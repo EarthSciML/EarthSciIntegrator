@@ -74,13 +74,7 @@ and every lane reproduces its cell's value bitwise.
 - reseact's transport is built from exactly these rules
   (`reseact.esm/reseact.esm:75`, `:91`).
 
-**The workarounds in use show the cost.**
 
-- eqice integrates 3-D age and energy on hand-cut blocks "with block-edge
-  ghosts frozen at the full-field initial age". The reason: a dense Jacobian
-  over the full 31×31 field needs about 113 GB (`eqice/PROGRESS.md:1054-1068`).
-- reseact proposes tiled transport because it is "exact for the state" and
-  compiles "at *tile* size" (`reseact.esm/SCALE_025.md:163-174`).
 
 **reseact's lanes need surgery and one build per capacity.**
 
