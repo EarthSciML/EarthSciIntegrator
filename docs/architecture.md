@@ -1,6 +1,6 @@
 # EarthSciIntegrator architecture (draft v0.2, 2026-10-13)
 
-**Status:** first full draft, for review. Decisions D1–D29 and their tradeoff analyses are in [`decisions.md`](decisions.md); the capability survey is in [`survey.md`](survey.md); upstream RFC drafts are in [`rfcs/`](rfcs/).
+**Status:** first full draft, for review. Decisions D1–D30 and their tradeoff analyses are in [`decisions.md`](decisions.md); the capability survey is in [`survey.md`](survey.md); upstream RFC drafts are in [`rfcs/`](rfcs/).
 
 ## 0. Scope
 
@@ -458,7 +458,7 @@ Partly. Low precision is safe where its errors are self-correcting (linear algeb
 - Where precision is **unspecified**, the run config chooses the state and RHS roles, and the error is judged against the tolerances (U14).
 - Mixed precision across leaves (f32 transport, f64 chemistry) is legal there, because conversions happen at leaf boundaries in the integrator, not inside an expression, so `mixed_element_type` never arises.
 - Linear-algebra and storage roles are numerical choices in every case.
-- **Open conflict (EqWeFiC).** If the WRF meteorology is declared Float32 (real*4), an f64 chemistry leaf that reads it mixes precisions inside one expression, which is illegal. The §4.4 example only works if the meteorology is left unspecified, which loses real*4 rounding, or if the spec gains a widening operator (U05 open question 3; no RFC yet). M7 must say which documents declare what.
+- **EqWeFiC (D30).** The WRF meteorology documents leave `element_type` unspecified, so f64 chemistry can read them legally. The run config may still choose f32 for dynamics. Bit-faithful real*4 rounding is given up. EqWeFiC's tests already run in f64 against real32 WRF at rel 1e-5, and its 3-D agreement target is statistical. No widening operator is needed.
 
 | Role | Allowed | Default |
 |---|---|---|

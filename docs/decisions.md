@@ -36,6 +36,7 @@ Facts are in [`survey.md`](survey.md) and the design is in [`architecture.md`](a
 | D28 | 2026-10-13 | **The GPU gate (M5g) runs two configurations:** f64 state, and mixed (f32 transport state, 16-bit W, chemistry on CPU). Either kind of GPU then works when hardware is chosen. |
 | — | 2026-10-13 | **RFCs are drafted for all upstream asks U1–U13** in [`rfcs/`](rfcs/), for review before anything is filed upstream. |
 | D29 | 2026-10-13 | **Numerical precision is separate from semantic precision.** A declared `element_type` (document or variable) stays semantic and binding (esm-spec §11.3.1). An omitted one means "unspecified": f64 by default, but the run config's precision roles may choose f32 state or RHS per leaf, with the error judged against tolerances, and the integrator reports what it chose. Mixed precision across leaves is legal because conversions happen at leaf boundaries. Spec change: U14. |
+| D30 | 2026-10-14 | **EqWeFiC's WRF meteorology leaves `element_type` unspecified** (D29), so WRF-Chem's double-precision chemistry can read it without a widening operator. Bit-faithful real*4 rounding is given up; tests already compare f64 runs against real32 WRF at rel 1e-5, and 3-D agreement is statistical. |
 | — | 2026-10-13 | **GPU hardware target: unknown.** Design for both FP64-strong (A100/H100) and FP64-weak GPUs. Precision roles (architecture §8) make that a run-config choice. |
 
 ## 1. Adjoint strategy: tradeoffs
@@ -220,4 +221,3 @@ So a whole leaf step, RHS plus stages plus linear solves plus controller, can be
 ## 5. Open questions
 
 - The GPU hardware target (D28 keeps both kinds viable).
-- EqWeFiC precision: declare the WRF meteorology Float32 and add a widening operator to the spec, or leave it unspecified so f64 chemistry can read it (architecture §8).
