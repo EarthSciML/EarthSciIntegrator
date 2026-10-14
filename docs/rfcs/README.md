@@ -1,6 +1,6 @@
 # Upstream RFC drafts
 
-**Status:** drafts, 2026-10-13, for review before anything is filed upstream.
+**Status:** drafts, 2026-10-13, for review before anything is filed upstream. Needed-by dates updated 2026-10-14 for milestone M4b (D37). The 2026-10-14 reuse audit (survey §6) verified that each ask names a real gap: none of U1–U15 duplicates existing upstream code.
 
 These are the changes EarthSciIntegrator needs in sibling repos. Each draft follows the EarthSciAST RFC format and cites current upstream code by `file:line`. Anything a draft could not verify is labelled as an assumption. The integrator-side context is in [`../architecture.md`](../architecture.md) §13 and [`../decisions.md`](../decisions.md).
 
@@ -11,10 +11,10 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 | U3 | EarthSciAST runtimes | [Range-restricted RHS](U03-range-restricted-rhs.md): operator subsets over tiles with halos, and lanes; bitwise assembly contract | M3, M5 |
 | U4 | EarthSciAST runtimes | [Reentrant RHS](U04-rust-public-threadsafe-rhs.md): Rust `RhsProgram` (`Send + Sync`), plus a reentrant Julia entry | M3 |
 | U5 | EarthSciAST | [Float32 integration](U05-float32-integration.md): what a declared Float32 governs, and what the integrator owns | M5g, M7 |
-| U6 | EarthSciAST | [Strip and expose](U06-strippable-constructs-and-observed-kernels.md): events, parameter updates and algebraic equations returned to the caller; standalone observed kernels | M6 |
+| U6 | EarthSciAST | [Strip and expose](U06-strippable-constructs-and-observed-kernels.md): events, parameter updates and algebraic equations returned to the caller; standalone observed kernels | M4b (eqice on shared memory, D37) |
 | U7 | EarthSciASTDiff | [Forcing and array-parameter columns](U07-forcing-jacobian-bands.md) | M4 |
 | U8 | EarthSciASTDiff | [Second-order bands](U08-second-order-bands.md) for Rosenbrock discrete adjoints | M4 |
-| U9 | EarthSciASTDiff | [Filtered faq, non-`+` reductions, recurrences](U09-faq-filters-semirings-recurrences.md); `column_block` structure; VJP models | M4, M6, M7 |
+| U9 | EarthSciASTDiff | [Filtered faq, non-`+` reductions, recurrences](U09-faq-filters-semirings-recurrences.md); `column_block` structure; VJP models | M4, M4b, M7 |
 | U10 | EarthSciASTDiff | [Production-rate Rust assembly](U10-rust-production-assembly.md), after a catch-up step | M3 |
 | U11 | EarthSciIO | [Async prefetch and rank windows](U11-async-prefetch-and-rank-windows.md) | M5 (prefetch from M3) |
 | U12 | EarthSciIO | [Rust streaming region writer](U12-rust-streaming-region-writer.md): commit protocol, indexed records | M4, M5 |

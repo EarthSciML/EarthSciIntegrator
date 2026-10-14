@@ -5,7 +5,7 @@ description: "An opt-in build mode in which the fast compilers remove the constr
 
 Status: draft (proposed by EarthSciIntegrator, 2026-10-13)
 Target: EarthSciAST — esm-libraries-spec §2.5 (new §2.5.11), API_SPEC §5.8, CONFORMANCE_SPEC (new §5.46), esm-spec §9.6.6 (three new codes). No esm format change.
-Needed by: EarthSciIntegrator milestone M6
+Needed by: EarthSciIntegrator milestone M4b (eqice on shared memory; D37, 2026-10-14)
 Integrator refs: architecture.md §3.2 (passes 1 and 6), §4.3 (`map`, `solve`, `coupled`), §6.3, §6.4, §9, §13 (U6); decisions D3, D4, D7, D8, D22; decisions.md §3.2 item 4
 
 ## Summary

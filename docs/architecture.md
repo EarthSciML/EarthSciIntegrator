@@ -1,6 +1,6 @@
-# EarthSciIntegrator architecture (draft v0.2, 2026-10-13)
+# EarthSciIntegrator architecture (draft v0.3, 2026-10-14)
 
-**Status:** first full draft, for review. Decisions D1–D30 and their tradeoff analyses are in [`decisions.md`](decisions.md); the capability survey is in [`survey.md`](survey.md); upstream RFC drafts are in [`rfcs/`](rfcs/).
+**Status:** second draft, after the 2026-10-14 review (reuse audit of the sibling repos and the Julia/Rust ecosystems; decisions D31–D38). Decisions D1–D38 and their tradeoff analyses are in [`decisions.md`](decisions.md); the capability survey, including the verified library inventory (§6 there), is in [`survey.md`](survey.md); upstream RFC drafts are in [`rfcs/`](rfcs/).
 
 ## 0. Scope
 
@@ -18,16 +18,12 @@ It is specified once and implemented natively in Julia and in Rust (D1).
 - continuous adjoints (D4);
 - continuous root-finding events (§9);
 - multi-domain nesting (not planned for now; D23);
+- BDF, and ARK methods other than `IMEXEuler` (D35);
+- the implementation of monolithic index-1 DAE integration, D3b (specified in v1, implemented after M6; D35);
+- forward sensitivities in Rust (Julia has them, D36);
 - Python, which comes later as a third native implementation (D1).
 
-**Inspiration from DifferentialEquations.jl:**
-- the problem / algorithm / solve separation;
-- tableau-generic method families;
-- the `init` / `step!` / `solve!` integrator interface;
-- PI controllers;
-- callbacks;
-- retcodes;
-- `remake`.
+**Relationship to DifferentialEquations.jl.** Borrowed: the problem / algorithm / solve separation; tableau-generic method families; the `init` / `step!` / `solve!` integrator interface; PI controllers; callbacks; retcodes; `remake`. In Julia this is more than inspiration: the implementation speaks SciMLBase (D33), events are DiffEqCallbacks, Krylov is Krylov.jl and nonlinear solves are NonlinearSolve.jl (D32), and the tableau coefficients and controller constants are OrdinaryDiffEq's own (D31). What is written in-house, and why, is D31.
 
 **What we do differently:**
 - structure-aware linear algebra by default, never a dense Jacobian;
@@ -68,7 +64,7 @@ It is specified once and implemented natively in Julia and in Rust (D1).
  │ Kernels      native CPU (Julia f!, Rust tape) · XLA programs on GPU (Julia)   │
  │ Partition    rank → tile → shard; halo exchange; executors (threads, MPI)    │
  │ Schedule     interpreter for combinators (§4)                                │
- │ Methods      ERK/SSP · Rosenbrock · SDIRK/ESDIRK · BDF · ARK · legacy        │
+ │ Methods      ERK/SSP · Rosenbrock · SDIRK/ESDIRK · IMEXEuler · legacy        │
  │ Solvers      batched block LU · column banded · Krylov+bjacobi/ASM · Newton  │
  │ Control      PI/PID · step limits · tstops · domain checks · retcodes        │
  │ Events       preset/periodic/condition · maps · forcing epochs · callbacks   │
@@ -116,11 +112,11 @@ The planner and the runtime are separate on purpose:
    - **Periodic wraps count as small reach across the seam.** EarthSciDiscretizations' periodic rules wrap by explicit index arithmetic in boundary slabs (cell 1 reads `f[NLON-1]`), which a naive offset analysis would classify as `global`.
 3. **DOF sets.** Each operator records the variables it writes and reads, so its kernel outputs only its own rows. This removes the Splitter's full-length parts.
 4. **Structure.** Run EarthSciASTDiff on each operator to get its Jacobian bands. From the bands, derive:
-   - the block pattern per cell (n×n, plus sparsity and a Markowitz LU plan);
+   - the block pattern per cell (n×n, plus sparsity and a Markowitz LU plan: EarthSciASTDiff's `BlockDiagonalPlan`, `markowitz_ordering` and `lu_fill`, reused as is);
    - column bandwidth, or `column_block` (dense within a column) for column contractions and sweeps, a structure class U9 adds;
-   - the stencil footprint;
+   - the stencil footprint, **derived from the band entries directly**, not from `detect_structure`: that function returns `:general` for any literal column index, so every periodic-wrap stencil would classify as general (`structure.jl:21`, `:62-63`);
    - a Gershgorin spectral-radius bound, as an expression usable as a step limit.
-5. **Strategy inference** (§3.5), only where the run config says `"auto"`.
+5. **Strategy inference** (§3.5), only where the run config says `"auto"`. Stiffness is classed first from structure and hints (`reaction_systems`, `solver.stiffness`); the Gershgorin bound is evaluated at the same sampled non-default states pass 8 uses, never at the default initial condition alone (a night-time chemistry IC would misclassify).
 6. **Derived documents**, one `.esm` per artifact:
    - per-operator RHS;
    - Jacobian band model. It also serves `Jᵀ·λ` by transposing at assembly, except for recurrence and scan operators: there a transpose costs O(N²) per line against O(N·L) for a reverse sweep, so the planner emits a dedicated VJP model (U9);
@@ -133,7 +129,7 @@ The planner and the runtime are separate on purpose:
 7. **Partition plan.** Rank and tile decomposition, halo widths per operator (the radius from pass 2), and shard sizing for pointwise and column leaves. The output stores' shard shape is an input: rank block boundaries fall on multiples of the output shard length, so ranks can write concurrently without locks (U12).
 8. **Validation and emission.** Checks:
    - Σ (operator RHS) = flat RHS at sampled states, within tolerance;
-   - **every** operator's band models against finite differences at sampled non-default states (reseact: "never FD-validate at the default IC"). This is mandatory, not sampled: EarthSciASTDiff's inliner has two paths that are silently wrong, found by reading (a contracting observed loses its Σ; a faq-defined observed is treated as a state);
+   - **every** operator's band models against an independent derivative at sampled non-default states (reseact: "never FD-validate at the default IC"). This is mandatory, not sampled: EarthSciASTDiff's inliner has two paths that are silently wrong, found by reading (a contracting observed loses its Σ; a faq-defined observed is treated as a state). The oracle is ForwardDiff on EarthSciAST's Dual-transparent `f!` in Julia, which avoids reseact's "no good FD step across thirty orders of magnitude" problem; the Rust planner compares its assembled values to the Julia-produced `.jvals.json` goldens at the same states rather than taking finite differences. No reusable tool for this exists today: reseact's `validate_plan` checks gather plans against index maps, and EarthSciASTDiff's oracle lives only in its tests;
    - a non-empty plan is required, because reseact's band model once went silently empty.
 
    Then write `plan.json` (canonical JSON) and `derived/*.esm`.
@@ -227,7 +223,7 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 }
 ```
 
-**eqice, PISM's `IceModel::step` (M6):**
+**eqice, PISM's `IceModel::step` (M4b):**
 
 ```json
 {"schedule": {"sequence": [
@@ -281,14 +277,16 @@ Every family is generic over its tableau. Each provides:
 | Explicit RK | Euler, Heun, **SSPRK33, SSPRK43**, RK4, **Tsit5**, BS3, SSPRK104, **WRF_RK3** | `vjp_u`, `vjp_p` at stored or recomputed stages |
 | Rosenbrock / ROW | **Rosenbrock23**, ROS2, ROS3P, **Rodas3, Rodas4**, Rodas5P; KPP's Ros2/3/4 and Rodas3/4 for WRF-Chem parity | plus `Wᵀ` solves (reused LU) and `hvp_u` for ∂J/∂u |
 | SDIRK / ESDIRK | **BackwardEuler**, TRBDF2, SDIRK2, Kvaerno3/4 | `Wᵀ` solves at converged stages (IFT) |
-| BDF | variable order 1–5, fixed-leading-coefficient form; index-1 DAE | tape-fixed coefficients → linear recursion backward |
-| ARK IMEX | **IMEXEuler** (PISM's "explicit horizontal at old time"), ARS222, KenCarp3/4 | ERK and SDIRK parts combined |
+| BDF | *post-v1* (D35): variable order 1–5, fixed-leading-coefficient form | tape-fixed coefficients → linear recursion backward |
+| ARK IMEX | **IMEXEuler** (PISM's "explicit horizontal at old time"); ARS222, KenCarp3/4 post-v1 (D35) | ERK and SDIRK parts combined |
 | Legacy fixed | θ-method (WRF chem mixing), single-step FE/BE | as above |
 | Split-explicit | WRF RK3 + forward–backward acoustic (M7) | composition of the above |
 
+**Why these are written rather than wrapped, and what is borrowed** (D31): the discrete adjoint of each family must read the forward step's stage internals, and lane pools need one vectorized step with a controller per lane; neither OrdinaryDiffEq nor diffsol offers that. Coefficients are not re-derived: tableaus come verbatim from `OrdinaryDiffEqRosenbrockTableaus`, `OrdinaryDiffEqSSPRK` and `OrdinaryDiffEqSDIRK`, cited in the spec. OrdinaryDiffEq (Julia) and diffsol (Rust) are the tier-2 oracles for order and trajectory; `SciMLSensitivity.ReverseDiffAdjoint` through OrdinaryDiffEq's own `Rosenbrock23`, `SSPRK43` and `TRBDF2(autodiff=false)` is the oracle for each hand-written family adjoint on toy problems, alongside Enzyme-on-step.
+
 ### 5.1 Controllers
 
-- PI with OrdinaryDiffEq's defaults per method, I, and PID (Söderlind).
+- PI with OrdinaryDiffEq's defaults per method, I, and PID (Söderlind). The constants are `OrdinaryDiffEqCore`'s (`PIController`, `PIDController`), copied with citation; reseact's `pictrl_ros23`/`pictrl_ssprk43` already did this.
 - Fixed dt.
 - A non-finite error estimate counts as a reject.
 - A `dt_min` guard returns a retcode instead of hanging (the Rust driver lacks this today).
@@ -312,11 +310,11 @@ W is kept structured and never assembled dense:
 
 | `linsolve` | Structure | Implementation |
 |---|---|---|
-| `block_lu` | per-cell n×n | Lane-SoA batched LU. Each LU operation is vectorized across all lanes of a shard. Pivoting is optional (reseact uses none). |
-| `sparse_block_lu` | per-cell sparse n×n | KPP-style unrolled elimination from EarthSciASTDiff's Markowitz plan. It executes as a short op tape over lanes in both languages (a generated function in Julia). |
+| `block_lu` | per-cell n×n | Lane-SoA batched LU. Each LU operation is vectorized across all lanes of a shard. Pivoting is optional (reseact uses none). Starts from reseact's `blocksolve` algorithm (`rx_traced_integrator.jl:110-135`: SoA, dense, no pivot, untyped), typed over U10's `LaneBlocks` layout; EarthSciMLBase's `BlockDiagonal` LU (`blockdiagonal.jl:180-217`: AoS `(n,n,ncells)`, generic `T`, optional pivoting, GPU-tested) is the oracle. |
+| `sparse_block_lu` | per-cell sparse n×n | KPP-style unrolled elimination from EarthSciASTDiff's Markowitz plan (`factorization.jl:87-134` gives the ordering and fill pattern; nothing anywhere executes it). It executes as a short op tape over lanes in both languages (a generated function in Julia). New in both languages. |
 | `banded` / `block_tridiagonal` | per column | Batched Thomas / block-Thomas across the columns of a shard. |
-| `krylov` | global sparse | GMRES(m) and BiCGStab, distributed (D12). Preconditioners: block-Jacobi ILU(0); ASM (overlap 1, LU subdomains); column-block-Jacobi for 3-D implicit operators. |
-| `matrix_free` | any | `J·v` from band models, with FD as a fallback. |
+| `krylov` | global sparse | GMRES(m) and BiCGStab, distributed (D12). Julia: Krylov.jl (`gmres`, `fgmres`, `bicgstab`, with `M=`/`N=` `ldiv` preconditioners). Rust: faer's `bicgstab` with its `Precond` traits, plus an in-house GMRES(m). Preconditioners, in-house in both: block-Jacobi ILU(0); ASM (overlap 1, LU subdomains); column-block-Jacobi for 3-D implicit operators. |
+| `matrix_free` | any | `J·v` from band models, with DifferentiationInterface pushforwards (Julia) or FD (Rust) as a fallback. |
 
 **Transposed solves for the adjoint** reuse the forward factorizations: LUᵀ, and Krylov on `Jᵀ` with the transposed preconditioner.
 
@@ -326,18 +324,19 @@ W is kept structured and never assembled dense:
 - Pseudo-transient continuation (PTC), which replaces eqice's hand-written pseudo-time relaxation.
 - Backtracking line search; Anderson acceleration.
 - Convergence criteria on the residual or on the relative change of a named observed (PISM's ‖ΔνH‖/‖νH‖).
+- **Julia:** NonlinearSolve.jl supplies all of the above (`NewtonRaphson`, `PseudoTransient`, `TrustRegion`, Broyden/Klement; LineSearch.jl; Anderson via its FixedPointAcceleration extension), with the structured W and Krylov.jl reached through a `LinearSolveFunction` (D32). The named-observed criterion is a custom termination condition. **Rust:** in-house.
 
 ### 6.3 `solve` nodes (nested algebraic, D3a)
 
 - Warm start from the previous solution.
 - `recover` ladder: under-relaxation, scaling a regularization parameter, reverting to the warm start.
 - The converged z is stored on the tape for the adjoint.
-- **Adjoint (IFT):** one transposed solve, `g_zᵀ μ = λ_z`, per step.
+- **Adjoint (IFT):** one transposed solve, `g_zᵀ μ = λ_z`, per step. Integrator code in both languages; in Julia `SciMLSensitivity.SteadyStateAdjoint` is an acceptable implementation of the same thing (D32).
 
-### 6.4 Index-1 DAE (D3b)
+### 6.4 Index-1 DAE (D3b; specified in v1, implemented after M6 unless M4b needs it, D35)
 
 - Semi-explicit form: `u' = f(u,z)`, `0 = g(u,z)`. `M = diag(I,0)` is implicit and never assembled.
-- Methods: BDF, stiffly accurate Rodas, stiffly accurate SDIRK.
+- Methods: stiffly accurate Rodas, stiffly accurate SDIRK (BDF post-v1).
 - Consistent initialization solves `g(u0, z) = 0` at t0.
 - The Newton system is block 2×2. It is solved by Krylov with a field-split preconditioner: the column or block preconditioner for u, and the SSA preconditioner for z.
 
@@ -496,9 +495,9 @@ Partly. Low precision is safe where its errors are self-correcting (linear algeb
 
 ## 9. Events, maps and callbacks (v1)
 
-- **Discrete events:** preset times, periodic, and condition-at-step-end. These cover forcing refresh, output, checkpoints, `every`, and `.esm` `discrete_events`.
+- **Discrete events:** preset times, periodic, and condition-at-step-end. These cover forcing refresh, output, checkpoints, `every`, and `.esm` `discrete_events`. In Julia they *are* DiffEqCallbacks' `PresetTimeCallback`, `PeriodicCallback` and `DiscreteCallback`, so EarthSciAST's existing composed data-refresh, output-sink and checkpoint callbacks plug in unchanged (D33).
 - **Maps** inside the schedule.
-- **Callbacks are propagated into every leaf and substep.** This is the bug that broke OrdinaryDiffEqOperatorSplitting.
+- **Callbacks are propagated into every leaf and substep.** This is the bug that broke OrdinaryDiffEqOperatorSplitting; the fix is propagation, not a new callback vocabulary.
 - **Continuous root-finding events are not in v1.** No v1 model needs them; the fire ignition time is a per-cell interpolation map.
 - **Firing decisions are recorded on the tape** and held fixed in the adjoint.
 
@@ -514,7 +513,7 @@ Partly. Low precision is safe where its errors are self-correcting (linear algeb
   - shard compositions, when they change;
   - converged `z` from `solve` nodes;
   - map masks, event firings and epochs.
-- Checkpoint at macro-step boundaries: state plus each cell's dt and controller history. Storage is an in-memory ring plus disk, with an optional revolve schedule for 0.25°-class runs. At 0.25° (about 188 GB for 5 days) each rank keeps its own store on node-local scratch.
+- Checkpoint at macro-step boundaries: state plus each cell's dt and controller history. Storage is an in-memory ring plus disk, with an optional revolve schedule for 0.25°-class runs. The schedule is computed by the planner with Checkpointing.jl and written into `plan.json`; both runtimes execute it and neither implements revolve (D34). At 0.25° (about 188 GB for 5 days) each rank keeps its own store on node-local scratch.
 
 **Backward pass, per macro step in reverse:**
 1. Restore the checkpoint.
@@ -531,7 +530,9 @@ Under D10 the replay is **bitwise** equal to the forward pass, so the replay-ver
 | Rosenbrock second order: `∇_u`, `∇_p`, `∇_F` of `μᵀJ(u)w`, and `∂f_t/∂u` where a method uses `f_t` (nonzero inside forcing brackets) | Second-order band models, one contraction per step (U8) |
 | `Wᵀ` solves | Reused factorizations (§6.1) |
 
-Julia additionally has Enzyme on the RHS as a fallback for primitives, and Enzyme on a whole step as the oracle.
+Julia additionally has AD on the RHS as a fallback for primitives, through DifferentiationInterface (`AutoEnzyme` pullbacks, `AutoForwardDiff` pushforwards; D38), and two step-level oracles: Enzyme on a whole step, and `SciMLSensitivity.ReverseDiffAdjoint` through OrdinaryDiffEq's implementation of the same method (D31).
+
+**Forward sensitivities (D36, Julia, v1).** `Dual` numbers are pushed through the whole integrator: state, stages, error norm and controller. Because the controller sees the tangents, the sensitivity includes the dt tangents reseact's prototype carried (survey §2). This is the `ForwardDiffSensitivity(convert_tspan=true)` pattern applied to our integrator and costs no integrator code beyond keeping it generic over the scalar type (D13). It is also the tangent side of the dot-product gate below.
 
 **Accumulation.**
 - Parameters: per-shard partials, reduced in fixed order.
@@ -573,12 +574,14 @@ docs/                       survey, decisions, architecture
 
 **Conformance tiers:**
 1. **Planner goldens:** byte-identical `plan.json` and derived documents.
-2. **Methods:** convergence order on reference problems; dot-product adjoint tests per family.
+2. **Methods:** convergence order on reference problems against OrdinaryDiffEq (Julia) and diffsol (Rust); dot-product adjoint tests per family, plus agreement with `ReverseDiffAdjoint` through OrdinaryDiffEq's own method on the same toy problem (D31).
 3. **Cross-language trajectories:** Julia ↔ Rust at tolerance; bitwise within each language for a given decomposition.
 4. **Model gates:**
    - reseact against the prototype;
    - eqice test F against the C++ dumps;
    - the EqWeFiC 24 h single-column run (SCM).
+
+**Where the tiers run.** Tiers 1–2 and the single-rank parts of 3–4 run in ordinary CI. Multi-rank conformance (M5 onward) runs as a cluster job on 1, 2 and 4 ranks per fixture; GPU conformance (M5g) is opt-in in the same way as EarthSciAST's Reactant tests (`ESM_TEST_REACTANT=1`). Both are part of the M5 and M5g deliverables, not afterthoughts.
 
 ## 13. Upstream asks
 
@@ -591,10 +594,10 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U3 | EarthSciAST | Range-restricted, DOF-subset RHS over a tile or a lane list, with halo reads and global indices (Julia `f!`; Rust slab tape) | M3 (tiles, lanes), M5 (MPI) |
 | U4 | EarthSciAST | Reentrant, thread-safe RHS entry point: Rust `RhsProgram` (`Send + Sync`); Julia `f!` without global forcing state | M3 |
 | U5 | EarthSciAST | Honour declared Float32 in integration: Rust (stop refusing), Julia (honour `element_type`), and the Rust XLA emitter | M5g, M7 |
-| U6 | EarthSciAST | Strip mode for events, parameter updates and algebraic equations, plus standalone kernels for residuals, conditions, affects, limits and maps | M6 |
+| U6 | EarthSciAST | Strip mode for events, parameter updates and algebraic equations, plus standalone kernels for residuals, conditions, affects, limits and maps | M4b |
 | U7 | EarthSciASTDiff | ∂f/∂(forcing buffer) bands, and array parameters as real columns | M4 |
-| U8 | EarthSciASTDiff | Second-order bands for Rosenbrock adjoints (`∇_u`, `∇_p`, `∇_F` of `μᵀJw`; `∂f_t/∂u`) | M4 |
-| U9 | EarthSciASTDiff | Filtered `faq`, non-`+` semirings, recurrences; `column_block` structure; dedicated VJP models | M4 (reseact's `Mz` filtered prefix scan), M6/M7 |
+| U8 | EarthSciASTDiff | Second-order bands for Rosenbrock adjoints (`∇_u`, `∇_p`, `∇_F` of `μᵀJw`; `∂f_t/∂u`) | M4 (Rust; Julia can use the D38 fallback) |
+| U9 | EarthSciASTDiff | Filtered `faq`, non-`+` semirings, recurrences; `column_block` structure; dedicated VJP models | M4 (reseact's `Mz` filtered prefix scan), M4b (eqice column contractions)/M7 |
 | U10 | EarthSciASTDiff | Production-rate Rust assembly, after a catch-up step: Rust and Python lag EarthSciAST (`aggregate`→`faq`, removed `VariableType`), so Rust does not compile against it and Python returns empty bands (both by reading) | M3 |
 | U11 | EarthSciIO | Async prefetch (forward/reverse) and per-rank name-keyed windows | M5 |
 | U12 | EarthSciIO | Rust streaming writer, multi-rank region writes, indexed time mode, f32/int types | M4 (Rust gradient sinks), M5 |
@@ -617,25 +620,27 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | | Deliverable | Gate |
 |---|---|---|
 | M0 | Spec skeleton: combinator semantics, run-config and plan schemas, the adjoint math per family. Repo scaffold and CI. | Schemas validate the three §4.4 examples |
-| M1 | Core in both languages: ERK/SSP, Rosenbrock, SDIRK; PI control; `leaf`/`sequence`/`strang`/`subcycle`/`map`; batched block LU; tape; method adjoints | Conformance tiers 2–3 on toy problems |
+| M1 | Core in both languages: ERK/SSP, Rosenbrock, SDIRK; PI control; `leaf`/`sequence`/`strang`/`subcycle`/`map`; batched block LU; tape; method adjoints. Julia on the SciMLBase interfaces (D33) with Krylov.jl and NonlinearSolve.jl (D32). | Conformance tiers 2–3 on toy problems, including the `ReverseDiffAdjoint` oracle per family |
 | M2 | Planner v1: provenance, locality, DOF sets, band models, strategy rules, plan goldens | Tier 1 on reseact-shaped fixtures |
-| M3 | reseact forward, shared memory: shards, lane pools (per-cell dt), dynamic re-sharding, epochs | Matches the prototype's native reference trajectory (`dt_scope: global`); `dt_scope: cell` bitwise invariant to shard and thread count |
-| M4 | reseact adjoint: params, then u0, gridded emissions, forcing (needs U7, U8, U9 and, in Rust, U12) | Agreement with the prototype's 48 h gradient to ≤1e-9 relative (D16); exact dot-product and replay |
-| M5 | MPI: ranks, halo exchange, deterministic reductions, distributed I/O | reseact at 2×2.5° and 0.25° |
+| M3 | reseact forward, shared memory: shards, lane pools (per-cell dt), dynamic re-sharding, epochs | Matches the prototype's native reference trajectory (`dt_scope: global`) **at no more than the prototype's native-reference wall time**; `dt_scope: cell` bitwise invariant to shard and thread count |
+| M4 | reseact adjoint: params, then u0, gridded emissions, forcing (needs U7, U8, U9 and, in Rust, U12); forward sensitivities with dt tangents in Julia (D36) | Agreement with the prototype's 48 h gradient to ≤1e-9 relative (D16); exact dot-product (adjoint against the forward-sensitivity tangent) and replay |
+| M4b | eqice on shared memory (D37): `solve` nodes (Newton–Krylov, Picard, PTC), IMEX columns, PISM limits, maps; needs U6 and U9's `column_block` | Test F (31×31×61) against the C++ dumps |
+| M5 | MPI: ranks, halo exchange, deterministic reductions, distributed I/O; multi-rank conformance in CI | reseact at 2×2.5° and 0.25° |
 | M5g | Julia XLA GPU: kernel-layer lowering, one program per leaf step, lane pools at fixed capacity, in-node multi-GPU via XLA collectives, device checkpoints | reseact forward and adjoint on GPU match CPU to tolerance, in two configurations (D28): f64 state, and mixed (f32 transport state, 16-bit W, chemistry on CPU). Bitwise run-to-run on one device |
 | M5b | Cross-rank lane migration for pointwise leaves (§7.6); f16/bf16 W and preconditioner storage with iterative refinement (§8) | Day/night load balance across ranks at 0.25°; refinement recovers f64 trajectories to tolerance |
-| M6 | eqice: `solve` (Newton–Krylov, Picard, PTC), index-1 DAE, IMEX columns, PISM limits, maps | Test F against the C++ dumps |
+| M6 | eqice at ice-sheet scale under MPI; monolithic index-1 DAE (D3b) if test F or the larger runs need it | Larger-domain eqice runs with the M5 determinism gates; D3b dot-product and consistent-initialization tests |
 | M7 | EqWeFiC: SCM 24 h (f32, `every`/`frozen`/`bind_dt`), then `split_explicit` + HEVI once `grids/wrf_arw_c` exists; fire mesh | PLAN.md acceptance criteria |
 
 ## 15. Risks
 
-1. **Two of everything (D1, D8).** The planner and MPI are the largest bodies of code, and both are written twice. Goldens keep them honest but do not halve the work.
-2. **The adjoint math for BDF, DAEs and `split_explicit`** is the subtlest per-family work. Rosenbrock adjoints in Rust depend on U8.
+1. **Two of everything (D1, D8).** The planner and MPI are the largest bodies of code, and both are written twice. Goldens keep them honest but do not halve the work. Fallback if planner effort threatens M3: the Rust runtime consumes Julia-produced plan artifacts until the Rust planner lands, with D8 as the end state (decisions §6).
+2. **The adjoint math for DAEs and `split_explicit`** is the subtlest per-family work (BDF left v1 with D35). Rosenbrock adjoints in Rust depend on U8.
 3. **The upstream critical path:**
    - U3 blocks tiles and MPI.
    - U7 and U9 block M4's forcing gradients.
    - U10's catch-up blocks every Rust band model, so it is a risk for M3.
-   - Fifteen asks across three repos is a lot of upstream work.
+   - Rust's M4 runs through six RFCs (U10 W0 → U7, U8, U9 → U12) while Julia's M4 can use the D38 fallback. If Rust slips, the Julia M4 gate stands on its own and Rust M4 is reported separately rather than holding the milestone (decisions §6).
+   - Fifteen asks across three repos is a lot of upstream work. The minimal set for M3 is U4, U10 W0 and U3's lanes; U2 improves reseact's split but the locality-only split is what the prototype already runs.
 4. **Rust tape performance at 3-D scale is unmeasured** against Julia native. Rust runs recurrences only on its slow interpreter (the fast tape falls back per rule, `tape/lower.rs:5179-5193`), so EqWeFiC's 3-D radiation sweeps in Rust would run there (U15, open question 3).
 5. **Matching reseact's gradient.** The arithmetic order differs from Enzyme-on-step, so agreement will be at the roundoff-amplified level, not necessarily 1e-11.
 6. **Lane-pool efficiency.** Compaction overhead and SIMD padding could eat into the per-cell dt gain at small shard sizes. Measure at CONUS before making `cell` the default for everything.
@@ -643,6 +648,8 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 8. **The XLA GPU path inherits reseact's record:** minutes-long compiles (hours in pathological cases), Reactant miscompiles and buffer donation, and an XLA:CPU race. Kernel code shared between the native and traced paths may be slower in one of them.
 
 ## 16. Former defaults, now decided
+
+The 2026-10-14 review added D31–D38 in [`decisions.md`](decisions.md): why the method families are in-house and what is borrowed; Krylov.jl, NonlinearSolve.jl and the SciMLBase interfaces in Julia; planner-emitted checkpoint schedules; the BDF/ARK/D3b scope cuts; forward sensitivities in v1; M4b before MPI; DifferentiationInterface for AD fallbacks.
 
 Every default in the v0.1 draft was decided on 2026-10-13, as D16–D28 in [`decisions.md`](decisions.md):
 - per-cell dt on lane pools for pointwise leaves;

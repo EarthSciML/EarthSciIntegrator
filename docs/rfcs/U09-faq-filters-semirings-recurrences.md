@@ -5,7 +5,7 @@ description: "Define EarthSciASTDiff's derivative rules and band representation 
 
 Status: draft (proposed by EarthSciIntegrator, 2026-10-13)
 Target: EarthSciASTDiff (`esm-jacobian-spec.md` §3.5, §4 entry fields, a new §4.4 "Recurrences", the structure classes and the `factorization` registry, §5 fixtures; draft spec, no version number yet). Prerequisite in EarthSciAST.jl: execute recurrences (causal-self-reference RFC §6.1 binding debt).
-Needed by: EarthSciIntegrator milestone M6/M7 (eqice and EqWeFiC column physics). The filtered-sum rule is needed earlier, at M4: forcing gradients through reseact's transport (U7 Motivation 4).
+Needed by: EarthSciIntegrator milestone M4b/M7 (eqice and EqWeFiC column physics; M4b per D37, 2026-10-14). The filtered-sum rule is needed earlier, at M4: forcing gradients through reseact's transport (U7 Motivation 4).
 Integrator refs: architecture.md §3.2 (passes 2, 4, 6), §3.5, §6.1 (`banded` / `block_tridiagonal`), §10 (primitives), §13 (U9); decisions D4, D8, §1.3 item 1, §3.2 item 2
 
 File citations are relative to the `code/` directory that holds all the repositories.
