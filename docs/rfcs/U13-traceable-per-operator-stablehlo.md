@@ -401,6 +401,10 @@ compiled tier.
 
 1. Does Reactant support a manual-SPMD region with `collective_permute` (§6 A)?
    This decides one program per leaf step for multi-GPU stencil leaves.
+   - Reactant 0.2.291 (the newest in the shared depot) has raw MLIR dialect builders for `sdy.manual_computation` (`src/mlir/Dialects/Shardy.jl:475`) and `stablehlo.collective_permute` (`src/mlir/Dialects/StableHLO.jl:1003`).
+   - It has no high-level wrapper: `Ops.jl` has no collectives, and `Sharding.jl` offers only automatic `NamedSharding`/`Mesh`.
+   - So A is reachable at the MLIR level, but untested from user code.
+   - The spike can run on CPU-only nodes if XLA's host-platform device-count flag passes through Reactant (an assumption).
 2. Should the fragment emit the operator once as a private `func.func` and
    `call` it per stage? Trace time is linear in call sites
    (`rx_traced_integrator.jl:25-28`), and interning across emissions was

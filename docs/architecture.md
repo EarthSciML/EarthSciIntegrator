@@ -437,11 +437,15 @@ Yes, and the design already allows it.
 **Rules on the XLA path:**
 - **Static shapes.** Lane pools have a fixed capacity and refill in masked chunks. Shard composition is a runtime gather-index input, so re-sharding never recompiles. Programs are per tile, which bounds compile time.
 - **Determinism (D10).** XLA's deterministic-ops mode is on. Our reductions use fixed trees. CPU and GPU agree to tolerance, not bitwise, because XLA's `exp`/`log` are not libm's.
-- **Parallelism.**
-  - The emitter's existing `sharding = :cells` cannot provide horizontal decomposition. It cuts the flat species-major state into contiguous slabs, which for `[lon, lat, lev]` fields are bands of levels, a vertical decomposition that D20 rules out. Its constant-index gather reads also cannot become `collective-permute`.
-  - So the integrator emits per-device tile fragments (U13) and the halo exchange between them itself. Whether Reactant's manual partitioning supports this is unverified.
-  - The fallback is one program per device per stage, with a halo exchange between stages. That breaks "one program per leaf step" for stencil leaves only; pointwise and column leaves are unaffected.
-  - Norms and Krylov dot products use XLA all-reduce in fixed-tree form. Across nodes, MPI exchanges halos on the host.
+- **Parallelism.** XLA can generate multi-GPU halos. Its SPMD partitioner (Shardy/GSPMD) emits `collective-permute` halo exchanges for slices, pads and windowed ops on a dimension sharded across devices. Today's emitter output just doesn't take that path, for two reasons:
+  - **Layout.** The state is one flat rank-1 vector, so the only axis to shard is the flat one. For column-major `[lon, lat, lev]` blocks a contiguous slab is a band of levels: a vertical decomposition (D20 rules it out).
+  - **Reads.** Stencil reads are constant-index gathers. The partitioner cannot see that they touch only neighbours, so it all-gathers the whole field instead of exchanging a halo. reseact chose gathers deliberately: slice-form reads made compile time blow up, and gathers cut `@compile` from 894 s to 207 s.
+
+  There are two ways to get XLA halos (U13 §6):
+  - **A. Manual SPMD (preferred).** Each device runs its tile fragment (U3/U13), and the integrator emits `collective_permute` between stages inside an `sdy.manual_computation` region. Reactant 0.2.291 has raw MLIR builders for both ops but no high-level wrapper, so this needs a spike.
+  - **B. Automatic.** Emit one N-D tensor per variable, sharded on lon/lat, with stencil reads as static slices, and let the partitioner insert the halos. This reopens the slice compile-time problem, and it rewrites the emitter's value model.
+
+  The fallback if A fails is one program per device per stage, which breaks "one program per leaf step" for stencil leaves only. Norms and Krylov dot products use all-reduce in fixed-tree form. Across nodes, MPI exchanges halos on the host.
 - **Adjoint.** The method-level adjoint kernels lower the same way. Checkpoints live in device memory and spill to host. The Enzyme-on-step oracle stays on CPU.
 
 **Precision.** The hardware target is unknown, so precision is a run-config choice:
@@ -635,7 +639,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 4. **Rust tape performance at 3-D scale is unmeasured** against Julia native. Rust runs recurrences only on its slow interpreter (the fast tape falls back per rule, `tape/lower.rs:5179-5193`), so EqWeFiC's 3-D radiation sweeps in Rust would run there (U15, open question 3).
 5. **Matching reseact's gradient.** The arithmetic order differs from Enzyme-on-step, so agreement will be at the roundoff-amplified level, not necessarily 1e-11.
 6. **Lane-pool efficiency.** Compaction overhead and SIMD padding could eat into the per-cell dt gain at small shard sizes. Measure at CONUS before making `cell` the default for everything.
-7. **Multi-GPU halos depend on Reactant manual partitioning** (unverified). The fallback costs one program per stage for stencil leaves.
+7. **Multi-GPU halos need a manual-SPMD spike.** Reactant has raw `sdy.manual_computation` and `collective_permute` builders but no wrapper. The fallback costs one program per stage for stencil leaves.
 8. **The XLA GPU path inherits reseact's record:** minutes-long compiles (hours in pathological cases), Reactant miscompiles and buffer donation, and an XLA:CPU race. Kernel code shared between the native and traced paths may be slower in one of them.
 
 ## 16. Former defaults, now decided
