@@ -1,6 +1,6 @@
-# EarthSciIntegrator architecture (draft v0.1, 2026-10-13)
+# EarthSciIntegrator architecture (draft v0.2, 2026-10-13)
 
-**Status:** first full draft, for review. Decisions D1–D28 and their tradeoff analyses are in [`decisions.md`](decisions.md); the capability survey is in [`survey.md`](survey.md); upstream RFC drafts are in [`rfcs/`](rfcs/).
+**Status:** first full draft, for review. Decisions D1–D29 and their tradeoff analyses are in [`decisions.md`](decisions.md); the capability survey is in [`survey.md`](survey.md); upstream RFC drafts are in [`rfcs/`](rfcs/).
 
 ## 0. Scope
 
@@ -89,8 +89,10 @@ The planner and the runtime are separate on purpose:
 - **The flattened AST from EarthSciAST,** with:
   - per-term provenance (upstream ask U2);
   - variable classification (`ode_states`, `observed_unknowns`, `algebraic_unknowns`);
-  - parameter classes and the cadence partition (CONST / DISCRETE / CONTINUOUS).
+  - parameter classes and the cadence partition (CONST / DISCRETE / CONTINUOUS);
+  - events, parameter `update` rules and algebraic equations, returned as structured objects by U6's strip mode, not refused.
 - **The run config** (§4), which may leave any choice as `"auto"`.
+- **Precedence.** The run config's `model` key is authoritative for a run. If the `.esm` also carries `solver.external`, the two must point at each other, or the planner refuses. The planner never writes `solver.external` into derived documents. Solver hints on mounted component files are dropped at assembly (U01), so the run config restates any per-component tolerances.
 
 ### 3.2 Passes
 
@@ -98,7 +100,9 @@ The planner and the runtime are separate on purpose:
    - Split each `D(x,t)` right-hand side into additive terms; the EarthSciASTSplitter algorithm, generalized.
    - Assign each term to an operator by provenance (component path) and the run config's selectors.
    - Unselected terms fall into default operators grouped by locality.
+   - Provenance (U2) separates `operator_compose` contributions; reseact has three. Where a model instead sums its physics tendencies in observeds of one assembly component (EqWeFiC's `moist_theta_tendency.esm` and a linear factor), the planner inlines those observeds, distributes the factor, and assigns each term to the component that owns the namespaced variable it reads. The `components` selector uses that rule.
    - Algebraic equations become `algebraic` operators. Event conditions, affects and step maps become `condition` and `map` operators. Run-config step-limit expressions become `limit` operators.
+   - **Parameter `update` rules** (esm ≥ 1.0 replaced parameter-writing events with them) become `condition`/`map` operators acting on parameters. `schedule` and `data` rules map to tstops and forcing epochs. `crossing` rules are refused in v1 (D22).
 2. **Locality analysis.** For every state read in a term, find its index offset relative to the written cell:
    - all offsets zero → `pointwise`;
    - nonzero only on the vertical axis → `column`;
@@ -106,26 +110,30 @@ The planner and the runtime are separate on purpose:
    - an unbounded horizontal `faq` contraction, or a global map → `global`.
 
    Column contractions such as reseact's PBL mean are `column`, not `pointwise`. That fixes the `contracts_space` special case in reseact's `split_common.jl`.
+
+   Two refinements:
+   - **The radius is the maximum over all `makearray` regions,** per axis and per direction. PPM reaches 3 cells upwind and 2 downwind; its mono flux form reaches 3 each side.
+   - **Periodic wraps count as small reach across the seam.** EarthSciDiscretizations' periodic rules wrap by explicit index arithmetic in boundary slabs (cell 1 reads `f[NLON-1]`), which a naive offset analysis would classify as `global`.
 3. **DOF sets.** Each operator records the variables it writes and reads, so its kernel outputs only its own rows. This removes the Splitter's full-length parts.
 4. **Structure.** Run EarthSciASTDiff on each operator to get its Jacobian bands. From the bands, derive:
    - the block pattern per cell (n×n, plus sparsity and a Markowitz LU plan);
-   - column bandwidth;
+   - column bandwidth, or `column_block` (dense within a column) for column contractions and sweeps, a structure class U9 adds;
    - the stencil footprint;
    - a Gershgorin spectral-radius bound, as an expression usable as a step limit.
 5. **Strategy inference** (§3.5), only where the run config says `"auto"`.
 6. **Derived documents**, one `.esm` per artifact:
    - per-operator RHS;
-   - Jacobian band model (it also serves `Jᵀ·λ`, because bands transpose at assembly);
-   - HVP band model, needed by Rosenbrock adjoints (U8);
-   - ∂f/∂p and ∂f/∂(forcing) band models (U7);
+   - Jacobian band model. It also serves `Jᵀ·λ` by transposing at assembly, except for recurrence and scan operators: there a transpose costs O(N²) per line against O(N·L) for a reverse sweep, so the planner emits a dedicated VJP model (U9);
+   - second-order band models for Rosenbrock adjoints: `∇_u`, `∇_p` and `∇_F` of the contraction `μᵀJ(u)w`, plus `∂f_t/∂u` where a method uses `f_t` (U8);
+   - ∂f/∂p (including array parameters) and ∂f/∂(forcing) band models (U7);
    - algebraic residual models;
    - map, limit and condition models.
 
-   All are compiled by the stock EarthSciAST compiler.
-7. **Partition plan.** Rank and tile decomposition, halo widths per operator (the radius from pass 2), and shard sizing for pointwise and column leaves.
+   RHS and band models compile with the stock EarthSciAST compiler. Residual, map, limit and condition models need U6: today algebraic unknowns are state slots, and observeds cannot be compiled as standalone kernels.
+7. **Partition plan.** Rank and tile decomposition, halo widths per operator (the radius from pass 2), and shard sizing for pointwise and column leaves. The output stores' shard shape is an input: rank block boundaries fall on multiples of the output shard length, so ranks can write concurrently without locks (U12).
 8. **Validation and emission.** Checks:
    - Σ (operator RHS) = flat RHS at sampled states, within tolerance;
-   - band models against finite differences at sampled non-default states (reseact: "never FD-validate at the default IC");
+   - **every** operator's band models against finite differences at sampled non-default states (reseact: "never FD-validate at the default IC"). This is mandatory, not sampled: EarthSciASTDiff's inliner has two paths that are silently wrong, found by reading (a contracting observed loses its Σ; a faq-defined observed is treated as a state);
    - a non-empty plan is required, because reseact's band model once went silently empty.
 
    Then write `plan.json` (canonical JSON) and `derived/*.esm`.
@@ -142,7 +150,7 @@ A run-config `freeze: ["ssa.nuH"]` makes pass 4 treat those observeds as constan
 
 | Operator structure | Default leaf |
 |---|---|
-| pointwise; stiff (from `reaction_systems`, `solver.stiffness: high`, or the Gershgorin bound × Δ ≫ 1) | Rosenbrock (`Rodas4`, or `Rosenbrock23` at loose tolerance); batched block LU (sparse-unrolled if n > 16); per-shard dt |
+| pointwise; stiff (from `reaction_systems`, `solver.stiffness: high`, or the Gershgorin bound × Δ ≫ 1) | Rosenbrock (`Rodas4`, or `Rosenbrock23` at loose tolerance); batched block LU (sparse-unrolled if n > 16); per-cell dt on lane pools (D17) |
 | pointwise; non-stiff | SSPRK43 / Tsit5 |
 | column; Gershgorin × Δ ≫ 1 | SDIRK / ESDIRK with batched banded or block-tridiagonal solves |
 | stencil | SSPRK43; step limit = the Gershgorin bound (CFL-like); global dt per leaf |
@@ -162,7 +170,7 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 |---|---|
 | `esm_integrator` | spec version |
 | `model` | path to the `.esm` |
-| `operators` | name → selector (`components`, `variables`, `locality`, `terms`) plus options (`freeze`, `bind_dt`) |
+| `operators` | name → selector (`components`, `variables`, `locality`, `terms`) plus options (`freeze`, `bind_dt`); `maps` entries define step maps as (target variable ← expression or observed) pairs plus a `dt` binding |
 | `schedule` | combinator tree (§4.3) |
 | `step` | macro-step controller: fixed `dt`, or `limits` (operator names, expressions, `{"max": …}`), `hit` (tstops sources), `resolution` |
 | `partition` | ranks (grid of horizontal blocks), tiles per rank, shards per leaf |
@@ -182,7 +190,7 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 | `coupled` | Monolithic integration of the sum of its operators (no splitting error). `imex: {explicit: [...], implicit: [...]}` selects ARK. If any algebraic operators are included, it becomes an index-1 DAE (§6.4). |
 | `frozen` | The operator's tendency is evaluated once at the start of the enclosing step and held across all stages (WRF `rk_addtend_dry`). |
 | `split_explicit` | WRF RK3 (Wicker–Skamarock: Δ/3, Δ/2, Δ) on `slow`, with `fast` integrated by forward–backward substeps (vertically implicit, `epssm` off-centring) inside each stage. *Spec in v1, implementation in M7.* |
-| `map` | `u ← M(u, p, t, Δ)`: calving, mask consistency, level-set reinit, iceberg removal. |
+| `map` | `u ← M(u, p, t, Δ)`: calving, mask consistency, level-set reinit, iceberg removal. A model writes a map as an observed that reads `dt` (eqice `stage2/geometry.esm`), so the run config names (target ← observed) pairs and binds `dt`. Maps may also act on parameters (parameter `update` rules). |
 | `solve` | Nested nonlinear solve for algebraic unknowns with everything else frozen (§6.3). |
 
 **`bind_dt`** sets a model parameter to the step actually taken, e.g. `{"wsm6.dtcld": "leaf"}`. A `leaf` with `alg: "ForwardEuler"`, `dt: "step"` and a bound dt reproduces a legacy WRF/PISM increment *exactly*, because the `.esm` already writes these as `(x_out − x_in)/dt` tendencies.
@@ -191,7 +199,7 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 
 ### 4.4 Examples (illustrative)
 
-**reseact, the prototype re-hosted (M3).** Use `"dt_scope": "global"` to reproduce the prototype bit for bit, and `"shard"` for speed.
+**reseact, the prototype re-hosted (M3).** Use `"dt_scope": "global"` to reproduce the prototype, and `"cell"` (the default, D17) for speed.
 
 ```json
 {
@@ -340,7 +348,7 @@ W is kept structured and never assembled dense:
 Horizontal only, so columns stay whole:
 - Ranks form a 2-D block grid.
 - Tiles subdivide a rank for threads.
-- Staggered face variables are owned by the low-side cell.
+- Staggered faces: cell i owns face i, its low (west/south) face. The tile that owns the last cell N on an axis also owns face N+1. This matches EarthSciDiscretizations ("face i is the lower (western) edge of cell i").
 - Halo width is the maximum stencil radius per axis over the operators that rank runs.
 
 ### 7.2 Per leaf
@@ -362,6 +370,8 @@ Taken from reseact's `shard_exec.jl`:
 
 v1 executors are threads (dynamic assignment of fixed-content shards to threads, which keeps D10 intact) and MPI ranks (Julia MPI.jl, Rust rsmpi).
 
+Threads need a reentrant RHS in **both** languages (U4). Julia's `f!` is not reentrant today: it uses a process-global forcing epoch, captures forcing buffers by alias, and threads internally when Polyester is loaded.
+
 ### 7.4 Deterministic reductions (D10)
 
 - Partial sums are gathered in rank order, reduced at the root, then broadcast. `MPI_Allreduce` gives no ordering guarantee.
@@ -369,9 +379,17 @@ v1 executors are threads (dynamic assignment of fixed-content shards to threads,
 
 ### 7.5 Forcing
 
-- Each rank reads its own window (EarthSciIO index-range and projection pushdown).
-- Refresh happens at epoch boundaries with half-open `(t0, tf]` semantics.
-- The next epoch is prefetched asynchronously, because refresh was 98% of the 0.25° forward wall time (U11).
+- **Rank windows.** Each rank reads its own block plus halo, using U11's name-keyed `select`.
+  - Files chunked by whole global levels (GEOS-FP 0.25° is chunked `[1,1,721,1152]`) gain nothing from windows. N ranks on a node decoding the same file inflate decompression N times.
+  - For those files, use one decoder per node with an MPI scatter, or convert to Zarr at fetch time.
+- **Refresh stops.** A macro step stops at every provider refresh time in `(t0, tf]`. That interval is half-open on the right, so a boundary landing on `tf` fires (reseact's fencepost bug).
+- **Buffer selection by stage time uses `[t_k, t_{k+1})`.** A stage evaluated at exactly `t_{k+1}` must see epoch k+1.
+  - The models' `frac`-based blend weight is 0 at record times. With the old bracket still loaded, such a stage would read record k instead of k+1. (Found by reading; reseact refreshes after the step, `adjoint_gradient.jl:1046-1056`.)
+  - So steps never cross an epoch boundary, and the next epoch is resident (prefetched) when a final stage lands on it.
+  - A blend weight that is continuous at record times, a model-side fix, would also remove the hazard.
+- **Prefetch** decodes upcoming epochs on background workers, forward or in reverse for the adjoint (U11).
+  - The "98% of 0.25° forward wall time" figure predates EarthSciIO's variable, window and record pushdown. With variable pushdown alone the projection is about 180 s per refresh, which still needs re-measuring.
+  - Prefetch hides refresh only up to the compute time per epoch, so decode cost has to come down first.
 
 ### 7.6 Dynamic partitioning as stiffness changes
 
@@ -419,23 +437,34 @@ Yes, and the design already allows it.
 **Rules on the XLA path:**
 - **Static shapes.** Lane pools have a fixed capacity and refill in masked chunks. Shard composition is a runtime gather-index input, so re-sharding never recompiles. Programs are per tile, which bounds compile time.
 - **Determinism (D10).** XLA's deterministic-ops mode is on. Our reductions use fixed trees. CPU and GPU agree to tolerance, not bitwise, because XLA's `exp`/`log` are not libm's.
-- **Parallelism.** Multiple GPUs in one node use XLA collectives (`collective-permute` for halos, all-reduce for norms and Krylov dot products). Across nodes, MPI exchanges halos on the host between stage programs; PJRT's distributed runtime is an alternative to evaluate.
+- **Parallelism.**
+  - The emitter's existing `sharding = :cells` cannot provide horizontal decomposition. It cuts the flat species-major state into contiguous slabs, which for `[lon, lat, lev]` fields are bands of levels, a vertical decomposition that D20 rules out. Its constant-index gather reads also cannot become `collective-permute`.
+  - So the integrator emits per-device tile fragments (U13) and the halo exchange between them itself. Whether Reactant's manual partitioning supports this is unverified.
+  - The fallback is one program per device per stage, with a halo exchange between stages. That breaks "one program per leaf step" for stencil leaves only; pointwise and column leaves are unaffected.
+  - Norms and Krylov dot products use XLA all-reduce in fixed-tree form. Across nodes, MPI exchanges halos on the host.
 - **Adjoint.** The method-level adjoint kernels lower the same way. Checkpoints live in device memory and spill to host. The Enzyme-on-step oracle stays on CPU.
 
 **Precision.** The hardware target is unknown, so precision is a run-config choice:
 - On FP64-strong GPUs (A100/H100), the state stays f64.
-- On FP64-weak GPUs, use f32 state for dynamics and transport and f16/bf16 W (§8).
+- On FP64-weak GPUs, use f32 state for dynamics and transport (allowed only where the document leaves precision unspecified, D29/U14) and f16/bf16 W (§8).
+- The direct emitter accepts only Float64 today, so f32 emission (U5, U13) is needed by M5g.
 - Executors are per leaf, so chemistry shards can stay on CPU cores while transport runs on the GPU.
 
 ## 8. Mixed precision, including float16
 
-Partly. Low precision is safe where its errors are self-correcting (linear algebra inside iterations, preconditioners, stored tables). It is not safe for the state. Adopted as D18, which amends D13 with precision **roles** per leaf:
+Partly. Low precision is safe where its errors are self-correcting (linear algebra inside iterations, preconditioners, stored tables). It is not safe for the state. Adopted as D18, which amends D13 with precision **roles** per leaf, and qualified by D29:
+
+- A **declared** `element_type` (document or variable) is semantic and binding. The state and RHS evaluation follow it exactly (esm-spec §11.3.1). EqWeFiC's real*4 ports declare Float32.
+- Where precision is **unspecified**, the run config chooses the state and RHS roles, and the error is judged against the tolerances (U14).
+- Mixed precision across leaves (f32 transport, f64 chemistry) is legal there, because conversions happen at leaf boundaries in the integrator, not inside an expression, so `mixed_element_type` never arises.
+- Linear-algebra and storage roles are numerical choices in every case.
+- **Open conflict (EqWeFiC).** If the WRF meteorology is declared Float32 (real*4), an f64 chemistry leaf that reads it mixes precisions inside one expression, which is illegal. The §4.4 example only works if the meteorology is left unspecified, which loses real*4 rounding, or if the spec gains a widening operator (U05 open question 3; no RFC yet). M7 must say which documents declare what.
 
 | Role | Allowed | Default |
 |---|---|---|
 | time, dt, error norms, reductions, adjoint accumulators | f64 only | f64 |
-| state `u` and stage vectors | f32, f64 | the model's `element_type` |
-| RHS evaluation | f32, f64 (≥ state) | state |
+| state `u` and stage vectors | f32, f64; must equal a declared `element_type` | declared `element_type`, else f64 |
+| RHS evaluation | f32, f64 (≥ state); must equal a declared `element_type` | state |
 | Jacobian / W storage | f16, bf16, f32, f64 | RHS |
 | LU factors, preconditioners | f16, bf16, f32, f64 | RHS |
 | forcing and lookup-table storage | f16, bf16, f32, f64 (upcast on load) | source |
@@ -481,7 +510,7 @@ Partly. Low precision is safe where its errors are self-correcting (linear algeb
   - shard compositions, when they change;
   - converged `z` from `solve` nodes;
   - map masks, event firings and epochs.
-- Checkpoint at macro-step boundaries: state plus each cell's dt and controller history. Storage is an in-memory ring plus disk, with an optional revolve schedule for 0.25°-class runs.
+- Checkpoint at macro-step boundaries: state plus each cell's dt and controller history. Storage is an in-memory ring plus disk, with an optional revolve schedule for 0.25°-class runs. At 0.25° (about 188 GB for 5 days) each rank keeps its own store on node-local scratch.
 
 **Backward pass, per macro step in reverse:**
 1. Restore the checkpoint.
@@ -494,7 +523,8 @@ Under D10 the replay is **bitwise** equal to the forward pass, so the replay-ver
 
 | Primitive | Source |
 |---|---|
-| `vjp_u`, `vjp_p` (including array parameters), `vjp_forcing`, `hvp_u` | EarthSciASTDiff band models, in both languages |
+| `vjp_u`, `vjp_p` (including array parameters), `vjp_forcing` | EarthSciASTDiff band models in both languages (U7). Recurrence and scan operators get dedicated VJP models (U9). |
+| Rosenbrock second order: `∇_u`, `∇_p`, `∇_F` of `μᵀJ(u)w`, and `∂f_t/∂u` where a method uses `f_t` (nonzero inside forcing brackets) | Second-order band models, one contraction per step (U8) |
 | `Wᵀ` solves | Reused factorizations (§6.1) |
 
 Julia additionally has Enzyme on the RHS as a fallback for primitives, and Enzyme on a whole step as the oracle.
@@ -502,9 +532,12 @@ Julia additionally has Enzyme on the RHS as a fallback for primitives, and Enzym
 **Accumulation.**
 - Parameters: per-shard partials, reduced in fixed order.
 - u0: `λ(t0)`.
-- Gridded fields: `vjp_p` into array parameters.
-- Forcing: per-epoch buffer gradients. The model's own time-blend expression appears in the forcing band model, so the chain rule into both bracketing records is automatic.
-- Forcing and field gradients stream to EarthSciIO sinks.
+- **Gridded fields:** `vjp_p` into array parameters. EarthSciASTDiff today maps parameter columns only through the scalar `p`, so array-parameter gradients are silently zero until U7 lands.
+- **Forcing:** accumulated per **provider record**, not per integrator epoch, since GEOS-FP's collections are not co-phased. A slot→record map comes from the tape. The model's own time-blend expression is in the forcing band model, so the chain rule into both bracketing records is automatic.
+- **Writing forcing gradients:**
+  - A record's gradient is complete only after both brackets containing it are processed, so records finish in descending time order. Gradient sinks therefore use indexed (positional) writes (U12), with one store per forcing cadence.
+  - Halo contributions are summed into the owning rank, in a fixed order, before writing.
+- Field and forcing gradients stream to EarthSciIO sinks (U12).
 
 **Validation gates.**
 - Dot-product identity per leaf step.
@@ -521,7 +554,8 @@ Julia additionally has Enzyme on the RHS as a fallback for primitives, and Enzym
   - Accumulators, such as precipitation totals, are auxiliary integrated states added by the planner.
 - **Restart:**
   - State, controller state (dt, PI history), `solve` warm starts (SSA velocity), forcing epoch and tape position.
-  - Restart is bitwise for the same decomposition (D10).
+  - Restart is bitwise for the same decomposition (D10). It comes from the integrator's own restart store; EarthSciAST's checkpoint sink promises only tolerance-consistent continuation because it holds no integrator internals.
+  - Rust's writer handles f64 only today; f32 state (M7) needs U12's types.
 
 ## 12. Spec, conformance and repository layout
 
@@ -544,21 +578,35 @@ docs/                       survey, decisions, architecture
 
 ## 13. Upstream asks
 
+RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what the drafts found.
+
 | # | Repo | Ask | Needed by |
 |---|---|---|---|
 | U1 | EarthSciAST | `solver.external` in the spec and schema | M2 |
-| U2 | EarthSciAST | Per-term provenance (component path) carried through flatten | M2 |
-| U3 | EarthSciAST | Range-restricted, DOF-subset RHS over a box with halo reads (Julia `f!`; Rust slab tape over sub-boxes) | M3 (tiles), M5 (MPI) |
-| U4 | EarthSciAST | Public, `Send + Sync` Rust RHS entry point (no `Rc`/`RefCell` in the executor) | M3 |
-| U5 | EarthSciAST | Float32 integration not refused | M7 |
-| U6 | EarthSciAST | Compile documents with events or algebraic equations stripped, and compile observed sets (residuals, conditions, maps) as standalone kernels | M6 |
-| U7 | EarthSciASTDiff | ∂f/∂(forcing buffer) bands | M4 (forcing gradients) |
-| U8 | EarthSciASTDiff | Second-order (HVP) bands | M4 (Rust Rosenbrock adjoint) |
-| U9 | EarthSciASTDiff | Filtered `faq`, non-`+` semirings, recurrences (column sweeps) | M6/M7 |
-| U10 | EarthSciASTDiff | Production-rate Rust assembly | M3 |
-| U11 | EarthSciIO | Async prefetch; per-rank index-range reads | M5 |
-| U12 | EarthSciIO | Rust streaming writer with region writes | M5 |
-| U13 | EarthSciAST (Julia) | Direct StableHLO emitter: per-operator, range-restricted RHS and band models with forcing as program inputs, traceable inside an integrator `while` loop | M5g |
+| U2 | EarthSciAST | Per-term provenance (`equation_contributions`) carried through flatten | M2 |
+| U3 | EarthSciAST | Range-restricted, DOF-subset RHS over a tile or a lane list, with halo reads and global indices (Julia `f!`; Rust slab tape) | M3 (tiles, lanes), M5 (MPI) |
+| U4 | EarthSciAST | Reentrant, thread-safe RHS entry point: Rust `RhsProgram` (`Send + Sync`); Julia `f!` without global forcing state | M3 |
+| U5 | EarthSciAST | Honour declared Float32 in integration: Rust (stop refusing), Julia (honour `element_type`), and the Rust XLA emitter | M5g, M7 |
+| U6 | EarthSciAST | Strip mode for events, parameter updates and algebraic equations, plus standalone kernels for residuals, conditions, affects, limits and maps | M6 |
+| U7 | EarthSciASTDiff | ∂f/∂(forcing buffer) bands, and array parameters as real columns | M4 |
+| U8 | EarthSciASTDiff | Second-order bands for Rosenbrock adjoints (`∇_u`, `∇_p`, `∇_F` of `μᵀJw`; `∂f_t/∂u`) | M4 |
+| U9 | EarthSciASTDiff | Filtered `faq`, non-`+` semirings, recurrences; `column_block` structure; dedicated VJP models | M4 (reseact's `Mz` filtered prefix scan), M6/M7 |
+| U10 | EarthSciASTDiff | Production-rate Rust assembly, after a catch-up step: Rust and Python lag EarthSciAST (`aggregate`→`faq`, removed `VariableType`), so Rust does not compile against it and Python returns empty bands (both by reading) | M3 |
+| U11 | EarthSciIO | Async prefetch (forward/reverse) and per-rank name-keyed windows | M5 |
+| U12 | EarthSciIO | Rust streaming writer, multi-rank region writes, indexed time mode, f32/int types | M4 (Rust gradient sinks), M5 |
+| U13 | EarthSciAST (Julia) | Traceable per-operator StableHLO fragments (`operator_ir`, `emit_fragment`), f32 emission, fixed-order folds | M5g |
+| U14 | EarthSciAST | Numerical vs semantic precision: an omitted `element_type` is unspecified, so the run config may choose (D29) | M5g, M7 |
+| U15 | EarthSciAST (Julia) | Execute recurrences in the native compiler and the StableHLO emitter | M7 |
+
+**Prerequisites the drafts uncovered:**
+- **esm 1.3.0.** U01 and U14 ship in esm 1.3.0. reseact (esm 1.0.0), eqice and EqWeFiC (1.0.0/1.1.0) must move to 1.3.0 before they can use `solver.external` or an f32 choice.
+- **An unmerged branch.** U14 builds on EarthSciAST's unmerged `fix/f59-mounted-leaf-precision` branch. On `main`, Julia's and Go's `ModelVariable` have no `element_type` field, so per-variable declarations are dropped on load (found by reading).
+- **A spec clarification for U15.** esm-spec §4.3.1.1 point 4 forbids vectorized or kernel-merged recurrence evaluation. U15 needs the clarification that cells sharing a recurrence position are independent and may be batched, for the Julia native path and any GPU path.
+
+**Bugs found while drafting, to file upstream:**
+- Two inliner paths in EarthSciASTDiff are silently wrong (`inline.jl:125-140`; see U09).
+- Bindings disagree on which events survive flatten (U06).
+- EarthSciIO's `spec/registries.md` still calls the zarr reader v2-only.
 
 ## 14. Milestones
 
@@ -568,7 +616,7 @@ docs/                       survey, decisions, architecture
 | M1 | Core in both languages: ERK/SSP, Rosenbrock, SDIRK; PI control; `leaf`/`sequence`/`strang`/`subcycle`/`map`; batched block LU; tape; method adjoints | Conformance tiers 2–3 on toy problems |
 | M2 | Planner v1: provenance, locality, DOF sets, band models, strategy rules, plan goldens | Tier 1 on reseact-shaped fixtures |
 | M3 | reseact forward, shared memory: shards, lane pools (per-cell dt), dynamic re-sharding, epochs | Matches the prototype's native reference trajectory (`dt_scope: global`); `dt_scope: cell` bitwise invariant to shard and thread count |
-| M4 | reseact adjoint: params, then u0, gridded emissions, forcing | Agreement with the prototype's 48 h gradient (target to set; ≤1e-9 rel suggested); exact dot-product and replay |
+| M4 | reseact adjoint: params, then u0, gridded emissions, forcing (needs U7, U8, U9 and, in Rust, U12) | Agreement with the prototype's 48 h gradient to ≤1e-9 relative (D16); exact dot-product and replay |
 | M5 | MPI: ranks, halo exchange, deterministic reductions, distributed I/O | reseact at 2×2.5° and 0.25° |
 | M5g | Julia XLA GPU: kernel-layer lowering, one program per leaf step, lane pools at fixed capacity, in-node multi-GPU via XLA collectives, device checkpoints | reseact forward and adjoint on GPU match CPU to tolerance, in two configurations (D28): f64 state, and mixed (f32 transport state, 16-bit W, chemistry on CPU). Bitwise run-to-run on one device |
 | M5b | Cross-rank lane migration for pointwise leaves (§7.6); f16/bf16 W and preconditioner storage with iterative refinement (§8) | Day/night load balance across ranks at 0.25°; refinement recovers f64 trajectories to tolerance |
@@ -579,11 +627,16 @@ docs/                       survey, decisions, architecture
 
 1. **Two of everything (D1, D8).** The planner and MPI are the largest bodies of code, and both are written twice. Goldens keep them honest but do not halve the work.
 2. **The adjoint math for BDF, DAEs and `split_explicit`** is the subtlest per-family work. Rosenbrock adjoints in Rust depend on U8.
-3. **The upstream critical path:** U3 blocks tiles and MPI, and U7 blocks forcing gradients.
-4. **Rust tape performance at 3-D scale is unmeasured** against Julia native.
+3. **The upstream critical path:**
+   - U3 blocks tiles and MPI.
+   - U7 and U9 block M4's forcing gradients.
+   - U10's catch-up blocks every Rust band model, so it is a risk for M3.
+   - Fifteen asks across three repos is a lot of upstream work.
+4. **Rust tape performance at 3-D scale is unmeasured** against Julia native. Rust runs recurrences only on its slow interpreter (the fast tape falls back per rule, `tape/lower.rs:5179-5193`), so EqWeFiC's 3-D radiation sweeps in Rust would run there (U15, open question 3).
 5. **Matching reseact's gradient.** The arithmetic order differs from Enzyme-on-step, so agreement will be at the roundoff-amplified level, not necessarily 1e-11.
 6. **Lane-pool efficiency.** Compaction overhead and SIMD padding could eat into the per-cell dt gain at small shard sizes. Measure at CONUS before making `cell` the default for everything.
-7. **The XLA GPU path inherits reseact's record:** minutes-long compiles (hours in pathological cases), Reactant miscompiles and buffer donation, and an XLA:CPU race. Kernel code shared between the native and traced paths may be slower in one of them.
+7. **Multi-GPU halos depend on Reactant manual partitioning** (unverified). The fallback costs one program per stage for stencil leaves.
+8. **The XLA GPU path inherits reseact's record:** minutes-long compiles (hours in pathological cases), Reactant miscompiles and buffer donation, and an XLA:CPU race. Kernel code shared between the native and traced paths may be slower in one of them.
 
 ## 16. Former defaults, now decided
 

@@ -47,10 +47,12 @@ Legend: **●** = needed now, **○** = needed later or optional, blank = not ne
 
 - **One flat semi-discrete ODE per document.**
   - Julia: `f!(du,u,p,t)`, in place and ForwardDiff-generic.
-  - Rust: `debug_eval_rhs(state, t, params, forcing)`, hidden from the public API.
+  - Rust: `debug_eval_rhs(state, t, params: &HashMap<String,f64>, force_scalar)` plus an allocation-free `debug_eval_rhs_into` (`simulate_array/driver.rs:527-533`, `:613-621`), both `#[doc(hidden)]`.
   - Reactant: an out-of-place `(u, p, t, bufs) -> du`.
 - **Layout is variable (species) major**: scalars first, then one column-major block per array variable (`EarthSciAST/pkg/EarthSciAST.jl/src/tree_walk/state_layout.jl`). Per-cell block solves therefore vectorize across cells, struct-of-arrays style; reseact's `blocksolve` exploits this.
-- **Flattening sums `operator_compose` terms and does not record which operator each term came from.** Splitting today happens downstream, by locality, in EarthSciASTSplitter.jl (Julia only).
+- **Flattening sums `operator_compose` terms and does not record which operator each term came from.**
+  - Julia tracks one owner per *equation* internally (`flatten.jl:1050-1056`), and Python exposes one `source_system` per equation (`flatten.py:1733-1737`). Neither is per-term provenance.
+  - Splitting today happens downstream, by locality, in EarthSciASTSplitter.jl (Julia only).
 - **No Jacobian, sparsity or mass matrix** is attached to the compiled problem.
   - EarthSciASTDiff can produce symbolic bands, `detect_structure` (block_diagonal / banded / general), and per-cell Markowitz LU orderings.
   - None of that is wired into a solver.
