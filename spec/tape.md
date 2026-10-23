@@ -29,7 +29,7 @@ Invocation order within a macro step is the execution order. Paths and order are
 | `solve` | the converged unknowns and the `recover` actions taken (M4b). |
 | macro step | `t`, `Δ`, and the reason string for Δ (spec/run-config.md §5): under a fixed `step.dt`, `step.dt`, or `tstop` when the step was shortened to a tstop. A `subcycle`'s and a macro step's record follow their children's. |
 
-Clip masks under `domain.on_violation: "clip"` are recorded with the leaf step that clipped. Rejected steps leave no record beyond the rejected count (spec/adjoint.md §2.2).
+Clip masks under `domain.on_violation: "clip"` are recorded with the leaf step that clipped. In the serialized form (§5) a leaf record carries `"clips": [[k, [i, ...]], ...]`: the 0-based index $k$ of the accepted step in the record's `steps`, and the ascending 0-based indices $i$, into the leaf's state vector, of the DOFs that step clipped. Steps that clipped nothing are omitted, and so is `clips` when no step clipped. Rejected steps leave no record beyond the rejected count (spec/adjoint.md §2.2).
 
 Stage values are **not** on the tape. The adjoint recomputes them by replaying each leaf invocation from its starting state with the recorded `(t_n, h_n)` (architecture §10, step 2).
 

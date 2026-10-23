@@ -107,7 +107,7 @@ The values in this example are illustrative:
 ```
 
 - `producer` is `julia`, `rust`, or `reference` (a high-accuracy OrdinaryDiffEq solve, for cases without an exact solution).
-- `u` holds the full state at each of `t`, in the layout of §1. Numbers are written in shortest round-trip form.
+- `t` starts with the initial time $t_0$, followed by the case's `saveat` times (or $t_f$ when it has none); `u` holds the full state at each of `t`, in the layout of §1. Numbers are written in shortest round-trip form.
 - `functional` and `gradient` are present for gradient cases only.
 - `stats.accepted` and `stats.rejected` sum over all leaves and macro steps.
 
