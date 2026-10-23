@@ -221,7 +221,11 @@ fn registry() -> &'static BTreeMap<&'static str, Tableau> {
         for (name, text) in SOURCES {
             let t: Tableau = serde_json::from_str(text)
                 .unwrap_or_else(|e| panic!("spec/tableaus/{name}.json does not parse: {e}"));
-            assert_eq!(&t.name, name, "spec/tableaus/{name}.json names itself {}", t.name);
+            assert_eq!(
+                &t.name, name,
+                "spec/tableaus/{name}.json names itself {}",
+                t.name
+            );
             m.insert(*name, t);
         }
         m

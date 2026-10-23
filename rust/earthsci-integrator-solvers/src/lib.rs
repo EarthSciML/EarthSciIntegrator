@@ -20,3 +20,9 @@ pub mod scalar;
 pub mod tableau;
 
 pub use scalar::Scalar;
+
+/// The leaf's right-hand side as methods see it: `f(out, u, t)` overwrites `out`.
+pub type RhsFn<'a, T> = dyn FnMut(&mut [T], &[T], f64) + 'a;
+
+/// A scaled error norm `norm(e, u_n, u_{n+1})` (spec/methods.md §7).
+pub type NormFn<'a, T> = dyn FnMut(&[f64], &[T], &[T]) -> f64 + 'a;

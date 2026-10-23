@@ -3,6 +3,7 @@
 
 use crate::norm::{rms_norm, Tolerances};
 use crate::scalar::{eps_f64, next_up, Scalar};
+use crate::RhsFn;
 
 /// Inputs of the first-step algorithm.
 pub struct InitDtInput<'a, T> {
@@ -20,10 +21,7 @@ pub struct InitDtInput<'a, T> {
 /// Computes the first step. `f(out, u, t)` overwrites `out` with the leaf's
 /// right-hand side. Returns the step and the number of `f` evaluations (2,
 /// or 1 when the first evaluation has a NaN).
-pub fn initial_dt<T: Scalar>(
-    inp: &InitDtInput<'_, T>,
-    f: &mut dyn FnMut(&mut [T], &[T], f64),
-) -> (f64, usize) {
+pub fn initial_dt<T: Scalar>(inp: &InitDtInput<'_, T>, f: &mut RhsFn<'_, T>) -> (f64, usize) {
     let n = inp.u0.len();
     let nd = inp.dofs.len();
     let u0 = inp.u0;

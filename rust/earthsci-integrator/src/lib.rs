@@ -9,7 +9,13 @@
 //! - `earthsci-integrator-solvers`: coefficient tables, method steps, error
 //!   norm, controllers and first step, independent of the operator interface.
 
+pub mod adjoint;
+pub mod config;
+pub mod conformance;
+pub mod leaf;
 pub mod operator;
+pub mod schedule;
+pub mod tape;
 pub mod toy;
 
 pub use earthsci_integrator_solvers::Scalar;

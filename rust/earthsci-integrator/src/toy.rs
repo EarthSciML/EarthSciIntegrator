@@ -134,9 +134,9 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             let mut u0 = vec![0.0; 2 * nc];
             let mut variables = Vec::new();
             let mut cells = Vec::new();
-            for c in 0..nc {
+            for (c, a) in u0.iter_mut().take(nc).enumerate() {
                 let x = (c as f64 + 0.5) / nc as f64;
-                u0[c] = 1.0 + 0.5 * (2.0 * PI * x).sin();
+                *a = 1.0 + 0.5 * (2.0 * PI * x).sin();
             }
             for v in ["A", "B"] {
                 for c in 0..nc {
@@ -607,10 +607,10 @@ impl<T: Scalar> Operator<T> for Photochemistry {
         out[2] += g2;
     }
     fn ft_vjp_u(&self, out: &mut [T], _u: &[T], p: &[f64], t: f64, nu: &[T]) {
-        for c in 0..PHOTO_NCELLS {
+        for (c, o) in out.iter_mut().take(PHOTO_NCELLS).enumerate() {
             let n = Self::signed(nu, c);
             let arg = p[2] * t + Self::phase(c);
-            acc(&mut out[c], n * 0.5 * p[0] * p[2] * arg.cos());
+            acc(o, n * 0.5 * p[0] * p[2] * arg.cos());
         }
     }
     fn ft_vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, nu: &[T]) {
@@ -958,7 +958,13 @@ mod tests {
         let fm = rhs(op, &axpy(u, -eps, &du), p, t);
         let scale = jv.iter().fold(1e-12f64, |m, x| m.max(x.abs()));
         for j in 0..n {
-            close(jv[j], (fp[j] - fm[j]) / (2.0 * eps), scale, 1e-6, &format!("{name} jvp_u[{j}]"));
+            close(
+                jv[j],
+                (fp[j] - fm[j]) / (2.0 * eps),
+                scale,
+                1e-6,
+                &format!("{name} jvp_u[{j}]"),
+            );
         }
         // vjp_u transposes jvp_u.
         let mut jtw = vec![0.0; n];
@@ -981,9 +987,19 @@ mod tests {
         op.vjp_p(&mut gp, u, p, t, &w);
         let fpp = rhs(op, u, &axpy(p, eps, &dpp), t);
         let fpm = rhs(op, u, &axpy(p, -eps, &dpp), t);
-        let fd: Vec<f64> = fpp.iter().zip(&fpm).map(|(a, b)| (a - b) / (2.0 * eps)).collect();
+        let fd: Vec<f64> = fpp
+            .iter()
+            .zip(&fpm)
+            .map(|(a, b)| (a - b) / (2.0 * eps))
+            .collect();
         let (l, r) = (dot(&gp, &dpp), dot(&w, &fd));
-        close(l, r, l.abs().max(r.abs()).max(1e-10), 1e-6, &format!("{name} vjp_p"));
+        close(
+            l,
+            r,
+            l.abs().max(r.abs()).max(1e-10),
+            1e-6,
+            &format!("{name} vjp_p"),
+        );
         // ft against finite differences in t.
         let ftt = ftv(op, u, p, t);
         let et = 1e-6 * t.abs().max(1.0);
@@ -997,7 +1013,10 @@ mod tests {
             close(ftt[j], fdt[j], scale, 1e-6, &format!("{name} ft[{j}]"));
         }
         if !op.depends_on_t() {
-            assert!(ftt.iter().all(|x| *x == 0.0), "{name}: ft of a t-independent operator");
+            assert!(
+                ftt.iter().all(|x| *x == 0.0),
+                "{name}: ft of a t-independent operator"
+            );
         }
         // Second-order calls: g(u, p) = Σ_i μ_iᵀ J(u, p) w_i.
         let mus: Vec<Vec<f64>> = (0..2).map(|_| rng.vec(n)).collect();
@@ -1017,15 +1036,30 @@ mod tests {
         op.hess_u(&mut hu, u, p, t, &pairs);
         let fd = (g(&axpy(u, eps, &du), p) - g(&axpy(u, -eps, &du), p)) / (2.0 * eps);
         let l = dot(&hu, &du);
-        close(l, fd, l.abs().max(fd.abs()).max(1e-8), 1e-5, &format!("{name} hess_u"));
+        close(
+            l,
+            fd,
+            l.abs().max(fd.abs()).max(1e-8),
+            1e-5,
+            &format!("{name} hess_u"),
+        );
         if op.linear_in_u() {
-            assert!(hu.iter().all(|x| *x == 0.0), "{name}: hess_u of a linear operator");
+            assert!(
+                hu.iter().all(|x| *x == 0.0),
+                "{name}: hess_u of a linear operator"
+            );
         }
         let mut hp = vec![0.0; np];
         op.hess_p(&mut hp, u, p, t, &pairs);
         let fd = (g(u, &axpy(p, eps, &dpp)) - g(u, &axpy(p, -eps, &dpp))) / (2.0 * eps);
         let l = dot(&hp, &dpp);
-        close(l, fd, l.abs().max(fd.abs()).max(1e-8), 1e-5, &format!("{name} hess_p"));
+        close(
+            l,
+            fd,
+            l.abs().max(fd.abs()).max(1e-8),
+            1e-5,
+            &format!("{name} hess_p"),
+        );
         // ft_vjp: ∇ (νᵀ f_t).
         let nu = rng.vec(n);
         let h = |uu: &[f64], pp: &[f64]| dot(&nu, &ftv(op, uu, pp, t));
@@ -1033,12 +1067,24 @@ mod tests {
         op.ft_vjp_u(&mut fu, u, p, t, &nu);
         let fd = (h(&axpy(u, eps, &du), p) - h(&axpy(u, -eps, &du), p)) / (2.0 * eps);
         let l = dot(&fu, &du);
-        close(l, fd, l.abs().max(fd.abs()).max(1e-8), 1e-5, &format!("{name} ft_vjp_u"));
+        close(
+            l,
+            fd,
+            l.abs().max(fd.abs()).max(1e-8),
+            1e-5,
+            &format!("{name} ft_vjp_u"),
+        );
         let mut fpv = vec![0.0; np];
         op.ft_vjp_p(&mut fpv, u, p, t, &nu);
         let fd = (h(u, &axpy(p, eps, &dpp)) - h(u, &axpy(p, -eps, &dpp))) / (2.0 * eps);
         let l = dot(&fpv, &dpp);
-        close(l, fd, l.abs().max(fd.abs()).max(1e-8), 1e-5, &format!("{name} ft_vjp_p"));
+        close(
+            l,
+            fd,
+            l.abs().max(fd.abs()).max(1e-8),
+            1e-5,
+            &format!("{name} ft_vjp_p"),
+        );
         // Writes: rhs is zero outside the written DOFs.
         let wr = op.writes();
         let f0 = rhs(op, u, p, t);
@@ -1098,9 +1144,29 @@ mod tests {
             m.map_jvp(&mut jv, &u, &p, 0.0, dt, &mask, &vu, &vp);
             let eps = 1e-6;
             let (mut op, mut om) = (vec![0.0], vec![0.0]);
-            m.apply_frozen(&mut op, &axpy(&u, eps, &vu), &axpy(&p, eps, &vp), 0.0, dt, &mask);
-            m.apply_frozen(&mut om, &axpy(&u, -eps, &vu), &axpy(&p, -eps, &vp), 0.0, dt, &mask);
-            close(jv[0], (op[0] - om[0]) / (2.0 * eps), jv[0].abs(), 1e-8, "map_jvp");
+            m.apply_frozen(
+                &mut op,
+                &axpy(&u, eps, &vu),
+                &axpy(&p, eps, &vp),
+                0.0,
+                dt,
+                &mask,
+            );
+            m.apply_frozen(
+                &mut om,
+                &axpy(&u, -eps, &vu),
+                &axpy(&p, -eps, &vp),
+                0.0,
+                dt,
+                &mask,
+            );
+            close(
+                jv[0],
+                (op[0] - om[0]) / (2.0 * eps),
+                jv[0].abs(),
+                1e-8,
+                "map_jvp",
+            );
             let w = rng.vec(1);
             let (mut gu, mut gp) = (vec![0.0], vec![0.0; 2]);
             m.map_vjp(&mut gu, &mut gp, &u, &p, 0.0, dt, &mask, &w);
@@ -1115,12 +1181,16 @@ mod tests {
         let p = [2.0, 3.0];
         for &t in &[0.3, 1.1, 1.9] {
             let e = 1e-6;
-            let du = (forced_decay_exact(t + e, 1.0, &p) - forced_decay_exact(t - e, 1.0, &p)) / (2.0 * e);
+            let du = (forced_decay_exact(t + e, 1.0, &p) - forced_decay_exact(t - e, 1.0, &p))
+                / (2.0 * e);
             let rhs = -2.0 * forced_decay_exact(t, 1.0, &p) + (3.0 * t).sin();
             assert!((du - rhs).abs() < 1e-8);
         }
         assert_eq!(forced_decay_exact(0.0, 1.0, &p), 1.0);
-        assert_eq!(source_decay_map_exact(0.0, &[1.0, 0.5], 0.5, 1), 0.5 * (-0.25f64).exp());
+        assert_eq!(
+            source_decay_map_exact(0.0, &[1.0, 0.5], 0.5, 1),
+            0.5 * (-0.25f64).exp()
+        );
     }
 
     #[test]
@@ -1129,7 +1199,10 @@ mod tests {
         let s = Structure::common(pb.operators.iter().map(|o| o.structure()));
         assert_eq!(s, Structure::Dense);
         let r = pb.operator("reaction").unwrap();
-        assert_eq!(Structure::common([r.structure()]), Structure::BlockDiagonal { ncells: 64, n: 2 });
+        assert_eq!(
+            Structure::common([r.structure()]),
+            Structure::BlockDiagonal { ncells: 64, n: 2 }
+        );
         let ph: ToyProblem<f32> = toy_problem("toy:photostationary_cells").unwrap();
         assert_eq!(ph.u0[16], 5.0);
         assert_eq!(ph.u0[32], 40.0);

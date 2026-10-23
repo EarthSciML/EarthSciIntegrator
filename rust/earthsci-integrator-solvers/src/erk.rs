@@ -8,6 +8,7 @@
 
 use crate::scalar::Scalar;
 use crate::tableau::{ErrorEstimate, Family, Form, Tableau};
+use crate::{NormFn, RhsFn};
 
 /// The step form and its coefficients.
 #[derive(Debug, Clone)]
@@ -32,7 +33,9 @@ pub enum ErkForm {
 pub enum ErkError {
     None,
     /// `e = Σ_i (h·b̃_i) K_i`.
-    Embedded { btilde: Vec<f64> },
+    Embedded {
+        btilde: Vec<f64>,
+    },
     /// `e = σ(ũ − u_{n+1})`.
     ShuOsherEmbedded {
         alpha: Vec<f64>,
@@ -40,7 +43,10 @@ pub enum ErkError {
         scale: f64,
     },
     /// Shampine's residual estimate (RK4).
-    ResidualControl { sigma: Vec<f64>, scale: f64 },
+    ResidualControl {
+        sigma: Vec<f64>,
+        scale: f64,
+    },
 }
 
 /// An explicit Runge–Kutta method built from its table.
@@ -97,7 +103,10 @@ impl ExplicitRk {
                 }
             }
             ErrorEstimate::ResidualControl => {
-                let r = t.residual_control.as_ref().ok_or("missing residual_control")?;
+                let r = t
+                    .residual_control
+                    .as_ref()
+                    .ok_or("missing residual_control")?;
                 ErkError::ResidualControl {
                     sigma: r.sigma.clone(),
                     scale: r.scale,
@@ -173,12 +182,12 @@ impl ExplicitRk {
     pub fn step<T: Scalar>(
         &self,
         w: &mut ErkWork<T>,
-        f: &mut dyn FnMut(&mut [T], &[T], f64),
+        f: &mut RhsFn<'_, T>,
         un: &[T],
         t: f64,
         h: f64,
         k1: Option<&[T]>,
-        norm: Option<&mut dyn FnMut(&[f64], &[T], &[T]) -> f64>,
+        norm: Option<&mut NormFn<'_, T>>,
     ) -> Option<f64> {
         w.has_fend = false;
         match &self.form {
@@ -312,6 +321,7 @@ impl ExplicitRk {
                 let mut emax = 0.0f64;
                 let mut first = true;
                 for &sg in sigma {
+                    #[allow(clippy::needless_range_loop)]
                     for j in 0..un.len() {
                         let up = un[j].to_f64();
                         let u = w.unew[j].to_f64();
@@ -320,9 +330,7 @@ impl ExplicitRk {
                         let p = (1.0 - sg) * up
                             + sg * u
                             + sg * (sg - 1.0)
-                                * ((1.0 - 2.0 * sg) * (u - up)
-                                    + (sg - 1.0) * h * k1
-                                    + sg * h * k5);
+                                * ((1.0 - 2.0 * sg) * (u - up) + (sg - 1.0) * h * k1 + sg * h * k5);
                         w.tmp[j] = T::from_f64(p);
                         let inner = -4.0 * h * k1 - 2.0 * h * k5 - 6.0 * up
                             + sg * (3.0 * h * k1 + 3.0 * h * k5 + 6.0 * up - 6.0 * u)
@@ -430,8 +438,7 @@ mod tests {
             }
             let mut w = m.workspace::<f64>(1);
             let mut est = |h: f64| {
-                let mut norm =
-                    |e: &[f64], _a: &[f64], _b: &[f64]| -> f64 { e[0].abs() };
+                let mut norm = |e: &[f64], _a: &[f64], _b: &[f64]| -> f64 { e[0].abs() };
                 m.step(&mut w, &mut forced, &[1.0], 0.0, h, None, Some(&mut norm))
                     .unwrap()
             };
@@ -440,7 +447,11 @@ mod tests {
             let ratio = (e1 / e2).log2();
             // Local error of the embedded method: order embedded_order + 1.
             let eo = m.embedded_order.unwrap() as f64 + 1.0;
-            assert!(ratio > eo - 0.6, "{}: estimate order {ratio}, expected ~{eo}", m.name);
+            assert!(
+                ratio > eo - 0.6,
+                "{}: estimate order {ratio}, expected ~{eo}",
+                m.name
+            );
         }
     }
 }
