@@ -188,7 +188,17 @@ OrdinaryDiffEqSDIRK sets $c_2 = \gamma$ for Kvaerno3 and Kvaerno4, where the row
 
   one extra solve with the step's $W$.
 
-  *Deviation from OrdinaryDiffEq.* OrdinaryDiffEqSDIRK smooths with its stored Newton matrix $W_{\text{ODE}} = J - I/(h\gamma)$ (`src/generic_imex_perform_step.jl:2389-2392`), which gives $-h\gamma\,(I - h\gamma J)^{-1} e_{\text{raw}}$: the estimate shrinks by the factor $h\gamma$. A run on $f(u, t) = t^3$ (where $J = 0$ and smoothing should change nothing) confirms it: OrdinaryDiffEq's smoothed TRBDF2 estimate is $h\gamma$ times its unsmoothed one (ratio 34.1 at $h = 0.1$, 341 at $h = 0.01$, with $\gamma = 0.2929$). With `smooth_est = false` OrdinaryDiffEq's estimate equals $e_{\text{raw}}$, which the extraction check confirms. *Open question 4* asks which to adopt; this draft adopts the formula above, so adaptive step sequences differ from OrdinaryDiffEq's defaults while the converged solutions do not.
+  *Deviation from OrdinaryDiffEq.* OrdinaryDiffEqSDIRK smooths with its stored Newton matrix $W_{\text{ODE}} = J - I/(h\gamma)$ (`src/generic_imex_perform_step.jl:2389-2392`), which gives $-h\gamma\,(I - h\gamma J)^{-1} e_{\text{raw}}$: the estimate shrinks by the factor $h\gamma$. A run on $f(u, t) = t^3$ (where $J = 0$ and smoothing should change nothing) confirms it: OrdinaryDiffEq's smoothed TRBDF2 estimate is $h\gamma$ times its unsmoothed one (ratio 34.1 at $h = 0.1$, 341 at $h = 0.01$, with $\gamma = 0.2929$). With `smooth_est = false` OrdinaryDiffEq's estimate equals $e_{\text{raw}}$, which the extraction check confirms. The spec adopts the formula above (D56). The rule is to follow OrdinaryDiffEq unless that gives wrong or low-accuracy results, and here it does: the estimate's extra factor $h\gamma$ makes the controller take steps whose error grows far beyond the tolerance as the tolerance tightens. Measured with [`../tools/tableaus/sdirk_error_estimate_check.jl`](../tools/tableaus/sdirk_error_estimate_check.jl), the end-of-run error divided by the tolerance (`reltol = abstol`) is:
+
+  | Problem | Method | tol | smoothed (OrdinaryDiffEq default) | unsmoothed |
+  |---|---|---|---|---|
+  | `forced_decay` | TRBDF2 | 1e-6 | 165 | 9.4 |
+  | `forced_decay` | TRBDF2 | 1e-8 | 1430 | 40 |
+  | `forced_decay` | SDIRK2 | 1e-8 | 6340 | 227 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | TRBDF2 | 1e-8 | 13.3 | 0.029 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | SDIRK2 | 1e-8 | 973 | 0.28 |
+
+  (Kvaerno3/4 are left out of the table because their stage-time defect, §5.4, dominates on these time-dependent problems.) Adaptive step sequences therefore differ from OrdinaryDiffEq's defaults; the oracle checks impose our step sequence, so they are unaffected. Not reported upstream.
 - **`divided_difference`** (BackwardEuler; OrdinaryDiffEqSDIRK `src/generic_imex_perform_step.jl:2401-2420`). With the previous accepted step $(u_{n-1}, t_{n-1})$ of the same leaf invocation:
 
   ```math
@@ -345,11 +355,11 @@ A non-success code from any leaf ends the run with that code, naming the leaf (a
 
 ## 13. Open questions and assumptions
 
-**Open questions:**
-1. **Kvaerno3/4 stage times** (§5.4). OrdinaryDiffEqSDIRK 2.9.8 evaluates stage 2 at $\gamma$ instead of $2\gamma$, which makes both methods first order on non-autonomous problems. This draft uses the row sums. Should the defect be reported upstream, and should tier-2 comparisons against them be limited to autonomous problems until it is fixed?
-2. **KPP's own step-size rule** (§4.4). Does WRF-Chem parity need it as a controller option, or are KPP's coefficients enough?
-3. **Jacobian reuse in SDIRK** (§5.3). v1 forms $J$ on every step attempt; OrdinaryDiffEq reuses it across steps. Adopt the reuse rule for large column solves later?
-4. **Smoothed SDIRK error estimate** (§5.5). OrdinaryDiffEq's smoothed estimate is scaled by $h\gamma$ relative to Hosea and Shampine's formula, which this draft adopts. Follow OrdinaryDiffEq to match its step sequences, or keep the formula and report the scaling upstream?
+**Decided 2026-10-23** (D55–D58):
+1. **Kvaerno3/4 stage times** (§5.4). The tables use the row sums. Tier-2 comparisons against OrdinaryDiffEq's Kvaerno methods are limited to autonomous problems. Not reported upstream.
+2. **KPP's own step-size rule** (§4.4) becomes a controller option, `controller: "KPP"`, at M7 for WRF-Chem parity. The tables already record it.
+3. **Jacobian reuse in SDIRK** (§5.3). v1 forms $J$ on every step attempt. OrdinaryDiffEq-style reuse is revisited at M4b, when eqice's column solves give real costs.
+4. **Smoothed SDIRK error estimate** (§5.5). Hosea and Shampine's formula, because OrdinaryDiffEq's scaled version gives low-accuracy results. Not reported upstream.
 
 **Assumptions:**
 5. The SDIRK initial guess (previous stage's $z$, zero for the first implicit stage) changes converged stages only at the Newton tolerance (§5.2).
