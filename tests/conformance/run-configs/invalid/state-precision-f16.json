@@ -1,0 +1,12 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "schedule": {
+    "leaf": "a"
+  },
+  "precision": {
+    "default": {
+      "state": "f16"
+    }
+  }
+}

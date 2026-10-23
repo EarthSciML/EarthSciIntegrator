@@ -140,7 +140,7 @@ The same `.esm`, run config and planner spec version must produce byte-identical
 
 ### 3.4 Picard is a frozen-observed Jacobian
 
-A run-config `freeze: ["ssa.nuH"]` makes pass 4 treat those observeds as constants when differentiating. This gives PISM's Picard operator (frozen effective viscosity) as an ordinary band model, so no model-specific Picard code is needed.
+A run-config `freeze: ["ssa.nuH"]` makes pass 4 treat those observeds as constants when differentiating. This gives PISM's Picard operator (frozen effective viscosity) as an ordinary band model, so no model-specific Picard code is needed. The adjoint still needs the full, unfrozen residual Jacobian, because the converged solution satisfies the full residual; the planner emits both band models (spec/adjoint.md §4.6, spec/plan.md §1).
 
 ### 3.5 Strategy inference rules (when "auto")
 

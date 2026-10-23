@@ -1,0 +1,670 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://earthsciml.org/schemas/esm-integrator/0.1.0/run-config.schema.json",
+  "title": "EarthSciIntegrator run configuration",
+  "description": "A run configuration (spec/run-config.md). Structural validation only: name resolution against the model, operator existence and the semantic rules of spec/run-config.md §7 are checked by the planner.",
+  "type": "object",
+  "required": ["esm_integrator", "model", "schedule"],
+  "additionalProperties": false,
+  "properties": {
+    "esm_integrator": {
+      "description": "Version of the integrator spec this document targets (spec/README.md §2).",
+      "$ref": "#/$defs/semver"
+    },
+    "description": {"type": "string"},
+    "model": {
+      "description": "Path to the .esm document, resolved relative to this file.",
+      "type": "string",
+      "minLength": 1
+    },
+    "operators": {
+      "type": "object",
+      "propertyNames": {
+        "description": "Names beginning default_ belong to the planner's default operators (spec/run-config.md §3.3).",
+        "allOf": [{"$ref": "#/$defs/operatorName"}, {"not": {"pattern": "^default_"}}]
+      },
+      "additionalProperties": {"$ref": "#/$defs/operator"}
+    },
+    "schedule": {
+      "description": "The schedule tree, or 'auto' for the planner's default composition (spec/run-config.md §4.1).",
+      "oneOf": [{"$ref": "#/$defs/node"}, {"$ref": "#/$defs/auto"}]
+    },
+    "step": {"$ref": "#/$defs/step"},
+    "partition": {"$ref": "#/$defs/partition"},
+    "precision": {"$ref": "#/$defs/precision"},
+    "adjoint": {"$ref": "#/$defs/adjoint"},
+    "output": {"$ref": "#/$defs/output"},
+    "restart": {"$ref": "#/$defs/restart"}
+  },
+
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "operatorName": {
+      "description": "An operator name. The four locality names are reserved (spec/run-config.md §3).",
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"not": {"$ref": "#/$defs/locality"}}
+      ]
+    },
+    "qualifiedName": {
+      "description": "A model variable, parameter or observed, namespaced by component path with dots (e.g. ssa.nuH).",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    },
+    "nameOrList": {
+      "oneOf": [
+        {"$ref": "#/$defs/qualifiedName"},
+        {"type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "minItems": 1, "uniqueItems": true}
+      ]
+    },
+    "locality": {
+      "enum": ["pointwise", "column", "stencil", "global"]
+    },
+    "duration": {
+      "description": "Seconds as a positive number, a string '<number> <unit>' with unit s, min, h, day or yr (spec/run-config.md §2.2), or the qualified name of a model parameter holding seconds. The words auto, step and accumulated are reserved and are never parameter names here.",
+      "oneOf": [
+        {"type": "number", "exclusiveMinimum": 0},
+        {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)? ?(s|min|h|day|yr)$"},
+        {"allOf": [{"$ref": "#/$defs/qualifiedName"}, {"not": {"enum": ["auto", "step", "accumulated"]}}]}
+      ]
+    },
+    "positiveNumber": {"type": "number", "exclusiveMinimum": 0},
+    "auto": {"const": "auto"},
+
+    "operator": {
+      "description": "A named group of additive right-hand-side terms (select), or a step map (map). spec/run-config.md §3.",
+      "oneOf": [
+        {"$ref": "#/$defs/termOperator"},
+        {"$ref": "#/$defs/mapOperator"}
+      ]
+    },
+    "termOperator": {
+      "type": "object",
+      "required": ["select"],
+      "additionalProperties": false,
+      "properties": {
+        "select": {"$ref": "#/$defs/selector"},
+        "freeze": {
+          "description": "Observeds treated as constants when differentiating this operator (Picard as a frozen-observed Jacobian, D25).",
+          "type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "uniqueItems": true
+        },
+        "bind_dt": {"$ref": "#/$defs/bindDt"}
+      }
+    },
+    "selector": {
+      "description": "Every present key must match (conjunction). An empty selector is refused.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "components": {"$ref": "#/$defs/nameOrList"},
+        "variables": {"$ref": "#/$defs/nameOrList"},
+        "locality": {
+          "oneOf": [
+            {"$ref": "#/$defs/locality"},
+            {"type": "array", "items": {"$ref": "#/$defs/locality"}, "minItems": 1, "uniqueItems": true}
+          ]
+        },
+        "terms": {
+          "description": "Provenance paths of individual contributions (U2 equation_contributions).",
+          "type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true
+        }
+      }
+    },
+    "mapOperator": {
+      "type": "object",
+      "required": ["map"],
+      "additionalProperties": false,
+      "properties": {
+        "map": {
+          "description": "Target state variable or parameter ← the qualified name of the observed that computes its new value. All targets are assigned simultaneously.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"$ref": "#/$defs/qualifiedName"},
+          "additionalProperties": {"$ref": "#/$defs/qualifiedName"}
+        },
+        "bind_dt": {"$ref": "#/$defs/bindDt"}
+      }
+    },
+    "bindDt": {
+      "description": "Model parameter ← which step it is set to: the leaf's actual (sub)step, the Δ its schedule node receives, or the macro step. spec/run-config.md §4.4.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/qualifiedName"},
+      "additionalProperties": {"enum": ["leaf", "node", "macro"]}
+    },
+
+    "node": {
+      "description": "A schedule node (spec/run-config.md §4). Exactly one combinator key identifies the kind.",
+      "oneOf": [
+        {"$ref": "#/$defs/leafNode"},
+        {"$ref": "#/$defs/coupledNode"},
+        {"$ref": "#/$defs/sequenceNode"},
+        {"$ref": "#/$defs/strangNode"},
+        {"$ref": "#/$defs/subcycleNode"},
+        {"$ref": "#/$defs/everyNode"},
+        {"$ref": "#/$defs/splitExplicitNode"},
+        {"$ref": "#/$defs/mapNode"},
+        {"$ref": "#/$defs/solveNode"}
+      ]
+    },
+    "nodeId": {
+      "description": "Optional name for a node, so precision, partition and output can refer to it. Unique within the schedule.",
+      "$ref": "#/$defs/identifier"
+    },
+    "operatorRefs": {
+      "oneOf": [
+        {"$ref": "#/$defs/operatorName"},
+        {"type": "array", "items": {"$ref": "#/$defs/operatorName"}, "minItems": 1, "uniqueItems": true}
+      ]
+    },
+    "leafOptions": {
+      "description": "Options shared by leaf and coupled nodes.",
+      "type": "object",
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "alg": {"$ref": "#/$defs/alg"},
+        "theta": {"description": "Off-centring of the Theta method, in [0, 1].", "type": "number", "minimum": 0, "maximum": 1},
+        "dt": {
+          "description": "Fixed substep, or 'step' (one step of the node's Δ), or 'accumulated' (one step of the time since this leaf last ran). Omitted: adaptive under control.",
+          "oneOf": [{"$ref": "#/$defs/duration"}, {"enum": ["step", "accumulated"]}]
+        },
+        "control": {"$ref": "#/$defs/control"},
+        "jacobian": {"enum": ["auto", "symbolic", "ad", "fd"]},
+        "linsolve": {"$ref": "#/$defs/linsolve"},
+        "imex": {"$ref": "#/$defs/imex"},
+        "domain": {"$ref": "#/$defs/domain"},
+        "frozen": {"$ref": "#/$defs/frozenList"},
+        "partition": {"$ref": "#/$defs/leafPartition"},
+        "bind_dt": {"$ref": "#/$defs/bindDt"}
+      }
+    },
+    "leafNode": {
+      "type": "object",
+      "required": ["leaf"],
+      "$ref": "#/$defs/leafOptions",
+      "properties": {"leaf": {"$ref": "#/$defs/operatorRefs"}},
+      "unevaluatedProperties": false
+    },
+    "coupledNode": {
+      "type": "object",
+      "required": ["coupled"],
+      "$ref": "#/$defs/leafOptions",
+      "properties": {"coupled": {"$ref": "#/$defs/operatorRefs"}},
+      "unevaluatedProperties": false
+    },
+    "sequenceNode": {
+      "type": "object",
+      "required": ["sequence"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "sequence": {"type": "array", "items": {"$ref": "#/$defs/node"}, "minItems": 1}
+      }
+    },
+    "strangNode": {
+      "type": "object",
+      "required": ["strang"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "strang": {"type": "array", "items": {"$ref": "#/$defs/node"}, "minItems": 2}
+      }
+    },
+    "subcycleNode": {
+      "type": "object",
+      "required": ["subcycle"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "subcycle": {"$ref": "#/$defs/node"},
+        "n": {"type": "integer", "minimum": 1},
+        "limits": {"$ref": "#/$defs/limits"}
+      },
+      "oneOf": [{"required": ["n"]}, {"required": ["limits"]}]
+    },
+    "everyNode": {
+      "type": "object",
+      "required": ["every", "period"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "every": {"$ref": "#/$defs/node"},
+        "period": {"$ref": "#/$defs/duration"},
+        "phase": {"oneOf": [{"const": 0}, {"$ref": "#/$defs/duration"}]},
+        "hold": {"enum": ["none", "tendency"]}
+      }
+    },
+    "frozenList": {
+      "description": "Operators whose tendency is evaluated once at the start of the enclosing step and held across its stages; an every-wrapped entry is re-evaluated only when t crosses its period (spec/run-config.md §4.6).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/operatorName"},
+          {
+            "type": "object",
+            "required": ["every", "period"],
+            "additionalProperties": false,
+            "properties": {
+              "every": {"$ref": "#/$defs/operatorName"},
+              "period": {"$ref": "#/$defs/duration"},
+              "phase": {"oneOf": [{"const": 0}, {"$ref": "#/$defs/duration"}]},
+              "hold": {"const": "tendency"}
+            }
+          }
+        ]
+      }
+    },
+    "splitExplicitNode": {
+      "type": "object",
+      "required": ["split_explicit"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "split_explicit": {
+          "type": "object",
+          "required": ["slow", "fast", "alg", "substeps"],
+          "additionalProperties": false,
+          "properties": {
+            "slow": {"$ref": "#/$defs/operatorRefs"},
+            "fast": {"$ref": "#/$defs/operatorRefs"},
+            "alg": {"const": "WRF_RK3"},
+            "substeps": {"type": "integer", "minimum": 1},
+            "fast_alg": {
+              "type": "object",
+              "required": ["forward_backward"],
+              "additionalProperties": false,
+              "properties": {
+                "forward_backward": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "vertical": {"enum": ["implicit", "explicit"]},
+                    "epssm": {"type": "number", "minimum": 0, "maximum": 1}
+                  }
+                }
+              }
+            },
+            "frozen": {"$ref": "#/$defs/frozenList"}
+          }
+        }
+      }
+    },
+    "mapNode": {
+      "type": "object",
+      "required": ["map"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "map": {"$ref": "#/$defs/operatorName"}
+      }
+    },
+    "solveNode": {
+      "type": "object",
+      "required": ["solve", "unknowns", "method"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nodeId"},
+        "solve": {"$ref": "#/$defs/operatorName"},
+        "unknowns": {"type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "minItems": 1, "uniqueItems": true},
+        "method": {"$ref": "#/$defs/nonlinearMethod"},
+        "warm_start": {"enum": ["previous", "initial"]}
+      }
+    },
+    "nonlinearMethod": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "newton": {"$ref": "#/$defs/newtonOptions"},
+        "picard": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "freeze": {"type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "minItems": 1, "uniqueItems": true}
+          },
+          "required": ["freeze"]
+        },
+        "ptc": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dt0": {"$ref": "#/$defs/positiveNumber"},
+            "growth": {"type": "number", "exclusiveMinimum": 1}
+          }
+        },
+        "linsolve": {"$ref": "#/$defs/linsolve"},
+        "linesearch": {"enum": ["none", "backtracking", "strong_wolfe"]},
+        "anderson": {"type": "integer", "minimum": 0},
+        "converged": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "residual": {"$ref": "#/$defs/positiveNumber"},
+            "rel_change": {"$ref": "#/$defs/qualifiedName"},
+            "tol": {"$ref": "#/$defs/positiveNumber"}
+          },
+          "dependentRequired": {"rel_change": ["tol"]}
+        },
+        "maxiter": {"type": "integer", "minimum": 1},
+        "recover": {
+          "description": "Ladder tried in order when an attempt fails (§6.3).",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object", "required": ["underrelax"], "additionalProperties": false,
+                "properties": {"underrelax": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}}
+              },
+              {
+                "type": "object", "required": ["scale_param", "by"], "additionalProperties": false,
+                "properties": {
+                  "scale_param": {"$ref": "#/$defs/qualifiedName"},
+                  "by": {"type": "number", "exclusiveMinimum": 0},
+                  "max": {"type": "integer", "minimum": 1}
+                }
+              },
+              {"const": "revert_warm_start"}
+            ]
+          }
+        }
+      },
+      "oneOf": [
+        {"required": ["newton"]},
+        {"required": ["picard"]},
+        {"required": ["ptc"]}
+      ]
+    },
+    "newtonOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inexact": {"description": "Eisenstat–Walker forcing terms.", "type": "boolean"}
+      }
+    },
+
+    "alg": {
+      "description": "Method name (architecture §5). 'auto' leaves the choice to the planner (§3.5).",
+      "enum": [
+        "auto",
+        "ForwardEuler", "Heun", "SSPRK33", "SSPRK43", "RK4", "Tsit5", "BS3", "SSPRK104", "WRF_RK3",
+        "Rosenbrock23", "ROS2", "ROS3P", "Rodas3", "Rodas4", "Rodas5P",
+        "KPP_Ros2", "KPP_Ros3", "KPP_Ros4", "KPP_Rodas3", "KPP_Rodas4",
+        "BackwardEuler", "TRBDF2", "SDIRK2", "Kvaerno3", "Kvaerno4",
+        "IMEXEuler", "Theta"
+      ]
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reltol": {"$ref": "#/$defs/positiveNumber"},
+        "abstol": {
+          "oneOf": [
+            {"$ref": "#/$defs/positiveNumber"},
+            {
+              "type": "object", "minProperties": 1,
+              "propertyNames": {"$ref": "#/$defs/qualifiedName"},
+              "additionalProperties": {"$ref": "#/$defs/positiveNumber"}
+            }
+          ]
+        },
+        "dt0": {"$ref": "#/$defs/duration"},
+        "dtmin": {"$ref": "#/$defs/duration"},
+        "dtmax": {"$ref": "#/$defs/duration"},
+        "controller": {"enum": ["auto", "PI", "I", "PID"]},
+        "dt_scope": {"enum": ["auto", "global", "shard", "cell"]},
+        "maxiters": {"type": "integer", "minimum": 1}
+      }
+    },
+    "linsolve": {
+      "oneOf": [
+        {"enum": ["auto", "block_lu", "sparse_block_lu", "banded", "block_tridiagonal", "gmres", "bicgstab", "matrix_free"]},
+        {
+          "type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": false,
+          "properties": {
+            "block_lu": {
+              "type": "object", "additionalProperties": false,
+              "properties": {"pivot": {"type": "boolean"}, "refine": {"type": "integer", "minimum": 0}}
+            },
+            "sparse_block_lu": {
+              "type": "object", "additionalProperties": false,
+              "properties": {"refine": {"type": "integer", "minimum": 0}}
+            },
+            "banded": {"type": "object", "additionalProperties": false, "properties": {}},
+            "block_tridiagonal": {"type": "object", "additionalProperties": false, "properties": {}},
+            "gmres": {"$ref": "#/$defs/krylovOptions"},
+            "bicgstab": {"$ref": "#/$defs/krylovOptions"},
+            "matrix_free": {"type": "object", "additionalProperties": false, "properties": {}}
+          }
+        }
+      ]
+    },
+    "krylovOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "restart": {"type": "integer", "minimum": 1},
+        "rtol": {"$ref": "#/$defs/positiveNumber"},
+        "maxiter": {"type": "integer", "minimum": 1},
+        "precond": {"$ref": "#/$defs/preconditioner"},
+        "fallback": {"$ref": "#/$defs/preconditioner"}
+      }
+    },
+    "preconditioner": {
+      "enum": ["none", "bjacobi_ilu0", "asm_lu", "column_bjacobi"]
+    },
+    "imex": {
+      "description": "Partition of the leaf's terms between the explicit and implicit parts. Entries are operator names or locality names; a locality name selects the leaf's terms of that locality (spec/run-config.md §4.5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implicit"],
+      "properties": {
+        "explicit": {"$ref": "#/$defs/imexPart"},
+        "implicit": {"$ref": "#/$defs/imexPart"}
+      }
+    },
+    "imexPart": {
+      "oneOf": [
+        {"$ref": "#/$defs/imexEntry"},
+        {"type": "array", "items": {"$ref": "#/$defs/imexEntry"}, "minItems": 1, "uniqueItems": true}
+      ]
+    },
+    "imexEntry": {
+      "anyOf": [{"$ref": "#/$defs/locality"}, {"$ref": "#/$defs/operatorName"}]
+    },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "nonnegative": {
+          "oneOf": [
+            {"const": "all"},
+            {"type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "minItems": 1, "uniqueItems": true}
+          ]
+        },
+        "on_violation": {"enum": ["reject", "clip"]},
+        "check_stages": {"type": "boolean"}
+      }
+    },
+
+    "limits": {
+      "description": "Step limits: the qualified name of an observed giving a maximum step in seconds, or a fixed maximum.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/qualifiedName"},
+          {
+            "type": "object", "required": ["max"], "additionalProperties": false,
+            "properties": {"max": {"$ref": "#/$defs/duration"}}
+          }
+        ]
+      }
+    },
+    "step": {
+      "description": "Macro-step control (spec/run-config.md §5): a fixed dt, or limits.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dt": {"$ref": "#/$defs/duration"},
+        "limits": {"$ref": "#/$defs/limits"},
+        "hit": {
+          "type": "array", "uniqueItems": true,
+          "items": {"enum": ["forcing_refresh", "forcing_records", "output", "restart", "events"]}
+        },
+        "hit_multiples": {"$ref": "#/$defs/duration"},
+        "resolution": {"$ref": "#/$defs/duration"}
+      },
+      "oneOf": [
+        {"required": ["dt"], "not": {"required": ["limits"]}},
+        {"required": ["limits"], "not": {"required": ["dt"]}}
+      ]
+    },
+
+    "partition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ranks": {"$ref": "#/$defs/grid2"},
+        "tiles": {"$ref": "#/$defs/grid2"},
+        "shards": {
+          "description": "Shard count per operator or node id, for pointwise and column leaves.",
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/identifier"},
+          "additionalProperties": {"oneOf": [{"type": "integer", "minimum": 1}, {"$ref": "#/$defs/auto"}]}
+        }
+      }
+    },
+    "leafPartition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "shards": {"oneOf": [{"type": "integer", "minimum": 1}, {"$ref": "#/$defs/auto"}]},
+        "shard_size": {"type": "integer", "minimum": 1}
+      }
+    },
+    "grid2": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1},
+      "minItems": 2,
+      "maxItems": 2
+    },
+
+    "precision": {
+      "description": "Precision roles (architecture §8, D18, D29). Keys are 'default', operator names or node ids.",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/identifier"},
+      "additionalProperties": {"$ref": "#/$defs/precisionRoles"}
+    },
+    "precisionRoles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "state": {"enum": ["f32", "f64"]},
+        "rhs": {"enum": ["f32", "f64"]},
+        "jacobian": {"$ref": "#/$defs/storagePrecision"},
+        "factors": {"$ref": "#/$defs/storagePrecision"},
+        "tables": {"$ref": "#/$defs/storagePrecision"}
+      }
+    },
+    "storagePrecision": {"enum": ["f16", "bf16", "f32", "f64"]},
+
+    "adjoint": {
+      "type": "object",
+      "required": ["functional", "wrt"],
+      "additionalProperties": false,
+      "properties": {
+        "functional": {"$ref": "#/$defs/functional"},
+        "wrt": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(u0|params:(numeric|[A-Za-z_*][A-Za-z0-9_.*]*)|fields:[A-Za-z_*][A-Za-z0-9_.*]*|forcing:[A-Za-z_*][A-Za-z0-9_.*]*)$"
+          }
+        },
+        "checkpoint": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "every": {"oneOf": [{"const": "macro_step"}, {"type": "integer", "minimum": 1}]},
+            "store": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"enum": ["memory", "disk"]}
+            },
+            "schedule": {"enum": ["all", "revolve", "multilevel"]},
+            "snapshots": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "functional": {
+      "description": "J = Σ_k φ(u(t_k)) + ∫ψ dt (architecture §10). One reduction of one quantity.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mean": {"$ref": "#/$defs/qualifiedName"},
+        "sum": {"$ref": "#/$defs/qualifiedName"},
+        "where": {
+          "description": "Index-set name → 1-based index or inclusive [lo, hi] range.",
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/identifier"},
+          "additionalProperties": {
+            "oneOf": [
+              {"type": "integer", "minimum": 1},
+              {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2}
+            ]
+          }
+        },
+        "over": {"enum": ["time", "final", "saveat"]}
+      },
+      "required": ["over"],
+      "oneOf": [{"required": ["mean"]}, {"required": ["sum"]}]
+    },
+
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sinks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "variables": {"type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "minItems": 1, "uniqueItems": true},
+              "saveat": {"$ref": "#/$defs/duration"}
+            }
+          }
+        },
+        "saveat": {"$ref": "#/$defs/duration"},
+        "accumulators": {
+          "description": "Time-integrated diagnostics the planner adds as states (D26): name ← observed to integrate.",
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/identifier"},
+          "additionalProperties": {"$ref": "#/$defs/qualifiedName"}
+        }
+      }
+    },
+    "restart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "every": {"$ref": "#/$defs/duration"},
+        "from": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

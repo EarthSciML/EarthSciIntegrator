@@ -1,0 +1,10 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "schedule": {
+    "every": {
+      "map": "m"
+    },
+    "period": "10 fortnights"
+  }
+}

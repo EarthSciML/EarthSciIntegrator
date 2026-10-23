@@ -1,0 +1,16 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "schedule": {
+    "solve": "s",
+    "unknowns": [
+      "s.u"
+    ],
+    "method": {
+      "newton": {},
+      "converged": {
+        "rel_change": "s.nu"
+      }
+    }
+  }
+}

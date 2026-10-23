@@ -1,0 +1,40 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "eqice, PISM's IceModel::step (architecture §4.4, M4b). The schedule and step are the architecture's; the operator selectors are filled in, and their component and variable names are illustrative until M4b binds them to eqice's assembled document.",
+  "model": "eqice.esm",
+  "operators": {
+    "ssa": {"select": {"components": "ssa"}},
+    "yield_stress": {"map": {"ssa.tauc": "basal_resistance.tauc"}},
+    "age": {"select": {"components": "ice_age"}},
+    "energy": {"select": {"components": "ice_energy"}},
+    "flow": {"select": {"components": "geometry_flow"}},
+    "enforce_consistency": {"map": {"geometry.mask": "geometry_flow.mask_out"}},
+    "front_retreat": {"map": {"geometry.H": "calving.H_out", "geometry.mask": "calving.mask_out"},
+                      "bind_dt": {"calving.dt": "node"}},
+    "source": {"select": {"components": "geometry_source"}, "bind_dt": {"geometry_source.dt": "leaf"}},
+    "iceberg_removal": {"map": {"geometry.H": "iceberg_remover.H_out", "geometry.mask": "iceberg_remover.mask_out"}},
+    "hydrology": {"select": {"components": "hydrology"}},
+    "bed_deformation": {"map": {"geometry.bed": "bed_deformation.bed_out"},
+                        "bind_dt": {"bed_deformation.dt_beddef": "node"}}
+  },
+  "schedule": {"sequence": [
+    {"solve": "ssa", "unknowns": ["ssa.u", "ssa.v"],
+     "method": {"picard": {"freeze": ["ssa.nuH"]},
+                "linsolve": {"gmres": {"precond": "bjacobi_ilu0", "fallback": "asm_lu"}},
+                "converged": {"rel_change": "ssa.nuH", "tol": 1e-4}, "maxiter": 300,
+                "recover": [{"underrelax": 0.8}, {"scale_param": "ssa.epsilon", "by": 4, "max": 3}]},
+     "warm_start": "previous"},
+    {"map": "yield_stress"},
+    {"leaf": ["age", "energy"], "alg": "IMEXEuler", "imex": {"implicit": "column", "explicit": "stencil"},
+     "dt": "accumulated"},
+    {"leaf": "flow", "alg": "ForwardEuler"},
+    {"map": "enforce_consistency"},
+    {"map": "front_retreat"},
+    {"leaf": "source", "alg": "ForwardEuler"},
+    {"map": "iceberg_removal"},
+    {"subcycle": {"leaf": "hydrology", "alg": "ForwardEuler"}, "limits": ["hydrology.cfl", "hydrology.diffusive"]},
+    {"every": {"map": "bed_deformation"}, "period": "10 yr"}
+  ]},
+  "step": {"limits": ["sb.cfl_2d", "energy.cfl_3d", "geometry.diffusivity", {"max": "60 yr"}],
+           "hit": ["output", "forcing_records"], "resolution": "1 s"}
+}

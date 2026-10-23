@@ -1,0 +1,216 @@
+# The run configuration
+
+**Status:** M0 draft, 2026-10-23. Normative for both implementations (D1, D8). The structure is fixed by [`schemas/run-config.schema.json`](schemas/run-config.schema.json); this chapter gives the meaning, and the rules a schema cannot check (§8). Background is in architecture §3–§5 and decisions D2, D21, D24.
+
+A run configuration says how to integrate one `.esm` model: how its right-hand side is split into operators, how the operators are scheduled and with which methods, how the macro step is chosen, how the domain is partitioned, at what precision each part runs, and what the adjoint differentiates. The `.esm` stays free of algorithm names (D2).
+
+## 1. The document
+
+- A run config is a JSON document (D24) that validates against the schema for its `esm_integrator` version.
+- `esm_integrator` is the version of this spec, independent of the esm format version. An implementation refuses a version it does not implement.
+- `model` is the path of the `.esm` document, resolved relative to the run config's own location.
+- **Precedence** (architecture §3.1). The run config's `model` is authoritative for a run. If the `.esm` also carries `solver.external` (U1), the two must name each other, or the planner refuses. The planner never writes `solver.external` into derived documents. Solver hints on mounted component files are dropped at assembly (U1), so per-component tolerances are restated here.
+- Unknown keys are errors at every level. There is no extension mechanism in 0.1.0.
+
+## 2. Conventions
+
+### 2.1 Names
+
+- A **qualified name** is a model variable, parameter or observed, namespaced by component path with dots: `ssa.nuH`, `wsm6.dtcld`. It is resolved against the flattened model.
+- An **operator name** is a plain identifier defined under `operators`, or a default operator (§3.3).
+- The four locality names `pointwise`, `column`, `stencil` and `global` are reserved. They are never operator names, so wherever a value may be either (§4.5), there is no ambiguity.
+- Names beginning `default_` are reserved for the default operators (§3.3).
+- A **node id** is an optional identifier on any schedule node, unique within the schedule. Precision, partition and output may refer to a node by id. The planner gives every node an id in the plan (spec/plan.md §3).
+
+### 2.2 Durations
+
+A duration is one of:
+- a positive number of seconds;
+- a string `"<number> <unit>"`, with the space optional, where the unit is `s`, `min` (60 s), `h` (3600 s), `day` (86 400 s) or `yr`;
+- the qualified name of a model parameter whose value is in seconds (WRF's `chemdt`). It is read once, at plan time, from the parameter's default or the value the run supplies.
+
+The words `auto`, `step` and `accumulated` are reserved and are never parameter names in a duration.
+
+*Assumption:* `yr` is 365 days (31 536 000 s), PISM's `365_day` calendar year. *Open question:* whether `yr` should follow the model's declared calendar instead.
+
+### 2.3 `"auto"`
+
+Where the schema allows `"auto"`, the planner chooses by the rules of architecture §3.5 and records the choice in the plan. Omitting an optional key means the same as `"auto"` unless the key's description gives a different default.
+
+## 3. Operators
+
+An operator is a named group of additive right-hand-side terms, or a step map. The planner forms operators from the flattened model (architecture §3.2 pass 1).
+
+### 3.1 Term operators: `select`
+
+`{"select": {...}, "freeze": [...], "bind_dt": {...}}`.
+
+- The planner splits every `D(x, t)` right-hand side into additive terms. Each term carries its provenance, the component (or coupling entry) that authored it (U2).
+- A selector matches a term when **every** key present matches (conjunction):
+  - `components`: the term's provenance is one of these components or lies under one of them;
+  - `variables`: the term contributes to one of these state variables;
+  - `locality`: the term's locality (architecture §3.2 pass 2) is one of these;
+  - `terms`: the term's provenance path is listed exactly.
+- **Each term belongs to exactly one operator.** A term matched by two selectors is an error naming both operators (§8).
+- Algebraic equations are selected the same way, by component or variable, and form algebraic operators that a `solve` node (§4.10) names.
+- `freeze` lists observeds treated as constants when differentiating the operator (D25). This is how Picard iteration is expressed (architecture §3.4).
+- `bind_dt` (§4.4) here applies wherever the operator is advanced.
+
+### 3.2 Map operators: `map`
+
+`{"map": {"<target>": "<observed>", ...}, "bind_dt": {...}}`.
+
+- Each target is a state variable or parameter, and each source is a qualified observed that computes its new value. A model writes a map as an observed that reads `dt` (eqice `stage2/geometry.esm`), and `bind_dt` binds that `dt`.
+- All sources are evaluated at the pre-map state, then all targets are assigned at once.
+- A map that targets parameters is how esm parameter `update` rules run (architecture §3.2 pass 1).
+
+### 3.3 Default operators
+
+Terms no selector matches fall into **default operators**, one per locality, named `default_pointwise`, `default_column`, `default_stencil` and `default_global`. A default operator exists only if it has terms. It may be named in the schedule like any other.
+
+### 3.4 Step limits
+
+A step limit (in `step.limits` or `subcycle.limits`) is a qualified observed whose value is the largest admissible step in seconds, such as a CFL bound, or `{"max": duration}`. The planner compiles each observed limit as a `limit` operator (architecture §3.2 pass 1).
+
+## 4. The schedule
+
+The schedule is a tree of nodes. Every node advances the model over an interval `[t, t+Δ]` that its parent gives it; the root receives the macro step (§5). Exactly one combinator key identifies a node's kind.
+
+### 4.1 `"auto"`
+
+`"schedule": "auto"` asks for the default composition (D21): a `sequence` of one leaf per locality in the order stencil → column → pointwise, upgraded to `strang` when the model's `solver.splitting` hint asks for it. Each leaf's options are chosen by architecture §3.5.
+
+### 4.2 `leaf`
+
+`{"leaf": <operators>, "alg": ..., ...}` advances the **sum** of its operators over `[t, t+Δ]` with one method.
+
+- `alg` names the method (architecture §5). Tableau coefficients and controller constants are OrdinaryDiffEq's (D31).
+- **Substeps.** With `dt` omitted, the leaf steps adaptively under `control` and may take any number of substeps; the last substep ends exactly at `t+Δ`. A numeric `dt` gives fixed substeps, the last shortened to land on `t+Δ`. `"step"` takes exactly one step of size Δ. `"accumulated"` takes one step whose size is the time since this leaf last ran (equal to Δ unless the leaf sits under `every`).
+- `control`: `reltol` and `abstol` (a number, or per variable); `dt0`, `dtmin`, `dtmax`; `controller` (PI, I or PID, with OrdinaryDiffEqCore's constants per method); `dt_scope` (`global`, `shard` or `cell`; D17 makes `cell` the default for pointwise leaves and `global` for stencil leaves); `maxiters`. A non-finite error estimate is a reject. A step below `dtmin` ends the run with a return code instead of hanging (architecture §5.1).
+- `jacobian`: `symbolic` (EarthSciASTDiff band models), `ad` (DifferentiationInterface, Julia only, D38) or `fd`.
+- `linsolve`: the W-matrix solver of architecture §6.1. As an object it carries options: `block_lu.pivot`, `refine` (iterative-refinement sweeps for low-precision factors, architecture §8), Krylov `restart`, `rtol`, `maxiter`, `precond` and `fallback` (the preconditioner tried when the first fails to converge).
+- `domain`: `nonnegative` (`"all"` or a list of variables), `on_violation` (`reject`, the default, D19; or `clip`), and `check_stages` (also check Rosenbrock stage values).
+- `imex` (§4.5), `frozen` (§4.6), `partition` (§6), `bind_dt` (§4.4) and `theta` (the θ-method's off-centring).
+
+### 4.3 `coupled`
+
+`{"coupled": <operators>, ...}` takes the same options as `leaf`. Without algebraic operators it is the same as a `leaf`. With algebraic operators it is a semi-explicit index-1 DAE integrated monolithically (D3b; architecture §6.4), which is specified for v1 and implemented after M6 unless M4b needs it (D35). Until then the planner refuses it.
+
+### 4.4 `bind_dt`
+
+`bind_dt` maps a model parameter to a step size, set before every evaluation that reads it:
+- `"leaf"`: the size of the step the leaf's method is actually taking. With `dt: "step"` and `alg: "ForwardEuler"`, this reproduces a legacy `(x_out − x_in)/dt` tendency exactly (architecture §4.3).
+- `"node"`: the Δ the enclosing node received.
+- `"macro"`: the macro step.
+
+A bound parameter is a constant of the adjoint's frozen tape, so it cannot appear in `adjoint.wrt` (spec/adjoint.md §5.8).
+
+### 4.5 IMEX partitions
+
+`imex: {"explicit": ..., "implicit": ...}` splits a leaf's terms between the explicit and implicit parts of an IMEX method. Entries are operator names, or locality names that select the leaf's terms of that locality. Every term of the leaf must land in exactly one part; `explicit` may be omitted, meaning "everything not implicit". In v1 the only IMEX method is `IMEXEuler` (D35), with the implicit part solved to convergence by Newton with the leaf's `linsolve`.
+
+### 4.6 `frozen`
+
+`frozen: [...]` on a `leaf`, `coupled` or `split_explicit` node lists operators whose tendency is evaluated once, at the start of each step of that node, and added as a constant to every stage of that step (WRF `rk_addtend_dry`). An entry `{"every": op, "period": ..., "hold": "tendency"}` is re-evaluated only on steps where `every` fires (§4.9) and held in between (WRF `radt`).
+
+*Clarification of architecture §4.3:* `frozen` is an option of the node whose stages it feeds, not a standalone node. Alone in a `sequence`, a frozen tendency would just be a forward Euler step.
+
+### 4.7 `sequence` and `strang`
+
+- `sequence`: the children in order, each over the whole `[t, t+Δ]` (Lie–Trotter). With maps and solves among the children this is PISM's ordered step.
+- `strang`: for children `a, b`: `a(Δ/2) b(Δ) a(Δ/2)`. For `n` children `c₁ … cₙ`: `c₁(Δ/2) … cₙ₋₁(Δ/2) cₙ(Δ) cₙ₋₁(Δ/2) … c₁(Δ/2)`. Each half is a separate invocation with its own step sequence.
+
+### 4.8 `subcycle`
+
+`{"subcycle": node, "n": k}` runs the child `k` times with Δ/k. `{"subcycle": node, "limits": [...]}` runs it adaptively: each substep is the minimum of the limits evaluated at the substep's start state and the time remaining, floored at `step.resolution`. The substep sequence is recorded on the tape.
+
+### 4.9 `every`
+
+`{"every": node, "period": P, "phase": φ, "hold": ...}`.
+
+- The node **fires** in an invocation over `[t, t+Δ]` when some `φ + kP`, `k ≥ 0`, lies in `[t, t+Δ)`. Firing times are tstops (§5), so they always fall on the start of a macro step. With a fixed `step.dt`, the planner refuses a `P` or `φ` that is not a multiple of it.
+- When it fires, the child runs over an interval of length Δₑ ending at `t+Δ`, where Δₑ is the time since the end of the previous firing (or since the start of the run). This is how WRF-Chem advances chemistry by `chemdt` and how PISM's bed deformation accumulates its step. Bindings with `"node"` see Δₑ.
+- When it does not fire, it is the identity.
+- `hold: "tendency"`: at a firing, the child's tendency is evaluated and then added as a constant to the right-hand side of every leaf among the enclosing node's other descendants, until the next firing. The child itself is not advanced. Its child must then be a single `leaf`.
+
+### 4.10 `map` and `solve`
+
+- `{"map": op}` applies a map operator (§3.2).
+- `{"solve": op, "unknowns": [...], "method": {...}, "warm_start": ...}` solves the algebraic operator `op` for the listed unknowns with everything else frozen (architecture §6.3). `method` holds exactly one of `newton` (with `inexact` for Eisenstat–Walker forcing), `picard` (with its `freeze` list, D25) or `ptc` (pseudo-transient continuation), plus `linsolve`, `linesearch`, `anderson` (memory depth), `converged` (`residual` tolerance, or `rel_change` of a named observed with `tol`), `maxiter` and `recover`. `recover` is a ladder tried in order on failure: under-relaxation, scaling a regularization parameter by a factor up to `max` times, and `revert_warm_start`. `warm_start` is `previous` (the last converged value, the default) or `initial`.
+
+### 4.11 `split_explicit`
+
+WRF's RK3 (Wicker–Skamarock: Δ/3, Δ/2, Δ) on `slow`, with `fast` advanced by `substeps` forward–backward substeps inside each stage, vertically implicit with `epssm` off-centring, and `frozen` tendencies added to every stage (architecture §4.3). Specified in v1, implemented at M7.
+
+## 5. The macro step: `step`
+
+Exactly one of:
+- **`dt`**: a fixed macro step. Every tstop must fall on a multiple of it.
+- **`limits`**: Δ is the minimum of the limits evaluated at the macro step's start state, and the distance to the next tstop.
+
+Then, for both:
+- **tstops** are the times named by `hit`:
+  - `forcing_refresh`: the times any forcing provider's two-record bracket changes, which start forcing epochs (architecture §7.5);
+  - `forcing_records`: the record timestamps of every forcing provider. For a provider that brackets consecutive records these are the same times;
+  - `output`, `restart`: the output and restart times;
+  - `events`: preset and periodic event times of the model.
+
+  `every` firing times (§4.9) and the observation times of the adjoint functional are always tstops. The interval is `(t₀, t_f]`, so a boundary at `t_f` is hit (architecture §7.5).
+- `hit_multiples` additionally makes every multiple of a duration a tstop.
+- `resolution` floors Δ to a multiple of it, and Δ is never less than one `resolution` unless a tstop is closer.
+- **Ties.** Each macro step records the reason for its size: the first source achieving the minimum, in the order limits as listed, then `max`, then tstops. The reason is deterministic, so two implementations agree on it (PISM bugs.md #11).
+- *Clarification of architecture §4.3:* the macro step has no error control of its own. Leaves adapt inside it. A schedule whose root is a single adaptive leaf behaves like an ordinary adaptive integration, because the planner then gives that leaf's accepted steps the role of macro steps.
+
+## 6. Partition
+
+- `ranks`: the 2-D grid of MPI ranks over the horizontal axes. Decomposition is horizontal only (D20).
+- `tiles`: the 2-D grid of thread tiles within each rank.
+- `shards`: shard counts per operator or node id, for pointwise and column leaves. A leaf's own `partition` (`shards`, or `shard_size` in lanes) overrides it.
+
+The planner derives halo widths and shard sizing (architecture §3.2 pass 7). Results are bitwise identical for a fixed decomposition (D10).
+
+## 7. Precision, adjoint, output, restart
+
+### 7.1 `precision`
+
+Precision roles per leaf (architecture §8, D18, D29). Keys are `default`, operator names or node ids; a more specific key overrides `default` role by role.
+
+| Role | Allowed |
+|---|---|
+| `state`, `rhs` | `f32`, `f64`. Must equal a declared `element_type`; free where the document leaves it unspecified (U14). `rhs` ≥ `state`. |
+| `jacobian`, `factors`, `tables` | `f16`, `bf16`, `f32`, `f64`, under any declaration. |
+
+Time, dt, error norms, reductions and adjoint accumulators are always f64 and are not configurable. The planner refuses a low-precision `jacobian` or `factors` with a classical Rosenbrock method (Rodas) unless overridden (architecture §8).
+
+### 7.2 `adjoint`
+
+- `functional`: the reduction (`mean` or `sum`) of one quantity, restricted by `where` (index-set name → 1-based index or inclusive range), `over` the run: `time` (the integral term, spec/adjoint.md §2.1), `final` (the end state), or `saveat` (a point term at each output time).
+- `wrt`: what to differentiate with respect to. `params:numeric` is every numeric scalar parameter; `params:<pattern>`, `fields:<pattern>` (gridded array parameters) and `forcing:<pattern>` (forcing fields, accumulated per provider record, D5) take a glob over qualified names, where `*` matches any characters including dots; `u0` is the initial state.
+- `checkpoint`: `every` (`macro_step` or a count of macro steps), `store` levels, and the `schedule` the planner computes (D34): `all`, `revolve` or `multilevel`, with `snapshots` slots.
+
+The math is in [`adjoint.md`](adjoint.md).
+
+### 7.3 `output` and `restart`
+
+- `output.sinks`: EarthSciIO sinks by `path`, with `variables` and their own `saveat`; `output.saveat` is the default. Output times are tstops, so `saveat` never needs dense output in v1.
+- `output.accumulators`: name → observed. The planner adds each as an integrated state (D26).
+- `restart`: `path`, cadence `every`, and `from`, a restart store to start from. Restart is bitwise for the same decomposition (architecture §11).
+
+## 8. Rules the planner checks
+
+The schema checks structure. The planner additionally refuses, naming the offending key:
+
+1. a `model` that does not load, or a `solver.external` that does not name this file back (§1);
+2. a qualified name that does not resolve in the flattened model, or resolves to the wrong kind (a map target that is not a state variable or parameter, a limit that is not an observed);
+3. an operator name used in the schedule that is neither defined nor an existing default operator;
+4. a term selected by two operators, or an operator whose selector matches nothing;
+5. an operator that the schedule never advances, or advances twice in one invocation outside `strang`;
+6. an `imex` partition that leaves a term in neither part or in both;
+7. duplicate node ids;
+8. a `hold: "tendency"` `every` whose child is not a single leaf;
+9. a tstop or `every` period that is not a multiple of a fixed `step.dt`;
+10. a precision role that contradicts a declared `element_type`, or `rhs` below `state`;
+11. a `wrt` entry that matches nothing, or names a parameter bound by `bind_dt`;
+12. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
+
+Error codes for these refusals are assigned with the planner (M2).

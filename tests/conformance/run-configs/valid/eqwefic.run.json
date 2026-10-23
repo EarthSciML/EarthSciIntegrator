@@ -1,0 +1,25 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "EqWeFiC, the WRF step (architecture §4.4, M7 sketch). The schedule, step and precision are the architecture's; the operator selectors are filled in, and their component names are illustrative until M7.",
+  "model": "eqwefic.esm",
+  "operators": {
+    "dynamics": {"select": {"components": "dynamics"}},
+    "acoustic": {"select": {"components": "acoustic"}},
+    "radiation": {"select": {"components": ["rrtm_lw", "dudhia_sw"]}},
+    "surface": {"select": {"components": ["sfclayrev", "noah"]}},
+    "pbl": {"select": {"components": "ysu"}},
+    "cumulus": {"select": {"components": "ntiedtke"}},
+    "microphysics": {"select": {"components": "wsm6"}},
+    "chemistry": {"select": {"components": "gaschem"}}
+  },
+  "schedule": {"sequence": [
+    {"split_explicit": {"slow": "dynamics", "fast": "acoustic", "alg": "WRF_RK3", "substeps": 6,
+                        "fast_alg": {"forward_backward": {"vertical": "implicit", "epssm": 0.1}},
+                        "frozen": [{"every": "radiation", "period": "10 min", "hold": "tendency"},
+                                   "surface", "pbl", "cumulus"]}},
+    {"leaf": "microphysics", "alg": "ForwardEuler", "dt": "step", "bind_dt": {"wsm6.dtcld": "leaf"}},
+    {"every": {"leaf": "chemistry", "alg": "Rodas3", "linsolve": "sparse_block_lu"}, "period": "chemdt"}
+  ]},
+  "step": {"dt": 40.5},
+  "precision": {"default": {"state": "f32"}, "chemistry": {"state": "f64"}}
+}

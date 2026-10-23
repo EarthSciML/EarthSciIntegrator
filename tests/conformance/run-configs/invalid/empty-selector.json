@@ -1,0 +1,12 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "operators": {
+    "a": {
+      "select": {}
+    }
+  },
+  "schedule": {
+    "leaf": "a"
+  }
+}

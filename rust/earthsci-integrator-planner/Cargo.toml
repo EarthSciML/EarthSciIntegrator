@@ -1,0 +1,8 @@
+[package]
+name = "earthsci-integrator-planner"
+description = "EarthSciIntegrator planner: operators, locality, structure, plan emission (M0 scaffold)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
