@@ -25,9 +25,11 @@
     },
     "schedule": {
       "description": "The resolved schedule: the run-config grammar with every 'auto' replaced and every leaf's options made explicit (spec/plan.md §3). Every node has an id.",
-      "$ref": "run-config.schema.json#/$defs/node"
+      "allOf": [{"$ref": "#/$defs/resolvedNode"}, {"$ref": "#/$defs/noAuto"}]
     },
-    "step": {"$ref": "run-config.schema.json#/$defs/step"},
+    "step": {
+      "allOf": [{"$ref": "run-config.schema.json#/$defs/step"}, {"$ref": "#/$defs/noAuto"}]
+    },
     "partition": {"$ref": "#/$defs/partitionPlan"},
     "precision": {
       "description": "Resolved precision roles per leaf, keyed by node id. Every role is present.",
@@ -73,6 +75,23 @@
   },
 
   "$defs": {
+    "resolvedNode": {
+      "description": "A run-config schedule node with an id, whose child nodes are resolved nodes too.",
+      "$ref": "run-config.schema.json#/$defs/node",
+      "required": ["id"],
+      "properties": {
+        "sequence": {"items": {"$ref": "#/$defs/resolvedNode"}},
+        "strang": {"items": {"$ref": "#/$defs/resolvedNode"}},
+        "subcycle": {"$ref": "#/$defs/resolvedNode"},
+        "every": {"$ref": "#/$defs/resolvedNode"}
+      }
+    },
+    "noAuto": {
+      "description": "No value anywhere inside is the string 'auto' (spec/plan.md §3). Operator names and node ids are never 'auto' (spec/run-config.md §2.1), so this cannot misfire on a name.",
+      "not": {"const": "auto"},
+      "items": {"$ref": "#/$defs/noAuto"},
+      "additionalProperties": {"$ref": "#/$defs/noAuto"}
+    },
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "fileRef": {
       "type": "object",

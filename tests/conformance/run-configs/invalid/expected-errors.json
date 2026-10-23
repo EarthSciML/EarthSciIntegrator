@@ -1,0 +1,130 @@
+{
+  "bad-duration-unit.json": {
+    "keyword": "pattern",
+    "at": [
+      "$.schedule.period"
+    ]
+  },
+  "bad-wrt.json": {
+    "keyword": "pattern",
+    "at": [
+      "$.adjoint.wrt[0]"
+    ]
+  },
+  "duration-in-years.json": {
+    "keyword": "pattern",
+    "at": [
+      "$.schedule.period"
+    ]
+  },
+  "empty-selector.json": {
+    "keyword": "minProperties",
+    "at": [
+      "$.operators.a.select"
+    ]
+  },
+  "freeze-on-operator.json": {
+    "keyword": "additionalProperties",
+    "at": [
+      "$.operators.ssa"
+    ]
+  },
+  "hit-forcing-records.json": {
+    "keyword": "enum",
+    "at": [
+      "$.step.hit[0]"
+    ]
+  },
+  "locality-as-operator-name.json": {
+    "keyword": "not",
+    "at": [
+      "$.operators",
+      "$.schedule.leaf"
+    ]
+  },
+  "missing-version.json": {
+    "keyword": "required",
+    "at": [
+      "$"
+    ]
+  },
+  "node-id-auto.json": {
+    "keyword": "not",
+    "at": [
+      "$.schedule.id"
+    ]
+  },
+  "operator-defined-with-default-prefix.json": {
+    "keyword": "not",
+    "at": [
+      "$.operators"
+    ]
+  },
+  "operator-named-default.json": {
+    "keyword": "not",
+    "at": [
+      "$.operators",
+      "$.schedule.leaf"
+    ]
+  },
+  "rel-change-without-tol.json": {
+    "keyword": "dependentRequired",
+    "at": [
+      "$.schedule.method.converged"
+    ]
+  },
+  "solve-two-methods.json": {
+    "keyword": "oneOf",
+    "at": [
+      "$.schedule.method"
+    ]
+  },
+  "state-precision-f16.json": {
+    "keyword": "enum",
+    "at": [
+      "$.precision.default.state"
+    ]
+  },
+  "step-dt-and-limits.json": {
+    "keyword": "not",
+    "at": [
+      "$.step"
+    ]
+  },
+  "strang-one-child.json": {
+    "keyword": "minItems",
+    "at": [
+      "$.schedule.strang"
+    ]
+  },
+  "subcycle-without-n-or-limits.json": {
+    "keyword": "required",
+    "at": [
+      "$.schedule"
+    ]
+  },
+  "two-combinators.json": {
+    "keyword": "additionalProperties",
+    "at": [
+      "$.schedule"
+    ]
+  },
+  "unknown-alg.json": {
+    "keyword": "enum",
+    "at": [
+      "$.schedule.alg"
+    ]
+  },
+  "unknown-top-level-key.json": {
+    "keyword": "additionalProperties",
+    "at": [
+      "$"
+    ]
+  },
+  "zero-duration.json": {
+    "keyword": "pattern",
+    "at": [
+      "$.step.dt"
+    ]
+  }
+}

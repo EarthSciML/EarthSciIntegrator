@@ -8,4 +8,4 @@ Shared by the Julia and Rust implementations (architecture §12, spec/README.md)
 | `run-configs/invalid/` | Run configs the schema must reject, one defect each, named for the defect. | `validate_schemas.py` |
 | `plans/valid/`, `plans/invalid/` | The same for `plan.json`. The valid plan is hand-written and reseact-shaped; real goldens arrive with the planner (M2). | `validate_schemas.py` |
 
-Run tier 0 locally with `python tests/conformance/validate_schemas.py` (needs `jsonschema` ≥ 4.18).
+Each `invalid/` directory has an `expected-errors.json` naming, per fixture, the schema keyword that must fail and where; a fixture that fails anywhere else has a second defect and is reported. Run tier 0 locally with `python tests/conformance/validate_schemas.py` (needs `jsonschema` ≥ 4.18).

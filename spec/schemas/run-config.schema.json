@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://earthsciml.org/schemas/esm-integrator/0.1.0/run-config.schema.json",
   "title": "EarthSciIntegrator run configuration",
-  "description": "A run configuration (spec/run-config.md). Structural validation only: name resolution against the model, operator existence and the semantic rules of spec/run-config.md §7 are checked by the planner.",
+  "description": "A run configuration (spec/run-config.md). Structural validation only: name resolution against the model, operator existence and the semantic rules of spec/run-config.md §8 are checked by the planner.",
   "type": "object",
   "required": ["esm_integrator", "model", "schedule"],
   "additionalProperties": false,
@@ -47,11 +47,16 @@
       "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
     },
     "operatorName": {
-      "description": "An operator name. The four locality names are reserved (spec/run-config.md §3).",
+      "description": "An operator name. The four locality names, 'auto' and 'default' are reserved (spec/run-config.md §2.1).",
       "allOf": [
         {"$ref": "#/$defs/identifier"},
-        {"not": {"$ref": "#/$defs/locality"}}
+        {"not": {"$ref": "#/$defs/locality"}},
+        {"not": {"$ref": "#/$defs/reservedWord"}}
       ]
+    },
+    "reservedWord": {
+      "description": "Never an operator name or node id: 'auto' is the planner's-choice value, and 'default' is the fallback key of precision (spec/run-config.md §2.1).",
+      "enum": ["auto", "default"]
     },
     "qualifiedName": {
       "description": "A model variable, parameter or observed, namespaced by component path with dots (e.g. ssa.nuH).",
@@ -68,10 +73,14 @@
       "enum": ["pointwise", "column", "stencil", "global"]
     },
     "duration": {
-      "description": "Seconds as a positive number, a string '<number> <unit>' with unit s, min, h or day (spec/run-config.md §2.2; years and months are not constant durations, D45), or the qualified name of a model parameter holding seconds. The words auto, step and accumulated are reserved and are never parameter names here.",
+      "description": "Seconds as a positive number, a positive string '<number> <unit>' with unit s, min, h or day (spec/run-config.md §2.2; years and months are not constant durations, D45), or the qualified name of a model parameter holding seconds. The words auto, step and accumulated are reserved and are never parameter names here.",
       "oneOf": [
         {"type": "number", "exclusiveMinimum": 0},
-        {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)? ?(s|min|h|day)$"},
+        {
+          "description": "The mantissa has a nonzero digit, so '0 s' and '0.0 day' are refused.",
+          "type": "string",
+          "pattern": "^([0-9]*[1-9][0-9]*(\\.[0-9]+)?|[0-9]+\\.[0-9]*[1-9][0-9]*)([eE][-+]?[0-9]+)? ?(s|min|h|day)$"
+        },
         {"allOf": [{"$ref": "#/$defs/qualifiedName"}, {"not": {"enum": ["auto", "step", "accumulated"]}}]}
       ]
     },
@@ -91,10 +100,6 @@
       "additionalProperties": false,
       "properties": {
         "select": {"$ref": "#/$defs/selector"},
-        "freeze": {
-          "description": "Observeds treated as constants when differentiating this operator (Picard as a frozen-observed Jacobian, D25).",
-          "type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "uniqueItems": true
-        },
         "bind_dt": {"$ref": "#/$defs/bindDt"}
       }
     },
@@ -156,8 +161,11 @@
       ]
     },
     "nodeId": {
-      "description": "Optional name for a node, so precision, partition and output can refer to it. Unique within the schedule.",
-      "$ref": "#/$defs/identifier"
+      "description": "Optional name for a node, so precision, partition and output can refer to it. Unique within the schedule. 'auto' and 'default' are reserved.",
+      "allOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"not": {"$ref": "#/$defs/reservedWord"}}
+      ]
     },
     "operatorRefs": {
       "oneOf": [
@@ -329,7 +337,10 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "freeze": {"type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "minItems": 1, "uniqueItems": true}
+            "freeze": {
+              "description": "Observeds treated as constants when differentiating the residual for the iteration (Picard as a frozen-observed Jacobian, D25). The only place freezing is written (D51).",
+              "type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "minItems": 1, "uniqueItems": true
+            }
           },
           "required": ["freeze"]
         },
@@ -511,7 +522,7 @@
       }
     },
     "step": {
-      "description": "Macro-step control (spec/run-config.md §5): a fixed dt, or limits.",
+      "description": "Macro-step control (spec/run-config.md §5): a fixed dt, or limits, or neither when the schedule root is a single adaptive leaf whose accepted steps are the macro steps (D49; the planner checks the root).",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -524,10 +535,7 @@
         "hit_multiples": {"$ref": "#/$defs/duration"},
         "resolution": {"$ref": "#/$defs/duration"}
       },
-      "oneOf": [
-        {"required": ["dt"], "not": {"required": ["limits"]}},
-        {"required": ["limits"], "not": {"required": ["dt"]}}
-      ]
+      "not": {"required": ["dt", "limits"]}
     },
 
     "partition": {

@@ -1,0 +1,20 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "description": "A single adaptive leaf as the whole schedule, with no dt or limits: its accepted steps are the macro steps (D49), and it lands on output times.",
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "Tsit5",
+    "control": {
+      "reltol": 1e-06
+    }
+  },
+  "step": {
+    "hit": [
+      "output"
+    ]
+  },
+  "output": {
+    "saveat": "1 h"
+  }
+}

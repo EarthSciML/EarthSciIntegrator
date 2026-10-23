@@ -1,0 +1,23 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "operators": {
+    "ssa": {
+      "select": {
+        "components": "ssa"
+      },
+      "freeze": [
+        "ssa.nuH"
+      ]
+    }
+  },
+  "schedule": {
+    "solve": "ssa",
+    "unknowns": [
+      "ssa.u"
+    ],
+    "method": {
+      "newton": {}
+    }
+  }
+}

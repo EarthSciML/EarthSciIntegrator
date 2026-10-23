@@ -57,6 +57,9 @@ Facts are in [`survey.md`](survey.md) and the design is in [`architecture.md`](a
 | D47 | 2026-10-23 | **`frozen` is an option of the `leaf`, `coupled` or `split_explicit` node whose stages it feeds**, not a standalone schedule node. |
 | D48 | 2026-10-23 | **When `every` fires, its child advances by the time since its previous firing**, ending at the end of the current step (WRF-Chem `chemdt`, PISM's accumulated bed-deformation step). |
 | D49 | 2026-10-23 | **The macro step has no error control of its own.** Leaves adapt inside it; a schedule whose root is a single adaptive leaf takes that leaf's accepted steps as macro steps. |
+| D50 | 2026-10-23 | **Under a fixed macro step, `every` firing times are not tstops.** The node fires on the macro step that contains the firing time, as WRF does for `radt` and `chemdt`, so periods need not be multiples of `step.dt`. Under adaptive macro steps, firing times stay tstops. |
+| D51 | 2026-10-23 | **Picard freezing is written only as `method.picard.freeze` on a `solve` node.** The operator-level `freeze` is dropped, so the planner's `frozen_jacobian` output has a single trigger. |
+| D52 | 2026-10-23 | **A leaf whose method has no embedded error estimate must give `dt`.** Omitted `dt` always means adaptive, and the planner refuses it for ForwardEuler, SSPRK33, SSPRK104, WRF_RK3, IMEXEuler and Theta, rather than defaulting by method. |
 
 ## 1. Adjoint strategy: tradeoffs
 

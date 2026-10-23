@@ -140,7 +140,7 @@ The same `.esm`, run config and planner spec version must produce byte-identical
 
 ### 3.4 Picard is a frozen-observed Jacobian
 
-A run-config `freeze: ["ssa.nuH"]` makes pass 4 treat those observeds as constants when differentiating. This gives PISM's Picard operator (frozen effective viscosity) as an ordinary band model, so no model-specific Picard code is needed. The adjoint still needs the full, unfrozen residual Jacobian, because the converged solution satisfies the full residual; the planner emits both band models (spec/adjoint.md §4.6, spec/plan.md §1).
+A `solve` node's `"method": {"picard": {"freeze": ["ssa.nuH"]}}` makes pass 4 treat those observeds as constants when differentiating the residual for the iteration. This is the only place freezing is written (D51). This gives PISM's Picard operator (frozen effective viscosity) as an ordinary band model, so no model-specific Picard code is needed. The adjoint still needs the full, unfrozen residual Jacobian, because the converged solution satisfies the full residual; the planner emits both band models (spec/adjoint.md §4.6, spec/plan.md §1).
 
 ### 3.5 Strategy inference rules (when "auto")
 
@@ -166,7 +166,7 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 |---|---|
 | `esm_integrator` | spec version |
 | `model` | path to the `.esm` |
-| `operators` | name → selector (`components`, `variables`, `locality`, `terms`) plus options (`freeze`, `bind_dt`); `maps` entries define step maps as (target variable ← expression or observed) pairs plus a `dt` binding |
+| `operators` | name → selector (`components`, `variables`, `locality`, `terms`) plus `bind_dt`; `maps` entries define step maps as (target variable ← expression or observed) pairs plus a `dt` binding |
 | `schedule` | combinator tree (§4.3) |
 | `step` | macro-step controller: fixed `dt`, or `limits` (operator names, expressions, `{"max": …}`), `hit` (tstops sources), `resolution` |
 | `partition` | ranks (grid of horizontal blocks), tiles per rank, shards per leaf |
@@ -182,7 +182,7 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 | `sequence` | Children in order, each over `Δ`. This is Lie–Trotter, and PISM's ordered step when children include maps and solves. |
 | `strang` | `a(Δ/2) b(Δ) a(Δ/2)`, generalized symmetrically for n children. |
 | `subcycle` | The child `n` times with `Δ/n`, or adaptively under its own `limits` (hydrology, fire `tbound`). |
-| `every` | The child runs only when `t` crosses multiples of `period` (+ `phase`), and then advances by the time since its last firing (D48). With `hold: "tendency"`, its tendency is evaluated at the crossing and added as a constant to sibling leaves until the next crossing (WRF `radt`). |
+| `every` | The child runs only when `t` crosses multiples of `period` (+ `phase`), and then advances by the time since its last firing (D48). Under adaptive macro steps the crossings are tstops; under a fixed `step.dt` the child fires on the step that contains the crossing (D50). With `hold: "tendency"`, its tendency is evaluated at the crossing and added as a constant to sibling leaves until the next crossing (WRF `radt`). |
 | `coupled` | Monolithic integration of the sum of its operators (no splitting error). `imex: {explicit: [...], implicit: [...]}` selects ARK. If any algebraic operators are included, it becomes an index-1 DAE (§6.4). |
 | `frozen` | An option of the `leaf`, `coupled` or `split_explicit` node it feeds, not a standalone node (D47): the listed operators' tendency is evaluated once at the start of each step of that node and held across all stages (WRF `rk_addtend_dry`). |
 | `split_explicit` | WRF RK3 (Wicker–Skamarock: Δ/3, Δ/2, Δ) on `slow`, with `fast` integrated by forward–backward substeps (vertically implicit, `epssm` off-centring) inside each stage. *Spec in v1, implementation in M7.* |
@@ -236,12 +236,12 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
    {"map": "yield_stress"},
    {"leaf": ["age", "energy"], "alg": "IMEXEuler", "imex": {"implicit": "column", "explicit": "stencil"},
     "dt": "accumulated"},
-   {"leaf": "flow", "alg": "ForwardEuler"},
+   {"leaf": "flow", "alg": "ForwardEuler", "dt": "step"},
    {"map": "enforce_consistency"},
    {"map": "front_retreat"},
-   {"leaf": "source", "alg": "ForwardEuler"},
+   {"leaf": "source", "alg": "ForwardEuler", "dt": "step"},
    {"map": "iceberg_removal"},
-   {"subcycle": {"leaf": "hydrology", "alg": "ForwardEuler"}, "limits": ["hydrology.cfl", "hydrology.diffusive"]},
+   {"subcycle": {"leaf": "hydrology", "alg": "ForwardEuler", "dt": "step"}, "limits": ["hydrology.cfl", "hydrology.diffusive"]},
    {"every": {"map": "bed_deformation"}, "period": "3650 day"}
  ]},
  "step": {"limits": ["sb.cfl_2d", "energy.cfl_3d", "geometry.diffusivity", {"max": "21900 day"}],
@@ -267,7 +267,7 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 
 Every family is generic over its tableau. Each provides:
 - a step;
-- an embedded error estimate;
+- an embedded error estimate, where the method has one (Euler, SSPRK33, SSPRK104, WRF_RK3, IMEXEuler and the θ-method do not, so their leaves give `dt`, D52);
 - optional dense output;
 - a declared requirement set (needs J? W? HVP for its adjoint?);
 - a **discrete adjoint step** (D4).
@@ -528,7 +528,7 @@ Under D10 the replay is **bitwise** equal to the forward pass, so the replay-ver
 |---|---|
 | `vjp_u`, `vjp_p` (including array parameters), `vjp_forcing` | EarthSciASTDiff band models in both languages (U7). Recurrence and scan operators get dedicated VJP models (U9). |
 | Rosenbrock second order: `∇_u`, `∇_p`, `∇_F` of `μᵀJ(u)w`, and `∂f_t/∂u` where a method uses `f_t` (nonzero inside forcing brackets) | Second-order band models, one contraction per step (U8) |
-| `Wᵀ` solves | Reused factorizations (§6.1) |
+| `Wᵀ` solves | Reused factorizations for Rosenbrock; the exact system at each converged stage for SDIRK (§6.1, D42) |
 
 Julia additionally has AD on the RHS as a fallback for primitives, through DifferentiationInterface (`AutoEnzyme` pullbacks, `AutoForwardDiff` pushforwards; D38), and two step-level oracles: Enzyme on a whole step, and `SciMLSensitivity.ReverseDiffAdjoint` through OrdinaryDiffEq's implementation of the same method (D31).
 

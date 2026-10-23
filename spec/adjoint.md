@@ -58,7 +58,7 @@ The run config's `adjoint.functional` (architecture §4.2, §10) defines
 \mathcal{J} = \sum_{k} \varphi_k\big(u(\tau_k), p\big) + \int_{t_0}^{t_f} \psi(u, p, t)\, dt .
 ```
 
-- **Point terms.** Each $\varphi_k$ is a named observed or reduction evaluated at an observation time $\tau_k$. Every $\tau_k$ MUST be a macro-step boundary, so it MUST appear in `step.hit`; the planner refuses otherwise. $u(\tau_k)$ is the full model state after the whole schedule for the macro step ending at $\tau_k$. In the reverse pass, on reaching $\tau_k$:
+- **Point terms.** Each $\varphi_k$ is a named observed or reduction evaluated at an observation time $\tau_k$. Every $\tau_k$ is a macro-step boundary: the planner always makes observation times tstops, whether or not `step.hit` names their source (spec/run-config.md §5). Under a fixed `step.dt`, an observation time that is not a multiple of it is refused like any other such tstop (spec/run-config.md §8 rule 9). $u(\tau_k)$ is the full model state after the whole schedule for the macro step ending at $\tau_k$. In the reverse pass, on reaching $\tau_k$:
 
   ```math
   \lambda \mathrel{+}= \nabla_u \varphi_k\big(u(\tau_k), p\big), \qquad \bar p \mathrel{+}= \nabla_p \varphi_k .
@@ -114,7 +114,7 @@ All primitives evaluate at a given $(u, p, t; F)$. Each returns a vector shaped 
 | `vjp_u(u; v)` | $J(u)^\top v$ | transposed bands; dedicated VJP model for recurrences and scans (U9); Julia fallback `AutoEnzyme` pullback |
 | `vjp_p(u; v)` | $f_p(u)^\top v$, including array parameters | parameter bands (U7) |
 | `vjp_F(u; v)` | $f_F(u)^\top v$, over buffer cells including the record axis | forcing bands (U7) |
-| `solve_W(v)`, `solve_Wt(v)` | $W^{-1} v$, $W^{-\top} v$ for the leaf's $W$ (§4) | the leaf's `linsolve`; the transposed solve reuses the forward factorization (architecture §6.1) |
+| `solve_W(v)`, `solve_Wt(v)` | $W^{-1} v$, $W^{-\top} v$ for the leaf's $W$ (§4) | the leaf's `linsolve`. Rosenbrock reuses the forward factorization, whose $W$ is formed at $u_n$. SDIRK, IMEX Euler and the θ-method solve the exact system at the converged stage, refactoring or iterating with the forward factorization as a preconditioner (§4.3, D42; architecture §6.1) |
 | `hess_u(u; {μ_i, w_i})` | $\nabla_u \sum_i \mu_i^\top J(u)\, w_i$ | second-order bands `[states, states]`, one contraction per call (U8) |
 | `hess_p`, `hess_F` | $\nabla_p$ and $\nabla_F$ of the same sum | second-order bands `[states, parameters]`, `[states, forcing]` (U8) |
 | `ft(u)` | $f_t(u)$ | time bands |
@@ -175,7 +175,8 @@ u^{(i)} = \sum_{j<i} \big(\alpha_{ij}\, u^{(j)} + h\,\beta_{ij}\, f(u^{(j)}, p, 
 
 ```math
 \bar u^{(j)} \mathrel{+}= \alpha_{ij}\, \bar u^{(i)} + h\beta_{ij}\, J(u^{(j)})^\top \bar u^{(i)}, \qquad
-\bar p \mathrel{+}= h\beta_{ij}\, f_p(u^{(j)})^\top \bar u^{(i)} ,
+\bar p \mathrel{+}= h\beta_{ij}\, f_p(u^{(j)})^\top \bar u^{(i)} , \qquad
+\bar F \mathrel{+}= h\beta_{ij}\, f_F(u^{(j)})^\top \bar u^{(i)} ,
 ```
 
 and $\lambda_n = \bar u^{(0)}$. When several $i$ share a $j$, an implementation SHOULD first form $v_j = \sum_i \beta_{ij} \bar u^{(i)}$ and then call `vjp_u` once on $v_j$. That calls `vjp_u` once per stage, as in the Butcher form. The summation order over $i$ is ascending (§6.4).
@@ -314,7 +315,7 @@ For an explicit first stage ($a_{11} = 0$), $W_1 = I$ and the solve is a copy. T
 - **Refactor.** Form $J(Z_i)$ from bands and factor $W_i$. This is the default for `block_lu`, `sparse_block_lu` and `banded`, where a factorization is cheap per cell or per column.
 - **Iterate.** Use the forward factorization as a preconditioner for a Krylov solve or iterative refinement on $W_i^\top$, with `vjp_u` supplying $J(Z_i)^\top v$. This is the default for `krylov` leaves.
 
-These defaults are decided (D42). Architecture §6.1's "reuse the forward factorizations" is exact for Rosenbrock only; for SDIRK the forward factorization is at most a preconditioner. *Informative:* the cost of refactoring per stage at 3-D column scale has not been measured.
+These defaults are decided (D42). Reusing the forward factorization is exact for Rosenbrock only; for SDIRK it is at most a preconditioner (architecture §6.1). The same holds for the $W$ of IMEX Euler (§4.4) and the θ-method (§4.5), which is formed at the converged $u_{n+1}$. *Informative:* the cost of refactoring per stage at 3-D column scale has not been measured.
 
 ### 4.4 IMEX Euler
 
@@ -371,7 +372,7 @@ from $dz = -g_z^{-1}(g_u\,du + g_p\,dp + g_F\,dF)$. That is one transposed solve
 
 Three consequences of differentiating at the converged solution:
 - **The warm start is not differentiated.** The converged $z$ does not depend on it, to tolerance.
-- **Picard needs the unfrozen Jacobian.** A Picard iteration (D25) uses a frozen-observed Jacobian as its *iteration operator*. Its converged $z$ still solves the full residual $g(u, z, p) = 0$. So the adjoint's $g_z$ is the **unfrozen** Jacobian, including the dependence of the frozen observed on $z$ (PISM's $\nu H$ on the velocity). The planner MUST therefore emit both band models for a `solve` node with `freeze`: the frozen one for the forward pass and the full one for the adjoint. Architecture §3.4 does not yet say this.
+- **Picard needs the unfrozen Jacobian.** A Picard iteration (D25) uses a frozen-observed Jacobian as its *iteration operator*. Its converged $z$ still solves the full residual $g(u, z, p) = 0$. So the adjoint's $g_z$ is the **unfrozen** Jacobian, including the dependence of the frozen observed on $z$ (PISM's $\nu H$ on the velocity). The planner MUST therefore emit both band models for a `solve` node with `picard.freeze`, the only place freezing is written (D51): the frozen one (`frozen_jacobian`) for the forward pass and the full one (`jacobian`) for the adjoint (spec/plan.md §1, architecture §3.4).
 - **`recover` actions are tape decisions.** An under-relaxation or a revert changes only the path, not the converged $z$, and has no effect on the adjoint. A `scale_param` action changes the residual itself, $g(u, z, s\cdot p_k)$ with the recorded scale $s$. The adjoint uses the scaled residual, and the chain rule multiplies $\bar p_k$ by $s$.
 
 ## 5. Combinators
@@ -398,7 +399,7 @@ The child runs $n$ times with $\Delta/n$, or adaptively under its own `limits` w
 
 The tape records the firings. A non-firing invocation is the identity and has an identity adjoint. A firing invocation is the child's map, so its reverse is the child's adjoint at that point.
 
-**`hold: "tendency"`.** At a firing at $t_c$, the held operator's tendency $\tau = f_H(u(t_c), p)$ is evaluated and stored. Until the next firing it is added as a constant to the right-hand side of every sibling leaf: $f_{\text{sib}}(u) + \tau$. Treat $\tau$ as a parameter of those leaves with $\partial(f_{\text{sib}} + \tau)/\partial \tau = I$. In the reverse pass:
+**`hold: "tendency"`.** At a firing at $t_c$, the held operator's tendency $\tau = f_H(u(t_c), p, t_c; F)$ is evaluated and stored, with $F$ the forcing buffers of the epoch containing $t_c$. Until the next firing it is added as a constant to the right-hand side of every sibling leaf: $f_{\text{sib}}(u) + \tau$. Treat $\tau$ as a parameter of those leaves with $\partial(f_{\text{sib}} + \tau)/\partial \tau = I$. In the reverse pass:
 - Every stage of a sibling leaf that adds $\tau$ contributes its stage cotangent to $\bar\tau$:
   - $\kappa_i$ for explicit methods;
   - $\omega_i$ for SDIRK;
@@ -407,11 +408,27 @@ The tape records the firings. A non-firing invocation is the identity and has an
 
   In each case this is the term that would have gone to `vjp_p` for a parameter entering additively.
 - $\tau$ has zero time gradient and does not enter $J$, so Rosenbrock's second-order and $f_t$ terms are unaffected.
-- On reaching $t_c$: $\ \bar u(t_c) \mathrel{+}= J_H(u(t_c))^\top \bar\tau$, $\ \bar p \mathrel{+}= f_{H,p}^\top \bar\tau$, then $\bar\tau \leftarrow 0$.
+- On reaching $t_c$, with every derivative at $(u(t_c), p, t_c; F)$:
+
+  ```math
+  \bar u(t_c) \mathrel{+}= J_H^\top \bar\tau, \qquad
+  \bar p \mathrel{+}= f_{H,p}^\top \bar\tau, \qquad
+  \bar F \mathrel{+}= f_{H,F}^\top \bar\tau ,
+  ```
+
+  then $\bar\tau \leftarrow 0$. $\bar F$ goes to the slots of $t_c$'s epoch, and from them to provider records as in §6.3.
 
 ### 5.6 `frozen`
 
-The operator's tendency is evaluated once at the start of the enclosing step, at $u_n$, and held across all stages (WRF `rk_addtend_dry`). This is §5.5 with the hold interval equal to one step of the enclosing node: $\bar\tau$ collects the stage cotangents of that step, and $\lambda_n \mathrel{+}= J_{\text{fr}}(u_n)^\top\bar\tau$.
+The operator's tendency is evaluated once at the start of the enclosing step, at $u_n$, and held across all stages (WRF `rk_addtend_dry`). This is §5.5 with the hold interval equal to one step of the enclosing node: $\bar\tau$ collects the stage cotangents of that step, and then, with every derivative at $(u_n, p, t_n; F)$,
+
+```math
+\lambda_n \mathrel{+}= J_{\text{fr}}^\top\bar\tau, \qquad
+\bar p \mathrel{+}= f_{\text{fr},p}^\top\bar\tau, \qquad
+\bar F \mathrel{+}= f_{\text{fr},F}^\top\bar\tau .
+```
+
+*Informative:* the per-step dot-product identity (§7.1) would not catch a missing term here, because its tangent side follows this section too.
 
 ### 5.7 `map` and domain clipping
 

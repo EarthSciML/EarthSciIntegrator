@@ -14,7 +14,7 @@ The planner reads a model and a run config and writes a **plan**: `plan.json` pl
 ```
 
 - `derived/` documents are named `<operator>.<kind>.esm`, where `kind` is one of the `derived` kinds in the schema: `rhs`, `jacobian`, `frozen_jacobian`, `vjp`, `second_order`, `param_jacobian`, `forcing_jacobian`, `residual`, `map`, `limit`, `condition` (architecture §3.2 pass 6). They are serialized in EarthSciAST's canonical form, as EarthSciASTDiff's byte-identical goldens are.
-- `frozen_jacobian` is emitted for an operator used by a `solve` node with `picard.freeze`. The forward iteration uses the frozen Jacobian; the adjoint needs the full residual Jacobian at the converged solution, emitted as `jacobian` (spec/adjoint.md §4.6).
+- `frozen_jacobian` is emitted for an operator used by a `solve` node with `picard.freeze`, the only place freezing is written (D51). The forward iteration uses the frozen Jacobian; the adjoint needs the full residual Jacobian at the converged solution, emitted as `jacobian` (spec/adjoint.md §4.6).
 - `plan.report.json` holds everything that legitimately differs between implementations: the planner's name and version, timings, and the measured errors behind each validation check. Its format is not specified.
 
 ## 2. Canonical form
@@ -36,7 +36,7 @@ Beyond JCS, the content is canonical:
 | `esm_integrator` | The spec version, equal to the run config's. |
 | `inputs` | The model and run config, by path and hash. A plan is stale when either hash changes. |
 | `operators` | Per operator: `kind` (`rhs`, `algebraic`, `map`, `limit`, `condition`); `locality` with its per-axis `radius` for stencils (architecture §3.2 pass 2); sorted `writes` and `reads` (pass 3); `terms` (provenance, U2); `structure` (pass 4, specified at M2); `stiffness` with the source of the classification (pass 5). |
-| `schedule` | The **resolved** schedule: the run-config grammar (spec/run-config.md §4) with no `"auto"` anywhere, every leaf's options explicit (method, controller, `dt_scope`, `jacobian`, `linsolve`, `domain`), every default operator named, and an `id` on every node. Ids the run config gave are kept; the planner names the rest by their path from the root (`root`, `root.0`, `root.1.every`, …). |
+| `schedule` | The **resolved** schedule: the run-config grammar (spec/run-config.md §4) with no `"auto"` anywhere, every leaf's options explicit (method, controller, `dt_scope`, `jacobian`, `linsolve`, `domain`), every default operator named, and an `id` on every node. Ids the run config gave are kept; the planner names the rest by their path from the root (`root`, `root.0`, `root.1.every`, …). The schema checks that every node has an id and that no value is `"auto"`. |
 | `step` | The macro-step control, as resolved. |
 | `partition` | Rank and tile grids, halo width per axis (the maximum stencil radius over the operators a rank runs), shard counts, and the output stores' shard length that rank boundaries align to (U12). |
 | `precision` | Every precision role for every leaf, by node id (spec/run-config.md §7.1). |

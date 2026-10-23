@@ -1,0 +1,15 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "operators": {
+    "default": {
+      "select": {
+        "components": "a"
+      }
+    }
+  },
+  "schedule": {
+    "leaf": "default",
+    "alg": "Tsit5"
+  }
+}

@@ -1,0 +1,189 @@
+{
+ "checkpoint_schedule": {
+  "kind": "all",
+  "macro_steps": 576
+ },
+ "derived": {
+  "derived/chemistry.jacobian.esm": {
+   "kind": "jacobian",
+   "operator": "chemistry",
+   "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "derived/chemistry.rhs.esm": {
+   "kind": "rhs",
+   "operator": "chemistry",
+   "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "derived/transport.rhs.esm": {
+   "kind": "rhs",
+   "operator": "transport",
+   "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+ },
+ "esm_integrator": "0.1.0",
+ "inputs": {
+  "model": {
+   "path": "toy.esm",
+   "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "run_config": {
+   "path": "toy.run.json",
+   "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+ },
+ "operators": {
+  "chemistry": {
+   "kind": "rhs",
+   "locality": {
+    "class": "pointwise"
+   },
+   "reads": [
+    "chem.NO",
+    "chem.NO2",
+    "chem.O3",
+    "met.T"
+   ],
+   "stiffness": {
+    "class": "stiff",
+    "source": "reaction_systems"
+   },
+   "terms": [
+    "chem.reactions"
+   ],
+   "writes": [
+    "chem.NO",
+    "chem.NO2",
+    "chem.O3"
+   ]
+  },
+  "transport": {
+   "kind": "rhs",
+   "locality": {
+    "class": "stencil",
+    "radius": {
+     "lat": [
+      3,
+      3
+     ],
+     "lon": [
+      3,
+      2
+     ]
+    }
+   },
+   "reads": [
+    "chem.NO",
+    "chem.NO2",
+    "chem.O3",
+    "met.u",
+    "met.v"
+   ],
+   "stiffness": {
+    "class": "nonstiff",
+    "source": "gershgorin"
+   },
+   "terms": [
+    "advection.lat",
+    "advection.lon"
+   ],
+   "writes": [
+    "chem.NO",
+    "chem.NO2",
+    "chem.O3"
+   ]
+  }
+ },
+ "partition": {
+  "halo": {
+   "lat": 3,
+   "lon": 3
+  },
+  "ranks": [
+   1,
+   1
+  ],
+  "shards": {
+   "chemistry": 8
+  },
+  "tiles": [
+   2,
+   2
+  ]
+ },
+ "precision": {
+  "chemistry": {
+   "factors": "f64",
+   "jacobian": "f64",
+   "rhs": "f64",
+   "state": "f64",
+   "tables": "f64"
+  },
+  "transport": {
+   "factors": "f64",
+   "jacobian": "f64",
+   "rhs": "f64",
+   "state": "f64",
+   "tables": "f64"
+  }
+ },
+ "schedule": {
+  "id": "root",
+  "sequence": [
+   {
+    "alg": "SSPRK43",
+    "control": {
+     "abstol": 1e-06,
+     "controller": "PI",
+     "dt0": 15,
+     "dt_scope": "global",
+     "reltol": 0.0001
+    },
+    "id": "transport",
+    "leaf": "transport"
+   },
+   {
+    "alg": "Rosenbrock23",
+    "control": {
+     "abstol": 1e-09,
+     "controller": "PI",
+     "dt0": 0.5,
+     "dt_scope": "cell",
+     "reltol": 0.0001
+    },
+    "domain": {
+     "check_stages": false,
+     "nonnegative": "all",
+     "on_violation": "reject"
+    },
+    "id": "chemistry",
+    "jacobian": "symbolic",
+    "leaf": "chemistry",
+    "linsolve": "auto"
+   }
+  ]
+ },
+ "step": {
+  "dt": 300,
+  "hit": [
+   "forcing_refresh",
+   "output"
+  ]
+ },
+ "validation": [
+  {
+   "check": "band_model",
+   "operator": "chemistry",
+   "passed": true
+  },
+  {
+   "check": "non_empty",
+   "operator": "chemistry",
+   "passed": true
+  },
+  {
+   "check": "rhs_sum",
+   "operator": "chemistry",
+   "passed": true
+  }
+ ]
+}
