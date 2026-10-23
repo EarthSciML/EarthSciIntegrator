@@ -306,7 +306,7 @@ The controller's error history ($E_{\text{old}}$, the PID $\varepsilon$s) change
 ### 8.6 Proposal, bounds and state
 
 - **Proposal.** After an accepted step at time $t_{n+1}$ with proposal $\hat h$: $\hat h \leftarrow (t_{n+1} + \hat h) - t_{n+1}$, rounded in f64 (OrdinaryDiffEqCore `src/integrators/integrator_utils.jl:1215-1231`), then clamped to $[\max(\texttt{dtmin}, \epsilon(t_{n+1})),\ \texttt{dtmax}]$.
-- **Shortened steps.** When a step was shortened to land on a stop (§10) and accepted, the proposal is computed from the unshortened size the controller had chosen, not from the shortened one (`src/integrators/integrator_utils.jl:633-638`).
+- **Shortened steps.** When a step was shortened to land on a stop (§10) and accepted, the next proposal is computed from the **shortened** size, as OrdinaryDiffEq does in practice (D61): `loopheader!` calls `modify_dt_for_tstops!` a second time (OrdinaryDiffEqCore 4.19, `src/integrators/integrator_utils.jl:123`), which overwrites the proposal saved from the unshortened size (`:633-638`). On van der Pol with Tsit5 at reltol 1e-8 this reproduces OrdinaryDiffEq's accepted, rejected and right-hand-side counts exactly.
 - **State.** Each leaf (each shard or cell, under `dt_scope: shard` or `cell`) keeps its proposal, $E_{\text{old}}$ or the PID history, $\theta_{\text{prev}}$ and $\eta_{\text{old}}$ (§5.2), and whether it has accepted a step. The state persists across the leaf's invocations and macro steps, and is part of checkpoints and restarts (architecture §10, §11). A fresh run starts it at the initial values above, with the first step from §9.
 - `dtmax` defaults to the length of the leaf's current interval; `dtmin` defaults to 0.
 
