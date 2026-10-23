@@ -64,7 +64,7 @@ Two tables deliberately differ from OrdinaryDiffEq (§5.4, §5.5); their files s
 
 ### 3.1 Forms and evaluation order
 
-**Butcher form** (`A`, `b`, `c`): the equations of [`adjoint.md`](adjoint.md) §4.1. Stage $i$ is evaluated at time $t_n + c_i h$. Sums run over ascending $j$, each term formed as $(h\,a_{ij})\,K_j$ with the scalar product first. A zero coefficient contributes nothing (the term is skipped, not multiplied by zero), so a non-finite $K_j$ never reaches a stage that does not read it.
+**Butcher form** (`A`, `b`, `c`): the equations of [`adjoint.md`](adjoint.md) §4.1. Stage $i$ is evaluated at time $t_n + c_i h$. Each stage argument and $u_{n+1}$ is summed left to right starting from $u_n$, then over ascending $j$, each term formed as $(h\,a_{ij})\,K_j$ with the scalar product first. No sum in this chapter is contracted into fused multiply-adds (D10). A zero coefficient contributes nothing (the term is skipped, not multiplied by zero), so a non-finite $K_j$ never reaches a stage that does not read it.
 
 **Shu–Osher form** (`alpha`, `beta`, `c`), for SSPRK33, SSPRK43 and SSPRK104. With $u^{(0)} = u_n$,
 
@@ -72,13 +72,13 @@ Two tables deliberately differ from OrdinaryDiffEq (§5.4, §5.5); their files s
 u^{(i)} = \sum_{j=0}^{i-1} \Big(\alpha_{ij}\, u^{(j)} + (h\,\beta_{ij})\, f\big(u^{(j)}, t_n + c_j h\big)\Big), \qquad u_{n+1} = u^{(s)} ,
 ```
 
-summed over ascending $j$, skipping zero coefficients. `alpha[i-1][j]` and `beta[i-1][j]` hold $\alpha_{ij}$ and $\beta_{ij}$, and `c[j]` is the time of the evaluation at $u^{(j)}$; each $f(u^{(j)})$ is evaluated once. OrdinaryDiffEqSSPRK writes these steps inline in a regrouped arithmetic (for SSPRK104, `(3u0 + 2u4 + 2(h/6)k4)/5`), which agrees with this form to roundoff but not bit for bit; the tables are the regrouped coefficients (verified to $\le 2\cdot10^{-16}$ relative by the extraction check).
+summed flat over ascending $j$, the $\alpha$ term before the $\beta$ term for each $j$, skipping zero coefficients. `alpha[i-1][j]` and `beta[i-1][j]` hold $\alpha_{ij}$ and $\beta_{ij}$, and `c[j]` is the time of the evaluation at $u^{(j)}$; each $f(u^{(j)})$ is evaluated once. OrdinaryDiffEqSSPRK writes these steps inline in a regrouped arithmetic (for SSPRK104, `(3u0 + 2u4 + 2(h/6)k4)/5`), which agrees with this form to roundoff but not bit for bit; the tables are the regrouped coefficients (verified to $\le 2\cdot10^{-16}$ relative by the extraction check).
 
 **Interpolation and dense output** are not part of v1 (output times are tstops, run-config §7.3), so the tables carry no interpolation coefficients.
 
 ### 3.2 Error estimates
 
-- **`embedded`** (Heun, BS3, Tsit5): $e = h\sum_i \tilde b_i K_i$ with $\tilde b$ = `btilde`. In BS3 and Tsit5 the last stage is $f(u_{n+1}, t_n + h)$ (row $s$ of $A$ equals $b$), so the estimate reads it.
+- **`embedded`** (Heun, BS3, Tsit5): $e = \sum_i (h\,\tilde b_i)\, K_i$ with $\tilde b$ = `btilde`, the scalar product first. In BS3 and Tsit5 the last stage is $f(u_{n+1}, t_n + h)$ (row $s$ of $A$ equals $b$), so the estimate reads it.
 - **`shu_osher_embedded`** (SSPRK43): the embedded solution $\tilde u = \sum_{j=0}^{s} \tilde\alpha_j u^{(j)} + h\sum_{j=0}^{s-1}\tilde\beta_j f(u^{(j)})$ with `embedded.alpha` and `embedded.beta`, and $e = \sigma(\tilde u - u_{n+1})$ with $\sigma$ = `embedded.scale`. For SSPRK43, $\tilde u = \tfrac13 u_n + \tfrac23 u^{(2)} + \tfrac13 h f(u^{(2)})$ and $\sigma = \tfrac12$ (OrdinaryDiffEqSSPRK `src/ssprk_perform_step.jl:766-807`).
 - **`residual_control`** (RK4), Shampine's residual estimate (OrdinaryDiffEqLowOrderRK `src/fixed_timestep_perform_step.jl:252-316`). With $k_1 = f(u_n, t_n)$, $k_5 = f(u_{n+1}, t_n + h)$, and for each $\sigma \in$ `residual_control.sigma` $= \tfrac12 \mp \tfrac{\sqrt 3}{6}$:
 
@@ -94,9 +94,9 @@ summed over ascending $j$, skipping zero coefficients. `alpha[i-1][j]` and `beta
 
 ### 3.3 First same as last
 
-For the methods whose table has `first_same_as_last: true` (Tsit5, BS3, Heun, RK4, ForwardEuler, Rosenbrock23), the step's last evaluation is $f(u_{n+1}, t_{n+1})$, and the next step's first stage is that value. A leaf MAY reuse it only while $u$, $t$, the parameters and the resident forcing are unchanged since it was computed. It MUST evaluate afresh:
+For the methods whose table has `first_same_as_last: true` (Tsit5, BS3, Heun, RK4, ForwardEuler, Rosenbrock23), the step's last evaluation is $f(u_{n+1}, t_n + h)$, and the next step's first stage is that value. It is evaluated at $t_n + h$ even when the step's end time was set to a stop exactly (§10), as OrdinaryDiffEq does; replay and the adjoint use the time it was actually evaluated at. A leaf MAY reuse it only while $u$, $t$, the parameters and the resident forcing are unchanged since it was computed. It MUST evaluate afresh:
 - at entry to every invocation of the leaf, because maps and other leaves may have changed the state ([`adjoint.md`](adjoint.md) §4.1);
-- after a domain clip (§11), and after a forcing epoch change.
+- after a domain clip (§11), after a skipped tiny stop step (§10), and after a forcing epoch change.
 
 After a rejected step the start point is unchanged, so the stored first stage stays valid. ForwardEuler needs the end-of-step evaluation only for this reuse: a leaf MAY skip it and evaluate $f(u_n)$ at the start of each step instead.
 
@@ -266,12 +266,13 @@ A step is accepted when $E \le 1$ (PI and I) or when the PID factor is at least 
 OrdinaryDiffEqCore `src/integrators/controllers.jl:805-843`:
 
 ```math
-q_{11} = E^{\beta_1}, \qquad q = \mathrm{clamp}\Big(\frac{q_{11}}{E_{\text{old}}^{\beta_2}\,\gamma},\ \frac{1}{q_{\max}},\ \frac{1}{q_{\min}}\Big), \qquad q = 1/q_{\max} \text{ if } E = 0 .
+q_{11} = E^{\beta_1}, \qquad q = \mathrm{clamp}\Big(\big(q_{11} / E_{\text{old}}^{\beta_2}\big) / \gamma,\ \frac{1}{q_{\max}},\ \frac{1}{q_{\min}}\Big), \qquad q = 1/q_{\max} \text{ if } E = 0 .
 ```
 
 - On acceptance: if $q_{\text{steady,min}} \le q \le q_{\text{steady,max}}$ then $q = 1$; $E_{\text{old}} \leftarrow \max(E, \texttt{qoldinit})$; the proposal is $h/q$.
 - On rejection: $h \leftarrow h / \min(1/q_{\min},\ q_{11}/\gamma)$.
 - $E_{\text{old}}$ starts at `qoldinit`.
+- Powers are exact (`^`, `powf`). *Deviation:* OrdinaryDiffEqCore uses `FastPower.fastpower`, which is accurate to about $10^{-4}$.
 
 ### 8.3 I controller
 
@@ -317,7 +318,7 @@ When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped 
 1. $\mathrm{sk}_j = \mathrm{abstol}_j + |u_{0,j}|\,\mathrm{reltol}$; $d_0 = \lVert u_0/\mathrm{sk} \rVert$, $f_0 = f(u_0, t_0)$, $d_1 = \lVert f_0/\mathrm{sk} \rVert$ (RMS norms).
 2. $\delta_{\min}$ = the next float above $\max(\texttt{dtmin}, \epsilon(t_0))$; $h_{\text{small}} = \max(\delta_{\min}, 10^{-6})$.
 3. If $f_0$ has a NaN, or $d_1$ is NaN: return $\delta_{\min}$.
-4. $h_0 = h_{\text{small}}$ if $d_0 < 10^{-5}$ or $d_1 < 10^{-5}$, else $h_0 = d_0/(100 d_1)$; then $h_0 \leftarrow \min(h_0, \texttt{dtmax})$.
+4. $h_0 = h_{\text{small}}$ if $d_0 < 10^{-5}$ or $d_1 < 10^{-5}$, else $h_0 = (d_0/d_1)/100$; then $h_0 \leftarrow \min(h_0, \texttt{dtmax})$.
 5. $u_1 = u_0 + h_0 f_0$, $f_1 = f(u_1, t_0 + h_0)$. If $f_1 = f_0$ exactly, return $\max(\delta_{\min}, 100 h_0)$.
 6. $d_2 = \lVert (f_1 - f_0)/\mathrm{sk} \rVert / h_0$. If $\max(d_1, d_2) \le 10^{-15}$, $h_1 = \max(h_{\text{small}}, 10^{-3} h_0)$; else $h_1 = 10^{-(2 + \log_{10}\max(d_1, d_2))/p}$.
 7. Return $\max(\delta_{\min}, \min(100 h_0, h_1, \texttt{dtmax}))$.
@@ -333,7 +334,9 @@ Before each step attempt, with $h$ the controller's size and $d$ the distance to
 - if $h + \mathrm{tol} < d$, the step is an ordinary one;
 - otherwise the step is a **stop step** of size $\min(h, d)$, and when accepted its end time is set to $t_{\text{stop}}$ exactly, not to $t + h$ (`fixed_t_for_tstop_error!`, `:1032-1038`).
 
-Fixed-`dt` leaves follow the same rule: substeps of `dt`, the last shortened to land on the stop (run-config §4.2). A stop step shorter than $\epsilon(|t|)$ is accepted without computing it (`handle_tstop_step!`, `:329-337`).
+Fixed-`dt` leaves follow the same rule: substeps of `dt`, the last shortened to land on the stop (run-config §4.2). A stop step shorter than $\epsilon(|t|)$ is accepted without computing it (`handle_tstop_step!`, `:329-337`); it is recorded on the tape and counted as accepted, as OrdinaryDiffEq counts it, and replay recognizes it by the same rule.
+
+An ordinary step's end time is $t_n + h$, accumulated in f64. Over a long fixed-`dt` run the accumulated time can drift past the landing tolerance, leaving a final step of order $10^{-13}$ (van der Pol at `dt` 0.01 on $[0, 6.3]$ takes 631 steps, as in OrdinaryDiffEq); both implementations accumulate the same way so step counts agree.
 
 ## 11. Domain enforcement
 

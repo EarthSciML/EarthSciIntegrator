@@ -6,7 +6,7 @@ M1's gate (architecture §14) is conformance tiers 2 and 3 on toy problems. The 
 
 Each problem below fixes its equations, operators, layout, parameters, initial state and interval exactly. Both implementations MUST implement every listed operator call (operator-interface.md §3) with hand-derived derivatives, not automatic differentiation, so the derivatives themselves are under test. The Julia implementation's ForwardDiff Jacobian of `rhs` is a test oracle for them.
 
-Indices are 0-based. "Cell" coordinates are $x_c = (c + \tfrac12)/\text{ncells}$. The names given to state components ($y$, $\mathrm{O_3}$, $A$, …) are the variable names a run config uses for them, for example in `adjoint.functional`; a problem with cells has one index set, `cell`. A problem's operators exist under the names given here, so a case's run config names them in its schedule and has no `operators` key.
+Indices are 0-based. "Cell" coordinates are $x_c = (c + \tfrac12)/\text{ncells}$. The names given to state components ($y$, $\mathrm{O_3}$, $A$, …) are the variable names a run config uses for them, for example in `adjoint.functional`; a problem with cells has one index set, `cell`. At M1 every toy leaf runs with `dt_scope: global` (tape.md covers no other scope until M3), whatever D17's default for its locality. A problem's operators exist under the names given here, so a case's run config names them in its schedule and has no `operators` key.
 
 ## 1. Problems
 
@@ -62,7 +62,7 @@ A leaf and a map in sequence, with an exact discrete solution. It tests `map`, `
 
 - State: $u \in \mathbb{R}^1$, `dense`. Parameters $p = (a, r) = (1, 0.5)$. Interval $[0, 4]$, $u(0) = 0$.
 - Operator `source`: $u' = a$.
-- Map operator `decay`: $u \leftarrow u\, e^{-r \Delta}$, with $\Delta$ bound to the node's step (spec/run-config.md §4.4).
+- Map operator `decay`: $u \leftarrow u\, e^{-r \Delta}$, with $\Delta$ the length of the map node's interval (spec/run-config.md §4.4).
 - With schedule `sequence[leaf source (ForwardEuler, dt "step"), map decay]` and macro step $\Delta$, the exact discrete solution is $u_{n+1} = (u_n + a\Delta)\, e^{-r\Delta}$.
 
 ## 2. Cases

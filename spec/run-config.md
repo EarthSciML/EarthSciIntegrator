@@ -87,7 +87,7 @@ The schedule is a tree of nodes. Every node advances the model over an interval 
 - `alg` names the method (architecture §5). Tableau coefficients and controller constants are OrdinaryDiffEq's (D31).
 - **Substeps.** With `dt` omitted, the leaf steps adaptively under `control` and may take any number of substeps; the last substep ends exactly at `t+Δ`. A numeric `dt` gives fixed substeps, the last shortened to land on `t+Δ`. `"step"` takes exactly one step of size Δ. `"accumulated"` takes one step whose size is the time since this leaf last ran (equal to Δ unless the leaf sits under `every`).
 - **Methods without an error estimate.** Adaptive stepping needs an embedded error estimate. `ForwardEuler`, `SSPRK33`, `SSPRK104`, `WRF_RK3`, `IMEXEuler` and `Theta` have none, so a leaf using one of them must give `dt` (D52). Legacy increments use `"step"`. An `alg` of `"auto"` with `dt` omitted resolves to a method that has an estimate, and on a stiff leaf never to SDIRK2, Kvaerno3 or Kvaerno4, whose estimate is unreliable on stiff problems (D59).
-- `control`: `reltol` and `abstol` (a number, or per variable); `dt0`, `dtmin`, `dtmax`; `controller` (PI, I or PID, with OrdinaryDiffEqCore's constants per method); `dt_scope` (`global`, `shard` or `cell`; D17 makes `cell` the default for pointwise leaves and `global` for stencil leaves); `maxiters`. A non-finite error estimate is a reject. A step below `dtmin` ends the run with a return code instead of hanging (architecture §5.1).
+- `control`: `reltol` and `abstol` (a number, or per variable); `dt0`, `dtmin`, `dtmax`; `controller` (PI, I or PID, with OrdinaryDiffEqCore's constants per method); `dt_scope` (`global`, `shard` or `cell`; D17 makes `cell` the default for pointwise leaves and `global` for stencil leaves); `maxiters`. Omitted tolerances default to DiffEqBase's, `reltol` $10^{-3}$ and `abstol` $10^{-6}$. A non-finite error estimate is a reject. A step below `dtmin` ends the run with a return code instead of hanging (architecture §5.1).
 - `jacobian`: `symbolic` (EarthSciASTDiff band models), `ad` (DifferentiationInterface, Julia only, D38) or `fd`.
 - `linsolve`: the W-matrix solver of architecture §6.1, or `dense_lu`, a dense LU of the whole system, for toy problems and tests only (operator-interface.md §4). As an object it carries options: `block_lu.pivot`, `refine` (iterative-refinement sweeps for low-precision factors, architecture §8), Krylov `restart`, `rtol`, `maxiter`, `precond` and `fallback` (the preconditioner tried when the first fails to converge).
 - `domain`: `nonnegative` (`"all"` or a list of variables), `on_violation` (`reject`, the default, D19; or `clip`), and `check_stages` (also check Rosenbrock stage values).
@@ -123,7 +123,7 @@ A bound parameter is a constant of the adjoint's frozen tape, so it cannot appea
 
 ### 4.8 `subcycle`
 
-`{"subcycle": node, "n": k}` runs the child `k` times with Δ/k. `{"subcycle": node, "limits": [...]}` runs it adaptively: each substep is the minimum of the limits evaluated at the substep's start state and the time remaining, floored at `step.resolution`. The substep sequence is recorded on the tape.
+`{"subcycle": node, "n": k}` runs the child `k` times with Δ/k: substep $i$ starts at $t + i\,(Δ/k)$, and the last ends at $t + Δ$ exactly. `{"subcycle": node, "limits": [...]}` runs it adaptively: each substep is the minimum of the limits evaluated at the substep's start state and the time remaining, floored at `step.resolution`. The substep sequence is recorded on the tape.
 
 ### 4.9 `every`
 
@@ -148,7 +148,7 @@ WRF's RK3 (Wicker–Skamarock: Δ/3, Δ/2, Δ) on `slow`, with `fast` advanced b
 ## 5. The macro step: `step`
 
 At most one of:
-- **`dt`**: a fixed macro step. Every tstop must fall on a multiple of it.
+- **`dt`**: a fixed macro step. Every tstop must fall on a multiple of it (§8 rule 9). Macro step $k$ covers $[t_0 + k\,\texttt{dt},\ t_0 + (k+1)\,\texttt{dt}]$, the last ending at $t_f$ exactly.
 - **`limits`**: Δ is the minimum of the limits evaluated at the macro step's start state, and the distance to the next tstop.
 - **Neither**: allowed only when the schedule's root is a single adaptive `leaf` or `coupled` node (D49). That node's accepted steps are the macro steps; it steps adaptively under its own `control` and lands exactly on every tstop. Omitting `step` entirely is the same as `{}`.
 
@@ -188,7 +188,7 @@ Time, dt, error norms, reductions and adjoint accumulators are always f64 and ar
 ### 7.2 `adjoint`
 
 - `functional`: the reduction (`mean` or `sum`) of one quantity, restricted by `where` (index-set name → 1-based index or inclusive range), `over` the run: `time` (the integral term, spec/adjoint.md §2.1), `final` (the end state), or `saveat` (a point term at each output time). For `time`, `integrate_in` names the leaf, by node id, that integrates the term; the default is the last leaf of the macro-step schedule (D39).
-- `wrt`: what to differentiate with respect to. `params:numeric` is every numeric scalar parameter; `params:<pattern>`, `fields:<pattern>` (gridded array parameters) and `forcing:<pattern>` (forcing fields, accumulated per provider record, D5) take a glob over qualified names, where `*` matches any characters including dots; `u0` is the initial state.
+- `wrt`: what to differentiate with respect to. `params:numeric` is every numeric scalar parameter; `params:<pattern>`, `fields:<pattern>` (gridded array parameters) and `forcing:<pattern>` (forcing fields, accumulated per provider record, D5) take a glob over qualified names, where `*` matches any characters including dots; `u0` is the initial state. A parameter bound by `bind_dt` is not differentiated: its entry under `params:numeric` is zero.
 - `checkpoint`: `every` (`macro_step` or a count of macro steps), `store` levels, and the `schedule` the planner computes (D34): `all`, `revolve` or `multilevel`, with `snapshots` slots.
 
 The math is in [`adjoint.md`](adjoint.md).
@@ -211,7 +211,7 @@ The schema checks structure. The planner additionally refuses, naming the offend
 6. an `imex` partition that leaves a term in neither part or in both;
 7. duplicate node ids;
 8. a `hold: "tendency"` `every` whose child is not a single leaf;
-9. a tstop that is not a multiple of a fixed `step.dt` (`every` firing times are not tstops then, §4.9);
+9. a tstop that is not a multiple of a fixed `step.dt` (`every` firing times are not tstops then, §4.9), unless the schedule's root is a single leaf, which lands on such tstops inside the macro step;
 10. a precision role that contradicts a declared `element_type`, or `rhs` below `state`;
 11. a `wrt` entry that matches nothing, or names a parameter bound by `bind_dt`;
 12. a `step` with neither `dt` nor `limits` whose schedule root is not a single adaptive `leaf` or `coupled` node (§5);
