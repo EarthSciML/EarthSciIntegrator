@@ -1,0 +1,13 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "schedule": {
+    "map": "m"
+  },
+  "step": {
+    "dt": 60,
+    "limits": [
+      "a.cfl"
+    ]
+  }
+}

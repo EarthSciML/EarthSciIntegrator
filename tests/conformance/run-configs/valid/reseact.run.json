@@ -1,0 +1,24 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "reseact, the prototype re-hosted (architecture §4.4, M3).",
+  "model": "reseact.esm",
+  "operators": {
+    "transport": {"select": {"locality": ["stencil", "column"]}},
+    "chemistry": {"select": {"locality": "pointwise"}}
+  },
+  "schedule": {"sequence": [
+    {"leaf": "transport", "alg": "SSPRK43",
+     "control": {"reltol": 1e-4, "abstol": 1e-6, "dt0": 15}},
+    {"leaf": "chemistry", "alg": "Rosenbrock23", "jacobian": "symbolic",
+     "linsolve": {"block_lu": {"pivot": false}},
+     "control": {"reltol": 1e-4, "abstol": 1e-9, "dt0": 0.5, "dt_scope": "global"},
+     "domain": {"nonnegative": "all", "on_violation": "reject"}}
+  ]},
+  "step": {"dt": 300, "hit": ["forcing_refresh", "output"]},
+  "partition": {"ranks": [1, 1], "shards": {"chemistry": 8}},
+  "adjoint": {
+    "functional": {"mean": "O3", "where": {"lev": 1}, "over": "time"},
+    "wrt": ["params:numeric", "u0", "fields:NEI2016.*", "forcing:*"],
+    "checkpoint": {"every": "macro_step", "store": ["memory", "disk"]}
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "failed-validation-emitted.json": {
+    "keyword": "const",
+    "at": [
+      "$.validation[0].passed"
+    ]
+  },
+  "implementation-specific-field.json": {
+    "keyword": "additionalProperties",
+    "at": [
+      "$"
+    ]
+  },
+  "missing-derived.json": {
+    "keyword": "required",
+    "at": [
+      "$"
+    ]
+  },
+  "precision-role-missing.json": {
+    "keyword": "required",
+    "at": [
+      "$.precision.chemistry"
+    ]
+  },
+  "radius-on-pointwise.json": {
+    "keyword": "not",
+    "at": [
+      "$.operators.chemistry.locality"
+    ]
+  },
+  "schedule-node-without-id.json": {
+    "keyword": "required",
+    "at": [
+      "$.schedule.sequence[0]"
+    ]
+  },
+  "schedule-with-auto.json": {
+    "keyword": "not",
+    "at": [
+      "$.schedule.sequence[1].linsolve"
+    ]
+  },
+  "stencil-without-radius.json": {
+    "keyword": "required",
+    "at": [
+      "$.operators.transport.locality"
+    ]
+  }
+}

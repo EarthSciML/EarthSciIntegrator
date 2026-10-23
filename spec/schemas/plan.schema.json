@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://earthsciml.org/schemas/esm-integrator/0.1.0/plan.schema.json",
+  "title": "EarthSciIntegrator plan",
+  "description": "The planner's output (spec/plan.md). Skeleton at spec 0.1.0: the field set is fixed here so that tier-1 goldens have a target; the contents of operator structure and the checkpoint actions are filled in at M2 and M4. A plan is serialized as RFC 8785 canonical JSON and must be byte-identical between the Julia and Rust planners, so it records nothing implementation-specific.",
+  "type": "object",
+  "required": ["esm_integrator", "inputs", "operators", "schedule", "step", "derived"],
+  "additionalProperties": false,
+  "properties": {
+    "esm_integrator": {"$ref": "run-config.schema.json#/$defs/semver"},
+    "inputs": {
+      "type": "object",
+      "required": ["model", "run_config"],
+      "additionalProperties": false,
+      "properties": {
+        "model": {"$ref": "#/$defs/fileRef"},
+        "run_config": {"$ref": "#/$defs/fileRef"}
+      }
+    },
+    "operators": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "run-config.schema.json#/$defs/operatorName"},
+      "additionalProperties": {"$ref": "#/$defs/operatorPlan"}
+    },
+    "schedule": {
+      "description": "The resolved schedule: the run-config grammar with every 'auto' replaced and every leaf's options made explicit (spec/plan.md §3). Every node has an id.",
+      "allOf": [{"$ref": "#/$defs/resolvedNode"}, {"$ref": "#/$defs/noAuto"}]
+    },
+    "step": {
+      "allOf": [{"$ref": "run-config.schema.json#/$defs/step"}, {"$ref": "#/$defs/noAuto"}]
+    },
+    "partition": {"$ref": "#/$defs/partitionPlan"},
+    "precision": {
+      "description": "Resolved precision roles per leaf, keyed by node id. Every role is present.",
+      "type": "object",
+      "propertyNames": {"$ref": "run-config.schema.json#/$defs/identifier"},
+      "additionalProperties": {
+        "allOf": [
+          {"$ref": "run-config.schema.json#/$defs/precisionRoles"},
+          {"required": ["state", "rhs", "jacobian", "factors", "tables"]}
+        ]
+      }
+    },
+    "checkpoint_schedule": {"$ref": "#/$defs/checkpointSchedule"},
+    "derived": {
+      "description": "Every derived document the plan refers to, by path relative to plan.json.",
+      "type": "object",
+      "propertyNames": {"type": "string", "pattern": "^derived/[A-Za-z0-9_.-]+\\.esm$"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["kind", "operator", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {"$ref": "#/$defs/derivedKind"},
+          "operator": {"$ref": "run-config.schema.json#/$defs/operatorName"},
+          "sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "validation": {
+      "description": "Pass 8's checks. Only outcomes are recorded, never measured errors, which differ between implementations.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["check", "operator", "passed"],
+        "additionalProperties": false,
+        "properties": {
+          "check": {"enum": ["rhs_sum", "band_model", "non_empty"]},
+          "operator": {"$ref": "run-config.schema.json#/$defs/operatorName"},
+          "passed": {"const": true}
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "resolvedNode": {
+      "description": "A run-config schedule node with an id, whose child nodes are resolved nodes too.",
+      "$ref": "run-config.schema.json#/$defs/node",
+      "required": ["id"],
+      "properties": {
+        "sequence": {"items": {"$ref": "#/$defs/resolvedNode"}},
+        "strang": {"items": {"$ref": "#/$defs/resolvedNode"}},
+        "subcycle": {"$ref": "#/$defs/resolvedNode"},
+        "every": {"$ref": "#/$defs/resolvedNode"}
+      }
+    },
+    "noAuto": {
+      "description": "No value anywhere inside is the string 'auto' (spec/plan.md §3). Operator names and node ids are never 'auto' (spec/run-config.md §2.1), so this cannot misfire on a name.",
+      "not": {"const": "auto"},
+      "items": {"$ref": "#/$defs/noAuto"},
+      "additionalProperties": {"$ref": "#/$defs/noAuto"}
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "fileRef": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "derivedKind": {
+      "enum": [
+        "rhs", "jacobian", "frozen_jacobian", "vjp", "second_order", "param_jacobian", "forcing_jacobian",
+        "residual", "map", "limit", "condition"
+      ]
+    },
+    "operatorPlan": {
+      "type": "object",
+      "required": ["kind", "locality", "writes", "reads"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["rhs", "algebraic", "map", "limit", "condition"]},
+        "locality": {
+          "type": "object",
+          "required": ["class"],
+          "additionalProperties": false,
+          "properties": {
+            "class": {"$ref": "run-config.schema.json#/$defs/locality"},
+            "radius": {
+              "description": "Stencil reach per horizontal axis: [cells toward lower index, cells toward higher index]. Present only for class 'stencil'.",
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": {"$ref": "run-config.schema.json#/$defs/identifier"},
+              "additionalProperties": {
+                "type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2
+              }
+            }
+          },
+          "if": {"properties": {"class": {"const": "stencil"}}},
+          "then": {"required": ["radius"]},
+          "else": {"not": {"required": ["radius"]}}
+        },
+        "writes": {"$ref": "#/$defs/sortedNames"},
+        "reads": {"$ref": "#/$defs/sortedNames"},
+        "terms": {
+          "description": "Provenance paths of the contributions assigned to this operator (U2), in flattened-equation order.",
+          "type": "array", "items": {"type": "string", "minLength": 1}
+        },
+        "structure": {
+          "description": "Filled in at M2 (architecture §3.2 pass 4).",
+          "type": "object"
+        },
+        "stiffness": {
+          "type": "object",
+          "required": ["class", "source"],
+          "additionalProperties": false,
+          "properties": {
+            "class": {"enum": ["stiff", "nonstiff"]},
+            "source": {"enum": ["reaction_systems", "solver_hint", "gershgorin", "run_config"]}
+          }
+        }
+      }
+    },
+    "sortedNames": {
+      "description": "Qualified names, sorted by Unicode code point (spec/plan.md §2).",
+      "type": "array",
+      "items": {"$ref": "run-config.schema.json#/$defs/qualifiedName"},
+      "uniqueItems": true
+    },
+    "partitionPlan": {
+      "type": "object",
+      "required": ["ranks", "tiles"],
+      "additionalProperties": false,
+      "properties": {
+        "ranks": {"$ref": "run-config.schema.json#/$defs/grid2"},
+        "tiles": {"$ref": "run-config.schema.json#/$defs/grid2"},
+        "halo": {
+          "description": "Halo width per horizontal axis, the maximum radius over the stencil operators (architecture §7.1).",
+          "type": "object",
+          "propertyNames": {"$ref": "run-config.schema.json#/$defs/identifier"},
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "shards": {
+          "type": "object",
+          "propertyNames": {"$ref": "run-config.schema.json#/$defs/identifier"},
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        },
+        "output_shard": {
+          "description": "The output stores' shard length per axis; rank block boundaries fall on its multiples (U12).",
+          "type": "object",
+          "propertyNames": {"$ref": "run-config.schema.json#/$defs/identifier"},
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "checkpointSchedule": {
+      "description": "D34: computed once by the planner, executed by both runtimes. The action vocabulary is provisional until M4.",
+      "type": "object",
+      "required": ["kind", "macro_steps"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["all", "revolve", "multilevel"]},
+        "macro_steps": {"type": "integer", "minimum": 0},
+        "snapshots": {"type": "integer", "minimum": 1},
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["op", "step"],
+            "additionalProperties": false,
+            "properties": {
+              "op": {"enum": ["store", "restore", "advance", "reverse", "free"]},
+              "step": {"type": "integer", "minimum": 0},
+              "to": {"type": "integer", "minimum": 0},
+              "slot": {"type": "integer", "minimum": 0},
+              "level": {"enum": ["memory", "disk"]}
+            }
+          }
+        }
+      }
+    }
+  }
+}

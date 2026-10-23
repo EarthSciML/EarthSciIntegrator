@@ -1,0 +1,8 @@
+[package]
+name = "earthsci-integrator-mpi"
+description = "EarthSciIntegrator MPI executor (M0 scaffold; rsmpi is added at M5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true

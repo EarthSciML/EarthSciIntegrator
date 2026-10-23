@@ -1,0 +1,15 @@
+name = "EarthSciIntegrator"
+uuid = "32373ebd-92e7-4f26-b916-9b5db62dd90f"
+version = "0.0.1"
+authors = ["EarthSciML"]
+
+[compat]
+JSON = "0.21"
+julia = "1.10"
+
+[extras]
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["JSON", "Test"]

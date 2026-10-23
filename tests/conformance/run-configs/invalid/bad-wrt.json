@@ -1,0 +1,16 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "schedule": {
+    "leaf": "a"
+  },
+  "adjoint": {
+    "functional": {
+      "sum": "x",
+      "over": "final"
+    },
+    "wrt": [
+      "state"
+    ]
+  }
+}

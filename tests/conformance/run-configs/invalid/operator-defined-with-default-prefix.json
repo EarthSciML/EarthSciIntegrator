@@ -1,0 +1,14 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "operators": {
+    "default_column": {
+      "select": {
+        "locality": "column"
+      }
+    }
+  },
+  "schedule": {
+    "leaf": "default_column"
+  }
+}

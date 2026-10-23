@@ -1,0 +1,11 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "schedule": {
+    "strang": [
+      {
+        "leaf": "a"
+      }
+    ]
+  }
+}
