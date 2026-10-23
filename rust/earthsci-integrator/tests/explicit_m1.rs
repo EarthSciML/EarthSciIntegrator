@@ -180,17 +180,17 @@ fn tape_paths_follow_the_schedule() {
     assert_eq!(
         &paths[..7],
         &[
-            "0/root.0.0",
-            "0/root.0.0#1",
+            "0/root.0.subcycle",
+            "0/root.0.subcycle#1",
             "0/root.0",
             "0/chem",
-            "0/root.0.0#2",
-            "0/root.0.0#3",
+            "0/root.0.subcycle#2",
+            "0/root.0.subcycle#3",
             "0/root.0#1"
         ]
     );
     assert_eq!(paths[7], "0");
-    assert_eq!(paths[8], "1/root.0.0");
+    assert_eq!(paths[8], "1/root.0.subcycle");
     // Strang halves cover [t, t+Δ/2] and [t+Δ/2, t+Δ]; the middle child [t, t+Δ].
     match &fwd.tape.records[0] {
         TapeRecord::Leaf { t, dt, steps, .. } => {

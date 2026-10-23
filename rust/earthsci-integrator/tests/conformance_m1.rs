@@ -5,7 +5,8 @@
 //! `cross_language` is the next stage. Cases that need unimplemented methods
 //! are listed as skipped, by name, and never counted as passing. A result
 //! file per case run goes to `$EARTHSCI_RESULTS_DIR` (default
-//! `rust/target/tmp/conformance/m1/rust`).
+//! `rust/target/tmp/conformance/m1/rust`). `$EARTHSCI_REFERENCE_DIR`
+//! overrides the directory of reference results.
 
 use earthsci_integrator::conformance::{default_paths, run_case, CasesFile, Outcome};
 use std::path::{Path, PathBuf};
@@ -19,7 +20,11 @@ fn m1_conformance_cases() {
     let result_dir = std::env::var_os("EARTHSCI_RESULTS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_TARGET_TMPDIR")).join("conformance/m1/rust"));
-    let paths = default_paths(&repo, result_dir.clone());
+    let mut paths = default_paths(&repo, result_dir.clone());
+    // `$EARTHSCI_REFERENCE_DIR` overrides tests/conformance/m1/reference/.
+    if let Some(d) = std::env::var_os("EARTHSCI_REFERENCE_DIR") {
+        paths.reference_dir = PathBuf::from(d);
+    }
 
     let mut report = String::new();
     let (mut ran, mut skipped, mut failed_cases) = (0, Vec::new(), Vec::new());

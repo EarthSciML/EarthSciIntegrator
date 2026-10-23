@@ -165,6 +165,10 @@ fn leaf_adjoint<T: Scalar>(
                 }
             }
         }
+        if st.skipped {
+            // A tiny stop step taken without computing it: the identity.
+            continue;
+        }
         let LeafMethod::Erk(m) = &leaf.method;
         let pc = erk_adjoint_step(leaf, m, st, &mut l);
         accumulate(pbar, &pc, bound);
@@ -216,7 +220,8 @@ pub fn erk_adjoint_step<T: Scalar>(
                         }
                     }
                 }
-                let ti = t + c[i] * h;
+                // Stage 1 at the time it was evaluated (a reused value's time).
+                let ti = if i == 0 { st.tk1 } else { t + c[i] * h };
                 let mut si = vec![T::zero(); n];
                 leaf.vjp_u(&mut si, &st.y[i], p, ti, &kappa);
                 let mut pc = vec![0.0; np];

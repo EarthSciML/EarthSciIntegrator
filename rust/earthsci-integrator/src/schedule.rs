@@ -120,21 +120,18 @@ impl<T: Scalar> Schedule<T> {
                 }
             }
             Node::Sequence { id, children } | Node::Strang { id, children } => {
+                // Children are named `<id>.0`, `<id>.1`, … after this node's
+                // own id (spec/plan.md §3), as the Julia implementation does.
+                let id = id_or(id);
                 let kids = children
                     .iter()
                     .enumerate()
-                    .map(|(i, c)| self.build_node(c, &format!("{path}.{i}"), pb, needs))
+                    .map(|(i, c)| self.build_node(c, &format!("{id}.{i}"), pb, needs))
                     .collect::<Result<Vec<_>, _>>()?;
                 if matches!(node, Node::Sequence { .. }) {
-                    SNode::Sequence {
-                        id: id_or(id),
-                        children: kids,
-                    }
+                    SNode::Sequence { id, children: kids }
                 } else {
-                    SNode::Strang {
-                        id: id_or(id),
-                        children: kids,
-                    }
+                    SNode::Strang { id, children: kids }
                 }
             }
             Node::Subcycle {
@@ -149,11 +146,11 @@ impl<T: Scalar> Schedule<T> {
                     ));
                 }
                 let n = n.ok_or_else(|| Error::Config("subcycle needs n".into()))?;
-                SNode::Subcycle {
-                    id: id_or(id),
-                    child: Box::new(self.build_node(child, &format!("{path}.0"), pb, needs)?),
-                    n,
-                }
+                // The child is `<id>.subcycle` (spec/plan.md §3's `root.1.every` pattern).
+                let id = id_or(id);
+                let child =
+                    Box::new(self.build_node(child, &format!("{id}.subcycle"), pb, needs)?);
+                SNode::Subcycle { id, child, n }
             }
         })
     }
@@ -496,9 +493,10 @@ impl<'a, T: Scalar> Exec<'a, T> {
         u: &mut [T],
         t0: f64,
         t1: f64,
-        delta: f64,
         is_root: bool,
     ) -> Result<(), Error> {
+        // Every invocation's Δ is its interval's length, `t1 − t0`.
+        let delta = t1 - t0;
         match node {
             SNode::Leaf { id, idx } => {
                 let path = self.path(id);
@@ -596,35 +594,35 @@ impl<'a, T: Scalar> Exec<'a, T> {
             }
             SNode::Sequence { children, .. } => {
                 for c in children {
-                    self.exec(c, u, t0, t1, delta, false)?;
+                    self.exec(c, u, t0, t1, false)?;
                 }
             }
             SNode::Strang { children, .. } => {
                 // c₁(Δ/2) … cₙ₋₁(Δ/2) cₙ(Δ) cₙ₋₁(Δ/2) … c₁(Δ/2) (run-config §4.7).
-                // *Reading:* the first halves cover [t, t+Δ/2], the middle child
-                // [t, t+Δ] and the second halves [t+Δ/2, t+Δ].
-                let half = 0.5 * delta;
-                let tm = t0 + half;
+                // *Reading:* the first halves cover [t, tm], the middle child
+                // [t, t+Δ] and the second halves [tm, t+Δ], tm = t + Δ/2.
+                let tm = t0 + delta / 2.0;
                 let n = children.len();
                 for c in &children[..n - 1] {
-                    self.exec(c, u, t0, tm, half, false)?;
+                    self.exec(c, u, t0, tm, false)?;
                 }
-                self.exec(&children[n - 1], u, t0, t1, delta, false)?;
+                self.exec(&children[n - 1], u, t0, t1, false)?;
                 for c in children[..n - 1].iter().rev() {
-                    self.exec(c, u, tm, t1, half, false)?;
+                    self.exec(c, u, tm, t1, false)?;
                 }
             }
             SNode::Subcycle { id, child, n } => {
                 let path = self.path(id);
+                // Substep i covers [t0 + i·δ, t0 + (i+1)·δ], the last ending at t1.
                 let hs = delta / *n as f64;
                 for k in 0..*n {
-                    let a = if k == 0 { t0 } else { t0 + k as f64 * hs };
+                    let a = t0 + k as f64 * hs;
                     let b = if k + 1 == *n {
                         t1
                     } else {
                         t0 + (k + 1) as f64 * hs
                     };
-                    self.exec(child, u, a, b, hs, false)?;
+                    self.exec(child, u, a, b, false)?;
                 }
                 self.tape_out.push(TapeRecord::Subcycle {
                     path,
@@ -669,9 +667,10 @@ pub struct RunSpec<T: Scalar> {
     pub macro_dt: f64,
     /// Output times, ascending.
     pub output_times: Vec<f64>,
-    /// Macro-level tstops: the interval end and the output times on a
-    /// multiple of the macro step.
-    pub macro_stops: Vec<f64>,
+    /// Macro-step boundaries `t0 … t_f`.
+    pub bounds: Vec<f64>,
+    /// The reason for each macro step's size.
+    pub reasons: Vec<String>,
     pub functional: Option<FunctionalSpec>,
     pub wrt_u0: bool,
     /// Per parameter: whether its gradient is requested.
@@ -750,7 +749,10 @@ impl<T: Scalar> RunSpec<T> {
         let mut wrt_u0 = false;
         let mut wrt_p = vec![false; problem.p.len()];
         let mut functional = None;
-        let mut out_times: Vec<f64> = saveat.map(|s| s.to_vec()).unwrap_or_else(|| vec![tspan.1]);
+        // Output times: `saveat` (default the end), always with the end; the
+        // initial state is output at t0 too (spec/toy-problems.md §3's example).
+        let mut out_times: Vec<f64> = saveat.map(|s| s.to_vec()).unwrap_or_default();
+        out_times.push(tspan.1);
         out_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
         out_times.dedup();
         if let Some(adj) = &rc.adjoint {
@@ -837,45 +839,32 @@ impl<T: Scalar> RunSpec<T> {
             });
         }
 
-        // Macro-level tstops: the end, plus output and observation times on a
-        // multiple of the macro step (spec/run-config.md §5, rule 9).
-        let on_multiple = |x: f64| {
-            let k = (x - tspan.0) / macro_dt;
-            (k - k.round()).abs() <= 1e-9 * k.abs().max(1.0)
-        };
-        let mut macro_stops = vec![tspan.1];
+        // Macro-step boundaries t0 + k·dt, the last one t_f exactly by the stop
+        // rule of spec/methods.md §10 (multiplied, not accumulated).
+        let (bounds, reasons) = macro_bounds(tspan.0, tspan.1, macro_dt);
         for &x in &out_times {
-            if x > tspan.0 && x < tspan.1 && on_multiple(x) {
-                macro_stops.push(x);
+            if x <= tspan.0 || x > tspan.1 {
+                return Err(Error::Config(format!(
+                    "output time {x} is outside ({}, {}]",
+                    tspan.0, tspan.1
+                )));
+            }
+            // Output times are tstops: macro-step boundaries under a fixed
+            // step.dt (run-config §8 rule 9), or stops inside the interval of a
+            // root leaf (spec/methods.md §10).
+            if !bounds.contains(&x) && !matches!(schedule.root, SNode::Leaf { .. }) {
+                return Err(Error::Config(format!(
+                    "output time {x} is not a multiple of step.dt = {macro_dt}"
+                )));
             }
         }
         if let Some(f) = &functional {
             for &x in &f.times {
-                if x > tspan.0 && x < tspan.1 {
-                    if !on_multiple(x) {
-                        return Err(Error::Config(format!(
-                            "observation time {x} is not a multiple of step.dt (run-config §8 rule 9)"
-                        )));
-                    }
-                    macro_stops.push(x);
+                if !bounds.contains(&x) {
+                    return Err(Error::Config(format!(
+                        "observation time {x} is not a multiple of step.dt (run-config §8 rule 9)"
+                    )));
                 }
-            }
-        }
-        macro_stops.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        macro_stops.dedup();
-        for &x in &out_times {
-            if x < tspan.0 || x > tspan.1 {
-                return Err(Error::Config(format!(
-                    "output time {x} is outside the interval"
-                )));
-            }
-            if x > tspan.0
-                && !macro_stops.contains(&x)
-                && !matches!(schedule.root, SNode::Leaf { .. })
-            {
-                return Err(Error::Config(format!(
-                    "output time {x} falls inside a macro step, which only a schedule whose root is a single leaf can land on"
-                )));
             }
         }
         Ok(RunSpec {
@@ -884,7 +873,8 @@ impl<T: Scalar> RunSpec<T> {
             tspan,
             macro_dt,
             output_times: out_times,
-            macro_stops,
+            bounds,
+            reasons,
             functional,
             wrt_u0,
             wrt_p,
@@ -911,17 +901,15 @@ impl<T: Scalar> RunSpec<T> {
     }
 
     fn run(&self, u0: &[T], p: &[f64], tape: Option<&Tape>) -> Result<ForwardRun<T>, Error> {
-        let (t0, tf) = self.tspan;
+        let t0 = self.tspan.0;
         let mut u = u0.to_vec();
         let mut persist = self.schedule.initial_persist();
-        let mut t = t0;
-        let mut k = 0usize;
         let mut out = ForwardRun {
-            outputs: Vec::new(),
+            outputs: vec![(t0, u.clone())],
             tape: Tape::default(),
             checkpoints: vec![Checkpoint {
                 macro_index: 0,
-                t,
+                t: t0,
                 u: u.clone(),
                 leaves: persist.clone(),
             }],
@@ -929,42 +917,25 @@ impl<T: Scalar> RunSpec<T> {
             rejected: 0,
             rhs_calls: 0,
         };
-        if self.output_times.first() == Some(&t0) {
-            out.outputs.push((t0, u.clone()));
-        }
         let index = tape.map(|tp| tp.index());
-        while t != tf {
-            let (t1, delta, reason) = match &index {
-                Some(ix) => match ix.get(k.to_string().as_str()) {
-                    Some(TapeRecord::Macro {
-                        t: tr, dt, reason, ..
-                    }) => {
-                        let t1 = self.next_boundary(*tr, *dt).0;
-                        t = *tr;
-                        (t1, *dt, reason.clone())
-                    }
-                    _ => return Err(Error::Run(format!("replay: no macro record {k}"))),
-                },
-                None => {
-                    let (t1, delta, stop) = self.next_boundary(t, self.macro_dt);
-                    (
-                        t1,
-                        delta,
-                        if stop && delta < self.macro_dt {
-                            "tstop".to_string()
-                        } else {
-                            "step.dt".to_string()
-                        },
-                    )
+        for k in 0..self.bounds.len() - 1 {
+            let (ta, tb) = (self.bounds[k], self.bounds[k + 1]);
+            let delta = tb - ta;
+            if let Some(ix) = &index {
+                if !matches!(
+                    ix.get(k.to_string().as_str()),
+                    Some(TapeRecord::Macro { .. })
+                ) {
+                    return Err(Error::Run(format!("replay: no macro record {k}")));
                 }
-            };
+            }
             let (seg, rhs) = self.macro_step(
                 k,
                 &mut u,
                 &mut persist,
                 p,
-                t,
-                t1,
+                ta,
+                tb,
                 delta,
                 index.as_ref(),
                 None,
@@ -975,53 +946,32 @@ impl<T: Scalar> RunSpec<T> {
             out.tape.records.extend(seg_tape);
             out.tape.records.push(TapeRecord::Macro {
                 path: k.to_string(),
-                t,
+                t: ta,
                 dt: delta,
-                reason,
+                reason: self.reasons[k].clone(),
             });
-            t = t1;
-            k += 1;
             out.checkpoints.push(Checkpoint {
-                macro_index: k,
-                t,
+                macro_index: k + 1,
+                t: tb,
                 u: u.clone(),
                 leaves: persist.clone(),
             });
-            if self.output_times.contains(&t) {
-                out.outputs.push((t, u.clone()));
+            if self.output_times.contains(&tb) {
+                out.outputs.push((tb, u.clone()));
             }
         }
         let (a, r) = out.tape.step_counts();
         out.accepted = a;
         out.rejected = r;
         out.outputs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        if out.outputs.len() != self.output_times.len() {
+        if out.outputs.len() != self.output_times.len() + 1 {
             return Err(Error::Run(format!(
-                "outputs at {:?}, expected {:?}",
+                "outputs at {:?}, expected t0 and {:?}",
                 out.outputs.iter().map(|o| o.0).collect::<Vec<_>>(),
                 self.output_times
             )));
         }
         Ok(out)
-    }
-
-    /// The end of the macro step starting at `t` with nominal size `dt`
-    /// (the landing rule of spec/methods.md §10 applied to macro steps):
-    /// `(t1, Δ, is_stop)`.
-    pub fn next_boundary(&self, t: f64, dt: f64) -> (f64, f64, bool) {
-        let stop = self
-            .macro_stops
-            .iter()
-            .copied()
-            .find(|&s| s > t)
-            .unwrap_or(self.tspan.1);
-        let d = stop - t;
-        let tol = 100.0 * eps_f64(t.abs().max(stop.abs()));
-        if dt + tol < d {
-            (t + dt, dt, false)
-        } else {
-            (stop, dt.min(d), true)
-        }
     }
 
     /// Runs macro step `k` over `[t0, t1]`, from `u` and `persist`.
@@ -1061,11 +1011,34 @@ impl<T: Scalar> RunSpec<T> {
             rhs_calls: 0,
             occ: HashMap::new(),
         };
-        ex.exec(&self.schedule.root, u, t0, t1, delta, true)?;
+        ex.exec(&self.schedule.root, u, t0, t1, true)?;
         if let (Some(a), Some(rec)) = (adj, ex.adj.take()) {
             *a = rec;
         }
         Ok(((ex.tape_out, ex.stop_states), ex.rhs_calls))
+    }
+}
+
+/// The macro-step boundaries under a fixed `step.dt`: `t0 + k·dt`, the last
+/// one `t_f` exactly by the stop rule of spec/methods.md §10, with each step's
+/// reason: `"step.dt"`, or `"tstop"` for a last step shortened to land on
+/// `t_f` (spec/run-config.md §5).
+pub fn macro_bounds(t0: f64, tf: f64, dt: f64) -> (Vec<f64>, Vec<String>) {
+    let mut bounds = vec![t0];
+    let mut reasons = Vec::new();
+    let mut k = 1.0;
+    loop {
+        let ta = *bounds.last().unwrap();
+        let (h, is_stop) = crate::leaf::stop_rule(ta, dt, tf);
+        if is_stop {
+            bounds.push(tf);
+            let tol = 100.0 * eps_f64(ta.abs().max(tf.abs()));
+            reasons.push(if h < dt - tol { "tstop" } else { "step.dt" }.to_string());
+            return (bounds, reasons);
+        }
+        bounds.push(t0 + k * dt);
+        reasons.push("step.dt".to_string());
+        k += 1.0;
     }
 }
 

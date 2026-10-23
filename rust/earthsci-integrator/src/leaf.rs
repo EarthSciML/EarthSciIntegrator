@@ -119,6 +119,12 @@ pub struct StepData<T> {
     pub y: Vec<Vec<T>>,
     /// The clip mask applied after the step, if it clipped.
     pub clip: Option<Vec<u8>>,
+    /// The time the first stage was evaluated at: `t_n`, or `t_{n−1} + h_{n−1}`
+    /// when it was the stored first-same-as-last value (spec/methods.md §3.3).
+    pub tk1: f64,
+    /// A stop step shorter than eps(|t|), accepted without computing it
+    /// (spec/methods.md §10): the identity.
+    pub skipped: bool,
 }
 
 /// The recorded steps and clip masks of a leaf invocation.
@@ -256,19 +262,24 @@ impl<T: Scalar> LeafSpec<T> {
             stage_data: Vec::new(),
             stop_states: Vec::new(),
         };
-        // spec/methods.md §3.3: the stored first-same-as-last value is
-        // invalid at entry to every invocation.
-        let mut cache: Option<Vec<T>> = None;
         let (t0, t1) = (call.t0, call.t1);
+        // The stops of this invocation: interior output times, then the end.
+        let mut stops: Vec<f64> = call.stops.to_vec();
+        stops.push(t1);
+        let next_stop = |t: f64| stops.iter().copied().find(|&s| s > t).unwrap_or(t1);
+        // spec/methods.md §3.3: the stored first-same-as-last value, with the
+        // time it was evaluated at, is invalid at entry to every invocation.
+        let mut cache: Option<(Vec<T>, f64)> = None;
 
-        // One step of size h from (u, t); returns E when wanted.
+        // One step of size h from (u, t); returns E when wanted, the
+        // parameters the step saw and the time of its first stage.
         let take = |w: &mut ErkWork<T>,
                     u: &[T],
                     t: f64,
                     h: f64,
-                    cache: &Option<Vec<T>>,
+                    cache: &Option<(Vec<T>, f64)>,
                     want_err: bool|
-         -> (Option<f64>, Vec<f64>) {
+         -> (Option<f64>, Vec<f64>, f64) {
             let pb = self.bound_params(call.p, h, call);
             let mut f = |o: &mut [T], uu: &[T], tt: f64| self.rhs(o, uu, &pb, tt);
             let tol = &self.tol;
@@ -280,189 +291,174 @@ impl<T: Scalar> LeafSpec<T> {
                 u,
                 t,
                 h,
-                cache.as_deref(),
+                cache.as_ref().map(|c| c.0.as_slice()),
                 if want_err { Some(&mut norm) } else { None },
             );
-            (e, pb)
+            let tk1 = cache.as_ref().map_or(m.stage_time(0, t, h), |c| c.1);
+            (e, pb, tk1)
         };
 
         // Replay: the recorded steps, controller off (spec/tape.md §3).
         if let Some((steps, clips)) = call.replay {
-            let mut t = t0;
             for (i, s) in steps.iter().enumerate() {
-                let (tn, h) = (s[0], s[1]);
-                t = tn;
-                let (_, pb) = take(&mut w, u, t, h, &cache, false);
-                let mut unew = w.unew.clone();
-                let mut clip = None;
-                if let Some((_, mask)) = clips.iter().find(|(k, _)| *k == i) {
-                    self.clip_frozen(&mut unew, mask);
-                    clip = Some(mask.clone());
-                }
-                if call.record_stages {
-                    out.stage_data.push(StepData {
-                        t,
-                        h,
-                        p: pb,
-                        y: w.y.clone(),
-                        clip: clip.clone(),
-                    });
-                }
-                cache = if clip.is_none() && w.has_fend {
-                    Some(w.fend.clone())
+                let (t, h) = (s[0], s[1]);
+                let ts = next_stop(t);
+                let (_, is_stop) = stop_rule(t, h, ts);
+                let tnew = if is_stop { ts } else { t + h };
+                if is_stop && h < eps_f64(t) {
+                    // A skipped tiny stop step, recognized by the same rule.
+                    cache = None;
+                    if call.record_stages {
+                        out.stage_data.push(StepData {
+                            t,
+                            h,
+                            p: self.bound_params(call.p, h, call),
+                            y: Vec::new(),
+                            clip: None,
+                            tk1: t,
+                            skipped: true,
+                        });
+                    }
                 } else {
-                    None
-                };
-                u.copy_from_slice(&unew);
-                t = steps.get(i + 1).map(|s| s[0]).unwrap_or(t1);
-                if let Some(&st) = call.stops.iter().find(|&&st| st == t) {
-                    out.stop_states.push((st, u.to_vec()));
+                    let (_, pb, tk1) = take(&mut w, u, t, h, &cache, false);
+                    let mut unew = w.unew.clone();
+                    let mut clip = None;
+                    if let Some((_, mask)) = clips.iter().find(|(k, _)| *k == i) {
+                        self.clip_frozen(&mut unew, mask);
+                        clip = Some(mask.clone());
+                    }
+                    if call.record_stages {
+                        out.stage_data.push(StepData {
+                            t,
+                            h,
+                            p: pb,
+                            y: w.y.clone(),
+                            clip: clip.clone(),
+                            tk1,
+                            skipped: false,
+                        });
+                    }
+                    cache = if clip.is_none() && w.has_fend {
+                        Some((w.fend.clone(), t + h))
+                    } else {
+                        None
+                    };
+                    u.copy_from_slice(&unew);
+                    if let Some(mk) = clip {
+                        out.clips.push((i, mk));
+                    }
+                }
+                if tnew != t1 && call.stops.contains(&tnew) {
+                    out.stop_states.push((tnew, u.to_vec()));
                 }
                 out.steps.push(*s);
                 out.accepted += 1;
-                if let Some(mk) = clip {
-                    out.clips.push((i, mk));
-                }
             }
-            let _ = t;
             out.rhs_calls = w.nf as u64;
             return Ok(out);
         }
 
         let adaptive = self.dt_mode == DtMode::Adaptive;
+        let dtmin = self.dtmin;
         let dtmax = self.dtmax.unwrap_or(t1 - t0);
-        let mut h = match self.dt_mode {
-            DtMode::Adaptive => {
-                let ctrl = self.controller.as_ref().ok_or_else(|| {
-                    Error::Config(format!(
-                        "leaf {}: {} has no error estimate, so the leaf must give dt (D52)",
-                        self.id, self.alg
-                    ))
-                })?;
-                let _ = ctrl;
-                match persist.proposal {
-                    // *Assumption* (spec/methods.md §8.6 says dtmax defaults to the
-                    // current interval): a proposal carried over from a longer
-                    // interval is clamped to this invocation's dtmax.
-                    Some(h) => h.min(dtmax),
-                    None => {
-                        let h0 = match self.dt0 {
-                            Some(d) => d.min(dtmax).max(self.dtmin.max(eps_f64(t0))),
-                            None => {
-                                let pb = self.bound_params(call.p, 0.0, call);
-                                let inp = InitDtInput {
-                                    u0: u,
-                                    t0,
-                                    dtmin: self.dtmin,
-                                    dtmax,
-                                    tol: &self.tol,
-                                    dofs: &self.dofs,
-                                    order: self.method.order(),
-                                };
-                                let (h0, nf) =
-                                    initial_dt(&inp, &mut |o, uu, tt| self.rhs(o, uu, &pb, tt));
-                                out.rhs_calls += nf as u64;
-                                h0
-                            }
-                        };
-                        persist.proposal = Some(h0);
-                        h0
-                    }
-                }
-            }
-            DtMode::Fixed(dt) => dt,
-            DtMode::Step | DtMode::Accumulated => call.delta,
+        // fix_dt_at_bounds: [max(dtmin, eps(t)), dtmax].
+        let fix = |h: f64, t: f64| h.min(dtmax).max(eps_f64(t).max(dtmin));
+        let ctrl = if adaptive {
+            Some(self.controller.as_ref().ok_or_else(|| {
+                Error::Config(format!(
+                    "leaf {}: {} has no error estimate, so the leaf must give dt (D52)",
+                    self.id, self.alg
+                ))
+            })?)
+        } else {
+            None
         };
-
-        // One step of Δ: "step" and "accumulated" (spec/run-config.md §4.2).
-        if matches!(self.dt_mode, DtMode::Step | DtMode::Accumulated) {
-            let (_, pb) = take(&mut w, u, t0, h, &cache, false);
-            let mut unew = w.unew.clone();
-            out.rhs_calls += w.nf as u64;
-            if unew.iter().any(|x| !x.is_finite()) {
-                out.retcode = Retcode::Unstable;
-                return Ok(out);
-            }
-            let mut clip = None;
-            if self.violates(&unew) {
-                match &self.domain {
-                    Some(d) if d.clip => clip = self.clip(&mut unew),
-                    _ => {
-                        out.retcode = Retcode::DomainViolation;
-                        return Ok(out);
-                    }
+        if adaptive && persist.proposal.is_none() {
+            let h0 = match self.dt0 {
+                Some(d) => fix(d, t0),
+                None => {
+                    let pb = self.bound_params(call.p, 0.0, call);
+                    let inp = InitDtInput {
+                        u0: u,
+                        t0,
+                        dtmin,
+                        dtmax,
+                        tol: &self.tol,
+                        dofs: &self.dofs,
+                        order: self.method.order(),
+                    };
+                    let (h0, nf) = initial_dt(&inp, &mut |o, uu, tt| self.rhs(o, uu, &pb, tt));
+                    out.rhs_calls += nf as u64;
+                    h0
                 }
-            }
-            if call.record_stages {
-                out.stage_data.push(StepData {
-                    t: t0,
-                    h,
-                    p: pb,
-                    y: w.y.clone(),
-                    clip: clip.clone(),
-                });
-            }
-            u.copy_from_slice(&unew);
-            out.steps.push([t0, h]);
-            out.accepted = 1;
-            if let Some(mk) = clip {
-                out.clips.push((0, mk));
-            }
-            return Ok(out);
+            };
+            persist.proposal = Some(h0);
         }
-
-        let mut t = t0;
-        let mut attempts: u64 = 0;
+        // Fixed substeps: dt, or one step of the node's Δ for "step" and
+        // "accumulated" (Δ without `every`), landing on the end by the stop rule.
+        let fixed_dt = match self.dt_mode {
+            DtMode::Fixed(dt) => dt,
+            _ => t1 - t0,
+        };
+        let mut hctrl = persist.proposal.unwrap_or(f64::NAN);
         let maxiters = self
             .maxiters
-            .or(if adaptive { Some(1_000_000) } else { None });
-        let mut stop_idx = 0;
-        while t != t1 {
-            // The next stop: interior stops, then the interval end (spec/methods.md §10).
-            while stop_idx < call.stops.len() && call.stops[stop_idx] <= t {
-                stop_idx += 1;
+            .unwrap_or(if adaptive { 1_000_000 } else { u64::MAX });
+        let mut t = t0;
+        let mut iter: u64 = 0;
+        let mut last_rejected = false;
+        loop {
+            if t >= t1 {
+                break;
             }
-            let stop = call.stops.get(stop_idx).copied().unwrap_or(t1);
-            let d = stop - t;
-            let tol = 100.0 * eps_f64(t.abs().max(stop.abs()));
-            let (hs, is_stop) = if h + tol < d {
-                (h, false)
-            } else {
-                (h.min(d), true)
-            };
-            if is_stop && hs < eps_f64(t) {
-                // handle_tstop_step!: accepted without computing it.
-                t = stop;
-                if stop != t1 {
-                    out.stop_states.push((stop, u.to_vec()));
+            let ts = next_stop(t);
+            let hc = if adaptive { fix(hctrl, t) } else { fixed_dt };
+            let (h, is_stop) = stop_rule(t, hc, ts);
+            iter += 1;
+            // Limits and return codes (spec/methods.md §12), checked before the
+            // attempt in SciMLBase `check_error`'s order.
+            if h.is_nan() {
+                out.retcode = Retcode::DtNaN;
+                break;
+            } else if iter > maxiters {
+                out.retcode = Retcode::MaxIters;
+                break;
+            } else if adaptive && dtmin > 0.0 && h <= dtmin && (last_rejected || t + h < ts) {
+                out.retcode = Retcode::DtLessThanMin;
+                break;
+            } else if adaptive && last_rejected && h <= eps_f64(t) {
+                out.retcode = Retcode::Unstable;
+                break;
+            }
+            let tnew = if is_stop { ts } else { t + h };
+            if is_stop && h < eps_f64(t) {
+                // handle_tstop_step!: accepted without computing it; recorded
+                // and counted, and the stored first-same-as-last value dropped.
+                if call.record_stages {
+                    out.stage_data.push(StepData {
+                        t,
+                        h,
+                        p: self.bound_params(call.p, h, call),
+                        y: Vec::new(),
+                        clip: None,
+                        tk1: t,
+                        skipped: true,
+                    });
+                }
+                out.steps.push([t, h]);
+                out.accepted += 1;
+                cache = None;
+                last_rejected = false;
+                t = tnew;
+                if t != t1 && call.stops.contains(&t) {
+                    out.stop_states.push((t, u.to_vec()));
                 }
                 continue;
             }
-            attempts += 1;
-            if let Some(mx) = maxiters {
-                if attempts > mx {
-                    out.retcode = Retcode::MaxIters;
-                    break;
-                }
-            }
-            let (e, pb) = take(&mut w, u, t, hs, &cache, adaptive);
+            let (e, pb, tk1) = take(&mut w, u, t, h, &cache, adaptive);
             let mut unew = w.unew.clone();
             let violation = self.violates(&unew) && !self.domain.as_ref().is_some_and(|d| d.clip);
-
-            if !adaptive {
-                if unew.iter().any(|x| !x.is_finite()) {
-                    out.retcode = Retcode::Unstable;
-                    break;
-                }
-                if violation {
-                    out.retcode = Retcode::DomainViolation;
-                    break;
-                }
-            } else {
-                let ctrl = self
-                    .controller
-                    .as_ref()
-                    .expect("adaptive leaf has a controller");
+            if let Some(ctrl) = ctrl {
                 let cs = persist
                     .ctrl
                     .as_mut()
@@ -470,11 +466,12 @@ impl<T: Scalar> LeafSpec<T> {
                 let e = e.expect("adaptive step returns an error estimate");
                 let reject_to = if !e.is_finite() || violation {
                     // spec/methods.md §7 (non-finite E) and §8.5 (domain).
-                    Some(hs * ctrl.qmin)
+                    Some(h * ctrl.qmin)
                 } else {
                     let ev = ctrl.evaluate(cs, e);
                     match ev.decision {
-                        Decision::Reject => Some(ctrl.reject(&ev, hs)),
+                        // h is the step attempted, shortened if it was a stop step.
+                        Decision::Reject => Some(ctrl.reject(&ev, h)),
                         Decision::Accept => {
                             // D61 (spec/methods.md §8.6): the proposal comes
                             // from the size of the step actually taken, so after
@@ -483,33 +480,26 @@ impl<T: Scalar> LeafSpec<T> {
                             // does (its second modify_dt_for_tstops! call, in
                             // loopheader!, overwrites dtpropose with the
                             // shortened dt).
-                            let prop = ctrl.accept(cs, &ev, e, hs);
-                            let tn = if is_stop { stop } else { t + hs };
-                            let mut ph = (tn + prop) - tn;
-                            ph = ph.min(dtmax).max(self.dtmin.max(eps_f64(tn)));
-                            h = ph;
-                            persist.proposal = Some(h);
+                            let prop = ctrl.accept(cs, &ev, e, h);
+                            hctrl = fix((tnew + prop) - tnew, tnew);
                             None
                         }
                     }
                 };
                 if let Some(hn) = reject_to {
                     out.rejected += 1;
-                    h = hn;
-                    persist.proposal = Some(h);
-                    if h.is_nan() {
-                        out.retcode = Retcode::DtNaN;
-                        break;
-                    }
-                    if self.dtmin > 0.0 && h <= self.dtmin {
-                        out.retcode = Retcode::DtLessThanMin;
-                        break;
-                    }
-                    if h <= eps_f64(t) {
-                        out.retcode = Retcode::Unstable;
-                        break;
-                    }
+                    hctrl = hn;
+                    last_rejected = true;
                     continue;
+                }
+            } else {
+                if unew.iter().any(|x| !x.is_finite()) {
+                    out.retcode = Retcode::Unstable;
+                    break;
+                }
+                if violation {
+                    out.retcode = Retcode::DomainViolation;
+                    break;
                 }
             }
             // Accepted.
@@ -518,16 +508,19 @@ impl<T: Scalar> LeafSpec<T> {
             if call.record_stages {
                 out.stage_data.push(StepData {
                     t,
-                    h: hs,
+                    h,
                     p: pb,
                     y: w.y.clone(),
                     clip: clip.clone(),
+                    tk1,
+                    skipped: false,
                 });
             }
-            out.steps.push([t, hs]);
+            out.steps.push([t, h]);
             out.accepted += 1;
+            // The end-of-step value f(u_{n+1}, t_n + h), unless clipped.
             cache = if clip.is_none() && w.has_fend {
-                Some(w.fend.clone())
+                Some((w.fend.clone(), t + h))
             } else {
                 None
             };
@@ -535,12 +528,29 @@ impl<T: Scalar> LeafSpec<T> {
                 out.clips.push((k, mk));
             }
             u.copy_from_slice(&unew);
-            t = if is_stop { stop } else { t + hs };
-            if is_stop && stop != t1 {
-                out.stop_states.push((stop, u.to_vec()));
+            last_rejected = false;
+            t = tnew;
+            if t != t1 && call.stops.contains(&t) {
+                out.stop_states.push((t, u.to_vec()));
             }
+        }
+        if adaptive {
+            persist.proposal = Some(hctrl);
         }
         out.rhs_calls += w.nf as u64;
         Ok(out)
+    }
+}
+
+/// spec/methods.md §10: with `d = ts − t` and `tol = 100 eps(max(|t|, |ts|))`,
+/// an ordinary step when `h + tol < d`, otherwise a stop step of size
+/// `min(h, d)` that ends at `ts` exactly.
+pub fn stop_rule(t: f64, h: f64, ts: f64) -> (f64, bool) {
+    let d = ts - t;
+    let tol = 100.0 * eps_f64(t.abs().max(ts.abs()));
+    if h + tol < d {
+        (h, false)
+    } else {
+        (h.min(d), true)
     }
 }

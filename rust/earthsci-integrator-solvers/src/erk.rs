@@ -64,9 +64,8 @@ pub struct ExplicitRk {
     /// `b` and `c_s = 1`): Tsit5 and BS3.
     pub last_stage_is_end: bool,
     /// A first-same-as-last method whose stages do not include
-    /// `f(u_{n+1})` evaluates it after the step (Heun, RK4). ForwardEuler
-    /// skips it, as spec/methods.md §3.3 allows, and evaluates `f(u_n)` at the
-    /// start of each step instead.
+    /// `f(u_{n+1})` evaluates it after the step, at `t_n + h` (Heun, RK4,
+    /// ForwardEuler), as OrdinaryDiffEq and the Julia implementation do.
     pub end_eval: bool,
 }
 
@@ -129,7 +128,7 @@ impl ExplicitRk {
             embedded_order: t.embedded_order,
             fsal,
             last_stage_is_end,
-            end_eval: fsal && !last_stage_is_end && s > 1,
+            end_eval: fsal && !last_stage_is_end,
         })
     }
 
