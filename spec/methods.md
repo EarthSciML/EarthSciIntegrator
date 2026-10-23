@@ -206,7 +206,7 @@ Tier-2 trajectory comparisons against OrdinaryDiffEq's Kvaerno3/4 use autonomous
   | stiff Prothero–Robinson, $\lambda = -10^4$ | Kvaerno4 | 1e-6 | † | † | 2.1 |
   | stiff Prothero–Robinson, $\lambda = -10^4$ | Kvaerno4 | 1e-8 | † | † | 246 |
 
-  († OrdinaryDiffEq's Kvaerno3/4 are dominated by their stage-time defect, §5.4, on these time-dependent problems.) On the non-stiff problem $h\gamma J$ is small, the adopted estimate is close to the unsmoothed one, and it removes OrdinaryDiffEq's loss of accuracy. On the stiff problem it does so for TRBDF2 only: SDIRK2, and Kvaerno3/4 at tight tolerances, still end far above the tolerance, SDIRK2 worse than with OrdinaryDiffEq's estimate. The unsmoothed estimate meets the tolerance there but takes 5–250 times as many steps (Kvaerno3/4 hit the $10^6$-step limit). Adaptive step sequences differ from OrdinaryDiffEq's defaults; the oracle checks impose our step sequence, so they are unaffected. Not reported upstream. *Open question* (§13, item 8): which estimate SDIRK2 and Kvaerno3/4 should use on stiff problems.
+  († OrdinaryDiffEq's Kvaerno3/4 are dominated by their stage-time defect, §5.4, on these time-dependent problems.) On the non-stiff problem $h\gamma J$ is small, the adopted estimate is close to the unsmoothed one, and it removes OrdinaryDiffEq's loss of accuracy. On the stiff problem it does so for TRBDF2 only: SDIRK2, and Kvaerno3/4 at tight tolerances, still end far above the tolerance, SDIRK2 worse than with OrdinaryDiffEq's estimate. The unsmoothed estimate meets the tolerance there but takes 5–250 times as many steps (Kvaerno3/4 hit the $10^6$-step limit). Adaptive step sequences differ from OrdinaryDiffEq's defaults; the oracle checks impose our step sequence, so they are unaffected. Not reported upstream. v1 keeps this estimate for all four methods and recommends TRBDF2 for stiff adaptive leaves; SDIRK2 and Kvaerno3/4 are documented as unreliable there at tight tolerances, and the estimate is revisited at M4b (D59, §13 item 5).
 - **`divided_difference`** (BackwardEuler; OrdinaryDiffEqSDIRK `src/generic_imex_perform_step.jl:2401-2420`). With the previous accepted step $(u_{n-1}, t_{n-1})$ of the same leaf invocation:
 
   ```math
@@ -363,18 +363,16 @@ A non-success code from any leaf ends the run with that code, naming the leaf (a
 
 ## 13. Decisions and assumptions
 
-**Decided 2026-10-23** (D55–D58):
+**Decided 2026-10-23** (D55–D59):
 1. **Kvaerno3/4 stage times** (§5.4). The tables use the row sums. Tier-2 comparisons against OrdinaryDiffEq's Kvaerno methods are limited to autonomous problems. Not reported upstream.
 2. **KPP's own step-size rule** (§4.4) becomes a controller option, `controller: "KPP"`, at M7 for WRF-Chem parity. The tables already record it.
 3. **Jacobian reuse in SDIRK** (§5.3). v1 forms $J$ on every step attempt. OrdinaryDiffEq-style reuse is revisited at M4b, when eqice's column solves give real costs.
-4. **Smoothed SDIRK error estimate** (§5.5). Hosea and Shampine's formula, because OrdinaryDiffEq's scaled version gives low-accuracy results. Not reported upstream. On stiff problems this fixes TRBDF2 only; see item 8.
+4. **Smoothed SDIRK error estimate** (§5.5). Hosea and Shampine's formula, because OrdinaryDiffEq's scaled version gives low-accuracy results. Not reported upstream. On stiff problems this fixes TRBDF2 only; see item 5.
+5. **SDIRK error estimate on stiff problems** (§5.5). v1 keeps Hosea and Shampine's estimate for every SDIRK method. TRBDF2 is the recommended SDIRK method for stiff adaptive leaves. SDIRK2 and Kvaerno3/4 remain available but are unreliable on stiff problems at tight tolerances: on the stiff Prothero–Robinson problem SDIRK2 ended 184–5590 times above the tolerance and Kvaerno3/4 29–246 times at `tol = 1e-8`, while the unsmoothed estimate met the tolerance at up to 250 times the steps. Revisited at M4b, when eqice's column solves give real costs; candidates then are smoothing only the stiff components, a different embedded pair for SDIRK2, or an unsmoothed estimate with a step cap. M1's stiff adaptive cases use TRBDF2, and Kvaerno4 at `reltol = 1e-6` (2.1 times the tolerance there).
 
 **Assumptions:**
-5. The SDIRK initial guess (previous stage's $z$, zero for the first implicit stage) changes converged stages only at the Newton tolerance (§5.2).
-6. BackwardEuler's divided-difference history resets at every invocation of the leaf (§5.5).
-7. The first-step algorithm runs per cell under `dt_scope: cell` (§9).
-
-**Open question:**
-8. **SDIRK error estimate on stiff problems** (§5.5). On the stiff Prothero–Robinson problem the adopted estimate leaves SDIRK2 184–5590 times above the tolerance and Kvaerno3/4 29–246 times at `tol = 1e-8`, while the unsmoothed estimate is accurate but takes up to 250 times as many steps. Candidates: smoothing only the stiff components, a different embedded pair for SDIRK2, or unsmoothed estimates with a step cap. Until settled, M1's stiff adaptive cases use TRBDF2 and Kvaerno4 at `reltol = 1e-6`, where Kvaerno4 measured 2.1.
+6. The SDIRK initial guess (previous stage's $z$, zero for the first implicit stage) changes converged stages only at the Newton tolerance (§5.2).
+7. BackwardEuler's divided-difference history resets at every invocation of the leaf (§5.5).
+8. The first-step algorithm runs per cell under `dt_scope: cell` (§9).
 
 **Deviations from OrdinaryDiffEq, collected:** stage times of Kvaerno3/4 (§5.4); the explicit first stage of ESDIRK methods is evaluated, not reused from $z_s/h$ (§5.1); the smoothed SDIRK error estimate (§5.5); no Jacobian reuse in SDIRK (§5.3); non-finite error estimates reject (§7); the SDIRK initial guess (§5.2); the `DomainViolation` return code (§12).
