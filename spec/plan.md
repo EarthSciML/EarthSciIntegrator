@@ -35,6 +35,7 @@ Beyond JCS, the content is canonical:
 |---|---|
 | `esm_integrator` | The spec version, equal to the run config's. |
 | `inputs` | The model and run config, by path and hash. A plan is stale when either hash changes. |
+| `time` | The run interval in seconds, resolved from the caller, the run config or the model, and which of the three gave it (spec/run-config.md §1.1, D60). |
 | `operators` | Per operator: `kind` (`rhs`, `algebraic`, `map`, `limit`, `condition`); `locality` with its per-axis `radius` for stencils (architecture §3.2 pass 2); sorted `writes` and `reads` (pass 3); `terms` (provenance, U2); `structure` (pass 4, specified at M2); `stiffness` with the source of the classification (pass 5). |
 | `schedule` | The **resolved** schedule: the run-config grammar (spec/run-config.md §4) with no `"auto"` anywhere, every leaf's options explicit (method, controller, `dt_scope`, `jacobian`, `linsolve`, `domain`), every default operator named, and an `id` on every node. Ids the run config gave are kept; the planner names the rest by their path from the root (`root`, `root.0`, `root.1.every`, …). The schema checks that every node has an id and that no value is `"auto"`. |
 | `step` | The macro-step control, as resolved. |

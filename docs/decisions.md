@@ -67,6 +67,7 @@ Facts are in [`survey.md`](survey.md) and the design is in [`architecture.md`](a
 | D57 | 2026-10-23 | **SDIRK forms its Jacobian on every step attempt in v1.** OrdinaryDiffEq-style reuse across steps is revisited at M4b with eqice's column-solve costs. |
 | D58 | 2026-10-23 | **KPP's own step-size rule becomes a controller option at M7** (`controller: "KPP"`), for WRF-Chem parity. M1 runs KPP coefficients under the PI controller. |
 | D59 | 2026-10-23 | **v1 keeps Hosea and Shampine's SDIRK error estimate for all SDIRK methods, and recommends TRBDF2 for stiff adaptive leaves.** On a stiff test problem the estimate leaves SDIRK2 and Kvaerno3/4 far above the tolerance at tight tolerances, and no alternative measured so far is both accurate and efficient. They stay available, documented as unreliable there; the estimate is revisited at M4b with eqice's column solves (spec/methods.md §5.5, §13 item 5). |
+| D60 | 2026-10-23 | **The run interval comes from the caller, the run config or the model, in that order of preference.** The caller is an API argument or a command-line option; the run config's key is `time` (`start` with `end` or `duration`, as seconds or RFC 3339 UTC timestamps); the model's is the `.esm` `solver.time_span`, which needs an upstream addition (U16). The most preferred source that gives an interval gives all of it, and the plan records the resolved interval and its source (spec/run-config.md §1.1). |
 
 ## 1. Adjoint strategy: tradeoffs
 

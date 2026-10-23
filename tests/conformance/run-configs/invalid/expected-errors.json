@@ -103,6 +103,18 @@
       "$.schedule"
     ]
   },
+  "time-end-and-duration.json": {
+    "keyword": "oneOf",
+    "at": [
+      "$.time"
+    ]
+  },
+  "time-local-timestamp.json": {
+    "keyword": "pattern",
+    "at": [
+      "$.time.start"
+    ]
+  },
   "two-combinators.json": {
     "keyword": "additionalProperties",
     "at": [

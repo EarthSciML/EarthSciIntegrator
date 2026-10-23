@@ -21,6 +21,7 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 | U13 | EarthSciAST.jl (Reactant ext) | [Traceable per-operator StableHLO](U13-traceable-per-operator-stablehlo.md) for the Julia GPU path | [EarthSciAST#544](https://github.com/EarthSciML/EarthSciAST/issues/544) | M5g |
 | U14 | EarthSciAST spec | [Declared vs unspecified precision](U14-numerical-vs-semantic-precision.md) (D29) | [EarthSciAST#545](https://github.com/EarthSciML/EarthSciAST/issues/545) | M5g, M7 |
 | U15 | EarthSciAST.jl | [Recurrence execution](U15-julia-recurrence-execution.md), native and StableHLO | [EarthSciAST#546](https://github.com/EarthSciML/EarthSciAST/issues/546) | M7 |
+| U16 | EarthSciAST spec | [`solver.time_span`](U16-solver-time-span.md): the run interval a document asks for (D60) | not filed | M2 |
 
 **Cross-cutting prerequisites** (architecture §13):
 - esm 1.3.0 for the three model repos.
