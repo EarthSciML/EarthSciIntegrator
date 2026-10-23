@@ -476,19 +476,14 @@ impl<T: Scalar> LeafSpec<T> {
                     match ev.decision {
                         Decision::Reject => Some(ctrl.reject(&ev, hs)),
                         Decision::Accept => {
-                            // The proposal comes from the unshortened size
-                            // the controller chose (§8.6).
-                            //
-                            // *Spec discrepancy, reported:* OrdinaryDiffEqCore
-                            // 4.19.0 calls modify_dt_for_tstops! twice before a
-                            // step (apply_step!, then loopheader! line 123), and
-                            // the second call overwrites dtpropose with the
-                            // already-shortened dt, so OrdinaryDiffEq in fact
-                            // proposes from the shortened step. With that rule
-                            // this leaf reproduces OrdinaryDiffEq's Tsit5 run of
-                            // van_der_pol/nonstiff (170 accepted, 2 rejected,
-                            // 1035 f calls). We follow the spec's stated rule.
-                            let prop = ctrl.accept(cs, &ev, e, h);
+                            // D61 (spec/methods.md §8.6): the proposal comes
+                            // from the size of the step actually taken, so after
+                            // a step shortened to land on a stop it comes from
+                            // the shortened size, as OrdinaryDiffEqCore 4.19.0
+                            // does (its second modify_dt_for_tstops! call, in
+                            // loopheader!, overwrites dtpropose with the
+                            // shortened dt).
+                            let prop = ctrl.accept(cs, &ev, e, hs);
                             let tn = if is_stop { stop } else { t + hs };
                             let mut ph = (tn + prop) - tn;
                             ph = ph.min(dtmax).max(self.dtmin.max(eps_f64(tn)));

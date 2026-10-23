@@ -176,8 +176,8 @@ impl Controller {
     }
 
     /// Updates the history after an accepted step and returns the proposed
-    /// next size from `h_base`, the unshortened size the controller chose
-    /// (spec/methods.md §8.6), before the proposal rounding and clamping.
+    /// next size from `h_base`, the size of the step just taken (shortened if it
+    /// landed on a stop; D61, spec/methods.md §8.6), before rounding and clamping.
     pub fn accept(&self, s: &mut ControllerState, ev: &Evaluation, e: f64, h_base: f64) -> f64 {
         let out = match self.kind {
             ControllerKind::PI | ControllerKind::I => {

@@ -454,3 +454,25 @@ fn f32_state() {
     let g = s.gradient(&fwd, &s.problem.p).unwrap();
     assert!(g.u0.iter().all(|x| x.is_finite()));
 }
+
+/// D61: after a step shortened to land on a stop, the proposal comes from the
+/// shortened size, as in OrdinaryDiffEqCore 4.19.0. OrdinaryDiffEq's Tsit5 on
+/// van_der_pol/nonstiff at reltol 1e-8, abstol 1e-10 with tstops at 1 and 3
+/// takes 170 accepted and 2 rejected steps with 1035 f evaluations.
+#[test]
+fn tsit5_step_counts_match_ordinarydiffeq() {
+    let r = rc(
+        "toy:van_der_pol/nonstiff",
+        json!({"leaf": "oscillator", "alg": "Tsit5", "control": {"reltol": 1e-8, "abstol": 1e-10}}),
+        6.3,
+        None,
+    );
+    let s = spec(&r, (0.0, 6.3), Some(&[1.0, 3.0, 6.3]));
+    let f = s.forward(&s.u0(), &s.problem.p).unwrap();
+    assert_eq!((f.accepted, f.rejected, f.rhs_calls), (170, 2, 1035));
+    // OrdinaryDiffEq's end state, to roundoff.
+    let ode = [1.832135188281472, 1.1618990754779062];
+    for (a, b) in f.final_state().iter().zip(ode) {
+        assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+    }
+}
