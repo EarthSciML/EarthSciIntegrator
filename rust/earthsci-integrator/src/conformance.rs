@@ -522,7 +522,7 @@ fn check_order(
     }
 }
 
-fn check_invariant(spec: &RunSpec<f64>, fwd: &ForwardRun<f64>, rtol: f64) -> Outcome {
+pub fn check_invariant(spec: &RunSpec<f64>, fwd: &ForwardRun<f64>, rtol: f64) -> Outcome {
     if spec.problem.invariants.is_empty() {
         return Outcome::Fail(format!("{} has no invariants", spec.problem.name));
     }
@@ -598,11 +598,15 @@ fn check_reference(case: &Case, fwd: &ForwardRun<f64>, rtol: f64, paths: &Paths)
     }
 }
 
-/// spec/adjoint.md §7.2: each requested gradient component against central
-/// differences of the frozen-tape map, at every epsilon. The perturbation
-/// of a nonzero `x` is `ε|x|`, of a zero one `ε`. A component passes when
-/// its smallest relative error over the epsilons is within `rtol`.
-fn check_fd(
+/// spec/adjoint.md §7.2: directional derivatives `⟨∇J, δ⟩` against central
+/// differences of the frozen-tape map `(J(x + εδ) − J(x − εδ))/2ε`, at every
+/// epsilon. The directions are: a pseudo-random one over every requested
+/// input, one over `u0` only, and each requested parameter alone. A
+/// direction's entry for input `x` is `r·|x|` (`r` in `[−1, 1]`), or `r` when
+/// `x = 0`, so inputs of very different size are perturbed comparably. A
+/// direction passes when its smallest relative error over the epsilons is
+/// within `rtol`.
+pub fn check_fd(
     spec: &RunSpec<f64>,
     fwd: &ForwardRun<f64>,
     g: &crate::adjoint::Gradient,
@@ -611,54 +615,68 @@ fn check_fd(
 ) -> Outcome {
     let u0 = spec.u0();
     let p = spec.problem.p.clone();
+    let (nu, np) = (u0.len(), p.len());
     let jfun = |u: &[f64], pp: &[f64]| -> Result<f64, Error> {
         let r = spec.replay(u, pp, &fwd.tape)?;
         spec.functional_value(&r)
     };
-    // Components: (label, is_u0, index, adjoint value).
-    let mut comps = Vec::new();
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    };
+    let scale = |x: f64| if x != 0.0 { x.abs() } else { 1.0 };
+    // Directions as (label, δu0, δp).
+    let mut dirs: Vec<(String, Vec<f64>, Vec<f64>)> = Vec::new();
+    let du: Vec<f64> = u0
+        .iter()
+        .map(|&x| if spec.wrt_u0 { rnd() * scale(x) } else { 0.0 })
+        .collect();
+    let dp: Vec<f64> = p
+        .iter()
+        .zip(&spec.wrt_p)
+        .map(|(&x, &w)| if w { rnd() * scale(x) } else { 0.0 })
+        .collect();
+    dirs.push(("all inputs".into(), du.clone(), dp));
     if spec.wrt_u0 {
-        for (i, &gi) in g.u0.iter().enumerate() {
-            comps.push((format!("u0[{i}]"), true, i, gi));
-        }
+        dirs.push(("u0".into(), du, vec![0.0; np]));
     }
     for (i, &w) in spec.wrt_p.iter().enumerate() {
         if w {
-            comps.push((
+            let mut e = vec![0.0; np];
+            e[i] = scale(p[i]);
+            dirs.push((
                 format!("p[{}]", spec.problem.param_names[i]),
-                false,
-                i,
-                g.p[i],
+                vec![0.0; nu],
+                e,
             ));
         }
     }
-    let gmax = comps.iter().map(|c| c.3.abs()).fold(0.0f64, f64::max);
     let mut worst = 0.0f64;
     let mut worst_label = String::new();
     let mut trend = String::new();
-    for (label, is_u0, i, gi) in &comps {
-        let x = if *is_u0 { u0[*i] } else { p[*i] };
+    for (label, du, dp) in &dirs {
+        let exact: f64 = g.u0.iter().zip(du).map(|(a, b)| a * b).sum::<f64>()
+            + g.p.iter().zip(dp).map(|(a, b)| a * b).sum::<f64>();
         let mut best = f64::INFINITY;
         let mut errs = Vec::new();
         for &eps in epsilons {
-            let h = if x != 0.0 { eps * x.abs() } else { eps };
-            let (mut up, mut um) = (u0.clone(), u0.clone());
-            let (mut pp, mut pm) = (p.clone(), p.clone());
-            if *is_u0 {
-                up[*i] += h;
-                um[*i] -= h;
-            } else {
-                pp[*i] += h;
-                pm[*i] -= h;
-            }
+            let shift = |s: f64| -> (Vec<f64>, Vec<f64>) {
+                (
+                    u0.iter().zip(du).map(|(x, d)| x + s * d).collect(),
+                    p.iter().zip(dp).map(|(x, d)| x + s * d).collect(),
+                )
+            };
+            let (up, pp) = shift(eps);
+            let (um, pm) = shift(-eps);
             let (jp, jm) = match (jfun(&up, &pp), jfun(&um, &pm)) {
                 (Ok(a), Ok(b)) => (a, b),
                 (Err(e), _) | (_, Err(e)) => return Outcome::Fail(format!("{label}: replay: {e}")),
             };
-            let fd = (jp - jm) / ((x + h) - (x - h));
-            // Relative to the component, floored at 1e-8 of the largest one,
-            // so a vanishing component is compared on the gradient's scale.
-            let e = (fd - gi).abs() / gi.abs().max(1e-8 * gmax).max(f64::MIN_POSITIVE);
+            let fd = (jp - jm) / (2.0 * eps);
+            let e = (fd - exact).abs() / exact.abs().max(f64::MIN_POSITIVE);
             errs.push(e);
             best = best.min(e);
         }
@@ -673,8 +691,8 @@ fn check_fd(
         }
     }
     let msg = format!(
-        "{} components; worst {worst_label}: relative error {} at the best epsilon (rtol {rtol:e}; over epsilons {trend})",
-        comps.len(),
+        "{} directions; worst {worst_label}: relative error {} at the best epsilon (rtol {rtol:e}; over epsilons {trend})",
+        dirs.len(),
         fmt_e(worst)
     );
     if worst <= rtol {
@@ -689,7 +707,7 @@ fn check_fd(
 /// tape reproduces every macro-step state, every output and the end state
 /// bitwise; and replaying each macro step from its checkpoint with the
 /// controller on reproduces its tape records and the next checkpoint bitwise.
-fn check_replay(spec: &RunSpec<f64>, fwd: &ForwardRun<f64>, u0: &[f64], p: &[f64]) -> Outcome {
+pub fn check_replay(spec: &RunSpec<f64>, fwd: &ForwardRun<f64>, u0: &[f64], p: &[f64]) -> Outcome {
     let back = match Tape::from_jsonl(&fwd.tape.to_jsonl()) {
         Ok(t) => t,
         Err(e) => return Outcome::Fail(format!("tape does not read back: {e}")),
