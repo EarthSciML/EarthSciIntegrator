@@ -33,6 +33,15 @@ SUITES = {
     "plans": "plan.schema.json",
 }
 
+# Spec and conformance data files that must validate: glob under the repository
+# root -> schema file. A glob that matches nothing is a failure only when
+# marked required.
+DOCUMENTS = [
+    ("tests/conformance/m1/cases.json", "cases.schema.json", True),
+    ("spec/tableaus/*.json", "tableau.schema.json", False),
+    ("tests/conformance/m1/reference/*.json", "result.schema.json", False),
+]
+
 
 def load(path):
     with open(path) as f:
@@ -119,9 +128,26 @@ def main():
                     if problem:
                         failures.append(f"{rel}: {problem}")
 
+    for pattern, schema_name, required in DOCUMENTS:
+        paths = sorted(ROOT.glob(pattern))
+        if required and not paths:
+            failures.append(f"{pattern}: missing")
+        if not paths:
+            continue
+        if schema_name not in schemas:
+            failures.append(f"spec/schemas/{schema_name}: missing (needed by {pattern})")
+            continue
+        validator = Draft202012Validator(schemas[schema_name], registry=registry)
+        for path in paths:
+            checked += 1
+            errors = list(validator.iter_errors(load(path)))
+            if errors:
+                best = min(errors, key=lambda e: len(list(e.absolute_path)))
+                failures.append(f"{path.relative_to(ROOT)}: should validate, but {best.json_path}: {best.message}")
+
     for f in failures:
         print("FAIL", f)
-    print(f"{checked} fixtures against {len(schemas)} schemas: {len(failures)} failures")
+    print(f"{checked} files against {len(schemas)} schemas: {len(failures)} failures")
     return 1 if failures else 0
 
 

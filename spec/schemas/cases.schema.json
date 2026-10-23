@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://earthsciml.org/schemas/esm-integrator/0.1.0/cases.schema.json",
+  "title": "EarthSciIntegrator conformance cases",
+  "description": "A list of conformance cases (spec/toy-problems.md §2): a run config, the interval, output times and checks.",
+  "type": "object",
+  "required": ["esm_integrator", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "esm_integrator": {"$ref": "run-config.schema.json#/$defs/semver"},
+    "generated_by": {"type": "string"},
+    "cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "rtol": {"type": "number", "exclusiveMinimum": 0},
+    "case": {
+      "type": "object",
+      "required": ["id", "run_config", "tspan", "checks"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+        "run_config": {
+          "allOf": [
+            {"$ref": "run-config.schema.json"},
+            {"properties": {"model": {"type": "string", "pattern": "^toy:[a-z_]+(/[a-z_]+)?$"}}}
+          ]
+        },
+        "tspan": {
+          "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2
+        },
+        "saveat": {
+          "description": "Output times. Default: the end of the interval only.",
+          "type": "array", "items": {"type": "number"}, "minItems": 1
+        },
+        "checks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/check"}}
+      }
+    },
+    "check": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["check", "vary", "dts", "expected"],
+          "properties": {
+            "check": {"const": "order"},
+            "vary": {"description": "Which step the dts replace: every leaf's fixed dt, or the macro step.", "enum": ["leaf", "macro"]},
+            "dts": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "minItems": 3},
+            "expected": {"type": "number", "exclusiveMinimum": 0},
+            "against": {"enum": ["exact", "reference"]}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["check", "rtol"],
+          "properties": {
+            "check": {"enum": ["oracle", "invariant", "exact_discrete", "reference", "dot_product", "reverse_diff"]},
+            "rtol": {"$ref": "#/$defs/rtol"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["check", "rtol", "epsilons"],
+          "properties": {
+            "check": {"const": "fd_gradient"},
+            "rtol": {"$ref": "#/$defs/rtol"},
+            "epsilons": {"type": "array", "items": {"type": "number", "exclusiveMinimum": 0}, "minItems": 2}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["check"],
+          "properties": {"check": {"const": "replay"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["check", "rtol"],
+          "properties": {
+            "check": {"const": "cross_language"},
+            "rtol": {"$ref": "#/$defs/rtol"},
+            "steps_may_differ": {"type": "boolean"}
+          }
+        }
+      ]
+    }
+  }
+}

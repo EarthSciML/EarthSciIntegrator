@@ -438,7 +438,7 @@
     },
     "linsolve": {
       "oneOf": [
-        {"enum": ["auto", "block_lu", "sparse_block_lu", "banded", "block_tridiagonal", "gmres", "bicgstab", "matrix_free"]},
+        {"enum": ["auto", "dense_lu", "block_lu", "sparse_block_lu", "banded", "block_tridiagonal", "gmres", "bicgstab", "matrix_free"]},
         {
           "type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": false,
           "properties": {
@@ -454,7 +454,8 @@
             "block_tridiagonal": {"type": "object", "additionalProperties": false, "properties": {}},
             "gmres": {"$ref": "#/$defs/krylovOptions"},
             "bicgstab": {"$ref": "#/$defs/krylovOptions"},
-            "matrix_free": {"type": "object", "additionalProperties": false, "properties": {}}
+            "matrix_free": {"type": "object", "additionalProperties": false, "properties": {}},
+            "dense_lu": {"type": "object", "additionalProperties": false, "properties": {}}
           }
         }
       ]

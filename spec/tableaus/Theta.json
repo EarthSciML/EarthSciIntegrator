@@ -1,0 +1,19 @@
+{
+  "controller": null,
+  "embedded_order": null,
+  "error_estimate": "none",
+  "family": "theta",
+  "first_same_as_last": false,
+  "form": "theta",
+  "name": "Theta",
+  "notes": [
+    "theta is the run config's leaf option. Second order when theta = 1/2."
+  ],
+  "order": 1,
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "reference": "spec/adjoint.md §4.5."
+  },
+  "stages": 1,
+  "stiffly_accurate": false
+}

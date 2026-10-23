@@ -1,0 +1,29 @@
+{
+  "A": [
+    [0.0, 0.0, 0.0],
+    [0.3333333333333333, 0.0, 0.0],
+    [0.0, 0.5, 0.0]
+  ],
+  "b": [0.0, 0.0, 1.0],
+  "c": [0.0, 0.3333333333333333, 0.5],
+  "controller": null,
+  "embedded_order": null,
+  "error_estimate": "none",
+  "family": "explicit_rk",
+  "first_same_as_last": false,
+  "form": "butcher",
+  "name": "WRF_RK3",
+  "notes": [
+    "Third order for linear autonomous problems, second order in general (Wicker and Skamarock 2002)."
+  ],
+  "order": 3,
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "WRF/dyn_em/solve_em.F",
+    "line": 610,
+    "note": "Stage fractions dt/3, dt/2, dt of the rk_order == 3 branch (lines 610-622, relative to the directory holding the repositories).",
+    "reference": "Wicker, L. J. and Skamarock, W. C. (2002), Time-splitting methods for elastic models using forward time schemes, Mon. Wea. Rev. 130, 2088-2097."
+  },
+  "stages": 3,
+  "stiffly_accurate": false
+}

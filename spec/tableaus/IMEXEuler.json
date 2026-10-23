@@ -1,0 +1,16 @@
+{
+  "controller": null,
+  "embedded_order": null,
+  "error_estimate": "none",
+  "family": "imex",
+  "first_same_as_last": false,
+  "form": "imex_euler",
+  "name": "IMEXEuler",
+  "order": 1,
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "reference": "architecture §5 (PISM's explicit horizontal at old time); spec/adjoint.md §4.4."
+  },
+  "stages": 1,
+  "stiffly_accurate": false
+}

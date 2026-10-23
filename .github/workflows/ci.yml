@@ -24,6 +24,10 @@ jobs:
           python-version: "3.12"
       - run: pip install "jsonschema>=4.18"
       - run: python tests/conformance/validate_schemas.py
+      - name: M1 cases are up to date with their generator
+        run: |
+          python tests/conformance/m1/make_cases.py
+          git diff --exit-code tests/conformance/m1/cases.json
 
   julia:
     name: Julia ${{ matrix.version }}

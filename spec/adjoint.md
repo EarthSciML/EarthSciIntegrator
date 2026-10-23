@@ -128,8 +128,8 @@ All primitives evaluate at a given $(u, p, t; F)$. Each returns a vector shaped 
 
 ## 4. Method families
 
-Each subsection gives the forward step in its normative form, its linearization, and the adjoint step. Coefficients are never re-derived here. They are taken verbatim, with citation, from OrdinaryDiffEq's tableau packages (D31):
-- `OrdinaryDiffEqSSPRK` and `OrdinaryDiffEqLowOrderRK`/`OrdinaryDiffEqTsit5` for explicit methods (*assumption:* the last two are the packages that hold Tsit5, BS3, RK4 and Heun; confirm when the method catalogue is written);
+Each subsection gives the forward step in its normative form, its linearization, and the adjoint step. Coefficients are never re-derived here. They are the shared tables in [`tableaus/`](tableaus/) (D54), taken with citation from OrdinaryDiffEq's packages (D31; spec/methods.md §1). The one deliberate departure is the Kvaerno3/4 stage times (spec/methods.md §5.4):
+- `OrdinaryDiffEqSSPRK`, `OrdinaryDiffEqLowOrderRK` and `OrdinaryDiffEqTsit5` for explicit methods;
 - `OrdinaryDiffEqRosenbrockTableaus` and `OrdinaryDiffEqRosenbrock`;
 - `OrdinaryDiffEqSDIRK`.
 
@@ -169,7 +169,7 @@ That is one `vjp_u` per stage with $\kappa_i \ne 0$, plus one `vjp_p` and one `v
 u^{(i)} = \sum_{j<i} \big(\alpha_{ij}\, u^{(j)} + h\,\beta_{ij}\, f(u^{(j)}, p, t_n + c_j h; F)\big), \quad i = 1..s, \qquad u_{n+1} = u^{(s)} .
 ```
 
-*Assumption:* the exact $(\alpha, \beta)$ arrays, including SSPRK43's embedded pair, are taken from `OrdinaryDiffEqSSPRK`'s `perform_step!` bodies, which state them inline rather than in tableau structs.
+The exact $(\alpha, \beta)$ arrays, including SSPRK43's embedded pair, are transcribed from `OrdinaryDiffEqSSPRK`'s `perform_step!` bodies, which state them inline rather than in tableau structs (spec/tableaus/, with file and line citations).
 
 *Adjoint.* Seed $\bar u^{(s)} = \lambda_{n+1}$ and $\bar u^{(j)} = 0$ for $j < s$. For $i = s, \dots, 1$, and for each $j < i$ with $(\alpha_{ij}, \beta_{ij}) \ne (0, 0)$:
 
@@ -547,7 +547,7 @@ Fixtures are scaled so a good $\epsilon$ exists. reseact's "never validate at th
   - `Rosenbrock23`, `SSPRK43`, and `TRBDF2(autodiff=false)` as named in architecture §5;
   - one representative per remaining v1 family.
 
-  Both sides must differentiate the same map. The OrdinaryDiffEq solve therefore runs with `adaptive = false` and the tape's step sequence imposed (`dt` and `tstops` from the tape). *Assumption:* ReverseDiff through an adaptive solve would also differentiate the controller, which this spec excludes. ReverseDiff differentiates TRBDF2's Newton iterations, so agreement for implicit families is at the Newton tolerance.
+  Both sides must differentiate the same map. The OrdinaryDiffEq solve therefore runs with `adaptive = false` and the tape's step sequence imposed (`dt` and `tstops` from the tape). *Assumption:* ReverseDiff through an adaptive solve would also differentiate the controller, which this spec excludes. ReverseDiff differentiates TRBDF2's Newton iterations, so agreement for implicit families is at the Newton tolerance. OrdinaryDiffEq's TRBDF2 and Kvaerno methods also take each step's explicit first stage from the previous step's last stage, which equals $f(u_n)$ only to the Newton tolerance (spec/methods.md §5), so the same bound applies to their forward trajectories. OrdinaryDiffEq's Kvaerno3/4 evaluate stage 2 at the wrong time (spec/methods.md §5.4), so they are oracles only on autonomous problems.
 - **Enzyme on a whole step** (Julia, decisions §1.4 option B), for the same toy problems and as a fallback oracle for any leaf.
 
 ### 7.4 Bitwise replay
@@ -568,5 +568,4 @@ Decided on 2026-10-23 and recorded as D39–D44: which leaf integrates the integ
 
 Remaining:
 
-1. *Assumption:* the packages holding the Tsit5, BS3, RK4 and Heun tableaus, and the inline Shu–Osher coefficients of `OrdinaryDiffEqSSPRK` (§4, §4.1). Settled when the methods chapter is written (M1).
-2. *Assumption:* ReverseDiffAdjoint is run with the tape's step sequence imposed, so it does not differentiate the controller (§7.3).
+1. *Assumption:* ReverseDiffAdjoint is run with the tape's step sequence imposed, so it does not differentiate the controller (§7.3).

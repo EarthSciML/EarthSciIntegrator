@@ -60,6 +60,8 @@ Facts are in [`survey.md`](survey.md) and the design is in [`architecture.md`](a
 | D50 | 2026-10-23 | **Under a fixed macro step, `every` firing times are not tstops.** The node fires on the macro step that contains the firing time, as WRF does for `radt` and `chemdt`, so periods need not be multiples of `step.dt`. Under adaptive macro steps, firing times stay tstops. |
 | D51 | 2026-10-23 | **Picard freezing is written only as `method.picard.freeze` on a `solve` node.** The operator-level `freeze` is dropped, so the planner's `frozen_jacobian` output has a single trigger. |
 | D52 | 2026-10-23 | **A leaf whose method has no embedded error estimate must give `dt`.** Omitted `dt` always means adaptive, and the planner refuses it for ForwardEuler, SSPRK33, SSPRK104, WRF_RK3, IMEXEuler and Theta, rather than defaulting by method. |
+| D53 | 2026-10-23 | **M1's toy problems are written by hand in both languages**, behind the operator interface (spec/operator-interface.md), with hand-derived derivatives. `.esm` versions join the conformance suite once U4 gives Rust a public, reentrant right-hand side, and must give the same results. |
+| D54 | 2026-10-23 | **Method coefficients and controller constants are shared data**, `spec/tableaus/*.json`, generated once from the installed OrdinaryDiffEq packages by `tools/tableaus/extract.jl` with source citations. Both implementations read the same numbers, which implements D31's "taken verbatim" and keeps Julia and Rust from drifting. |
 
 ## 1. Adjoint strategy: tradeoffs
 

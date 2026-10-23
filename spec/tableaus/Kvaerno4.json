@@ -1,0 +1,55 @@
+{
+  "A": [
+    [0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.4358665215, 0.4358665215, 0.0, 0.0, 0.0],
+    [0.140737774731968, -0.108365551378832, 0.4358665215, 0.0, 0.0],
+    [0.102399400616089, -0.376878452267324, 0.838612530151233, 0.4358665215, 0.0],
+    [0.157024897860995, 0.117330441357768, 0.61667803039168, -0.326899891110444, 0.4358665215]
+  ],
+  "b": [0.157024897860995, 0.117330441357768, 0.61667803039168, -0.326899891110444, 0.4358665215],
+  "btilde": [-0.054625497244906, -0.494208893625092, 0.221934499759553, 0.762766412610444, -0.4358665215],
+  "c": [0.0, 0.871733043, 0.468238744853136, 1.0, 1.0],
+  "c_ordinarydiffeq": [0.0, 0.4358665215, 0.468238744853136, 1.0, 1.0],
+  "controller": {
+    "beta1": 0.175,
+    "beta2": 0.1,
+    "failfactor": 2,
+    "gamma": 0.9,
+    "pid_accept_safety": 0.81,
+    "pid_beta3": 0,
+    "qmax": 10,
+    "qmax_first_step": 10000,
+    "qmin": 0.2,
+    "qoldinit": 0.0001,
+    "qsteady_max": 1.2,
+    "qsteady_min": 1,
+    "source": {
+      "file": "src/alg_utils.jl",
+      "line": 776,
+      "note": "beta1_default, beta2_default, gamma_default, qmin_default, qmax_default, qsteady_*_default, qmax_first_step_default and failfactor_default for this algorithm; qoldinit and the PID constants from src/integrators/controllers.jl (PIController, PIDController).",
+      "package": "OrdinaryDiffEqCore",
+      "version": "4.19.0"
+    }
+  },
+  "embedded_order": 3,
+  "error_estimate": "embedded_smoothed",
+  "explicit_first_stage": true,
+  "family": "sdirk",
+  "first_same_as_last": false,
+  "form": "sdirk",
+  "name": "Kvaerno4",
+  "notes": [
+    "OrdinaryDiffEq sets the stage times c to [0.0, 0.4358665215, 0.468238744853136, 1.0, 1.0]; this table uses the row sums of A, which the method's order conditions assume (spec/methods.md §5.4, open question 1)."
+  ],
+  "order": 4,
+  "ordinarydiffeq_algorithm": "Kvaerno4",
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "src/imex_tableaus.jl",
+    "line": 1278,
+    "package": "OrdinaryDiffEqSDIRK",
+    "version": "2.9.8"
+  },
+  "stages": 5,
+  "stiffly_accurate": true
+}
