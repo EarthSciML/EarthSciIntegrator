@@ -14,7 +14,7 @@ The planner reads a model and a run config and writes a **plan**: `plan.json` pl
 ```
 
 - `derived/` documents are named `<operator>.<kind>.esm`, where `kind` is one of the `derived` kinds in the schema: `rhs`, `jacobian`, `frozen_jacobian`, `vjp`, `second_order`, `param_jacobian`, `forcing_jacobian`, `residual`, `map`, `limit`, `condition` (architecture §3.2 pass 6). They are serialized in EarthSciAST's canonical form, as EarthSciASTDiff's byte-identical goldens are.
-- `frozen_jacobian` is emitted for an operator used by a `solve` node with `picard.freeze`. The forward iteration uses the frozen Jacobian; the adjoint needs the full residual Jacobian at the converged solution, emitted as `jacobian` (spec/adjoint.md §4.6, open question 8 there).
+- `frozen_jacobian` is emitted for an operator used by a `solve` node with `picard.freeze`. The forward iteration uses the frozen Jacobian; the adjoint needs the full residual Jacobian at the converged solution, emitted as `jacobian` (spec/adjoint.md §4.6).
 - `plan.report.json` holds everything that legitimately differs between implementations: the planner's name and version, timings, and the measured errors behind each validation check. Its format is not specified.
 
 ## 2. Canonical form

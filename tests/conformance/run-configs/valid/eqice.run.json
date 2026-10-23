@@ -1,6 +1,6 @@
 {
   "esm_integrator": "0.1.0",
-  "description": "eqice, PISM's IceModel::step (architecture §4.4, M4b). The schedule and step are the architecture's; the operator selectors are filled in, and their component and variable names are illustrative until M4b binds them to eqice's assembled document.",
+  "description": "eqice, PISM's IceModel::step (architecture §4.4, M4b). The schedule and step are the architecture's (year-scale durations written in days, D45); the operator selectors are filled in, and their component and variable names are illustrative until M4b binds them to eqice's assembled document.",
   "model": "eqice.esm",
   "operators": {
     "ssa": {"select": {"components": "ssa"}},
@@ -33,8 +33,8 @@
     {"leaf": "source", "alg": "ForwardEuler"},
     {"map": "iceberg_removal"},
     {"subcycle": {"leaf": "hydrology", "alg": "ForwardEuler"}, "limits": ["hydrology.cfl", "hydrology.diffusive"]},
-    {"every": {"map": "bed_deformation"}, "period": "10 yr"}
+    {"every": {"map": "bed_deformation"}, "period": "3650 day"}
   ]},
-  "step": {"limits": ["sb.cfl_2d", "energy.cfl_3d", "geometry.diffusivity", {"max": "60 yr"}],
-           "hit": ["output", "forcing_records"], "resolution": "1 s"}
+  "step": {"limits": ["sb.cfl_2d", "energy.cfl_3d", "geometry.diffusivity", {"max": "21900 day"}],
+           "hit": ["output", "forcing_refresh"], "resolution": "1 s"}
 }

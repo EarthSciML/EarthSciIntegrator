@@ -26,12 +26,12 @@ A run configuration says how to integrate one `.esm` model: how its right-hand s
 
 A duration is one of:
 - a positive number of seconds;
-- a string `"<number> <unit>"`, with the space optional, where the unit is `s`, `min` (60 s), `h` (3600 s), `day` (86 400 s) or `yr`;
+- a string `"<number> <unit>"`, with the space optional, where the unit is `s`, `min` (60 s), `h` (3600 s) or `day` (86 400 s);
 - the qualified name of a model parameter whose value is in seconds (WRF's `chemdt`). It is read once, at plan time, from the parameter's default or the value the run supplies.
 
 The words `auto`, `step` and `accumulated` are reserved and are never parameter names in a duration.
 
-*Assumption:* `yr` is 365 days (31 536 000 s), PISM's `365_day` calendar year. *Open question:* whether `yr` should follow the model's declared calendar instead.
+Years and months are not units, because they are not constant durations (D45). Year-scale settings are written in days (eqice's bed-deformation period is `"3650 day"`). Calendar-aware periods, if a model needs them, would be a separate construct in a later version.
 
 ### 2.3 `"auto"`
 
@@ -90,7 +90,7 @@ The schedule is a tree of nodes. Every node advances the model over an interval 
 - `jacobian`: `symbolic` (EarthSciASTDiff band models), `ad` (DifferentiationInterface, Julia only, D38) or `fd`.
 - `linsolve`: the W-matrix solver of architecture §6.1. As an object it carries options: `block_lu.pivot`, `refine` (iterative-refinement sweeps for low-precision factors, architecture §8), Krylov `restart`, `rtol`, `maxiter`, `precond` and `fallback` (the preconditioner tried when the first fails to converge).
 - `domain`: `nonnegative` (`"all"` or a list of variables), `on_violation` (`reject`, the default, D19; or `clip`), and `check_stages` (also check Rosenbrock stage values).
-- `imex` (§4.5), `frozen` (§4.6), `partition` (§6), `bind_dt` (§4.4) and `theta` (the θ-method's off-centring).
+- `imex` (§4.5), `implicit_solve` (§4.5), `frozen` (§4.6), `partition` (§6), `bind_dt` (§4.4) and `theta` (the θ-method's off-centring).
 
 ### 4.3 `coupled`
 
@@ -107,13 +107,13 @@ A bound parameter is a constant of the adjoint's frozen tape, so it cannot appea
 
 ### 4.5 IMEX partitions
 
-`imex: {"explicit": ..., "implicit": ...}` splits a leaf's terms between the explicit and implicit parts of an IMEX method. Entries are operator names, or locality names that select the leaf's terms of that locality. Every term of the leaf must land in exactly one part; `explicit` may be omitted, meaning "everything not implicit". In v1 the only IMEX method is `IMEXEuler` (D35), with the implicit part solved to convergence by Newton with the leaf's `linsolve`.
+`imex: {"explicit": ..., "implicit": ...}` splits a leaf's terms between the explicit and implicit parts of an IMEX method. Entries are operator names, or locality names that select the leaf's terms of that locality. Every term of the leaf must land in exactly one part; `explicit` may be omitted, meaning "everything not implicit". In v1 the only IMEX method is `IMEXEuler` (D35). Its implicit part is solved to convergence by Newton with the leaf's `linsolve` unless `implicit_solve: "linearized"` asks for a single linearized step (D43); the two coincide when the implicit terms are linear in the state.
 
 ### 4.6 `frozen`
 
 `frozen: [...]` on a `leaf`, `coupled` or `split_explicit` node lists operators whose tendency is evaluated once, at the start of each step of that node, and added as a constant to every stage of that step (WRF `rk_addtend_dry`). An entry `{"every": op, "period": ..., "hold": "tendency"}` is re-evaluated only on steps where `every` fires (§4.9) and held in between (WRF `radt`).
 
-*Clarification of architecture §4.3:* `frozen` is an option of the node whose stages it feeds, not a standalone node. Alone in a `sequence`, a frozen tendency would just be a forward Euler step.
+`frozen` is an option of the node whose stages it feeds, not a standalone node (D47). Alone in a `sequence`, a frozen tendency would just be a forward Euler step.
 
 ### 4.7 `sequence` and `strang`
 
@@ -129,7 +129,7 @@ A bound parameter is a constant of the adjoint's frozen tape, so it cannot appea
 `{"every": node, "period": P, "phase": φ, "hold": ...}`.
 
 - The node **fires** in an invocation over `[t, t+Δ]` when some `φ + kP`, `k ≥ 0`, lies in `[t, t+Δ)`. Firing times are tstops (§5), so they always fall on the start of a macro step. With a fixed `step.dt`, the planner refuses a `P` or `φ` that is not a multiple of it.
-- When it fires, the child runs over an interval of length Δₑ ending at `t+Δ`, where Δₑ is the time since the end of the previous firing (or since the start of the run). This is how WRF-Chem advances chemistry by `chemdt` and how PISM's bed deformation accumulates its step. Bindings with `"node"` see Δₑ.
+- When it fires, the child runs over an interval of length Δₑ ending at `t+Δ`, where Δₑ is the time since the end of the previous firing (or since the start of the run). This is how WRF-Chem advances chemistry by `chemdt` and how PISM's bed deformation accumulates its step (D48). Bindings with `"node"` see Δₑ.
 - When it does not fire, it is the identity.
 - `hold: "tendency"`: at a firing, the child's tendency is evaluated and then added as a constant to the right-hand side of every leaf among the enclosing node's other descendants, until the next firing. The child itself is not advanced. Its child must then be a single `leaf`.
 
@@ -150,8 +150,7 @@ Exactly one of:
 
 Then, for both:
 - **tstops** are the times named by `hit`:
-  - `forcing_refresh`: the times any forcing provider's two-record bracket changes, which start forcing epochs (architecture §7.5);
-  - `forcing_records`: the record timestamps of every forcing provider. For a provider that brackets consecutive records these are the same times;
+  - `forcing_refresh`: the times any forcing provider's two-record bracket changes, which start forcing epochs (architecture §7.5). For a provider that brackets consecutive records these are its record timestamps. This is the only forcing hit source (D46);
   - `output`, `restart`: the output and restart times;
   - `events`: preset and periodic event times of the model.
 
@@ -159,7 +158,7 @@ Then, for both:
 - `hit_multiples` additionally makes every multiple of a duration a tstop.
 - `resolution` floors Δ to a multiple of it, and Δ is never less than one `resolution` unless a tstop is closer.
 - **Ties.** Each macro step records the reason for its size: the first source achieving the minimum, in the order limits as listed, then `max`, then tstops. The reason is deterministic, so two implementations agree on it (PISM bugs.md #11).
-- *Clarification of architecture §4.3:* the macro step has no error control of its own. Leaves adapt inside it. A schedule whose root is a single adaptive leaf behaves like an ordinary adaptive integration, because the planner then gives that leaf's accepted steps the role of macro steps.
+- The macro step has no error control of its own (D49). Leaves adapt inside it. A schedule whose root is a single adaptive leaf behaves like an ordinary adaptive integration, because the planner then gives that leaf's accepted steps the role of macro steps.
 
 ## 6. Partition
 
@@ -184,7 +183,7 @@ Time, dt, error norms, reductions and adjoint accumulators are always f64 and ar
 
 ### 7.2 `adjoint`
 
-- `functional`: the reduction (`mean` or `sum`) of one quantity, restricted by `where` (index-set name → 1-based index or inclusive range), `over` the run: `time` (the integral term, spec/adjoint.md §2.1), `final` (the end state), or `saveat` (a point term at each output time).
+- `functional`: the reduction (`mean` or `sum`) of one quantity, restricted by `where` (index-set name → 1-based index or inclusive range), `over` the run: `time` (the integral term, spec/adjoint.md §2.1), `final` (the end state), or `saveat` (a point term at each output time). For `time`, `integrate_in` names the leaf, by node id, that integrates the term; the default is the last leaf of the macro-step schedule (D39).
 - `wrt`: what to differentiate with respect to. `params:numeric` is every numeric scalar parameter; `params:<pattern>`, `fields:<pattern>` (gridded array parameters) and `forcing:<pattern>` (forcing fields, accumulated per provider record, D5) take a glob over qualified names, where `*` matches any characters including dots; `u0` is the initial state.
 - `checkpoint`: `every` (`macro_step` or a count of macro steps), `store` levels, and the `schedule` the planner computes (D34): `all`, `revolve` or `multilevel`, with `snapshots` slots.
 

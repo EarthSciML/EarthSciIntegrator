@@ -68,10 +68,10 @@
       "enum": ["pointwise", "column", "stencil", "global"]
     },
     "duration": {
-      "description": "Seconds as a positive number, a string '<number> <unit>' with unit s, min, h, day or yr (spec/run-config.md §2.2), or the qualified name of a model parameter holding seconds. The words auto, step and accumulated are reserved and are never parameter names here.",
+      "description": "Seconds as a positive number, a string '<number> <unit>' with unit s, min, h or day (spec/run-config.md §2.2; years and months are not constant durations, D45), or the qualified name of a model parameter holding seconds. The words auto, step and accumulated are reserved and are never parameter names here.",
       "oneOf": [
         {"type": "number", "exclusiveMinimum": 0},
-        {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)? ?(s|min|h|day|yr)$"},
+        {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)? ?(s|min|h|day)$"},
         {"allOf": [{"$ref": "#/$defs/qualifiedName"}, {"not": {"enum": ["auto", "step", "accumulated"]}}]}
       ]
     },
@@ -172,6 +172,7 @@
         "id": {"$ref": "#/$defs/nodeId"},
         "alg": {"$ref": "#/$defs/alg"},
         "theta": {"description": "Off-centring of the Theta method, in [0, 1].", "type": "number", "minimum": 0, "maximum": 1},
+        "implicit_solve": {"description": "How an IMEX or implicit Euler step solves its implicit part: to convergence (default), or one linearized step (D43).", "enum": ["converged", "linearized"]},
         "dt": {
           "description": "Fixed substep, or 'step' (one step of the node's Δ), or 'accumulated' (one step of the time since this leaf last ran). Omitted: adaptive under control.",
           "oneOf": [{"$ref": "#/$defs/duration"}, {"enum": ["step", "accumulated"]}]
@@ -518,7 +519,7 @@
         "limits": {"$ref": "#/$defs/limits"},
         "hit": {
           "type": "array", "uniqueItems": true,
-          "items": {"enum": ["forcing_refresh", "forcing_records", "output", "restart", "events"]}
+          "items": {"enum": ["forcing_refresh", "output", "restart", "events"]}
         },
         "hit_multiples": {"$ref": "#/$defs/duration"},
         "resolution": {"$ref": "#/$defs/duration"}
@@ -624,7 +625,11 @@
             ]
           }
         },
-        "over": {"enum": ["time", "final", "saveat"]}
+        "over": {"enum": ["time", "final", "saveat"]},
+        "integrate_in": {
+          "description": "Node id of the leaf that integrates the time-integral term (D39). Default: the last leaf of the macro-step schedule.",
+          "$ref": "#/$defs/nodeId"
+        }
       },
       "required": ["over"],
       "oneOf": [{"required": ["mean"]}, {"required": ["sum"]}]

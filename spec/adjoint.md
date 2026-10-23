@@ -66,7 +66,7 @@ The run config's `adjoint.functional` (architecture §4.2, §10) defines
 
 - **The integral term is discretized as an integrated auxiliary state** (D26). The planner adds a state $q$ with $q' = \psi(u, p, t)$ and $q(t_0) = 0$, and sets $\int \psi \approx q(t_f)$. The integral is therefore the quadrature the forward method induces, and its adjoint is that method's adjoint applied to the augmented state $(u, q)$. Because nothing reads $q$, $\bar q \equiv 1$ throughout the reverse pass. Each stage's contribution reduces to the stage cotangent of $q$ times $\nabla_u \psi$ and $\nabla_p \psi$ at that stage.
 
-- *Open question 1.* Under splitting, $\psi$ reads state that several leaves write. Which leaf integrates $q$ changes the quadrature. Proposal: the planner attaches $q$ to the last leaf of the macro-step sequence by default, overridable in `adjoint.functional`. The architecture does not yet say.
+- **Which leaf integrates $q$** (D39). Under splitting, $\psi$ reads state that several leaves write, and the leaf that integrates $q$ decides the quadrature. The planner attaches $q$ to the last leaf of the macro-step schedule, so $\psi$ sees the state after every process. `adjoint.functional.integrate_in` names a different leaf by node id.
 
 ### 2.2 The tape and what is held fixed
 
@@ -98,7 +98,7 @@ Julia's forward sensitivities push `Dual` numbers through the state, stages, err
   - This tangent is the exact linearization of $\Phi_{\text{tape}}$. **The M4 dot-product gate (adjoint against forward-sensitivity tangent) uses this mode.**
 - **`dt_tangents = true` (adaptive map).** This mode keeps reseact's forward-sensitivity lane. It is validated against finite differences of the adaptive map. It is never compared with the adjoint by a dot product.
 
-*Open question 2.* D36 describes only the second mode, and D13 says error norms are "always f64" without saying whether a `Dual` with f64 value type counts. This section assumes it does, so dt tangents survive the norm only when asked for. Confirm both points.
+Both modes are decided (D40). A `Dual` whose value type is f64 satisfies D13's "error norms are always f64" (D41), so with `dt_tangents = true` the partials flow through the norm into the controller; with `dt_tangents = false` they are stripped before it.
 
 ### 2.4 Steps never straddle discontinuities
 
@@ -314,7 +314,7 @@ For an explicit first stage ($a_{11} = 0$), $W_1 = I$ and the solve is a copy. T
 - **Refactor.** Form $J(Z_i)$ from bands and factor $W_i$. This is the default for `block_lu`, `sparse_block_lu` and `banded`, where a factorization is cheap per cell or per column.
 - **Iterate.** Use the forward factorization as a preconditioner for a Krylov solve or iterative refinement on $W_i^\top$, with `vjp_u` supplying $J(Z_i)^\top v$. This is the default for `krylov` leaves.
 
-*Open question 3.* Architecture §6.1 says transposed solves "reuse the forward factorizations". That is exact for Rosenbrock, but for SDIRK only if the forward Newton refreshed $J$ at the converged stage. The cost of refactoring per stage at 3-D column scale has not been measured.
+These defaults are decided (D42). Architecture §6.1's "reuse the forward factorizations" is exact for Rosenbrock only; for SDIRK the forward factorization is at most a preconditioner. *Informative:* the cost of refactoring per stage at 3-D column scale has not been measured.
 
 ### 4.4 IMEX Euler
 
@@ -334,7 +334,7 @@ W^\top \omega = \lambda_{n+1}, \qquad
 
 and $\bar F$ likewise.
 
-*Assumption:* the implicit part is solved to convergence. If a configuration instead takes a single linearized (Rosenbrock–Euler) step on a nonlinear $f_I$, then $W$ is formed at $u_n$ and the step is a one-stage Rosenbrock method; its adjoint is §4.2 with one stage, including `hess_u`. The run-config schema MUST make that choice explicit rather than inferring it.
+The implicit part is solved to convergence by default (D43). The leaf option `implicit_solve: "linearized"` instead takes a single linearized (Rosenbrock–Euler) step: $W$ is formed at $u_n$ and the step is a one-stage Rosenbrock method, whose adjoint is §4.2 with one stage, including `hess_u`. When $f_I$ is linear in $u$ the two coincide, and the planner records `converged`.
 
 ### 4.5 Legacy fixed steps: θ-method, forward Euler, backward Euler
 
@@ -510,9 +510,7 @@ The tangent side uses the same stage values and the same exact-stage linearizati
 
 Sources of the tangent:
 - **Julia:** forward sensitivities with `dt_tangents = false` (§2.3).
-- **Rust:** no forward sensitivities in v1 (D36). The tangent-linear step is the linearization written in each subsection of §4, implemented with `jvp_u` and the forward solves.
-
-*Open question 4.* Whether Rust's exact dot-product gate needs this tangent-linear step, which is extra code per family, or whether Rust gates on the finite-difference test (§7.2) plus agreement with Julia's gradient. The M4 gate text says "exact dot-product (adjoint against the forward-sensitivity tangent)", which Rust cannot meet without one.
+- **Rust:** none in v1. Rust has no forward sensitivities (D36) and does not write a tangent-linear step per family. Rust adjoints are gated instead by the finite-difference test (§7.2) and by agreement with Julia's gradient at tolerance (§7.5, conformance tier 3) (D44). The exact dot-product gate of M4 is Julia's.
 
 The same identity is checked for the composition over one macro step and over a whole run, through the combinators of §5.
 
@@ -549,11 +547,9 @@ Julia and Rust gradients for the same plan agree to tolerance (conformance tier 
 
 ## 8. Open questions and assumptions, collected
 
-1. Which leaf integrates the integral term's accumulator under splitting (§2.1).
-2. Whether D36's forward sensitivities get a frozen-tape mode, and how D13's "f64 norms" reads for `Dual` numbers (§2.3).
-3. The cost of exact transposed SDIRK stage solves at the converged stage, versus reusing a forward factorization formed elsewhere (§4.3).
-4. Whether Rust needs a tangent-linear step for the exact dot-product gate (§7.1).
-5. *Assumption:* the packages holding the Tsit5, BS3, RK4 and Heun tableaus, and the inline Shu–Osher coefficients of `OrdinaryDiffEqSSPRK` (§4, §4.1).
-6. *Assumption:* IMEX Euler's implicit part is converged, not one linearized step, unless the run config says otherwise (§4.4).
-7. *Assumption:* ReverseDiffAdjoint is run with the tape's step sequence imposed, so it does not differentiate the controller (§7.3).
-8. *Finding for the architecture:* `solve` nodes with `freeze` need the unfrozen residual Jacobian for the adjoint, so the planner emits both band models (§4.6). Architecture §3.4 does not yet say this.
+Decided on 2026-10-23 and recorded as D39–D44: which leaf integrates the integral term (§2.1), the two forward-sensitivity modes and `Dual` numbers in the f64 norm (§2.3), SDIRK transposed solves (§4.3), IMEX Euler's converged default (§4.4), and Rust's adjoint gate (§7.1).
+
+Remaining:
+
+1. *Assumption:* the packages holding the Tsit5, BS3, RK4 and Heun tableaus, and the inline Shu–Osher coefficients of `OrdinaryDiffEqSSPRK` (§4, §4.1). Settled when the methods chapter is written (M1).
+2. *Assumption:* ReverseDiffAdjoint is run with the tape's step sequence imposed, so it does not differentiate the controller (§7.3).

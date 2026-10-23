@@ -182,16 +182,16 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 | `sequence` | Children in order, each over `Δ`. This is Lie–Trotter, and PISM's ordered step when children include maps and solves. |
 | `strang` | `a(Δ/2) b(Δ) a(Δ/2)`, generalized symmetrically for n children. |
 | `subcycle` | The child `n` times with `Δ/n`, or adaptively under its own `limits` (hydrology, fire `tbound`). |
-| `every` | The child runs only when `t` crosses multiples of `period` (+ `phase`). With `hold: "tendency"`, its tendency is evaluated at the crossing and added as a constant to sibling leaves until the next crossing (WRF `radt`). |
+| `every` | The child runs only when `t` crosses multiples of `period` (+ `phase`), and then advances by the time since its last firing (D48). With `hold: "tendency"`, its tendency is evaluated at the crossing and added as a constant to sibling leaves until the next crossing (WRF `radt`). |
 | `coupled` | Monolithic integration of the sum of its operators (no splitting error). `imex: {explicit: [...], implicit: [...]}` selects ARK. If any algebraic operators are included, it becomes an index-1 DAE (§6.4). |
-| `frozen` | The operator's tendency is evaluated once at the start of the enclosing step and held across all stages (WRF `rk_addtend_dry`). |
+| `frozen` | An option of the `leaf`, `coupled` or `split_explicit` node it feeds, not a standalone node (D47): the listed operators' tendency is evaluated once at the start of each step of that node and held across all stages (WRF `rk_addtend_dry`). |
 | `split_explicit` | WRF RK3 (Wicker–Skamarock: Δ/3, Δ/2, Δ) on `slow`, with `fast` integrated by forward–backward substeps (vertically implicit, `epssm` off-centring) inside each stage. *Spec in v1, implementation in M7.* |
 | `map` | `u ← M(u, p, t, Δ)`: calving, mask consistency, level-set reinit, iceberg removal. A model writes a map as an observed that reads `dt` (eqice `stage2/geometry.esm`), so the run config names (target ← observed) pairs and binds `dt`. Maps may also act on parameters (parameter `update` rules). |
 | `solve` | Nested nonlinear solve for algebraic unknowns with everything else frozen (§6.3). |
 
 **`bind_dt`** sets a model parameter to the step actually taken, e.g. `{"wsm6.dtcld": "leaf"}`. A `leaf` with `alg: "ForwardEuler"`, `dt: "step"` and a bound dt reproduces a legacy WRF/PISM increment *exactly*, because the `.esm` already writes these as `(x_out − x_in)/dt` tendencies.
 
-**Step control** is `Δ = min(error control, limits…, distance to the next tstop)`, then `hit_multiples` and a floor at `resolution`, with a deterministic reason string on ties (PISM bugs.md #11).
+**Step control** is `Δ = min(limits…, distance to the next tstop)`, then `hit_multiples` and a floor at `resolution`, with a deterministic reason string on ties (PISM bugs.md #11). The macro step has no error control of its own; leaves adapt inside it, and a schedule whose root is a single adaptive leaf takes that leaf's accepted steps as macro steps (D49). The full semantics are in [`../spec/run-config.md`](../spec/run-config.md).
 
 ### 4.4 Examples (illustrative)
 
@@ -242,10 +242,10 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
    {"leaf": "source", "alg": "ForwardEuler"},
    {"map": "iceberg_removal"},
    {"subcycle": {"leaf": "hydrology", "alg": "ForwardEuler"}, "limits": ["hydrology.cfl", "hydrology.diffusive"]},
-   {"every": {"map": "bed_deformation"}, "period": "10 yr"}
+   {"every": {"map": "bed_deformation"}, "period": "3650 day"}
  ]},
- "step": {"limits": ["sb.cfl_2d", "energy.cfl_3d", "geometry.diffusivity", {"max": "60 yr"}],
-          "hit": ["output", "forcing_records"], "resolution": "1 s"}}
+ "step": {"limits": ["sb.cfl_2d", "energy.cfl_3d", "geometry.diffusivity", {"max": "21900 day"}],
+          "hit": ["output", "forcing_refresh"], "resolution": "1 s"}}
 ```
 
 **EqWeFiC, the WRF step (M7, sketch):**
@@ -316,7 +316,7 @@ W is kept structured and never assembled dense:
 | `krylov` | global sparse | GMRES(m) and BiCGStab, distributed (D12). Julia: Krylov.jl (`gmres`, `fgmres`, `bicgstab`, with `M=`/`N=` `ldiv` preconditioners). Rust: faer's `bicgstab` with its `Precond` traits, plus an in-house GMRES(m). Preconditioners, in-house in both: block-Jacobi ILU(0); ASM (overlap 1, LU subdomains); column-block-Jacobi for 3-D implicit operators. |
 | `matrix_free` | any | `J·v` from band models, with DifferentiationInterface pushforwards (Julia) or FD (Rust) as a fallback. |
 
-**Transposed solves for the adjoint** reuse the forward factorizations: LUᵀ, and Krylov on `Jᵀ` with the transposed preconditioner.
+**Transposed solves for the adjoint** reuse the forward factorizations for Rosenbrock, whose W is formed at the step's start: LUᵀ, and Krylov on `Jᵀ` with the transposed preconditioner. SDIRK needs W at each converged stage instead (D42): per-cell and per-column solvers refactor there, and Krylov leaves use the forward factorization as a preconditioner for the exact transposed system.
 
 ### 6.2 Nonlinear solvers
 
@@ -623,7 +623,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | M1 | Core in both languages: ERK/SSP, Rosenbrock, SDIRK; PI control; `leaf`/`sequence`/`strang`/`subcycle`/`map`; batched block LU; tape; method adjoints. Julia on the SciMLBase interfaces (D33) with Krylov.jl and NonlinearSolve.jl (D32). | Conformance tiers 2–3 on toy problems, including the `ReverseDiffAdjoint` oracle per family |
 | M2 | Planner v1: provenance, locality, DOF sets, band models, strategy rules, plan goldens | Tier 1 on reseact-shaped fixtures |
 | M3 | reseact forward, shared memory: shards, lane pools (per-cell dt), dynamic re-sharding, epochs | Matches the prototype's native reference trajectory (`dt_scope: global`) **at no more than the prototype's native-reference wall time**; `dt_scope: cell` bitwise invariant to shard and thread count |
-| M4 | reseact adjoint: params, then u0, gridded emissions, forcing (needs U7, U8, U9 and, in Rust, U12); forward sensitivities with dt tangents in Julia (D36) | Agreement with the prototype's 48 h gradient to ≤1e-9 relative (D16); exact dot-product (adjoint against the forward-sensitivity tangent) and replay |
+| M4 | reseact adjoint: params, then u0, gridded emissions, forcing (needs U7, U8, U9 and, in Rust, U12); forward sensitivities with dt tangents in Julia (D36) | Agreement with the prototype's 48 h gradient to ≤1e-9 relative (D16); exact dot-product (adjoint against the frozen-tape forward-sensitivity tangent, D40; Julia, while Rust is gated by finite differences and agreement with Julia, D44) and replay |
 | M4b | eqice on shared memory (D37): `solve` nodes (Newton–Krylov, Picard, PTC), IMEX columns, PISM limits, maps; needs U6 and U9's `column_block` | Test F (31×31×61) against the C++ dumps |
 | M5 | MPI: ranks, halo exchange, deterministic reductions, distributed I/O; multi-rank conformance in CI | reseact at 2×2.5° and 0.25° |
 | M5g | Julia XLA GPU: kernel-layer lowering, one program per leaf step, lane pools at fixed capacity, in-node multi-GPU via XLA collectives, device checkpoints | reseact forward and adjoint on GPU match CPU to tolerance, in two configurations (D28): f64 state, and mixed (f32 transport state, 16-bit W, chemistry on CPU). Bitwise run-to-run on one device |
