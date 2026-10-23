@@ -210,7 +210,7 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
                 abstol[variable_dofs(prob, name)] .= Float64(v)
             end
         end
-        tol = Tolerances(reltol, abstol)
+        tol = Tolerances(reltol, abstol, writes(opsum, prob.N))
     end
     controller = controller_kind(let c = get(ctrl, "controller", "auto"); c == "auto" ? "PI" : c end)
     maxiters = haskey(ctrl, "maxiters") ? Int(ctrl["maxiters"]) : (dt === nothing ? 1_000_000 : typemax(Int))

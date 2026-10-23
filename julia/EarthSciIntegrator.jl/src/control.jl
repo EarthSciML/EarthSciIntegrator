@@ -11,26 +11,30 @@ primal(x::Real) = x
 _f64(x) = Float64(primal(x))
 
 """
-    Tolerances(reltol, abstol)
+    Tolerances(reltol, abstol, dofs=eachindex(abstol))
 
-`reltol` is a scalar; `abstol` holds one absolute tolerance per DOF of the leaf.
+`reltol` is a scalar; `abstol` holds one absolute tolerance per entry of the
+state vector; `dofs` are the (1-based, ascending) DOFs the leaf's operators
+write, over which the error norm and the first step sum (spec/methods.md §7, §9).
 """
 struct Tolerances
     reltol::Float64
     abstol::Vector{Float64}
+    dofs::Vector{Int}
 end
+Tolerances(reltol, abstol) = Tolerances(reltol, abstol, collect(eachindex(abstol)))
 
 """
     error_norm(e, un, un1, tol) -> Float64
 
 spec/methods.md §7: `sqrt(Σⱼ (eⱼ/scⱼ)² / N)` with `scⱼ = abstolⱼ + reltol·max(|u_{n,j}|, |u_{n+1,j}|)`,
-in f64 whatever the state type, summed sequentially in ascending DOF order with
-no fused multiply-add.
+over the `N` DOFs the leaf writes (`tol.dofs`), in f64 whatever the state type,
+summed sequentially in ascending DOF order with no fused multiply-add.
 """
 function error_norm(e, un, un1, tol::Tolerances)
-    N = length(e)
+    N = length(tol.dofs)
     s = 0.0
-    @inbounds for j in 1:N
+    @inbounds for j in tol.dofs
         sc = tol.abstol[j] + tol.reltol * max(abs(_f64(un[j])), abs(_f64(un1[j])))
         r = _f64(e[j]) / sc
         s = s + r * r
@@ -191,16 +195,20 @@ the number of right-hand-side evaluations made.
 """
 function initial_step(f!, u0, t0::Float64, order::Integer, tol::Tolerances, dtmin::Float64, dtmax::Float64)
     N = length(u0)
+    D = tol.dofs                 # the DOFs the leaf writes (spec/methods.md §9 with §7)
     dtmin_ = nextfloat(max(dtmin, eps(t0)))
     smalldt = max(dtmin_, 1.0e-6)
-    sk = [tol.abstol[j] + abs(_f64(u0[j])) * tol.reltol for j in 1:N]
+    sk = zeros(N)
+    for j in D
+        sk[j] = tol.abstol[j] + abs(_f64(u0[j])) * tol.reltol
+    end
     rms(x) = (s = 0.0; for v in x; s = s + v * v; end; sqrt(s / length(x)))
-    d0 = rms([_f64(u0[j]) / sk[j] for j in 1:N])
+    d0 = rms([_f64(u0[j]) / sk[j] for j in D])
     f0 = similar(u0)
     f!(f0, u0, t0)
     nf = 1
-    any(x -> isnan(_f64(x)), f0) && return dtmin_, nf
-    d1 = rms([_f64(f0[j]) / sk[j] for j in 1:N])
+    any(j -> isnan(_f64(f0[j])), D) && return dtmin_, nf
+    d1 = rms([_f64(f0[j]) / sk[j] for j in D])
     isnan(d1) && return dtmin_, nf
     if d0 < 1.0e-5 || d1 < 1.0e-5
         h0 = smalldt
@@ -212,8 +220,8 @@ function initial_step(f!, u0, t0::Float64, order::Integer, tol::Tolerances, dtmi
     f1 = similar(u0)
     f!(f1, u1, t0 + h0)
     nf += 1
-    f1 == f0 && return max(dtmin_, 100 * h0), nf
-    d2 = rms([(_f64(f1[j]) - _f64(f0[j])) / sk[j] for j in 1:N]) / h0
+    f1[D] == f0[D] && return max(dtmin_, 100 * h0), nf
+    d2 = rms([(_f64(f1[j]) - _f64(f0[j])) / sk[j] for j in D]) / h0
     m = max(d1, d2)
     if m <= 1.0e-15
         h1 = max(smalldt, h0 * 0.001)

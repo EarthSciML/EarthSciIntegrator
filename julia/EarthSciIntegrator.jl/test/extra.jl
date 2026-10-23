@@ -11,7 +11,7 @@ xcase(id, model, schedule, step, tspan; adjoint = nothing, saveat = nothing, che
     saveat === nothing || (c["saveat"] = saveat)
     c
 end
-const XGRAD = [Dict{String, Any}("check" => "dot_product", "rtol" => 1e-12, "scale" => "terms"),
+const XGRAD = [Dict{String, Any}("check" => "dot_product", "rtol" => 1e-12),
     Dict{String, Any}("check" => "fd_gradient", "rtol" => 1e-6, "epsilons" => [1e-3, 1e-4, 1e-5]),
     Dict{String, Any}("check" => "replay")]
 xgrad(q, over = "final", how = "sum") = Dict{String, Any}("functional" => Dict{String, Any}(how => q, "over" => over),
@@ -78,10 +78,47 @@ const ADAPTIVE_EXPLICIT = ["Heun", "RK4", "BS3", "Tsit5", "SSPRK43"]
         Dict("leaf" => "decay", "alg" => "SSPRK43", "control" => Dict("reltol" => 1e-6, "abstol" => 1e-8),
             "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")), Dict("dt" => 2), [0, 2.0];
         adjoint = xgrad("u"), checks = XGRAD))
+    # A leaf whose operators write a subset of the state: transport writes A only,
+    # so its error norm and first step sum over A's 64 DOFs (spec/methods.md §7, §9).
+    tr = xcase("x.advection_reaction.transport_only", "toy:advection_reaction",
+        Dict("leaf" => "transport", "alg" => "Tsit5", "control" => Dict("reltol" => 1e-8, "abstol" => 1e-10)),
+        Dict("dt" => 0.1), [0, 0.1]; adjoint = xgrad("A"),
+        checks = vcat(XGRAD, [Dict{String, Any}("check" => "oracle", "rtol" => 1e-12)]))
+    run_xcase(tr)
+    let run = build_case(tr)
+        @test run.root.tol.dofs == collect(1:64)
+        forward!(run)
+        @test run.u[65:128] == run.u0[65:128]
+        # The same run with the norm over the whole state takes different steps.
+        whole = EarthSciIntegrator.Tolerances(run.root.tol.reltol, run.root.tol.abstol)
+        @test whole.dofs == collect(1:128)
+        l = run.root
+        lw = EarthSciIntegrator.LeafNode(l.id, l.opnames, l.ops, l.tab, l.method, l.dt, whole, l.dt0, l.dtmin, l.dtmax,
+            l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings)
+        cs = EarthSciIntegrator.ControllerState(l.tab.controller)
+        ub = EarthSciIntegrator.leaf_forward(lw, cs, copy(run.u0), run.p, 0.0, 0.1, "0/root", 0.1, [0.1])
+        @test ub.record.steps != [s for r in run.tape.records if r isa LeafRecord for s in r.steps]
+    end
     # bind_dt: the leaf's step bound to a parameter, which gets no cotangent.
     run_xcase(xcase("x.forced_decay.bind_dt", "toy:forced_decay",
         Dict("leaf" => "decay", "alg" => "RK4", "dt" => 0.1, "bind_dt" => Dict("omega" => "node")), Dict("dt" => 0.5), [0, 2.0];
         adjoint = xgrad("u"), checks = XGRAD))
+    # Clips on the tape (spec/tape.md §2): [[k, [i, ...]], ...], k the 0-based step
+    # index within `steps`, i the 0-based clipped DOFs; absent when nothing clipped.
+    let run = forward!(build_case(xcase("x.forced_decay.clip", "toy:forced_decay",
+            Dict("leaf" => "decay", "alg" => "SSPRK43", "control" => Dict("reltol" => 1e-6, "abstol" => 1e-8),
+                "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")), Dict("dt" => 2), [0, 2.0])))
+        line = first(split(EarthSciIntegrator.tape_string(run.tape), '\n'))
+        d = JSON.parse(line)
+        @test haskey(d, "clips") && !isempty(d["clips"])
+        @test all(c -> c[2] == [0] && 0 <= c[1] < length(d["steps"]), d["clips"])
+        rec = run.tape.records[1]
+        @test all(k -> run.tape.records[1].steps[k + 1][1] >= 0, first.(rec.clips))
+        # A run that clips nothing writes no clips key.
+        r2 = forward!(build_case(xcase("x.nc", "toy:forced_decay", Dict("leaf" => "decay", "alg" => "RK4", "dt" => 0.1,
+            "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")), Dict("dt" => 0.5), [0, 0.5])))
+        @test !occursin("clips", EarthSciIntegrator.tape_string(r2.tape))
+    end
     for o in OUTCOMES[(n0 + 1):end]
         println(rpad(o.passed ? "  pass" : "  FAIL", 7), rpad(o.case, 42), rpad(o.check, 15), o.detail)
     end

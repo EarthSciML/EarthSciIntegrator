@@ -7,9 +7,11 @@ abstract type TapeRecord end
     LeafRecord
 
 A `leaf` invocation: its interval `[t, t+dt]`, the accepted steps `(tₙ, hₙ)`,
-the accepted and rejected counts, the return code, and the clip masks
-recorded under `domain.on_violation: "clip"` (step index ⇒ mask of DOFs kept,
-spec/methods.md §11).
+the accepted and rejected counts, the return code, and the clips recorded
+under `domain.on_violation: "clip"` (spec/tape.md §2): `k => [i, …]` with `k`
+the 0-based index of the accepted step within `steps` and the `i` the
+ascending 0-based indices, into the leaf's state vector, of the DOFs that step
+clipped. Steps that clipped nothing have no entry.
 """
 mutable struct LeafRecord <: TapeRecord
     path::String
@@ -19,7 +21,7 @@ mutable struct LeafRecord <: TapeRecord
     accepted::Int
     rejected::Int
     retcode::String
-    clips::Vector{Pair{Int, Vector{Bool}}}
+    clips::Vector{Pair{Int, Vector{Int}}}
 end
 
 """A `map` invocation and the mask of discrete decisions the map recorded."""
@@ -88,7 +90,7 @@ function _jline(io::IO, r::LeafRecord)
         ", \"steps\": [", steps, "], \"accepted\": ", r.accepted, ", \"rejected\": ", r.rejected,
         ", \"retcode\": ", _jstr(r.retcode))
     if !isempty(r.clips)
-        clips = join(("[" * string(i) * ", [" * join(map(_jbool, m), ", ") * "]]" for (i, m) in r.clips), ", ")
+        clips = join(("[" * string(k) * ", [" * join(string.(idx), ", ") * "]]" for (k, idx) in r.clips), ", ")
         print(io, ", \"clips\": [", clips, "]")
     end
     print(io, "}")
@@ -121,7 +123,7 @@ function read_tape(io::IO)
         node = d["node"]
         if node == "leaf"
             steps = NTuple{2, Float64}[(_f(s[1]), _f(s[2])) for s in d["steps"]]
-            clips = Pair{Int, Vector{Bool}}[Int(c[1]) => Bool.(c[2]) for c in get(d, "clips", [])]
+            clips = Pair{Int, Vector{Int}}[Int(c[1]) => Int.(c[2]) for c in get(d, "clips", [])]
             push!(tape, LeafRecord(d["path"], _f(d["t"]), _f(d["dt"]), steps, Int(d["accepted"]), Int(d["rejected"]),
                 d["retcode"], clips))
         elseif node == "map"

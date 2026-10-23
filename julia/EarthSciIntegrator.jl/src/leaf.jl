@@ -55,15 +55,16 @@ end
 
 _domain_violation(leaf::LeafNode, u) = any(j -> u[j] < 0, leaf.nonnegative)
 
+"""Clip the listed DOFs at zero; returns the ascending 0-based indices of the DOFs clipped."""
 function _clip!(leaf::LeafNode, u)
-    mask = trues(length(u))
+    clipped = Int[]
     for j in leaf.nonnegative
         if u[j] < 0
-            mask[j] = false
+            push!(clipped, j - 1)
             u[j] = zero(eltype(u))
         end
     end
-    return collect(mask)
+    return sort!(clipped)
 end
 
 """
@@ -82,7 +83,7 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
     Δ = tb - ta
     dtmax = something(leaf.dtmax, Δ)
     dtmin = leaf.dtmin
-    rec = LeafRecord(path, ta, Δ, NTuple{2, Float64}[], 0, 0, "Success", Pair{Int, Vector{Bool}}[])
+    rec = LeafRecord(path, ta, Δ, NTuple{2, Float64}[], 0, 0, "Success", Pair{Int, Vector{Int}}[])
     interior = Tuple{Float64, Vector{Float64}}[]
     u = copy(u0)
     t = ta
@@ -180,7 +181,7 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         clipped = false
         if leaf.on_violation === :clip && _domain_violation(leaf, unew)
             unew = copy(unew)
-            push!(rec.clips, length(rec.steps) => _clip!(leaf, unew))
+            push!(rec.clips, (length(rec.steps) - 1) => _clip!(leaf, unew))
             clipped = true
         end
         # First same as last: reuse f(u_{n+1}) only if it was evaluated at the
@@ -219,7 +220,7 @@ function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float
         _, isstop = stop_rule(t, h, ts)
         tnew = isstop ? ts : t + h
         pp = apply_bindings(p, lb, h, 0.0, 0.0)
-        mask = get(clipmap, n, nothing)
+        mask = get(clipmap, n - 1, nothing)    # 0-based clipped DOFs of this step
         tk1 = something(tk1_next, t)
         states === nothing || push!(states, (copy(u), t, h, pp, mask, tnew, tk1))
         if isstop && h < eps(abs(t))
@@ -236,7 +237,8 @@ end
 """
     leaf_step(leaf, u, p, t, h, mask) -> u′
 
-One replayed step (stages from `u`, recorded clip `mask` or `nothing`),
+One replayed step (stages from `u`; `mask` is `nothing` or the 0-based
+indices of the DOFs the step clipped, as recorded on the tape),
 generic over element types; the frozen-tape step map `Φₙ` of spec/adjoint.md §1.
 """
 function leaf_step(leaf::LeafNode, u, p, t, h, mask, tk1 = t)
@@ -244,8 +246,8 @@ function leaf_step(leaf::LeafNode, u, p, t, h, mask, tk1 = t)
     u1 = erk_step(leaf.method, f!, u, t, h, nothing, false, nothing; tk1).u
     if mask !== nothing
         u1 = copy(u1)
-        for j in eachindex(u1)
-            mask[j] || (u1[j] = zero(eltype(u1)))
+        for i in mask
+            u1[i + 1] = zero(eltype(u1))
         end
     end
     return u1
@@ -259,7 +261,10 @@ then the method's adjoint step. A skipped (sub-eps) stop step is the identity.
 """
 function leaf_step_adjoint(leaf::LeafNode, u, p, t, h, mask, λ, skipped::Bool = false, tk1 = t)
     if mask !== nothing
-        λ = [mask[j] ? λ[j] : 0.0 for j in eachindex(λ)]
+        λ = copy(λ)
+        for i in mask
+            λ[i + 1] = 0.0
+        end
     end
     skipped && return copy(λ), zeros(length(p))
     λn, p̄, _ = erk_adjoint_step(leaf.method, leaf.ops, u, p, t, h, λ; tk1)

@@ -391,6 +391,7 @@ struct Transport <: AbstractOperator
 end
 opname(::Transport) = "transport"
 structure(::Transport) = DenseStructure()
+writes(op::Transport, N) = collect(1:op.ncells)        # B does not move
 depends_on_t(::Transport) = false
 linear_in_u(::Transport) = true
 

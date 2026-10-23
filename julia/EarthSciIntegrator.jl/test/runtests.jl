@@ -68,6 +68,9 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         e, u0, u1 = [1e-4, -2e-4], [1.0, -2.0], [1.5, 0.5]
         sc = [1e-6 + 1e-3 * 1.5, 1e-6 + 1e-3 * 2.0]
         @test error_norm(e, u0, u1, tol) == sqrt(((e[1] / sc[1])^2 + (e[2] / sc[2])^2) / 2)
+        # The norm sums over the DOFs the leaf writes only.
+        sub = Tolerances(1e-3, [1e-6, 1e-6], [2])
+        @test error_norm(e, u0, u1, sub) == sqrt((e[2] / sc[2])^2 / 1)
         # Dual numbers: the norm sees primal values only.
         d = ForwardDiff.Dual(1e-4, 3.0)
         @test error_norm([d, -2e-4], u0, u1, tol) == error_norm(e, u0, u1, tol)

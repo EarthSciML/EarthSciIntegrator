@@ -61,6 +61,12 @@ function structure end
 depends_on_t(::AbstractOperator) = true
 """`linear_in_u(op)`: whether `J_k` is independent of `u`."""
 linear_in_u(::AbstractOperator) = false
+"""
+`writes(op, N)`: the 1-based indices of the DOFs of an `N`-vector state that the
+operator writes (its `f_k` can be nonzero there). Default: all of them. A leaf's
+error norm and first step sum over the union of its operators' (spec/methods.md §7).
+"""
+writes(::AbstractOperator, N) = collect(1:N)
 """`opname(op)`: the operator's name, as a run config's schedule names it."""
 function opname end
 
@@ -164,6 +170,7 @@ end
 OperatorSum(ops::AbstractVector) = OperatorSum(Tuple(ops))
 
 structure(s::OperatorSum) = leaf_structure(map(structure, s.ops))
+writes(s::OperatorSum, N) = sort!(unique!(reduce(vcat, (writes(op, N) for op in s.ops); init = Int[])))
 depends_on_t(s::OperatorSum) = any(depends_on_t, s.ops)
 linear_in_u(s::OperatorSum) = all(linear_in_u, s.ops)
 

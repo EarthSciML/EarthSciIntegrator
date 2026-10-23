@@ -141,7 +141,15 @@ direction(rng, x) = [randn(rng) * (iszero(v) ? 1.0 : abs(v)) for v in x]
 dual(x, dx) = [ForwardDiff.Dual{:tangent}(a, b) for (a, b) in zip(x, dx)]
 partials(x) = [ForwardDiff.partials(v)[1] for v in x]
 
-relmismatch(a, b) = abs(a - b) / max(abs(a), abs(b), floatmin())
+# spec/adjoint.md §7.1 (as amended in PR #9): the mismatch of the two sides
+# divided by the larger of the summed magnitudes of their individual terms,
+# max(Σ|λ_{n+1,i} δu_{n+1,i}|, Σ|λ_{n,i} δu_i| + Σ|p̄_k δp_k|).
+function dot_mismatch(λ1, δu1, λn, δu, p̄, δp)
+    lhs = dot(λ1, δu1)
+    rhs = dot(λn, δu) + dot(p̄, δp)
+    scale = max(sum(abs, λ1 .* δu1), sum(abs, λn .* δu) + sum(abs, p̄ .* δp), floatmin())
+    return abs(lhs - rhs) / scale
+end
 
 function check_dot_product(case, run, chk)
     id = case["id"]
@@ -164,18 +172,10 @@ function check_dot_product(case, run, chk)
                     δu, δp, λ = direction(rng, u), direction(rng, pp), randn(rng, length(u))
                     u1 = skipped ? dual(u, δu) : leaf_step(leaf, dual(u, δu), dual(pp, δp), t, h, mask, tk1)
                     λn, p̄ = leaf_step_adjoint(leaf, u, pp, t, h, mask, λ, skipped, tk1)
-                    lhs = dot(λ, partials(u1))
-                    rhs = dot(λn, δu) + dot(p̄, δp)
-                    # spec/adjoint.md §7.1 scales by the larger side. A random λ can make
-                    # ⟨λ, δu₁⟩ cancel to far below its terms, and the measure then reports
-                    # roundoff as a mismatch; with "scale": "terms" (used only by the extra
-                    # tests, never by cases.json) the scale is Σ|λᵢ δu₁ᵢ| instead.
-                    r = get(chk, "scale", "sides") == "terms" ?
-                        abs(lhs - rhs) / max(sum(abs, λ .* partials(u1)), abs(lhs), abs(rhs), floatmin()) :
-                        relmismatch(lhs, rhs)
+                    r = dot_mismatch(λ, partials(u1), λn, δu, p̄, δp)
                     if r > worst_step
                         worst_step = r
-                        worst_info = "worst step at t = $t: ⟨λ, δu₁⟩ = $lhs, Σ|λᵢδu₁ᵢ| = $(sum(abs, λ .* partials(u1)))"
+                        worst_info = "worst step at t = $t"
                     end
                     nsteps += 1
                 end
@@ -186,7 +186,7 @@ function check_dot_product(case, run, chk)
                 map_jvp!(node.op, jv, uin, pm, t, rec.dt, rec.mask, δu, δp)
                 λb, p̄ = zeros(length(uin)), zeros(P)
                 map_vjp!(node.op, λb, p̄, uin, pm, t, rec.dt, rec.mask, λ)
-                worst_step = max(worst_step, relmismatch(dot(λ, jv), dot(λb, δu) + dot(p̄, δp)))
+                worst_step = max(worst_step, dot_mismatch(λ, jv, λb, δu, p̄, δp))
                 nsteps += 1
             end
         end
@@ -197,15 +197,20 @@ function check_dot_product(case, run, chk)
         λn, p̄ = macro_adjoint(run, k, λ)
         p̄[run.bound_params] .= 0
         δp[run.bound_params] .= 0
-        worst_macro = max(worst_macro, relmismatch(dot(λ, partials(u1)), dot(λn, δu) + dot(p̄, δp)))
+        worst_macro = max(worst_macro, dot_mismatch(λ, partials(u1), λn, δu, p̄, δp))
     end
     # The whole run: the frozen-tape tangent of J against the gradient.
     δu, δp = direction(rng, run.u0), direction(rng, run.p)
     δp[run.bound_params] .= 0
     _, outs = replay(run, dual(run.u0, δu), dual(run.p, δp))
-    dJ = ForwardDiff.partials(functional_value(run, outs))[1]
     _, ū0, p̄ = gradient(run)
-    whole = relmismatch(dJ, dot(ū0, δu) + dot(p̄, δp))
+    # The left side's terms: the tangent of each point term's DOFs times its weight.
+    F = run.functional
+    w = EarthSciIntegrator.phi_gradient(F, length(run.u0))
+    finals = F.over === :final ? [last(outs)] : [o for o in outs if o[1] > run.tspan[1]]
+    λ1 = reduce(vcat, [w for _ in finals])
+    δu1 = reduce(vcat, [partials(u) for (_, u) in finals])
+    whole = dot_mismatch(λ1, δu1, ū0, δu, p̄, δp)
     worst = max(worst_step, worst_macro, whole)
     record!(id, "dot_product", worst <= chk["rtol"],
         "largest relative mismatch $worst over $nsteps steps (per step $worst_step, per macro step $worst_macro, whole run $whole; $worst_info), rtol $(chk["rtol"])")
