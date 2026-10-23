@@ -117,8 +117,8 @@ pub struct StepData<T> {
     pub p: Vec<f64>,
     /// Stage states: Butcher `U_i`; Shu–Osher `u^(j)`, `j = 0..s`.
     pub y: Vec<Vec<T>>,
-    /// The clip mask applied after the step, if it clipped.
-    pub clip: Option<Vec<u8>>,
+    /// The DOFs the clip after the step zeroed, if it clipped.
+    pub clip: Option<Vec<usize>>,
     /// The time the first stage was evaluated at: `t_n`, or `t_{n−1} + h_{n−1}`
     /// when it was the stored first-same-as-last value (spec/methods.md §3.3).
     pub tk1: f64,
@@ -128,7 +128,7 @@ pub struct StepData<T> {
 }
 
 /// The recorded steps and clip masks of a leaf invocation.
-pub type Replay<'a> = (&'a [[f64; 2]], &'a [(usize, Vec<u8>)]);
+pub type Replay<'a> = (&'a [[f64; 2]], &'a [(usize, Vec<usize>)]);
 
 /// Arguments of one invocation.
 pub struct LeafCall<'a> {
@@ -154,7 +154,7 @@ pub struct LeafOutcome<T> {
     pub accepted: u64,
     pub rejected: u64,
     pub retcode: Retcode,
-    pub clips: Vec<(usize, Vec<u8>)>,
+    pub clips: Vec<(usize, Vec<usize>)>,
     pub rhs_calls: u64,
     pub stage_data: Vec<StepData<T>>,
     /// The state on landing at each interior stop.
@@ -211,34 +211,30 @@ impl<T: Scalar> LeafSpec<T> {
         }
     }
 
-    /// Clips the listed DOFs at zero and returns the mask (1 = kept), or
-    /// `None` when nothing was clipped (spec/adjoint.md §5.7: ties at 0 keep).
-    fn clip(&self, u: &mut [T]) -> Option<Vec<u8>> {
+    /// Clips the listed DOFs at zero and returns the ascending indices of the
+    /// DOFs it clipped, or `None` when nothing was clipped (spec/tape.md §2;
+    /// spec/adjoint.md §5.7: ties at 0 keep).
+    fn clip(&self, u: &mut [T]) -> Option<Vec<usize>> {
         let d = self.domain.as_ref().filter(|d| d.clip)?;
-        let mask: Vec<u8> = d
+        let clipped: Vec<usize> = d
             .dofs
             .iter()
-            .map(|&j| u8::from(u[j] >= T::zero()))
+            .copied()
+            .filter(|&j| u[j] < T::zero())
             .collect();
-        if mask.iter().all(|&m| m == 1) {
+        if clipped.is_empty() {
             return None;
         }
-        for (&j, &m) in d.dofs.iter().zip(&mask) {
-            if m == 0 {
-                u[j] = T::zero();
-            }
+        for &j in &clipped {
+            u[j] = T::zero();
         }
-        Some(mask)
+        Some(clipped)
     }
 
-    /// Applies a recorded clip mask (the frozen-tape clip).
-    fn clip_frozen(&self, u: &mut [T], mask: &[u8]) {
-        if let Some(d) = &self.domain {
-            for (&j, &m) in d.dofs.iter().zip(mask) {
-                if m == 0 {
-                    u[j] = T::zero();
-                }
-            }
+    /// Applies a recorded clip (the frozen-tape clip): zeroes the listed DOFs.
+    fn clip_frozen(&self, u: &mut [T], clipped: &[usize]) {
+        for &j in clipped {
+            u[j] = T::zero();
         }
     }
 

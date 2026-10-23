@@ -34,11 +34,13 @@ pub enum TapeRecord {
         accepted: u64,
         rejected: u64,
         retcode: Retcode,
-        /// Clip masks under `domain.on_violation: "clip"`: `(step index,
-        /// one byte per listed DOF, 1 = kept, 0 = clipped)`, only for steps
-        /// that clipped.
+        /// Clips under `domain.on_violation: "clip"` (spec/tape.md §2):
+        /// `[k, [i, ...]]` with `k` the 0-based index of the accepted step in
+        /// `steps` and the `i` the ascending 0-based indices, into the leaf's
+        /// state vector, of the DOFs that step clipped. Steps that clipped
+        /// nothing are omitted, and the key when nothing clipped.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        clips: Vec<(usize, Vec<u8>)>,
+        clips: Vec<(usize, Vec<usize>)>,
     },
     Subcycle {
         path: String,
@@ -237,7 +239,7 @@ mod tests {
                     accepted: 2,
                     rejected: 1,
                     retcode: Retcode::Success,
-                    clips: vec![(1, vec![1, 0])],
+                    clips: vec![(1, vec![0, 3])],
                 },
                 TapeRecord::Map {
                     path: "0/root.1".into(),
@@ -261,6 +263,19 @@ mod tests {
         };
         let s = tape.to_jsonl();
         assert!(s.starts_with("{\"node\":\"leaf\",\"path\":\"0/root.0\""));
+        // spec/tape.md §2: [[k, [i, ...]], ...], omitted when nothing clipped.
+        assert!(s.lines().next().unwrap().contains("\"clips\":[[1,[0,3]]]"));
+        let no_clip = TapeRecord::Leaf {
+            path: "0/root".into(),
+            t: 0.0,
+            dt: 1.0,
+            steps: vec![[0.0, 1.0]],
+            accepted: 1,
+            rejected: 0,
+            retcode: Retcode::Success,
+            clips: vec![],
+        };
+        assert!(!serde_json::to_string(&no_clip).unwrap().contains("clips"));
         let back = Tape::from_jsonl(&s).unwrap();
         assert_eq!(back, tape);
         for (a, b) in back.records.iter().zip(&tape.records) {

@@ -157,12 +157,10 @@ fn leaf_adjoint<T: Scalar>(
 ) {
     let mut l: Vec<T> = lam.iter().map(|&x| T::from_f64(x)).collect();
     for st in steps.iter().rev() {
-        // The clip after the step: λ ← m ⊙ λ on the listed DOFs (§5.7).
-        if let (Some(mask), Some(d)) = (&st.clip, &leaf.domain) {
-            for (&j, &m) in d.dofs.iter().zip(mask) {
-                if m == 0 {
-                    l[j] = T::zero();
-                }
+        // The clip after the step: λ ← m ⊙ λ, zero on the clipped DOFs (§5.7).
+        if let Some(clipped) = &st.clip {
+            for &j in clipped {
+                l[j] = T::zero();
             }
         }
         if st.skipped {
