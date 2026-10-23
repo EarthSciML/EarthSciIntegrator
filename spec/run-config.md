@@ -8,7 +8,7 @@ A run configuration says how to integrate one `.esm` model: how its right-hand s
 
 - A run config is a JSON document (D24) that validates against the schema for its `esm_integrator` version.
 - `esm_integrator` is the version of this spec, independent of the esm format version. An implementation refuses a version it does not implement.
-- `model` is the path of the `.esm` document, resolved relative to the run config's own location.
+- `model` is the path of the `.esm` document, resolved relative to the run config's own location. In conformance cases only, `toy:<problem>` names a hand-written toy problem instead (spec/toy-problems.md §2).
 - **Precedence** (architecture §3.1). The run config's `model` is authoritative for a run. If the `.esm` also carries `solver.external` (U1), the two must name each other, or the planner refuses. The planner never writes `solver.external` into derived documents. Solver hints on mounted component files are dropped at assembly (U1), so per-component tolerances are restated here.
 - Unknown keys are errors at every level. There is no extension mechanism in 0.1.0.
 
@@ -86,10 +86,10 @@ The schedule is a tree of nodes. Every node advances the model over an interval 
 
 - `alg` names the method (architecture §5). Tableau coefficients and controller constants are OrdinaryDiffEq's (D31).
 - **Substeps.** With `dt` omitted, the leaf steps adaptively under `control` and may take any number of substeps; the last substep ends exactly at `t+Δ`. A numeric `dt` gives fixed substeps, the last shortened to land on `t+Δ`. `"step"` takes exactly one step of size Δ. `"accumulated"` takes one step whose size is the time since this leaf last ran (equal to Δ unless the leaf sits under `every`).
-- **Methods without an error estimate.** Adaptive stepping needs an embedded error estimate. `ForwardEuler`, `SSPRK33`, `SSPRK104`, `WRF_RK3`, `IMEXEuler` and `Theta` have none, so a leaf using one of them must give `dt` (D52). Legacy increments use `"step"`. An `alg` of `"auto"` with `dt` omitted resolves to a method that has an estimate.
+- **Methods without an error estimate.** Adaptive stepping needs an embedded error estimate. `ForwardEuler`, `SSPRK33`, `SSPRK104`, `WRF_RK3`, `IMEXEuler` and `Theta` have none, so a leaf using one of them must give `dt` (D52). Legacy increments use `"step"`. An `alg` of `"auto"` with `dt` omitted resolves to a method that has an estimate, and on a stiff leaf never to SDIRK2, Kvaerno3 or Kvaerno4, whose estimate is unreliable on stiff problems (D59).
 - `control`: `reltol` and `abstol` (a number, or per variable); `dt0`, `dtmin`, `dtmax`; `controller` (PI, I or PID, with OrdinaryDiffEqCore's constants per method); `dt_scope` (`global`, `shard` or `cell`; D17 makes `cell` the default for pointwise leaves and `global` for stencil leaves); `maxiters`. A non-finite error estimate is a reject. A step below `dtmin` ends the run with a return code instead of hanging (architecture §5.1).
 - `jacobian`: `symbolic` (EarthSciASTDiff band models), `ad` (DifferentiationInterface, Julia only, D38) or `fd`.
-- `linsolve`: the W-matrix solver of architecture §6.1. As an object it carries options: `block_lu.pivot`, `refine` (iterative-refinement sweeps for low-precision factors, architecture §8), Krylov `restart`, `rtol`, `maxiter`, `precond` and `fallback` (the preconditioner tried when the first fails to converge).
+- `linsolve`: the W-matrix solver of architecture §6.1, or `dense_lu`, a dense LU of the whole system, for toy problems and tests only (operator-interface.md §4). As an object it carries options: `block_lu.pivot`, `refine` (iterative-refinement sweeps for low-precision factors, architecture §8), Krylov `restart`, `rtol`, `maxiter`, `precond` and `fallback` (the preconditioner tried when the first fails to converge).
 - `domain`: `nonnegative` (`"all"` or a list of variables), `on_violation` (`reject`, the default, D19; or `clip`), and `check_stages` (also check Rosenbrock stage values).
 - `imex` (§4.5), `implicit_solve` (§4.5), `frozen` (§4.6), `partition` (§6), `bind_dt` (§4.4) and `theta` (the θ-method's off-centring).
 

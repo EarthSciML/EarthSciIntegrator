@@ -9,10 +9,16 @@ One spec, implemented natively in Julia ([`../julia/EarthSciIntegrator.jl`](../j
 | [`run-config.md`](run-config.md) | The run configuration: operators, combinator semantics, macro-step control, partition, precision, adjoint and output settings, and the rules the planner checks | M0 draft |
 | [`plan.md`](plan.md) | The planner's output: files, canonical form, contents | M0 skeleton; operator structure at M2 |
 | [`adjoint.md`](adjoint.md) | The discrete adjoint: functional, tape, primitives, the adjoint step of every method family and combinator, accumulation, verification identities | M0 draft |
+| [`methods.md`](methods.md) | Methods and controllers: the method catalogue, forward step forms, error estimates and norms, step-size control, first step, return codes | M1 draft |
+| [`tableaus/`](tableaus/) | Method coefficients and controller constants as data, extracted from OrdinaryDiffEq (D54) | M1 |
+| [`operator-interface.md`](operator-interface.md) | What a leaf calls on an operator: right-hand side, derivative products, Jacobian storage, maps | M1 draft |
+| [`tape.md`](tape.md) | The tape, replay, checkpoints, and a serialized form for tests | M1 draft |
+| [`toy-problems.md`](toy-problems.md) | The hand-written toy problems, the M1 conformance cases and checks, and result files | M1 draft |
 | [`schemas/run-config.schema.json`](schemas/run-config.schema.json) | JSON Schema (2020-12) for run configs | 0.1.0 |
 | [`schemas/plan.schema.json`](schemas/plan.schema.json) | JSON Schema (2020-12) for `plan.json` | 0.1.0 skeleton |
+| [`schemas/tableau.schema.json`](schemas/tableau.schema.json), [`schemas/cases.schema.json`](schemas/cases.schema.json), [`schemas/result.schema.json`](schemas/result.schema.json) | Coefficient tables, conformance cases, and result files | 0.1.0 |
 
-Chapters still to come: methods and controllers (tableau sources, error norms, step acceptance; M1), linear and nonlinear solvers (M1), partitioning and executors (M3), events and callbacks (M1).
+Chapters still to come: linear and nonlinear solvers beyond what methods.md states (M1 batched block LU; Krylov and `solve` nodes at M4b), events and callbacks (with the M1 implementations), partitioning and executors (M3).
 
 ## Conventions
 
