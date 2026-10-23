@@ -1,6 +1,6 @@
 # Methods and step-size control
 
-**Status:** M1 draft, 2026-10-23. Normative for both implementations (D1, D8) unless a paragraph is marked *informative*, *assumption* or *open question*.
+**Status:** M1 draft, 2026-10-23. Normative for both implementations (D1, D8) unless a paragraph is marked *informative* or *assumption*.
 
 This chapter defines what one step of each v1 method computes in the forward pass, how its error is estimated and measured, and how a leaf chooses, accepts and rejects its steps. The discrete adjoint of the same steps is [`adjoint.md`](adjoint.md); the two chapters use the same arithmetic forms, and this one refers there for the step equations rather than repeating them. What the run config may set is [`run-config.md`](run-config.md) §4.2.
 
@@ -131,7 +131,7 @@ After a rejected step the start point is unchanged, so the stored first stage st
 
 KPP's `ros_A`, `ros_C`, `ros_Gamma(1)`, `ros_Alpha`, `ros_Gamma`, `ros_M`, `ros_E` are this form's $A$, $C$, $\gamma$, $c$, $d$, $b$, $\tilde b$: KPP solves $(I/(h\gamma) - J)K_i = f(Y_i) + \sum_j (C_{ij}/h) K_j + h\gamma_i f_t$ (`rosenbrock.f90:575-627`). KPP's error norm is §7's. Its step-size rule differs: an I controller with exponent $1/$`ros_ELO`, safety 0.9, bounds $[0.2, 6]$, no growth after a rejection, and a factor 0.1 after two rejections in a row (`rosenbrock.f90:631-660`); the table records it under `kpp.controller`. By default a KPP leaf uses §8's controller with the constants in its `controller` field.
 
-*Open question 2.* Whether WRF-Chem parity at M7 needs KPP's own step-size rule as a run-config controller option (`controller: "KPP"`), or whether matching KPP's coefficients is enough.
+KPP's own step-size rule becomes a run-config controller option, `controller: "KPP"`, at M7 for WRF-Chem parity (D58). Until then KPP methods run under the PI controller.
 
 ## 5. SDIRK and ESDIRK
 
@@ -168,7 +168,7 @@ The same iteration solves the implicit part of BackwardEuler, Theta and IMEXEule
 
 $J$ is formed at $(u_n, t_n)$ on every step attempt, and $W = I - h\gamma J$ is factored once per attempt and shared by all implicit stages (SDIRK has one $\gamma$). Precision roles apply as in §4.2.
 
-*Informative.* OrdinaryDiffEq reuses $J$ across steps and rebuilds $W$ only when $h\gamma$ changes by more than 20 % (`new_W_dt_cutoff = 1/5`), after a divergence with a stale $J$, or after an error-test failure on the first stage (OrdinaryDiffEqDifferentiation `src/derivative_utils.jl:541-600`). v1 does not: forming $J$ every attempt makes the step a function of $(u_n, h)$ alone, which keeps lane pools (D17) and replay (architecture §10) simple. The adjoint is unaffected either way (D42). *Open question 3* is whether to adopt the reuse rule for large column solves.
+*Informative.* OrdinaryDiffEq reuses $J$ across steps and rebuilds $W$ only when $h\gamma$ changes by more than 20 % (`new_W_dt_cutoff = 1/5`), after a divergence with a stale $J$, or after an error-test failure on the first stage (OrdinaryDiffEqDifferentiation `src/derivative_utils.jl:541-600`). v1 does not: forming $J$ every attempt makes the step a function of $(u_n, h)$ alone, which keeps lane pools (D17) and replay (architecture §10) simple. The adjoint is unaffected either way (D42). Adopting the reuse rule for large column solves is revisited at M4b (D57).
 
 ### 5.4 Stage times
 
@@ -176,7 +176,7 @@ Stage $i$ is evaluated at $t_n + c_i h$ with $c_i = \sum_j a_{ij}$, the row sum 
 
 OrdinaryDiffEqSDIRK sets $c_2 = \gamma$ for Kvaerno3 and Kvaerno4, where the row sum is $2\gamma$ (`src/imex_tableaus.jl:1203-1272`, `:1275-1360`, commented "matching master's nlsolver.c = γ"). The tables keep OrdinaryDiffEq's value as `c_ordinarydiffeq`. The extraction check shows that OrdinaryDiffEq does evaluate stage 2 at $\gamma$, and on the non-autonomous test problem Kvaerno3 and Kvaerno4 then converge at first order (observed 0.99 and 0.98) instead of third and fourth. With the row sums they converge at 2.94 and 3.85. Autonomous problems are unaffected.
 
-*Open question 1.* This looks like an OrdinaryDiffEq defect worth reporting upstream. Until it is fixed, tier-2 trajectory comparisons against OrdinaryDiffEq's Kvaerno3/4 must use autonomous problems.
+Tier-2 trajectory comparisons against OrdinaryDiffEq's Kvaerno3/4 use autonomous problems only (D55).
 
 ### 5.5 Error estimates
 
@@ -353,7 +353,7 @@ A leaf returns one code per invocation (per cell under `dt_scope: cell`, reduced
 
 A non-success code from any leaf ends the run with that code, naming the leaf (and cell); the schedule does not retry it.
 
-## 13. Open questions and assumptions
+## 13. Decisions and assumptions
 
 **Decided 2026-10-23** (D55–D58):
 1. **Kvaerno3/4 stage times** (§5.4). The tables use the row sums. Tier-2 comparisons against OrdinaryDiffEq's Kvaerno methods are limited to autonomous problems. Not reported upstream.
