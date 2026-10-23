@@ -539,7 +539,7 @@ for (name, alg, ctorname) in (("BackwardEuler", ImplicitEuler(), :ImplicitEulerE
     isempty(t.btilde) || (d["btilde"] = Float64.(t.btilde))
     if c != Float64.(t.c)
         d["c_ordinarydiffeq"] = Float64.(t.c)
-        push!(d["notes"], "OrdinaryDiffEq sets the stage times c to $(Float64.(t.c)); this table uses the row sums of A, which the method's order conditions assume (spec/methods.md §5.4, open question 1).")
+        push!(d["notes"], "OrdinaryDiffEq sets the stage times c to $(Float64.(t.c)); this table uses the row sums of A, which the method's order conditions assume (spec/methods.md §5.4, D55).")
     end
     name == "BackwardEuler" && (d["divided_difference"] = Dict{String, Any}("constant" => 7 / 12))
     isempty(d["notes"]) && delete!(d, "notes")
@@ -554,7 +554,7 @@ add!("IMEXEuler", Dict{String, Any}("family" => "imex", "form" => "imex_euler", 
 ))
 add!("Theta", Dict{String, Any}("family" => "theta", "form" => "theta", "stages" => 1,
     "error_estimate" => "none", "order" => 1, "embedded_order" => nothing, "controller" => nothing,
-    "notes" => ["theta is the run config's leaf option. Second order when theta = 1/2."],
+    "notes" => ["theta is the run config's leaf option. order is the order for theta ≠ 1/2; theta = 1/2 is second order."],
     "source" => Dict{String, Any}("reference" => "spec/adjoint.md §4.5."),
 ))
 
@@ -583,7 +583,7 @@ for (name, d) in tables
         d["controller"] = controller(alg)
         d["controller"]["source"] = merge(CONTROLLER_SOURCE, Dict("note" => note))
     elseif !haskey(d, "order")
-        d["order"] = name == "WRF_RK3" ? 3 : error("no order for $name")
+        d["order"] = name == "WRF_RK3" ? 2 : error("no order for $name")
         d["embedded_order"] = nothing
         d["controller"] = nothing
     end
@@ -657,7 +657,7 @@ for (name, d) in sort!(collect(tables); by = first)
         check(abs(E_mine - E_ode) <= 1e-6 * E_ode, "$name: unsmoothed error estimate matches OrdinaryDiffEq (smooth_est = false), $(@sprintf("%.6e", E_mine)) vs $(@sprintf("%.6e", E_ode))")
     end
     # 3. Observed order on the non-autonomous test problem.
-    expected = name == "WRF_RK3" ? 2 : d["order"]
+    expected = d["order"]
     p = observed_order((u, t, h) -> stepper(u, t, h)[1]; n0 = d["order"] >= 4 ? 8 : 16)
     check(p > expected - 0.35, "$name: observed order $(@sprintf("%.2f", p)) (expected $expected)")
 end

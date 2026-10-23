@@ -435,10 +435,10 @@
      "check": "order",
      "vary": "leaf",
      "dts": [
-      0.1,
-      0.05,
       0.025,
-      0.0125
+      0.0125,
+      0.00625,
+      0.003125
      ],
      "expected": 2,
      "against": "exact"
@@ -1342,8 +1342,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-06
     }
    ]
   },
@@ -1411,8 +1411,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1480,8 +1480,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1549,8 +1549,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1590,7 +1590,7 @@
    "checks": [
     {
      "check": "oracle",
-     "rtol": 1e-08
+     "rtol": 1e-05
     },
     {
      "check": "reference",
@@ -1614,12 +1614,12 @@
     },
     {
      "check": "reverse_diff",
-     "rtol": 1e-08
+     "rtol": 1e-05
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1659,7 +1659,7 @@
    "checks": [
     {
      "check": "oracle",
-     "rtol": 1e-08
+     "rtol": 1e-05
     },
     {
      "check": "reference",
@@ -1683,12 +1683,12 @@
     },
     {
      "check": "reverse_diff",
-     "rtol": 1e-08
+     "rtol": 1e-05
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1735,8 +1735,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1813,8 +1813,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1861,8 +1861,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1901,7 +1901,7 @@
     },
     {
      "check": "oracle",
-     "rtol": 1e-08
+     "rtol": 1e-05
     },
     {
      "check": "reference",
@@ -1909,8 +1909,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -1949,7 +1949,7 @@
     },
     {
      "check": "oracle",
-     "rtol": 1e-08
+     "rtol": 1e-05
     },
     {
      "check": "reference",
@@ -1957,8 +1957,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -2038,8 +2038,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -2089,8 +2089,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -2136,8 +2136,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
     }
    ]
   },
@@ -2199,8 +2199,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
     }
    ]
   },
@@ -2272,8 +2272,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
     }
    ]
   },
@@ -2335,8 +2335,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
     }
    ]
   },
@@ -2408,8 +2408,8 @@
     },
     {
      "check": "cross_language",
-     "rtol": 1e-06,
-     "steps_may_differ": true
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
     }
    ]
   },

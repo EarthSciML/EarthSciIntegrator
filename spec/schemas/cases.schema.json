@@ -76,7 +76,7 @@
           "properties": {
             "check": {"const": "cross_language"},
             "rtol": {"$ref": "#/$defs/rtol"},
-            "steps_may_differ": {"type": "boolean"}
+            "rtol_steps_differ": {"$ref": "#/$defs/rtol"}
           }
         }
       ]

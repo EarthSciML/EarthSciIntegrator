@@ -7,7 +7,7 @@
   "form": "theta",
   "name": "Theta",
   "notes": [
-    "theta is the run config's leaf option. Second order when theta = 1/2."
+    "theta is the run config's leaf option. order is the order for theta ≠ 1/2; theta = 1/2 is second order."
   ],
   "order": 1,
   "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",

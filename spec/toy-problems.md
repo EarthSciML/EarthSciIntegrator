@@ -75,7 +75,7 @@ A leaf and a map in sequence, with an exact discrete solution. It tests `map`, `
 
 | Check | Meaning | Tier |
 |---|---|---|
-| `order` | Run the case at fixed `dt` for each value in `dts`. The observed order, the least-squares slope of $\log$ error against $\log$ dt for the end-state error in the max norm, is at least `expected − 0.3` (ROS2 shows 1.75 before its asymptotic range, spec/methods.md §2). The error is against the exact solution where §1 gives one, otherwise against the `reference` result. | 2 |
+| `order` | Run the case at fixed `dt` for each value in `dts`. The observed order, the least-squares slope of $\log$ error against $\log$ dt for the end-state error in the max norm, is at least `expected − 0.3`. On `forced_decay` every method measures within 0.1 of its order at dts 0.1–0.0125, or above it, except ROS2 (1.71, pre-asymptotic), whose case uses dts 0.025–0.003125 (1.92). The error is against the exact solution where §1 gives one, otherwise against the `reference` result. | 2 |
 | `oracle` | Run the same method in OrdinaryDiffEq with the same step sequence (`adaptive = false`, `tstops` from our tape; D31). End states agree to `rtol`. Julia only; Rust compares with the Julia result through `cross_language`. | 2 |
 | `invariant` | The problem's invariants hold at every output time to `rtol`. | 2 |
 | `exact_discrete` | The end state equals §1's exact discrete solution to `rtol`. | 2 |
@@ -84,7 +84,7 @@ A leaf and a map in sequence, with an exact discrete solution. It tests `map`, `
 | `fd_gradient` | spec/adjoint.md §7.2, central differences at the listed `epsilons`. | 2 |
 | `reverse_diff` | Agreement with `SciMLSensitivity.ReverseDiffAdjoint` through OrdinaryDiffEq's same method, with the tape's step sequence imposed (spec/adjoint.md §7.3), to `rtol`. Julia only. | 2 |
 | `replay` | Replaying from the start with the tape reproduces every accepted step and the end state bitwise (D10). | 2 |
-| `cross_language` | Julia and Rust results (§3) agree: output states and gradients to `rtol`, accepted step counts exactly unless `steps_may_differ`. | 3 |
+| `cross_language` | Julia and Rust results (§3) agree: output states and gradients to `rtol`, and accepted step counts exactly. With `rtol_steps_differ` the step sequences may differ, since a roundoff-level accept/reject flip changes every later step; when they do, states and gradients agree to `rtol_steps_differ` instead, which is set from the case's `reltol` because the two then differ by about the global error. | 3 |
 
 A check fails loudly with the measured quantity and the threshold.
 

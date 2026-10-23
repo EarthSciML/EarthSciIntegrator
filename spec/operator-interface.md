@@ -51,7 +51,7 @@ These are the primitives of spec/adjoint.md §3, per operator. The leaf's primit
 
 Each operator also declares:
 - `depends_on_t`: whether $f_k$ depends on $t$ explicitly. When false, `ft` and `ft_vjp_*` are zero and need not be implemented.
-- `linear_in_u`: whether $J_k$ is independent of $u$. When true, `hess_*` and `ft_vjp_u` are zero, and IMEX Euler may solve its implicit part with one linear solve (spec/adjoint.md §4.4).
+- `linear_in_u`: whether $J_k$ is independent of $u$. When true, `hess_u` is zero, and IMEX Euler may solve its implicit part with one linear solve (spec/adjoint.md §4.4). The other second-order calls need not vanish: `hess_p` is zero only when $J_k$ also does not depend on $p$, and `ft_vjp_u` only when it does not depend on $t$. For $f_k = -k\,u$, $J_k = -k$ and `hess_p` is $-\sum_i \mu_i^\top w_i$.
 - Its structure (§2).
 
 A leaf whose method or adjoint needs a call its operators do not provide is refused when the leaf is built, naming the operator and the call.

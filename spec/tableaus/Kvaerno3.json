@@ -38,7 +38,7 @@
   "form": "sdirk",
   "name": "Kvaerno3",
   "notes": [
-    "OrdinaryDiffEq sets the stage times c to [0.0, 0.4358665215, 1.0, 1.0]; this table uses the row sums of A, which the method's order conditions assume (spec/methods.md §5.4, open question 1)."
+    "OrdinaryDiffEq sets the stage times c to [0.0, 0.4358665215, 1.0, 1.0]; this table uses the row sums of A, which the method's order conditions assume (spec/methods.md §5.4, D55)."
   ],
   "order": 3,
   "ordinarydiffeq_algorithm": "Kvaerno3",

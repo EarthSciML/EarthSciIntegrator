@@ -43,7 +43,7 @@ Replay re-executes an invocation with the step sequence taken from the tape inst
 
 A checkpoint is taken at a macro-step boundary and holds everything needed to resume the forward run bitwise:
 - the full state $u$ of every leaf, in each leaf's element type;
-- per leaf, the controller state: the proposed next step and the controller's error history (spec/methods.md);
+- per leaf (per shard or cell under `dt_scope: shard` or `cell`), the whole persistent state of spec/methods.md §8.6: the proposed next step, the controller's error history ($E_{\text{old}}$ or the PID history), the Newton rate $\theta_{\text{prev}}$ and $\eta_{\text{old}}$ (§5.2), and whether it has accepted a step (which decides between `qmax_first_step` and `qmax`);
 - per `every` node, the time of its last firing;
 - per `solve` node, the warm start (M4b);
 - the macro step index and time.

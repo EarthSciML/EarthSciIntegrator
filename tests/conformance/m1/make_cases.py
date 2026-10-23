@@ -21,22 +21,42 @@ METHODS = {
     "Kvaerno3": (3, "sdirk"), "Kvaerno4": (4, "sdirk"),
     "IMEXEuler": (1, "imex"), "Theta": (2, "theta"),
 }
-# Methods OrdinaryDiffEq implements in the same arithmetic form (D31).
+# Methods OrdinaryDiffEq does not implement in the same arithmetic form (D31),
+# so they have no oracle check.
 NO_ORACLE = {"WRF_RK3", "IMEXEuler", "Theta"}
 # OrdinaryDiffEq's Kvaerno3/4 evaluate stage 2 at the wrong time (spec/methods.md
 # §5.4), so they are oracles only on autonomous problems.
 NO_ORACLE_NONAUTONOMOUS = NO_ORACLE | {"Kvaerno3", "Kvaerno4"}
-# OrdinaryDiffEq's SDIRK methods reuse the previous step's last stage as the
-# next first stage, equal to f(u_n) only to the Newton tolerance.
-def oracle_rtol(alg, tight):
-    return 1e-8 if METHODS[alg][1] == "sdirk" else tight
+# OrdinaryDiffEq's SDIRK methods reuse J and W across steps, take the first
+# stage from the previous step's last one and start Newton from other guesses
+# (spec/methods.md §5.1-§5.3). On a nonlinear problem their stages then differ
+# from ours by up to the Newton tolerance, κ·reltol with κ = 1/100, on every
+# step, and the differences accumulate; `reltol` is the case's. On a linear
+# problem (reltol None) Newton converges in one iteration and the two agree
+# to roundoff. The same bound applies to reverse_diff, which differentiates
+# OrdinaryDiffEq's iterations.
+def oracle_rtol(alg, tight, reltol=None):
+    if METHODS[alg][1] != "sdirk":
+        return tight
+    return 1e-8 if reltol is None else times(10, reltol)
+
+
+def times(factor, reltol):
+    """factor * reltol, rounded so cases.json shows 1e-05, not 9.999999999999999e-06."""
+    return float(f"{factor * reltol:.1g}")
 GRAD = [
     {"check": "dot_product", "rtol": 1e-12},
     {"check": "fd_gradient", "rtol": 1e-6, "epsilons": [1e-3, 1e-4, 1e-5]},
     {"check": "replay"},
 ]
 XL = {"check": "cross_language", "rtol": 1e-10}
-XL_ADAPTIVE = {"check": "cross_language", "rtol": 1e-6, "steps_may_differ": True}
+# Adaptive runs can take different step sequences after a roundoff-level
+# accept/reject flip; their states then differ by about the global error, which
+# is several times reltol (spec/methods.md §5.5). With the same steps, SDIRK
+# runs can still differ by a Newton iteration, as for oracle_rtol.
+def xl_adaptive(alg, reltol):
+    return {"check": "cross_language", "rtol": oracle_rtol(alg, 1e-10, reltol),
+            "rtol_steps_differ": times(100, reltol)}
 
 
 def cfg(model, schedule, step, adjoint=None):
@@ -70,9 +90,12 @@ def grad(quantity, over, how="sum"):
 
 cases = []
 
-# forced_decay: order and oracle for every method at fixed dt.
+# forced_decay: order and oracle for every method at fixed dt. ROS2 is
+# pre-asymptotic at the common step sizes (observed order 1.71 there, 1.92 at
+# these), so it is measured at smaller ones.
+DTS = {"ROS2": [0.025, 0.0125, 0.00625, 0.003125]}
 for alg, (order, _) in METHODS.items():
-    checks = [{"check": "order", "vary": "leaf", "dts": [0.1, 0.05, 0.025, 0.0125],
+    checks = [{"check": "order", "vary": "leaf", "dts": DTS.get(alg, [0.1, 0.05, 0.025, 0.0125]),
                "expected": order, "against": "exact"}]
     if alg not in NO_ORACLE_NONAUTONOMOUS:
         checks.append({"check": "oracle", "rtol": oracle_rtol(alg, 1e-12)})
@@ -97,12 +120,12 @@ for alg in ["SSPRK43", "Tsit5", "BS3", "RK4"]:
 cases.append({"id": "van_der_pol.nonstiff.Tsit5.adaptive",
               "run_config": cfg("toy:van_der_pol/nonstiff", leaf("oscillator", "Tsit5", **adaptive(1e-8, 1e-10)), {"dt": 6.3}),
               "tspan": [0, 6.3], "saveat": [1.0, 3.0, 6.3],
-              "checks": [{"check": "oracle", "rtol": 1e-12}, {"check": "reference", "rtol": 1e-6}, XL_ADAPTIVE]})
+              "checks": [{"check": "oracle", "rtol": 1e-12}, {"check": "reference", "rtol": 1e-6}, xl_adaptive("Tsit5", 1e-8)]})
 
 # van_der_pol, stiff: implicit methods, adaptive, with gradients (nonzero second-order terms).
 for alg in ["Rosenbrock23", "Rodas4", "Rodas5P", "TRBDF2", "Kvaerno4"]:
-    checks = [{"check": "oracle", "rtol": oracle_rtol(alg, 1e-10)}, {"check": "reference", "rtol": 1e-4}] + GRAD
-    checks += [{"check": "reverse_diff", "rtol": 1e-8}, XL_ADAPTIVE]
+    checks = [{"check": "oracle", "rtol": oracle_rtol(alg, 1e-10, 1e-6)}, {"check": "reference", "rtol": 1e-4}] + GRAD
+    checks += [{"check": "reverse_diff", "rtol": oracle_rtol(alg, 1e-8, 1e-6)}, xl_adaptive(alg, 1e-6)]
     cases.append({"id": f"van_der_pol.stiff.{alg}.adaptive",
                   "run_config": cfg("toy:van_der_pol/stiff", leaf("oscillator", alg, **adaptive(1e-6, 1e-8)), {"dt": 1},
                                     grad("y", "final")),
@@ -110,11 +133,11 @@ for alg in ["Rosenbrock23", "Rodas4", "Rodas5P", "TRBDF2", "Kvaerno4"]:
 
 # robertson: stiff, adaptive, invariant, gradient of the final y3.
 for alg in ["Rosenbrock23", "Rodas4", "Rodas5P", "TRBDF2", "Kvaerno4"]:
-    checks = [{"check": "invariant", "rtol": 1e-12}, {"check": "oracle", "rtol": oracle_rtol(alg, 1e-10)},
+    checks = [{"check": "invariant", "rtol": 1e-12}, {"check": "oracle", "rtol": oracle_rtol(alg, 1e-10, 1e-6)},
               {"check": "reference", "rtol": 1e-4}]
     if alg == "Rodas4":
         checks += GRAD + [{"check": "reverse_diff", "rtol": 1e-8}]
-    checks.append(XL_ADAPTIVE)
+    checks.append(xl_adaptive(alg, 1e-6))
     cases.append({"id": f"robertson.{alg}.adaptive",
                   "run_config": cfg("toy:robertson", leaf("kinetics", alg, **adaptive(1e-6, 1e-10)), {"dt": 40},
                                     grad("y3", "final") if alg == "Rodas4" else None),
@@ -125,10 +148,10 @@ for alg in ["Rosenbrock23", "Rodas4", "Kvaerno4"]:
     # photostationary_cells is non-autonomous.
     checks = [{"check": "invariant", "rtol": 1e-12}, {"check": "reference", "rtol": 1e-4}]
     if alg not in NO_ORACLE_NONAUTONOMOUS:
-        checks.insert(1, {"check": "oracle", "rtol": oracle_rtol(alg, 1e-10)})
+        checks.insert(1, {"check": "oracle", "rtol": oracle_rtol(alg, 1e-10, 1e-6)})
     if alg == "Rosenbrock23":
         checks += GRAD + [{"check": "reverse_diff", "rtol": 1e-8}]
-    checks.append(XL_ADAPTIVE)
+    checks.append(xl_adaptive(alg, 1e-6))
     node = leaf("photochemistry", alg, linsolve={"block_lu": {"pivot": False}}, **adaptive(1e-6, 1e-6))
     cases.append({"id": f"photostationary_cells.{alg}.adaptive",
                   "run_config": cfg("toy:photostationary_cells", node, {"dt": 600},
@@ -145,10 +168,10 @@ for name, node, order in [("lie", {"sequence": [transport, reaction]}, 1),
                   "tspan": [0, 0.5],
                   "checks": [{"check": "order", "vary": "macro", "dts": [0.05, 0.025, 0.0125, 0.00625],
                               "expected": order, "against": "reference"},
-                             {"check": "invariant", "rtol": 1e-12}, XL_ADAPTIVE]})
+                             {"check": "invariant", "rtol": 1e-12}, xl_adaptive("Rodas4", 1e-10)]})
     cases.append({"id": f"advection_reaction.{name}.gradient",
                   "run_config": cfg("toy:advection_reaction", node, {"dt": 0.025}, grad("B", "final")),
-                  "tspan": [0, 0.5], "checks": GRAD + [XL_ADAPTIVE]})
+                  "tspan": [0, 0.5], "checks": GRAD + [xl_adaptive("Rodas4", 1e-10)]})
 sub = {"sequence": [{"subcycle": {"leaf": "transport", "alg": "SSPRK33", "dt": "step"}, "n": 4},
                     leaf("reaction", "Rodas4", dt="step", linsolve={"block_lu": {"pivot": False}})]}
 cases.append({"id": "advection_reaction.subcycle.fixed",

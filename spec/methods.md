@@ -188,17 +188,25 @@ Tier-2 trajectory comparisons against OrdinaryDiffEq's Kvaerno3/4 use autonomous
 
   one extra solve with the step's $W$.
 
-  *Deviation from OrdinaryDiffEq.* OrdinaryDiffEqSDIRK smooths with its stored Newton matrix $W_{\text{ODE}} = J - I/(h\gamma)$ (`src/generic_imex_perform_step.jl:2389-2392`), which gives $-h\gamma\,(I - h\gamma J)^{-1} e_{\text{raw}}$: the estimate shrinks by the factor $h\gamma$. A run on $f(u, t) = t^3$ (where $J = 0$ and smoothing should change nothing) confirms it: OrdinaryDiffEq's smoothed TRBDF2 estimate is $h\gamma$ times its unsmoothed one (ratio 34.1 at $h = 0.1$, 341 at $h = 0.01$, with $\gamma = 0.2929$). With `smooth_est = false` OrdinaryDiffEq's estimate equals $e_{\text{raw}}$, which the extraction check confirms. The spec adopts the formula above (D56). The rule is to follow OrdinaryDiffEq unless that gives wrong or low-accuracy results, and here it does: the estimate's extra factor $h\gamma$ makes the controller take steps whose error grows far beyond the tolerance as the tolerance tightens. Measured with [`../tools/tableaus/sdirk_error_estimate_check.jl`](../tools/tableaus/sdirk_error_estimate_check.jl), the end-of-run error divided by the tolerance (`reltol = abstol`) is:
+  *Deviation from OrdinaryDiffEq.* OrdinaryDiffEqSDIRK smooths with its stored Newton matrix $W_{\text{ODE}} = J - I/(h\gamma)$ (`src/generic_imex_perform_step.jl:2389-2392`), which gives $-h\gamma\,(I - h\gamma J)^{-1} e_{\text{raw}}$: the estimate shrinks by the factor $h\gamma$. A run on $f(u, t) = t^3$ (where $J = 0$ and smoothing should change nothing) confirms it: OrdinaryDiffEq's smoothed TRBDF2 estimate is $h\gamma$ times its unsmoothed one (ratio 34.1 at $h = 0.1$, 341 at $h = 0.01$, with $\gamma = 0.2929$). With `smooth_est = false` OrdinaryDiffEq's estimate equals $e_{\text{raw}}$, which the extraction check confirms. The spec adopts the formula above (D56). The rule is to follow OrdinaryDiffEq unless that gives wrong or low-accuracy results, and here it does: the estimate's extra factor $h\gamma$ makes the controller take steps whose error grows far beyond the tolerance as the tolerance tightens. [`../tools/tableaus/sdirk_error_estimate_check.jl`](../tools/tableaus/sdirk_error_estimate_check.jl) measures the end-of-run error divided by the tolerance (`reltol = abstol`) for OrdinaryDiffEq with and without smoothing, and for this section's step (with the row-sum stage times of §5.4) under §8.2's PI controller with the estimate above:
 
-  | Problem | Method | tol | smoothed (OrdinaryDiffEq default) | unsmoothed |
-  |---|---|---|---|---|
-  | `forced_decay` | TRBDF2 | 1e-6 | 165 | 9.4 |
-  | `forced_decay` | TRBDF2 | 1e-8 | 1430 | 40 |
-  | `forced_decay` | SDIRK2 | 1e-8 | 6340 | 227 |
-  | stiff Prothero–Robinson, $\lambda = -10^4$ | TRBDF2 | 1e-8 | 13.3 | 0.029 |
-  | stiff Prothero–Robinson, $\lambda = -10^4$ | SDIRK2 | 1e-8 | 973 | 0.28 |
+  | Problem | Method | tol | smoothed (OrdinaryDiffEq default) | unsmoothed | adopted |
+  |---|---|---|---|---|---|
+  | `forced_decay` | TRBDF2 | 1e-6 | 165 | 9.4 | 8.7 |
+  | `forced_decay` | TRBDF2 | 1e-8 | 1430 | 40 | 43 |
+  | `forced_decay` | SDIRK2 | 1e-6 | 53 | 0.76 | 0.56 |
+  | `forced_decay` | SDIRK2 | 1e-8 | 6340 | 227 | 0.60 |
+  | `forced_decay` | Kvaerno3 | 1e-8 | † | † | 0.42 |
+  | `forced_decay` | Kvaerno4 | 1e-8 | † | † | 0.086 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | TRBDF2 | 1e-6 | 0.52 | 0.00044 | 0.46 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | TRBDF2 | 1e-8 | 2.8 | 0.0025 | 0.82 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | SDIRK2 | 1e-6 | 19 | 0.14 | 184 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | SDIRK2 | 1e-8 | 973 | 0.28 | 5590 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | Kvaerno3 | 1e-8 | † | † | 29 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | Kvaerno4 | 1e-6 | † | † | 2.1 |
+  | stiff Prothero–Robinson, $\lambda = -10^4$ | Kvaerno4 | 1e-8 | † | † | 246 |
 
-  (Kvaerno3/4 are left out of the table because their stage-time defect, §5.4, dominates on these time-dependent problems.) Adaptive step sequences therefore differ from OrdinaryDiffEq's defaults; the oracle checks impose our step sequence, so they are unaffected. Not reported upstream.
+  († OrdinaryDiffEq's Kvaerno3/4 are dominated by their stage-time defect, §5.4, on these time-dependent problems.) On the non-stiff problem $h\gamma J$ is small, the adopted estimate is close to the unsmoothed one, and it removes OrdinaryDiffEq's loss of accuracy. On the stiff problem it does so for TRBDF2 only: SDIRK2, and Kvaerno3/4 at tight tolerances, still end far above the tolerance, SDIRK2 worse than with OrdinaryDiffEq's estimate. The unsmoothed estimate meets the tolerance there but takes 5–250 times as many steps (Kvaerno3/4 hit the $10^6$-step limit). Adaptive step sequences differ from OrdinaryDiffEq's defaults; the oracle checks impose our step sequence, so they are unaffected. Not reported upstream. *Open question* (§13, item 8): which estimate SDIRK2 and Kvaerno3/4 should use on stiff problems.
 - **`divided_difference`** (BackwardEuler; OrdinaryDiffEqSDIRK `src/generic_imex_perform_step.jl:2401-2420`). With the previous accepted step $(u_{n-1}, t_{n-1})$ of the same leaf invocation:
 
   ```math
@@ -359,11 +367,14 @@ A non-success code from any leaf ends the run with that code, naming the leaf (a
 1. **Kvaerno3/4 stage times** (§5.4). The tables use the row sums. Tier-2 comparisons against OrdinaryDiffEq's Kvaerno methods are limited to autonomous problems. Not reported upstream.
 2. **KPP's own step-size rule** (§4.4) becomes a controller option, `controller: "KPP"`, at M7 for WRF-Chem parity. The tables already record it.
 3. **Jacobian reuse in SDIRK** (§5.3). v1 forms $J$ on every step attempt. OrdinaryDiffEq-style reuse is revisited at M4b, when eqice's column solves give real costs.
-4. **Smoothed SDIRK error estimate** (§5.5). Hosea and Shampine's formula, because OrdinaryDiffEq's scaled version gives low-accuracy results. Not reported upstream.
+4. **Smoothed SDIRK error estimate** (§5.5). Hosea and Shampine's formula, because OrdinaryDiffEq's scaled version gives low-accuracy results. Not reported upstream. On stiff problems this fixes TRBDF2 only; see item 8.
 
 **Assumptions:**
 5. The SDIRK initial guess (previous stage's $z$, zero for the first implicit stage) changes converged stages only at the Newton tolerance (§5.2).
 6. BackwardEuler's divided-difference history resets at every invocation of the leaf (§5.5).
 7. The first-step algorithm runs per cell under `dt_scope: cell` (§9).
+
+**Open question:**
+8. **SDIRK error estimate on stiff problems** (§5.5). On the stiff Prothero–Robinson problem the adopted estimate leaves SDIRK2 184–5590 times above the tolerance and Kvaerno3/4 29–246 times at `tol = 1e-8`, while the unsmoothed estimate is accurate but takes up to 250 times as many steps. Candidates: smoothing only the stiff components, a different embedded pair for SDIRK2, or unsmoothed estimates with a step cap. Until settled, M1's stiff adaptive cases use TRBDF2 and Kvaerno4 at `reltol = 1e-6`, where Kvaerno4 measured 2.1.
 
 **Deviations from OrdinaryDiffEq, collected:** stage times of Kvaerno3/4 (§5.4); the explicit first stage of ESDIRK methods is evaluated, not reused from $z_s/h$ (§5.1); the smoothed SDIRK error estimate (§5.5); no Jacobian reuse in SDIRK (§5.3); non-finite error estimates reject (§7); the SDIRK initial guess (§5.2); the `DomainViolation` return code (§12).
