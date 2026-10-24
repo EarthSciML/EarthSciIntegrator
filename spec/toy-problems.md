@@ -82,7 +82,7 @@ A leaf and a map in sequence, with an exact discrete solution. It tests `map`, `
 | `reference` | Output states agree with the `reference` result (§3) to `rtol`, relative to the largest magnitude of each state component over the run. | 2 |
 | `dot_product` | spec/adjoint.md §7.1 for every step, with the frozen-tape tangent. Julia only (D44). | 2 |
 | `fd_gradient` | spec/adjoint.md §7.2, central differences at the listed `epsilons`. | 2 |
-| `reverse_diff` | Agreement with `SciMLSensitivity.ReverseDiffAdjoint` through OrdinaryDiffEq's same method, with the tape's step sequence imposed (spec/adjoint.md §7.3), to `rtol`. Julia only. | 2 |
+| `reverse_diff` | Agreement with `SciMLSensitivity.ReverseDiffAdjoint` through OrdinaryDiffEq's same method, with the tape's step sequence imposed (spec/adjoint.md §7.3), to `rtol`; on cases too large for a ReverseDiff tape, ForwardDiff through the same solve (§7.3). Julia only. | 2 |
 | `replay` | Replaying from the start with the tape reproduces every accepted step and the end state bitwise (D10). | 2 |
 | `cross_language` | Julia and Rust results (§3) agree: output states and gradients to `rtol`, and accepted step counts exactly. With `rtol_steps_differ` the step sequences may differ, since a roundoff-level accept/reject flip changes every later step; when they do, states and gradients agree to `rtol_steps_differ` instead, which is set from the case's `reltol` because the two then differ by about the global error. | 3 |
 
