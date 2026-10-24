@@ -9,9 +9,15 @@ use crate::{Error, Scalar};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-/// Julia's `sin` and `cos`, so the toy problems' right-hand sides agree
-/// with the Julia implementation's bit for bit (see [`crate::jltrig`]).
-use crate::jltrig::{cos, sin};
+// The platform's `sin` and `cos`. They can differ from Julia's in the last
+// bit, so the toy problems need not agree with the Julia implementation's
+// bit for bit (spec/toy-problems.md §2.1, `cross_language`).
+fn sin(x: f64) -> f64 {
+    x.sin()
+}
+fn cos(x: f64) -> f64 {
+    x.cos()
+}
 
 /// A toy problem: its operators, layout, parameters, initial state,
 /// interval and the facts the conformance checks use.
