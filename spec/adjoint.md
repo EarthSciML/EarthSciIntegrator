@@ -71,9 +71,12 @@ The run config's `adjoint.functional` (architecture §4.2, §10) defines
 - **Increments.** With $\psi$ evaluated at each stage state and the stage's time, one step adds:
   - explicit Runge–Kutta: $\Delta q = \sum_i (h b_i)\, \psi(U_i)$;
   - transformed-form Rosenbrock, with $\psi$ linear in $u$ and independent of $t$, and $\sigma = 1/(h\gamma)$: $k_{q,i} = \big(\psi(U_i) + \sum_j (C_{ij}/h)\, k_{q,j} + \psi(k_i)\big)/\sigma$ and $\Delta q = \sum_i b_i k_{q,i}$, the method applied to $q' = \psi(u)$, whose Jacobian row is $\nabla_u\psi$ and has no $q$ column;
-  - Rosenbrock23, likewise: $k_{q,1} = \psi(u_n) + h d\,\psi(k_1)$, $k_{q,2} = \big((\psi(U_2) - k_{q,1}) + h d\,(\psi(k_2) - \psi(k_1))\big) + k_{q,1}$, $\Delta q = h\, k_{q,2}$.
+  - Rosenbrock23, likewise: $k_{q,1} = \psi(u_n) + h d\,\psi(k_1)$, $k_{q,2} = \big((\psi(U_2) - k_{q,1}) + h d\,(\psi(k_2) - \psi(k_1))\big) + k_{q,1}$, $\Delta q = h\, k_{q,2}$;
+  - SDIRK and ESDIRK: $\Delta q = \sum_i b_i\,\big(h\,\psi(Z_i)\big)$ at the stage states $Z_i$ ($Z_1 = u_n$ for an explicit first stage), summed over ascending $i$ skipping zero $b_i$. Since $\psi$ does not read $q$, the $q$ component of stage $i$ is exactly $z_{q,i} = h\,\psi(Z_i)$, with no Newton iteration;
+  - θ-method: $\Delta q = (h(1-\theta))\,\psi(u_n) + \theta\,\big(h\,\psi(u_{n+1})\big)$, the first term absent at θ = 1 and the second at θ = 0, as the state's $\tau$ and $\theta z$ (spec/methods.md §6);
+  - IMEX Euler: refused at M1. Which part, $f_E$ or $f_I$, integrates $q$ is not specified (§8).
   
-  A general $\psi$ under Rosenbrock methods, and other families, follow with their M1 stage. At M1 a functional with an integral term is accepted only for a schedule that is a single leaf, and refused otherwise.
+  A general $\psi$ under Rosenbrock methods follows later. At M1 a functional with an integral term is accepted only for a schedule that is a single leaf, and refused otherwise.
 
 ### 2.2 The tape and what is held fixed
 
@@ -290,10 +293,12 @@ BackwardEuler, TRBDF2, SDIRK2, Kvaerno3/4, with tableau $(a_{ij}, b_i, c_i)$ fro
 G_i(Z_i) \equiv Z_i - h\gamma\, f(Z_i, p, t_n + c_i h; F) - \Big(u_n + h \sum_{j<i} a_{ij} K_j\Big) = 0, \qquad K_i = f(Z_i),
 ```
 ```math
-u_{n+1} = u_n + h\sum_i b_i K_i \quad\text{(or } u_{n+1} = Z_s \text{ when the method is stiffly accurate, } b_i = a_{si}\text{)}.
+u_{n+1} = u_n + h\sum_i b_i K_i .
 ```
 
-OrdinaryDiffEq iterates on $z_i = h K_i$ rather than on $Z_i$. At the exact solution the two are the same map, so the derivative below holds for either. An implementation MAY use either unknown.
+The forward pass computes $u_{n+1}$ this way also for stiffly accurate methods ($b_i = a_{si}$), where OrdinaryDiffEq takes $u_{n+1} = Z_s$ (spec/methods.md §5.1).
+
+OrdinaryDiffEq iterates on $z_i = h K_i$ rather than on $Z_i$, and so does the forward pass (spec/methods.md §5.1–§5.2). At the exact solution the two are the same map, so the derivative below holds for either.
 
 **Implicit function theorem.** The adjoint differentiates the map defined by the *exact* stage solutions at the computed $Z_i$. Newton iterates, the Newton matrix (which may hold a stale or low-precision $J$), line searches and convergence tests are not differentiated. With $W_i = I - h\gamma J(Z_i)$:
 
@@ -322,7 +327,9 @@ For an explicit first stage ($a_{11} = 0$), $W_1 = I$ and the solve is a copy. T
 - **Refactor.** Form $J(Z_i)$ from bands and factor $W_i$. This is the default for `block_lu`, `sparse_block_lu` and `banded`, where a factorization is cheap per cell or per column.
 - **Iterate.** Use the forward factorization as a preconditioner for a Krylov solve or iterative refinement on $W_i^\top$, with `vjp_u` supplying $J(Z_i)^\top v$. This is the default for `krylov` leaves.
 
-These defaults are decided (D42). Reusing the forward factorization is exact for Rosenbrock only; for SDIRK it is at most a preconditioner (architecture §6.1). The same holds for the $W$ of IMEX Euler (§4.4) and the θ-method (§4.5), which is formed at the converged $u_{n+1}$. *Informative:* the cost of refactoring per stage at 3-D column scale has not been measured.
+These defaults are decided (D42). Under refactoring each transposed solve is computed as $\omega_i = M_i^{-\top}(R_i \cdot \sigma)$, with $R_i$ the right-hand side above, $\sigma = 1/(h\gamma)$ and $M_i = \sigma I - J(Z_i, t_n + c_i h)$ factored at the converged stage as spec/methods.md §5.3 factors the forward $M$; the forward Newton solve is scaled the same way (spec/methods.md §5.2). §4.4 and §4.5 solve $W^\top \omega = \lambda_{n+1}$ likewise, as $M^{-\top}(\lambda_{n+1} \cdot \sigma)$ with $M = \sigma I - J_{(I)}(u_{n+1}, t_n + h)$ and $\gamma$ = 1 or θ.
+
+Reusing the forward factorization is exact for Rosenbrock only; for SDIRK it is at most a preconditioner (architecture §6.1). The same holds for the $W$ of IMEX Euler (§4.4) and the θ-method (§4.5), which is formed at the converged $u_{n+1}$. *Informative:* the cost of refactoring per stage at 3-D column scale has not been measured.
 
 ### 4.4 IMEX Euler
 
@@ -332,7 +339,7 @@ PISM's "explicit horizontal at old time" (architecture §5). The leaf's operator
 u_{n+1} = u_n + h\, f_E(u_n) + h\, f_I(u_{n+1}),
 ```
 
-with the implicit equation converged by Newton, or by one linear solve when $f_I$ is linear in $u$, as eqice's column diffusion is. With $W = I - hJ_I(u_{n+1})$:
+with the implicit equation converged by Newton, which takes one linear solve to roundoff when $f_I$ is linear in $u$, as eqice's column diffusion is. With $W = I - hJ_I(u_{n+1})$:
 
 ```math
 W^\top \omega = \lambda_{n+1}, \qquad
@@ -342,7 +349,7 @@ W^\top \omega = \lambda_{n+1}, \qquad
 
 and $\bar F$ likewise.
 
-The implicit part is solved to convergence by default (D43). The leaf option `implicit_solve: "linearized"` instead takes a single linearized (Rosenbrock–Euler) step: $W$ is formed at $u_n$ and the step is a one-stage Rosenbrock method, whose adjoint is §4.2 with one stage, including `hess_u`. When $f_I$ is linear in $u$ the two coincide, and the planner records `converged`.
+The implicit part is solved to convergence by default (D43). The leaf option `implicit_solve: "linearized"` instead takes a single linearized (Rosenbrock–Euler) step: $W$ is formed at $u_n$ and the step is a one-stage Rosenbrock method, whose adjoint is §4.2 with one stage, including `hess_u`. The two coincide only when $f_I$ is linear in $u$ and independent of $t$: the linearized step evaluates $f_I$ at $(u_n, t_n)$, the converged step at $(u_{n+1}, t_n + h)$, so for $f_I = -k u + c(t)$ they differ by $h(I - hJ)^{-1}(c(t_n + h) - c(t_n))$. The leaf runs the `implicit_solve` it asks for in every case; neither the planner nor an implementation substitutes one for the other.
 
 ### 4.5 Legacy fixed steps: θ-method, forward Euler, backward Euler
 
@@ -544,7 +551,9 @@ Check the directional derivative $\langle \nabla \mathcal{J}, (\delta u_0, \delt
 
 The frozen-tape replay:
 - holds $(t_n, h_n)$, every mask, branch and firing, and the epoch map at their recorded values;
-- tightens implicit-stage and `solve`-node tolerances well below $\epsilon^2$. The adjoint is the exact implicit-function derivative, while finite differences of a loosely converged Newton carry an error of order tol/$\epsilon$.
+- tightens implicit-stage and `solve`-node tolerances well below $\epsilon^2$. The adjoint is the exact implicit-function derivative, while finite differences of a loosely converged Newton carry an error of order tol/$\epsilon$. At M1 the replay converges every implicit stage to roundoff; how is implementation-defined. *Informative:* Julia runs the forward Newton iteration (spec/methods.md §5.2) and then full Newton, with $J$ refactored at each iterate, until the increment stops shrinking; Rust runs the iteration with the forward $M$ for up to 100 iterations, until the increment norm is below $10^{-12}$ or stops shrinking.
+
+**Accuracy of implicit adjoints.** The replay's finite differences differentiate the map with exact stages. The adjoint differentiates the exact stage equations, but at the stages the forward Newton iteration converged to, so for SDIRK, θ and IMEX steps it is exact only up to the Newton tolerance (the contract at the top of this chapter). Measured: BackwardEuler on stiff van der Pol at the default `reltol` $10^{-3}$ differs from finite differences by $1.25\cdot10^{-6}$ relative; an adaptive SDIRK leaf on non-stiff van der Pol at `reltol` $10^{-5}$ by up to $3\cdot10^{-6}$ on a direction whose derivative is small. This is why the M1 conformance cases check implicit gradients on a linear problem (`forced_decay`, where Newton converges to roundoff), or at a `reltol` no looser than the `fd_gradient` `rtol` (stiff van der Pol at $10^{-6}$).
 
 Fixtures are scaled so a good $\epsilon$ exists. In the conformance check (spec/toy-problems.md §2.1):
 - a direction's component for an input whose value is zero is scaled by that input's largest magnitude over the run's outputs and checkpoints, not by 1, so a perturbation of a species that starts at zero stays within the problem's range (Robertson's $y_2$ perturbed by $10^{-3}$ diverges);
@@ -558,8 +567,9 @@ reseact's "never validate at the default initial condition" applies: perturb fro
   - `Rosenbrock23`, `SSPRK43`, and `TRBDF2(autodiff=false)` as named in architecture §5;
   - one representative per remaining v1 family.
 
-  Both sides must differentiate the same map. The OrdinaryDiffEq solve therefore runs with `adaptive = false` and the tape's step sequence imposed (`dt` and `tstops` from the tape). *Assumption:* ReverseDiff through an adaptive solve would also differentiate the controller, which this spec excludes. ReverseDiff differentiates TRBDF2's Newton iterations, so agreement for implicit families is at the Newton tolerance. OrdinaryDiffEq's TRBDF2 and Kvaerno methods also take each step's explicit first stage from the previous step's last stage, which equals $f(u_n)$ only to the Newton tolerance (spec/methods.md §5), so the same bound applies to their forward trajectories. OrdinaryDiffEq's Kvaerno3/4 evaluate stage 2 at the wrong time (spec/methods.md §5.4), so they are oracles only on autonomous problems.
+  Both sides must differentiate the same map. The OrdinaryDiffEq solve therefore runs with `adaptive = false` and the tape's step sequence imposed (`dt` and `tstops` from the tape). *Assumption:* ReverseDiff through an adaptive solve would also differentiate the controller, which this spec excludes. ReverseDiff differentiates TRBDF2's Newton iterations, so agreement for implicit families is at the Newton tolerance; OrdinaryDiffEq's SDIRK methods run with `NLNewton(κ = 1e-6)` here as in the `oracle` check (spec/toy-problems.md §2.1). OrdinaryDiffEq's TRBDF2 and Kvaerno methods also take each step's explicit first stage from the previous step's last stage, which equals $f(u_n)$ only to the Newton tolerance (spec/methods.md §5), so the same bound applies to their forward trajectories. OrdinaryDiffEq's Kvaerno3/4 evaluate stage 2 at the wrong time (spec/methods.md §5.4), so they are oracles only on autonomous problems.
   ReverseDiff tapes every scalar operation of OrdinaryDiffEq's dense LU, about $N^3$ per step for $N$ states. When $N^3$ times the number of steps exceeds $10^7$ (photostationary_cells with Rosenbrock23: 49 states over 733 steps), the check differentiates the same OrdinaryDiffEq solve, with the same method, imposed steps and map, in forward mode with ForwardDiff instead, and says so.
+  ReverseDiffAdjoint through OrdinaryDiffEqSDIRK 2.9.8's Kvaerno4 returns an exactly zero gradient (`van_der_pol.stiff.Kvaerno4.adaptive`, for $u_0$ and $p$, where ForwardDiff through the same solve and our adjoint agree to $10^{-8}$). For Kvaerno4 the check therefore also uses ForwardDiff through the same OrdinaryDiffEq solve, and says so in its output. Through TRBDF2, ReverseDiffAdjoint works. Not reported upstream.
   *Informative.* ReverseDiff through OrdinaryDiffEqRosenbrock 2.7.5 fails: its out-of-place cache types `JacReuseState.cached_dT` (`rosenbrock_caches.jl:51`) like the state, a `TrackedArray`, and the in-place path fails in LinearSolve's typed cache. The Julia oracle therefore makes `tgrad` a ReverseDiff primitive whose pullback uses ForwardDiff Jacobians of `ft`.
 - **Enzyme on a whole step** (Julia, decisions §1.4 option B), for the same toy problems and as a fallback oracle for any leaf.
 
@@ -582,3 +592,4 @@ Decided on 2026-10-23 and recorded as D39–D44: which leaf integrates the integ
 Remaining:
 
 1. *Assumption:* ReverseDiffAdjoint is run with the tape's step sequence imposed, so it does not differentiate the controller (§7.3).
+2. *Open question:* the integral term on an IMEX Euler leaf (§2.1). $q' = \psi(u)$ can be put in the explicit part, $\Delta q = h\,\psi(u_n)$, or in the implicit part, $\Delta q = h\,\psi(u_{n+1})$, and the two give different quadratures. Until it is decided, a functional with an integral term on an IMEX Euler leaf is refused.

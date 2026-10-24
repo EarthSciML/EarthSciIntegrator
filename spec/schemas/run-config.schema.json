@@ -206,10 +206,12 @@
     "leafOptions": {
       "description": "Options shared by leaf and coupled nodes.",
       "type": "object",
+      "if": {"required": ["alg"], "properties": {"alg": {"const": "Theta"}}},
+      "then": {"required": ["theta"]},
       "properties": {
         "id": {"$ref": "#/$defs/nodeId"},
         "alg": {"$ref": "#/$defs/alg"},
-        "theta": {"description": "Off-centring of the Theta method, in [0, 1].", "type": "number", "minimum": 0, "maximum": 1},
+        "theta": {"description": "Off-centring of the Theta method, in [0, 1]. Required when alg is Theta.", "type": "number", "minimum": 0, "maximum": 1},
         "implicit_solve": {"description": "How an IMEX or implicit Euler step solves its implicit part: to convergence (default), or one linearized step (D43).", "enum": ["converged", "linearized"]},
         "dt": {
           "description": "Fixed substep, or 'step' (one step of the node's Δ), or 'accumulated' (one step of the time since this leaf last ran). Omitted: adaptive under control.",

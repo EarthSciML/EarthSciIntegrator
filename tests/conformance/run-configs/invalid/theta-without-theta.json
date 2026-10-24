@@ -1,0 +1,9 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "schedule": {
+    "leaf": "a",
+    "alg": "Theta",
+    "dt": "60s"
+  }
+}
