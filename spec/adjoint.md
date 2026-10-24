@@ -519,7 +519,7 @@ Then
 \langle \lambda_{n+1}, \delta u_{n+1}\rangle = \langle \lambda_n, \delta u\rangle + \langle \bar p, \delta p\rangle + \langle \bar F, \delta F\rangle ,
 ```
 
-with the relative mismatch, scaled by the larger of the two sides' magnitudes:
+with the mismatch scaled by the magnitude of the terms rather than of the sums, since with a random $\lambda$ either side can nearly cancel: by $\max\big(\sum_i |\lambda_{n+1,i}\,\delta u_{n+1,i}|,\ \sum_i |\lambda_{n,i}\,\delta u_i| + \sum_k |\bar p_k\,\delta p_k| + \sum_m |\bar F_m\,\delta F_m|\big)$:
 - **≤ 1e-12** for explicit and Rosenbrock steps, and for SDIRK, θ and IMEX steps whose transposed solves are direct;
 - **≤ the transposed-solve or refinement tolerance** where those solves iterate (Krylov, low-precision factors with refinement).
 
