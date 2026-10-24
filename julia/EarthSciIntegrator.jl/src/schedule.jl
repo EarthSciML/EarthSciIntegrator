@@ -31,6 +31,7 @@ struct LeafNode{O <: OperatorSum, M <: AbstractMethod} <: Node
     bindings::Bindings
     linsolve::LinsolveSpec       # the W solver of Rosenbrock leaves (unused by explicit ones)
     check_stages::Bool           # domain.check_stages (Rosenbrock only)
+    ψ::Union{Nothing, Integrand} # the integrand of a functional over time, on the leaf that integrates it
 end
 is_adaptive(l::LeafNode) = l.dt === nothing
 
@@ -280,8 +281,12 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
             "(spec/methods.md §9, run-config §8 rule 15)"))
     end
     return LeafNode(id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
-        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages)
+        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing)
 end
+
+"""The same leaf integrating the functional's integrand `ψ` (spec/adjoint.md §2.1)."""
+with_integrand(l::LeafNode, ψ::Integrand) = LeafNode(l.id, l.opnames, l.ops, l.tab, l.method, l.dt, l.tol, l.dt0,
+    l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, ψ)
 
 """
     apply_bindings(p, bindings, Δleaf, Δnode, Δmacro) -> p′

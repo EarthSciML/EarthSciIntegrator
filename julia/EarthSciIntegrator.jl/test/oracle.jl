@@ -71,20 +71,49 @@ end
 # `ft` in u and p, which keeps the oracle independent of the hand-derived
 # `ft_vjp_u` and `ft_vjp_p` the adjoint uses. (The in-place path fails too, in
 # LinearSolve's typed cache.)
+#
+# A functional over time is integrated, as in our leaf, as the auxiliary state
+# q' = ψ(u) appended to the state (spec/adjoint.md §2.1); with the step
+# sequence imposed, q's presence does not change OrdinaryDiffEq's steps.
 _ftvec(ops, u, p, t) = (d = zeros(promote_type(eltype(u), eltype(p)), length(u)); EarthSciIntegrator.ft!(ops, d, u, p, t); d)
-tracked_ft(ops, u, p, t) = _ftvec(ops, u, p, t)
-tracked_ft(ops, u::ReverseDiff.TrackedArray, p::ReverseDiff.TrackedArray, t) = ReverseDiff.track(tracked_ft, ops, u, p, t)
-ReverseDiff.@grad function tracked_ft(ops, u, p, t)
+"""f_t of the state, with a zero appended for q when `aug`."""
+struct FtOf{O}
+    ops::O
+    aug::Bool
+end
+(g::FtOf)(u, p, t) = g.aug ? vcat(_ftvec(g.ops, u[1:(end - 1)], p, t), zero(promote_type(eltype(u), eltype(p)))) :
+                      _ftvec(g.ops, u, p, t)
+tracked_ft(g, u, p, t) = g(u, p, t)
+tracked_ft(g, u::ReverseDiff.TrackedArray, p::ReverseDiff.TrackedArray, t) = ReverseDiff.track(tracked_ft, g, u, p, t)
+ReverseDiff.@grad function tracked_ft(g, u, p, t)
     uv, pv = ReverseDiff.value(u), ReverseDiff.value(p)
-    Ju = ForwardDiff.jacobian(x -> _ftvec(ops, x, pv, t), uv)
-    Jp = ForwardDiff.jacobian(q -> _ftvec(ops, uv, q, t), pv)
-    return _ftvec(ops, uv, pv, t), Δ -> (nothing, Ju' * Δ, Jp' * Δ, nothing)
+    Ju = ForwardDiff.jacobian(x -> g(x, pv, t), uv)
+    Jp = ForwardDiff.jacobian(q -> g(uv, q, t), pv)
+    return g(uv, pv, t), Δ -> (nothing, Ju' * Δ, Jp' * Δ, nothing)
 end
 
-"""The run's out-of-place problem for ReverseDiffAdjoint, with our step sequence imposed."""
+"""
+The run's out-of-place problem for ReverseDiffAdjoint, with our step sequence
+imposed; for a functional over time, on the state (u, q).
+"""
 function reverse_diff_problem(run)
     prob, kw = oracle_problem(run; inplace = false)
     ops = run.root.ops
-    f = SciMLBase.ODEFunction{false}(prob.f.f; jac = prob.f.jac, tgrad = (u, p, t) -> tracked_ft(ops, u, p, t))
-    return remake(prob; f), kw
+    ψ = run.root.ψ
+    if ψ === nothing
+        f = SciMLBase.ODEFunction{false}(prob.f.f; jac = prob.f.jac, tgrad = (u, p, t) -> tracked_ft(FtOf(ops, false), u, p, t))
+        return remake(prob; f), kw
+    end
+    f0, J0 = prob.f.f, prob.f.jac
+    faug(x, p, t) = (u = x[1:(end - 1)]; vcat(f0(u, p, t), ψ(u)))
+    jaug = function (x, p, t)
+        N = length(x) - 1
+        Ju = J0(x[1:N], p, t)
+        J = zeros(eltype(Ju), N + 1, N + 1)
+        J[1:N, 1:N] .= Ju
+        J[N + 1, 1:N] .= ψ.w
+        return J
+    end
+    f = SciMLBase.ODEFunction{false}(faug; jac = jaug, tgrad = (u, p, t) -> tracked_ft(FtOf(ops, true), u, p, t))
+    return remake(prob; f, u0 = vcat(prob.u0, 0.0)), kw
 end

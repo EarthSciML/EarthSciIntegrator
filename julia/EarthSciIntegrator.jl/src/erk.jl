@@ -100,8 +100,38 @@ struct StepResult{V}
     nf::Int
     singular::Bool          # Rosenbrock: W failed to factor (spec/methods.md §4.2)
     stage_violation::Bool   # Rosenbrock: a stage state violated domain.check_stages (§11)
+    dq::Any                 # increment of the time-integrated functional q, or nothing
 end
-StepResult(u, E, fsal, nf) = StepResult(u, E, fsal, nf, false, false)
+StepResult(u, E, fsal, nf) = StepResult(u, E, fsal, nf, false, false, nothing)
+StepResult(u, E, fsal, nf, singular, violation) = StepResult(u, E, fsal, nf, singular, violation, nothing)
+
+"""
+    Integrand(dofs, weight)
+
+ψ(u) = weight·Σ_{j ∈ dofs} uⱼ (sum in ascending DOF order, then scaled; for
+`mean` the weight is 1/length(dofs)): the linear, time-independent integrand
+of a functional over `time`, integrated as the auxiliary state q with
+q' = ψ(u) by the leaf that carries it (spec/adjoint.md §2.1). q is not part of
+the error norm, so whether a gradient is requested does not change the steps.
+`w` is ∇ψ.
+"""
+struct Integrand
+    dofs::Vector{Int}
+    weight::Float64
+    w::Vector{Float64}
+end
+function Integrand(dofs::Vector{Int}, weight::Float64, N::Integer)
+    w = zeros(N)
+    w[dofs] .= weight
+    return Integrand(dofs, weight, w)
+end
+function (ψ::Integrand)(x)
+    s = zero(eltype(x))
+    for j in ψ.dofs
+        s = s + x[j]
+    end
+    return ψ.weight == 1 ? s : s * ψ.weight
+end
 
 # ---------------------------------------------------------------------------
 # Butcher form
@@ -158,7 +188,7 @@ One forward step attempt of size `h` from `(u, t)`. `f!(out, u, t)` overwrites
 `out` with the leaf's right-hand side. With `adaptive` the error estimate of
 spec/methods.md §3.2 is formed and normed.
 """
-function erk_step(m::ButcherERK, f!, u, t, h, k1, adaptive::Bool, tol; tk1 = t + m.c[1] * h)
+function erk_step(m::ButcherERK, f!, u, t, h, k1, adaptive::Bool, tol; tk1 = t + m.c[1] * h, ψ = nothing)
     est = m.tab.error_estimate
     fsal_method = m.tab.first_same_as_last
     nstages = (adaptive || (fsal_method && m.last_stage_is_end)) ? m.s : findlast(m.active)
@@ -202,7 +232,16 @@ function erk_step(m::ButcherERK, f!, u, t, h, k1, adaptive::Bool, tol; tk1 = t +
         f!(fsal, unew, t + h)
         nf += 1
     end
-    return StepResult(unew, E, fsal, nf)
+    # The integrated functional: Δq = Σᵢ (h bᵢ) ψ(Uᵢ), ascending, from zero.
+    dq = nothing
+    if ψ !== nothing
+        dq = zero(eltype(unew))
+        for i in 1:m.s
+            m.b[i] == 0 && continue
+            dq = dq + (h * m.b[i]) * ψ(U[i])
+        end
+    end
+    return StepResult(unew, E, fsal, nf, false, false, dq)
 end
 
 """
@@ -247,7 +286,7 @@ are recomputed from `u` (replay), then swept `i = s..1` with
 `p̄ = Σᵢ f_p(Uᵢ)ᵀκᵢ`, both summed over ascending stages (§6.4). Stages with
 structurally zero `κᵢ` are skipped.
 """
-function erk_adjoint_step(m::ButcherERK, ops, u, p, t, h, λ; tk1 = t + m.c[1] * h)
+function erk_adjoint_step(m::ButcherERK, ops, u, p, t, h, λ; tk1 = t + m.c[1] * h, ψ = nothing)
     f! = (out, x, τ) -> eval_rhs!(out, ops, x, p, τ)
     nact = findlast(m.active)
     U, _, nf = butcher_stages(m, f!, u, t, h, nothing, nact; tk1)
@@ -269,6 +308,8 @@ function erk_adjoint_step(m::ButcherERK, ops, u, p, t, h, λ; tk1 = t + m.c[1] *
         τ = i == 1 ? tk1 : t + m.c[i] * h
         σ[i] = zeros(N)
         vjp_u!(ops, σ[i], U[i], p, τ, κ)
+        # With the integrated functional (q̄ = 1), Uᵢ's cotangent also has (h bᵢ)∇ψ.
+        ψ === nothing || m.b[i] == 0 || _axpy!(σ[i], σ[i], h * m.b[i], ψ.w)
         pc[i] = zeros(P)
         vjp_p!(ops, pc[i], U[i], p, τ, κ)
     end
@@ -339,7 +380,7 @@ function shu_osher_combine(u, us, F, α, β, h)
     return acc === nothing ? zero(u) : acc
 end
 
-function erk_step(m::ShuOsherERK, f!, u, t, h, k1, adaptive::Bool, tol; tk1 = t)
+function erk_step(m::ShuOsherERK, f!, u, t, h, k1, adaptive::Bool, tol; tk1 = t, ψ = nothing)
     us, F, nf = shu_osher_stages(m, f!, u, t, h)
     unew = us[m.s + 1]
     E = NaN
@@ -364,7 +405,7 @@ spec/adjoint.md §4.1, Shu–Osher form: with `ū⁽ˢ⁾ = λ`, for `j = s-1..0
 `wⱼ = Σ_{i>j} (h βᵢⱼ) ū⁽ⁱ⁾` and `ū⁽ʲ⁾ = Σ_{i>j} αᵢⱼ ū⁽ⁱ⁾ + J(u⁽ʲ⁾)ᵀ wⱼ`, both
 over ascending `i`; one `vjp_u` and one `vjp_p` per evaluated stage.
 """
-function erk_adjoint_step(m::ShuOsherERK, ops, u, p, t, h, λ; tk1 = t)
+function erk_adjoint_step(m::ShuOsherERK, ops, u, p, t, h, λ; tk1 = t, ψ = nothing)
     f! = (out, x, τ) -> eval_rhs!(out, ops, x, p, τ)
     us, _, nf = shu_osher_stages(m, f!, u, t, h)
     s = m.s

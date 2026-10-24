@@ -356,5 +356,6 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     include("test_operators.jl")
     include("oracle.jl")
     include("conformance.jl")
+    include("rosenbrock.jl")
     include("extra.jl")
 end

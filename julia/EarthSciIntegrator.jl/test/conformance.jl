@@ -170,9 +170,17 @@ function check_dot_product(case, run, chk)
                     _, isstop = stop_rule(t, h, next_stop(stops, t))
                     skipped = isstop && h < eps(abs(t))
                     δu, δp, λ = direction(rng, u), direction(rng, pp), randn(rng, length(u))
-                    u1 = skipped ? dual(u, δu) : leaf_step(leaf, dual(u, δu), dual(pp, δp), t, h, mask, tk1)
                     λn, p̄ = leaf_step_adjoint(leaf, u, pp, t, h, mask, λ, skipped, tk1)
-                    r = dot_mismatch(λ, partials(u1), λn, δu, p̄, δp)
+                    if leaf.ψ === nothing
+                        u1 = skipped ? dual(u, δu) : leaf_step(leaf, dual(u, δu), dual(pp, δp), t, h, mask, tk1)
+                        r = dot_mismatch(λ, partials(u1), λn, δu, p̄, δp)
+                    else
+                        # The integrating leaf's step also maps to Δq, with q̄ = 1.
+                        u1, dq = skipped ? (dual(u, δu), 0.0) :
+                                 leaf_step(leaf, dual(u, δu), dual(pp, δp), t, h, mask, tk1; withq = true)
+                        δdq = dq isa ForwardDiff.Dual ? ForwardDiff.partials(dq)[1] : 0.0
+                        r = dot_mismatch(vcat(λ, 1.0), vcat(partials(u1), δdq), λn, δu, p̄, δp)
+                    end
                     if r > worst_step
                         worst_step = r
                         worst_info = "worst step at t = $t"
@@ -193,23 +201,33 @@ function check_dot_product(case, run, chk)
         # The whole macro step.
         u = run.checkpoints[k + 1].u
         δu, δp, λ = direction(rng, u), direction(rng, run.p), randn(rng, length(u))
-        u1 = replay_macro(run, k, dual(u, δu), dual(run.p, δp))
+        timefun = run.functional.over === :time
+        qacc = timefun ? Ref{Any}(0.0) : nothing
+        u1 = replay_macro(run, k, dual(u, δu), dual(run.p, δp); qacc)
         λn, p̄ = macro_adjoint(run, k, λ)
         p̄[run.bound_params] .= 0
         δp[run.bound_params] .= 0
-        worst_macro = max(worst_macro, dot_mismatch(λ, partials(u1), λn, δu, p̄, δp))
+        λ1, δu1 = λ, partials(u1)
+        if timefun
+            λ1, δu1 = vcat(λ, 1.0), vcat(δu1, qacc[] isa ForwardDiff.Dual ? ForwardDiff.partials(qacc[])[1] : 0.0)
+        end
+        worst_macro = max(worst_macro, dot_mismatch(λ1, δu1, λn, δu, p̄, δp))
     end
     # The whole run: the frozen-tape tangent of J against the gradient.
     δu, δp = direction(rng, run.u0), direction(rng, run.p)
     δp[run.bound_params] .= 0
-    _, outs = replay(run, dual(run.u0, δu), dual(run.p, δp))
+    _, outs, qd = replay(run, dual(run.u0, δu), dual(run.p, δp))
     _, ū0, p̄ = gradient(run)
     # The left side's terms: the tangent of each point term's DOFs times its weight.
     F = run.functional
-    w = EarthSciIntegrator.phi_gradient(F, length(run.u0))
-    finals = F.over === :final ? [last(outs)] : [o for o in outs if o[1] > run.tspan[1]]
-    λ1 = reduce(vcat, [w for _ in finals])
-    δu1 = reduce(vcat, [partials(u) for (_, u) in finals])
+    if F.over === :time
+        λ1, δu1 = [1.0], [ForwardDiff.partials(qd)[1]]
+    else
+        w = EarthSciIntegrator.phi_gradient(F, length(run.u0))
+        finals = F.over === :final ? [last(outs)] : [o for o in outs if o[1] > run.tspan[1]]
+        λ1 = reduce(vcat, [w for _ in finals])
+        δu1 = reduce(vcat, [partials(u) for (_, u) in finals])
+    end
     whole = dot_mismatch(λ1, δu1, ū0, δu, p̄, δp)
     worst = max(worst_step, worst_macro, whole)
     record!(id, "dot_product", worst <= chk["rtol"],
@@ -220,7 +238,14 @@ function check_fd_gradient(case, run, chk)
     id = case["id"]
     rng = Random.MersenneTwister(hash(id) + 1)
     _, ū0, p̄ = gradient(run)
-    δu = run.wrt_u0 ? direction(rng, run.u0) : zeros(length(run.u0))
+    # A state component that starts at zero is perturbed on the scale of its
+    # largest magnitude over the run's checkpoints and outputs, not 1 (as the
+    # Rust harness does): robertson's y₂ peaks near 4e-5, and a unit
+    # perturbation at ε = 1e-3 leaves the stable region of the frozen steps.
+    scale = [maximum(abs(x[j]) for x in vcat([c.u for c in run.checkpoints], [o[2] for o in run.outputs]))
+             for j in eachindex(run.u0)]
+    u0dir = [iszero(v) && !iszero(scale[j]) ? scale[j] : v for (j, v) in enumerate(run.u0)]
+    δu = run.wrt_u0 ? direction(rng, u0dir) : zeros(length(run.u0))
     δp = zeros(length(run.p))
     δp[run.wrt_p] .= direction(rng, run.p[run.wrt_p])
     D = dot(ū0, δu) + dot(p̄, δp)
@@ -239,20 +264,52 @@ function check_reverse_diff(case, run, chk)
     id = case["id"]
     alg = ode_alg(run.root.tab.name)
     F = run.functional
-    F.over === :final || error("reverse_diff check implemented for final-time functionals")
+    F.over in (:final, :time) || error("reverse_diff check implemented for final-time and time-integrated functionals")
     prob, kw = reverse_diff_problem(run)
-    w = EarthSciIntegrator.phi_gradient(F, length(run.u0))
-    loss = function (u0, p)
-        sol = solve(remake(prob; u0, p), alg; sensealg = ReverseDiffAdjoint(), kw...)
-        return dot(w, sol.u[end])
+    N = length(run.u0)
+    w = F.over === :time ? vcat(zeros(N), 1.0) : EarthSciIntegrator.phi_gradient(F, N)
+    # ReverseDiff tapes every scalar operation of OrdinaryDiffEq's dense LU,
+    # about N³ per step: photostationary_cells' 49 states over 6354 steps need
+    # more than 140 GiB. Above a budget the same OrdinaryDiffEq solve (same
+    # method, same imposed steps, same map) is differentiated in forward mode
+    # with ForwardDiff instead, and the check says so.
+    nsteps = sum(length(r.steps) for r in run.tape.records if r isa LeafRecord)
+    forward_mode = length(prob.u0)^3 * nsteps > 10^7
+    if forward_mode
+        fprob, _ = oracle_problem(run; inplace = false)
+        if run.root.ψ !== nothing
+            ψ, f0, J0 = run.root.ψ, fprob.f.f, fprob.f.jac
+            faug(x, p, t) = (u = x[1:(end - 1)]; vcat(f0(u, p, t), ψ(u)))
+            jaug = function (x, p, t)
+                Ju = J0(x[1:N], p, t)
+                J = zeros(eltype(Ju), N + 1, N + 1)
+                J[1:N, 1:N] .= Ju
+                J[N + 1, 1:N] .= ψ.w
+                return J
+            end
+            fprob = remake(fprob; f = SciMLBase.ODEFunction{false}(faug; jac = jaug, tgrad = FtOf(run.root.ops, true)),
+                u0 = vcat(fprob.u0, 0.0))
+        end
+        M = length(fprob.u0)
+        lossx = x -> dot(w, solve(remake(fprob; u0 = x[1:M], p = x[(M + 1):end]), alg; kw...).u[end])
+        gx = ForwardDiff.gradient(lossx, vcat(fprob.u0, run.p))
+        gu, gp = gx[1:N], gx[(M + 1):end]
+    else
+        loss = function (u0, p)
+            sol = solve(remake(prob; u0, p), alg; sensealg = ReverseDiffAdjoint(), kw...)
+            return dot(w, sol.u[end])
+        end
+        gu, gp = Zygote.gradient(loss, copy(prob.u0), copy(run.p))
+        gu = gu[1:N]
     end
-    gu, gp = Zygote.gradient(loss, copy(run.u0), copy(run.p))
     _, ū0, p̄ = gradient(run)
     eu = run.wrt_u0 ? relerr(ū0, gu) : 0.0
     ep = isempty(run.wrt_p) ? 0.0 : relerr(p̄[run.wrt_p], gp[run.wrt_p])
     err = max(eu, ep)
+    how = forward_mode ? "ForwardDiff through the same OrdinaryDiffEq solve (too large for ReverseDiffAdjoint's tape)" :
+          "ReverseDiffAdjoint"
     record!(id, "reverse_diff", err <= chk["rtol"],
-        "relative difference from ReverseDiffAdjoint: u0 $eu, p $ep; rtol $(chk["rtol"])")
+        "relative difference from $how: u0 $eu, p $ep; rtol $(chk["rtol"])")
 end
 
 bitwise_equal(a, b) = length(a) == length(b) && all(i -> reinterpret(UInt64, Float64(a[i])) == reinterpret(UInt64, Float64(b[i])), eachindex(a))
@@ -272,8 +329,9 @@ function check_replay(case, run, chk)
     id = case["id"]
     problems = String[]
     # 1. Replay from the start with the tape: end state bitwise.
-    u, _ = replay(run)
+    u, _, q = replay(run)
     bitwise_equal(u, run.u) || push!(problems, "replayed end state differs (max |Δ| = $(maxabs(u .- run.u)))")
+    q === nothing || bitwise_equal([q], [run.q]) || push!(problems, "replayed integrated functional differs ($q, $(run.q))")
     # 2. Every macro step replayed from its checkpoint lands bitwise on the next one,
     #    and every replayed step ends where the tape's next step starts.
     for k in 0:(length(run.bounds) - 2)

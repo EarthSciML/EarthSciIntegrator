@@ -1,35 +1,40 @@
 # The Rosenbrock family (spec/methods.md §4, spec/adjoint.md §4.2).
 #
 # Arithmetic of the transformed form (ROS2, ROS3P, Rodas3/4/5P, the KPP
-# methods), following OrdinaryDiffEqRosenbrock 2.7.5's in-place generic step
-# (`src/rosenbrock_perform_step.jl:734` onward, `_stage_accum!` and
-# `_stage_rhs!` at :616-664):
-# - J and f_t at (uₙ, tₙ); Ŵ = I/(hγ) - J with 1/(hγ) = `inv(h*γ)` (linsolve.jl).
-# - Uᵢ = uₙ + A_i1 k₁ + A_i2 k₂ + …, a flat left-to-right sum from uₙ.
-# - rᵢ = f(Uᵢ, tₙ + cᵢh) + (h dᵢ) f_t + (C_i1/h) k₁ + (C_i2/h) k₂ + …, a flat
-#   left-to-right sum; the coefficient of kⱼ is `C[i,j] / h` (OrdinaryDiffEq's
-#   `dtC = C ./ dt`), that of f_t is `h * d[i]` (`dtd = dt .* d`). The f_t
-#   term is present only when f_t is formed (spec/methods.md §4.2).
+# methods), following OrdinaryDiffEqRosenbrock 2.7.5's out-of-place generic
+# step (`src/rosenbrock_perform_step.jl:431-540`), and agreed with the Rust
+# implementation:
+# - J and f_t at (uₙ, tₙ); Ŵ = I/(hγ) - J with 1/(hγ) = `inv(h*γ)`, the
+#   diagonal formed as `inv(h*γ) - J_ii` in one rounding (linsolve.jl).
+# - Uᵢ = uₙ + A_i1 k₁ + A_i2 k₂ + …, left to right from uₙ.
+# - rᵢ = (f(Uᵢ, tₙ + cᵢh) + (h dᵢ) f_t) + sᵢ with sᵢ = (C_i1/h) k₁ + (C_i2/h) k₂
+#   + … summed left to right from zero; the coefficient of kⱼ is `C[i,j] / h`
+#   (OrdinaryDiffEq's `dtC = C ./ dt`), that of f_t is `h * d[i]`
+#   (`dtd = dt .* d`). The f_t term is omitted when dᵢ = 0 or f_t is not
+#   formed (spec/methods.md §4.2).
 # - kᵢ = Ŵ⁻¹ rᵢ; u_{n+1} = uₙ + b₁k₁ + b₂k₂ + …; e = b̃₁k₁ + b̃₂k₂ + … starting
 #   from the first non-zero term.
 # - Zero coefficients skip their term everywhere (as spec/methods.md §3.1 says
 #   for explicit methods). OrdinaryDiffEq multiplies zeros through in its stage
 #   sums; the values agree except for the sign of a zero.
-# - A stage whose row of A and cᵢ equal the previous stage's reuses its f value.
-# *Deviation:* OrdinaryDiffEq's out-of-place step groups rᵢ as
-# `(f + dtd*dT) + (Σⱼ dtC*kⱼ)` instead (`:487-497`), and it writes everything
-# under `@muladd`; both agree with this form to roundoff only.
+# - From the third stage on, a stage whose row of A and cᵢ equal the previous
+#   stage's reuses its f value (OrdinaryDiffEq's rule, `:463-466`: ROS3P and
+#   KPP_Ros3/Ros4; not Rodas3 or Rodas4). Only the f count changes.
+# *Deviation:* OrdinaryDiffEq writes the step under `@muladd`, and its in-place
+# step sums rᵢ flat (`_stage_rhs!`, `:645-663`); both agree with this form to
+# roundoff only.
 #
 # Rosenbrock23 (the ode23s step, spec/adjoint.md §4.2 and spec/methods.md §4.3)
-# with dtγ = h·d:
-#   Ŵ = I - dtγ J,  k₁ = Ŵ⁻¹(f₀ + dtγ f_t),  U₂ = uₙ + (h/2) k₁,
-#   f₁ = f(U₂, tₙ + h/2),  k₂ = Ŵ⁻¹(f₁ - k₁) + k₁,  u_{n+1} = uₙ + h k₂,
-#   f₂ = f(u_{n+1}, tₙ + h),
-#   k₃ = Ŵ⁻¹(((f₂ - c₃₂(k₂ - f₁)) - 2(k₁ - f₀)) + h f_t),
+# with dtγ = h·d and σ = 1/dtγ = `inv(h*d)`, in OrdinaryDiffEq's arithmetic
+# (`:249-330`) with the sign flipped: M = σI - J is factored (OrdinaryDiffEq's
+# W = J - σI negated) and each solve is multiplied by σ, so (M⁻¹r)·σ is the
+# spec's Ŵ⁻¹r with Ŵ = I - dtγ J:
+#   k₁ = (M⁻¹(f₀ + dtγ f_t))·σ,  U₂ = uₙ + (h/2) k₁,  f₁ = f(U₂, tₙ + h/2),
+#   k₂ = (M⁻¹(f₁ - k₁))·σ + k₁,  u_{n+1} = uₙ + h k₂,  f₂ = f(u_{n+1}, tₙ + h),
+#   k₃ = (M⁻¹(((f₂ - c₃₂(k₂ - f₁)) - 2(k₁ - f₀)) + h f_t))·σ,
 #   e = (h/6)((k₁ - 2k₂) + k₃),
-# with h/2 and h/6 formed as `h / 2` and `h / 6` (OrdinaryDiffEq's `dto2`, `dto6`).
-# *Deviation:* OrdinaryDiffEq solves with W = J - I/dtγ and multiplies the
-# result by -1/dtγ (`:34-145`), which equals Ŵ⁻¹ to roundoff.
+# with h/2 and h/6 formed as `h / 2` and `h / 6` (OrdinaryDiffEq's `dto2`,
+# `dto6`). The adjoint's transposed solves are (M⁻ᵀb)·σ.
 
 """A Rosenbrock method: the transformed form or Rosenbrock23's ode23s form."""
 struct RosenbrockMethod <: AbstractMethod
@@ -58,7 +63,7 @@ function RosenbrockMethod(tab::Tableau)
     d = something(tab.d)::Vector{Float64}
     bt = tab.btilde === nothing ? zeros(length(b)) : tab.btilde
     s = length(b)
-    reuse = [i > 1 && c[i] == c[i - 1] && all(j -> A[i, j] == A[i - 1, j], 1:(i - 1)) for i in 1:s]
+    reuse = [i > 2 && c[i] == c[i - 1] && all(j -> A[i, j] == A[i - 1, j], 1:(i - 1)) for i in 1:s]
     return RosenbrockMethod(tab, :transformed, s, A, C, b, bt, c, d, something(tab.gamma), NaN, reuse,
         any(!iszero, d))
 end
@@ -100,11 +105,7 @@ function rosenbrock_linearization(m::RosenbrockMethod, ctx::RosenbrockContext, u
         ft = zeros(T, N)
         ft!(ctx.ops, ft, u, p, t)
     end
-    if m.form === :rosenbrock23
-        F = factor_W(J, one(T), h * m.d[1], ctx.ls)
-    else
-        F = factor_W(J, inv(h * m.gamma), one(T), ctx.ls)
-    end
+    F = factor_W(J, m.form === :rosenbrock23 ? inv(h * m.d[1]) : inv(h * m.gamma), ctx.ls)
     return J, ft, F
 end
 
@@ -131,10 +132,11 @@ function rosenbrock_stages(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t,
     violation = false
     if m.form === :rosenbrock23
         dtγ = h * m.d[1]
+        σ = inv(dtγ)
         f0 = k1 === nothing ? (nf += 1; feval(u, tk1)) : k1
         r1 = copy(f0)
         ft === nothing || _addto!(r1, dtγ, ft)
-        kk1 = lu_solve(F, r1)
+        kk1 = lu_solve(F, r1) .* σ
         U2 = convert(Vector{T}, copy(u))
         _addto!(U2, h / 2, kk1)
         violation |= _stage_violation(ctx, u) || _stage_violation(ctx, U2)
@@ -143,7 +145,7 @@ function rosenbrock_stages(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t,
         r2 = f1 .- kk1
         kk2 = lu_solve(F, r2)
         @inbounds for j in eachindex(kk2)
-            kk2[j] = kk2[j] + kk1[j]
+            kk2[j] = kk2[j] * σ + kk1[j]
         end
         u1 = convert(Vector{T}, copy(u))
         _addto!(u1, h, kk2)
@@ -170,9 +172,13 @@ function rosenbrock_stages(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t,
         end
         r = copy(fv[i])
         ft === nothing || m.d[i] == 0 || _addto!(r, h * m.d[i], ft)
-        for j in 1:(i - 1)
-            cij = m.C[i, j]
-            cij == 0 || _addto!(r, cij / h, k[j])
+        if i > 1
+            si = zeros(T, N)
+            for j in 1:(i - 1)
+                cij = m.C[i, j]
+                cij == 0 || _addto!(si, cij / h, k[j])
+            end
+            r .= r .+ si
         end
         k[i] = lu_solve(F, r)
     end
@@ -189,11 +195,13 @@ end
 One forward step attempt. A singular W gives `E = 2` (spec/methods.md §4.2)
 and the unchanged state; the caller distinguishes it by `singular`.
 """
-function rosenbrock_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h, k1, adaptive::Bool, tol; tk1 = t)
+function rosenbrock_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h, k1, adaptive::Bool, tol; tk1 = t,
+        ψ = nothing)
     st = rosenbrock_stages(m, ctx, u, p, t, h, k1; tk1)
     if st.singular
         return StepResult(u, 2.0, nothing, st.nf, true, false)
     end
+    dq = ψ === nothing ? nothing : rosenbrock_dq(m, st, ψ, u, h)
     nf = st.nf
     u1 = st.u1
     E = NaN
@@ -213,7 +221,7 @@ function rosenbrock_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h
                 r3[j] = (f2[j] - c32 * (kk2[j] - f1[j])) - 2 * (kk1[j] - f0[j])
             end
             st.ft === nothing || _addto!(r3, h, st.ft)
-            kk3 = lu_solve(st.F, r3)
+            kk3 = lu_solve(st.F, r3) .* inv(h * m.d[1])
             dto6 = h / 6
             e = similar(f2)
             @inbounds for j in eachindex(e)
@@ -236,7 +244,44 @@ function rosenbrock_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h
         end
         E = e === nothing ? 0.0 : error_norm(e, u, u1, tol)
     end
-    return StepResult(u1, E, fsal, nf, false, st.violation)
+    return StepResult(u1, E, fsal, nf, false, st.violation, dq)
+end
+
+"""
+    rosenbrock_dq(m, st, ψ, u, h) -> Δq
+
+The increment of the integrated functional q (q' = ψ(u), ψ linear and
+time-independent, spec/adjoint.md §2.1): the method applied to the augmented
+state (u, q), whose Ŵ has the extra row (-s∇ψᵀ, α). With σ = 1/(hγ), the
+transformed form has k_{q,i} = ((ψ(Uᵢ) + Σⱼ (C_ij/h) k_{q,j}) + ψ(kᵢ)) / σ (the
+sum from zero, ascending) and Δq = Σ bᵢ k_{q,i}; Rosenbrock23, with
+dtγ = h d, has k_{q,1} = ψ(uₙ) + dtγ ψ(k₁),
+k_{q,2} = ((ψ(U₂) - k_{q,1}) + dtγ (ψ(k₂) - ψ(k₁))) + k_{q,1} and
+Δq = h k_{q,2}. These are the Rust implementation's forms.
+"""
+function rosenbrock_dq(m::RosenbrockMethod, st, ψ, u, h)
+    if m.form === :rosenbrock23
+        dtγ = h * m.d[1]
+        kk1, kk2 = st.k
+        ψk1 = ψ(kk1)
+        kq1 = ψ(u) + dtγ * ψk1
+        kq2 = ((ψ(st.U[2]) - kq1) + dtγ * (ψ(kk2) - ψk1)) + kq1
+        return h * kq2
+    end
+    σ = inv(h * m.gamma)
+    kq = Vector{Any}(undef, m.s)
+    for i in 1:m.s
+        sq = zero(eltype(st.k[i]))
+        for j in 1:(i - 1)
+            m.C[i, j] == 0 || (sq = sq + (m.C[i, j] / h) * kq[j])
+        end
+        kq[i] = ((ψ(st.U[i]) + sq) + ψ(st.k[i])) / σ
+    end
+    dq = zero(eltype(st.k[1]))
+    for i in 1:m.s
+        m.b[i] == 0 || (dq = dq + m.b[i] * kq[i])
+    end
+    return dq
 end
 
 """
@@ -251,7 +296,7 @@ p̄ = Σ f_p(Uᵢ)ᵀμᵢ + ∇ₚΣμᵢᵀJkᵢ + ∇ₚ(νᵀf_t). Rosenbroc
 (μ₁, dtγ k₁), (μ₂, dtγ (k₂ - k₁)) and ν = dtγ μ₁. Sums run over ascending
 stages (spec/adjoint.md §6.4).
 """
-function rosenbrock_adjoint_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h, λ; tk1 = t)
+function rosenbrock_adjoint_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h, λ; tk1 = t, ψ = nothing)
     st = rosenbrock_stages(m, ctx, u, p, t, h, nothing; tk1)
     st.singular && error("rosenbrock adjoint: W is singular on replay at t = $t, h = $h")
     N, P = length(u), length(p)
@@ -261,15 +306,20 @@ function rosenbrock_adjoint_step(m::RosenbrockMethod, ctx::RosenbrockContext, u,
         kk1, kk2 = st.k
         U2 = st.U[2]
         dtγ = h * m.d[1]
+        σ = inv(dtγ)
         kb2 = h .* λ
-        μ2 = lu_solve_transpose(F, kb2)
+        # With the integrated functional (q̄ = 1): the augmented Ŵᵀ has the
+        # extra column -dtγ∇ψ and k̄_{q,2} = h, so μ_{q,2} = h, μ_{q,1} = 0.
+        rhs2 = ψ === nothing ? kb2 : kb2 .+ (dtγ * h) .* ψ.w
+        μ2 = lu_solve_transpose(F, rhs2) .* σ
         σ2 = zeros(N)
         vjp_u!(ops, σ2, U2, p, t + h / 2, μ2)
+        ψ === nothing || _addto!(σ2, h, ψ.w)
         kb1 = similar(kb2)
         @inbounds for j in 1:N
             kb1[j] = (kb2[j] - μ2[j]) + (h / 2) * σ2[j]
         end
-        μ1 = lu_solve_transpose(F, kb1)
+        μ1 = lu_solve_transpose(F, kb1) .* σ
         σ1 = zeros(N)
         vjp_u!(ops, σ1, u, p, tk1, μ1)
         pairs = [(μ1, dtγ .* kk1), (μ2, dtγ .* (kk2 .- kk1))]
@@ -300,12 +350,20 @@ function rosenbrock_adjoint_step(m::RosenbrockMethod, ctx::RosenbrockContext, u,
     μ = Vector{Union{Nothing, Vector{Float64}}}(nothing, s)
     σ = Vector{Union{Nothing, Vector{Float64}}}(nothing, s)
     pc = Vector{Union{Nothing, Vector{Float64}}}(nothing, s)
+    # The integrated functional (q̄ = 1): k̄_{q,i} = bᵢ + Σ_{l>i} (C_li/h) μ_{q,l},
+    # μ_{q,i} = k̄_{q,i}/σ, μᵢ = Ŵ⁻ᵀ(k̄ᵢ + μ_{q,i}∇ψ), and Uᵢ's cotangent gains μ_{q,i}∇ψ.
+    σW = inv(h * m.gamma)
+    kbq = ψ === nothing ? zeros(s) : copy(m.b)
     for i in s:-1:1
-        kb[i] === nothing && continue
-        μ[i] = lu_solve_transpose(F, kb[i])
+        μq = ψ === nothing ? 0.0 : kbq[i] / σW
+        (kb[i] === nothing && μq == 0) && continue
+        rhs = kb[i] === nothing ? zeros(N) : kb[i]
+        μq == 0 || (rhs = rhs .+ μq .* ψ.w)
+        μ[i] = lu_solve_transpose(F, rhs)
         τ = t + m.c[i] * h
         σ[i] = zeros(N)
         vjp_u!(ops, σ[i], st.U[i], p, τ, μ[i])
+        μq == 0 || _addto!(σ[i], μq, ψ.w)
         pc[i] = zeros(P)
         vjp_p!(ops, pc[i], st.U[i], p, τ, μ[i])
         for j in 1:(i - 1)
@@ -314,6 +372,7 @@ function rosenbrock_adjoint_step(m::RosenbrockMethod, ctx::RosenbrockContext, u,
             kb[j] === nothing && (kb[j] = zeros(N))
             a == 0 || _addto!(kb[j], a, σ[i])
             cij == 0 || _addto!(kb[j], cij / h, μ[i])
+            cij == 0 || μq == 0 || (kbq[j] += (cij / h) * μq)
         end
     end
     λn = copy(λ)
