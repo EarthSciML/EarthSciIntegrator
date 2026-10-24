@@ -87,6 +87,6 @@ function gradient(run::Run)
     for i in run.bound_params
         p̄[i] = 0.0
     end
-    J = functional_value(run, run.outputs)
+    J = functional_value(run, run.u, run.outputs)
     return J, λ, p̄
 end

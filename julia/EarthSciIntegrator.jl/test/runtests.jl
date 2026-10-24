@@ -6,7 +6,7 @@
 using EarthSciIntegrator
 using EarthSciIntegrator: TABLEAUS, ControllerState, Tolerances, error_norm, controller_factor!, controller_accept!,
     controller_reject, accepts, propose, PI_CONTROLLER, I_CONTROLLER, PID_CONTROLLER, stop_rule, macro_bounds,
-    UnsupportedError, ConfigError
+    UnsupportedError, ConfigError, LeafRecord, read_tape, tape_string
 using ForwardDiff
 using JSON
 using LinearAlgebra: dot
@@ -151,6 +151,126 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
             "0/root.0.subcycle#2", "0/root.0.subcycle#3", "0/root.0#1", "0", "1/root.0.subcycle"]
         u, _ = replay(run)
         @test u == run.u
+    end
+
+    @testset "output times and fixed macro boundaries" begin
+        # spec/run-config.md §5 "Fixed boundaries": a tstop within the landing
+        # tolerance of t₀ + k·dt is that boundary, exactly.
+        @test 3 * 0.1 != 0.3
+        b, _ = macro_bounds(0.0, 1.0, 0.1)
+        @test b[4] == 3 * 0.1
+        b, r = macro_bounds(0.0, 1.0, 0.1, [0.3, 0.7, 1.0])
+        @test b[4] === 0.3 && b[8] === 0.7 && b[end] === 1.0 && length(b) == 11 && all(==("step.dt"), r)
+        @test b[5] == 4 * 0.1 && b[9] == 8 * 0.1      # the others are still multiplied
+        smap = Dict("esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
+            "schedule" => Dict("sequence" => [Dict("leaf" => "source", "alg" => "RK4", "dt" => "step"), Dict("map" => "decay")]),
+            "step" => Dict("dt" => 0.1))
+        # A non-leaf root with an output at 0.3: accepted, the state reported at 0.3
+        # exactly, and t_f not added to the list.
+        run = forward!(build_run(smap; tspan = (0, 1), saveat = [0.3]))
+        @test run.retcode == "Success"
+        @test run.output_times == [0.3]
+        @test first.(run.outputs) == [0.0, 0.3]
+        @test run.outputs[2][2] == run.checkpoints[4].u
+        @test run.u == run.checkpoints[end].u && run.u != run.outputs[2][2]
+        m = [r for r in run.tape.records if r isa EarthSciIntegrator.MacroRecord]
+        @test m[4].t === 0.3 && m[3].dt == 0.3 - m[3].t
+        @test replay(run)[2] == run.outputs[2:end]
+        rf = JSON.parse(EarthSciIntegrator.result_json("x", run))
+        @test rf["t"] == [0.0, 0.3] && length(rf["u"]) == 2
+        # A listed t₀ adds nothing; no saveat means t_f alone.
+        run = forward!(build_run(smap; tspan = (0, 1), saveat = [0.0, 0.5, 1.0]))
+        @test run.output_times == [0.5, 1.0] && first.(run.outputs) == [0.0, 0.5, 1.0]
+        @test build_run(smap; tspan = (0, 1)).output_times == [1.0]
+        # Times outside [t₀, t_f], and off the boundaries with a non-leaf root, are refused.
+        @test_throws ConfigError build_run(smap; tspan = (0, 1), saveat = [-0.1, 0.5])
+        @test_throws ConfigError build_run(smap; tspan = (0, 1), saveat = [1.1])
+        @test_throws ConfigError build_run(smap; tspan = (0, 1), saveat = [0.35])
+        # A single-leaf root: the boundary near 0.3 snaps too; 0.35 is a stop inside a step.
+        leafroot = merge(smap, Dict("schedule" => Dict("leaf" => "source", "alg" => "RK4", "dt" => 0.05)))
+        run = forward!(build_run(leafroot; tspan = (0, 1), saveat = [0.3, 0.35]))
+        @test 0.3 in run.bounds && !(0.35 in run.bounds)
+        @test first.(run.outputs) == [0.0, 0.3, 0.35]
+        # Functionals: over saveat, one point term per output time after t₀; final, the
+        # end state even when t_f is not an output time.
+        sum_over(over) = Dict("functional" => Dict("sum" => "u", "over" => over), "wrt" => ["u0", "params:numeric"])
+        for (over, saveat) in (("saveat", [0.0, 0.3, 0.7]), ("final", [0.3]))
+            cfg = merge(smap, Dict("adjoint" => sum_over(over)))
+            run = forward!(build_run(cfg; tspan = (0, 1), saveat))
+            J, ū0, p̄ = gradient(run)
+            us = Dict(run.outputs)
+            @test J == (over == "saveat" ? us[0.3][1] + us[0.7][1] : run.u[1])
+            Jx(x) = EarthSciIntegrator.functional_value(run, replay(run, x[1:1], x[2:3])...)
+            g = ForwardDiff.gradient(Jx, vcat(run.u0, run.p))
+            @test Jx(vcat(run.u0, run.p)) == J
+            @test isapprox(vcat(ū0, p̄), g; rtol = 1e-12)
+        end
+    end
+
+    @testset "node ids by position" begin
+        cfg = Dict("esm_integrator" => "0.1.0", "model" => "toy:advection_reaction",
+            "schedule" => Dict("sequence" => [
+                Dict("id" => "transport", "strang" => [
+                    Dict("subcycle" => Dict("leaf" => "transport", "alg" => "SSPRK33", "dt" => "step"), "n" => 2),
+                    Dict("leaf" => "reaction", "alg" => "RK4", "dt" => 1e-3)]),
+                Dict("id" => "chem", "leaf" => "reaction", "alg" => "RK4", "dt" => 1e-3)]),
+            "step" => Dict("dt" => 0.05))
+        run = build_run(cfg; tspan = (0, 0.1))
+        @test [n.id for n in EarthSciIntegrator.allnodes(run.root)] ==
+              ["root", "transport", "root.0.0", "root.0.0.subcycle", "root.0.1", "chem"]
+    end
+
+    @testset "replay refuses a tape that does not fit the run" begin
+        Mismatch = EarthSciIntegrator.ReplayMismatchError
+        MacroRecord = EarthSciIntegrator.MacroRecord
+        clipcfg = Dict("esm_integrator" => "0.1.0", "model" => "toy:advection_reaction",
+            "schedule" => Dict("leaf" => ["transport", "reaction"], "alg" => "RK4", "dt" => 0.01,
+                "domain" => Dict("nonnegative" => ["A"], "on_violation" => "clip")), "step" => Dict("dt" => 0.05))
+        run = forward!(build_run(clipcfg; tspan = (0, 0.1)))
+        @test run.retcode == "Success"
+        @test replay(run)[1] == run.u
+        fresh() = read_tape(tape_string(run.tape))
+        rec1(t) = t.records[1]::LeafRecord
+        # Valid clips replay; each kind of invalid entry is a mismatch, not a crash
+        # or a silent zeroing: a DOF outside the clip domain (B), out of range,
+        # not ascending, repeated, an empty list, a step the record does not have,
+        # and two entries for one step.
+        t = fresh(); push!(rec1(t).clips, 2 => [0, 5])
+        @test replay(run; tape = t)[1] isa Vector{Float64}
+        for clip in (2 => [64], 2 => [200], 2 => [-1], 2 => [5, 0], 2 => [3, 3], 2 => Int[], 5 => [0], -1 => [0])
+            t = fresh(); push!(rec1(t).clips, clip)
+            @test_throws Mismatch replay(run; tape = t)
+        end
+        t = fresh(); append!(rec1(t).clips, [2 => [0], 2 => [1]])
+        @test_throws Mismatch replay(run; tape = t)
+        # Clips on a leaf that does not clip.
+        noclip = deepcopy(clipcfg); delete!(noclip["schedule"], "domain")
+        r2 = forward!(build_run(noclip; tspan = (0, 0.1)))
+        t = read_tape(tape_string(r2.tape)); push!(rec1(t).clips, 2 => [0])
+        @test_throws Mismatch replay(r2; tape = t)
+        # Macro steps: t and dt must be the run's boundaries, bitwise; the record must
+        # exist, and there must be no more of them than the run has.
+        i = findfirst(r -> r isa MacroRecord && r.path == "1", run.tape.records)
+        for (dt, tt) in ((nextfloat(0.05), 0.05), (0.05, nextfloat(0.05)))
+            t = fresh(); t.records[i] = MacroRecord("1", tt, dt, "step.dt")
+            @test_throws Mismatch replay(run; tape = t)
+        end
+        t = EarthSciIntegrator.Tape()
+        foreach(r -> r isa MacroRecord || push!(t, r), run.tape.records)
+        @test_throws Mismatch replay(run; tape = t)
+        t = fresh(); push!(t, MacroRecord("2", 0.1, 0.05, "step.dt"))
+        @test_throws Mismatch replay(run; tape = t)
+        # The same for an invocation's interval, and a missing invocation.
+        t = fresh(); r = rec1(t)
+        t.records[1] = LeafRecord(r.path, r.t, prevfloat(r.dt), r.steps, r.accepted, r.rejected, r.retcode, r.clips)
+        @test_throws Mismatch replay(run; tape = t)
+        t = EarthSciIntegrator.Tape()
+        foreach(r -> r.path == "1/root" || push!(t, r), run.tape.records)
+        @test_throws Mismatch replay(run; tape = t)
+        # A tape from a run with another step.dt.
+        other = deepcopy(clipcfg); other["step"]["dt"] = 0.1
+        r3 = forward!(build_run(other; tspan = (0, 0.1)))
+        @test_throws Mismatch replay(run; tape = r3.tape)
     end
 
     include("test_operators.jl")

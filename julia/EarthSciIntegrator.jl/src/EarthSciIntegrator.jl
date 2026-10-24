@@ -44,6 +44,19 @@ struct ConfigError <: Exception
 end
 Base.showerror(io::IO, e::ConfigError) = print(io, "ConfigError: ", e.msg)
 
+"""
+    ReplayMismatchError(msg)
+
+Raised when a tape does not fit the run it is replayed for (spec/tape.md §3):
+a record missing or of the wrong kind, an interval other than the one the
+schedule gives the invocation, a map decision that flips, or clips outside the
+leaf's steps or its clip domain.
+"""
+struct ReplayMismatchError <: Exception
+    msg::String
+end
+Base.showerror(io::IO, e::ReplayMismatchError) = print(io, "ReplayMismatchError: ", e.msg)
+
 include("operators.jl")
 include("toys.jl")
 include("tableaus.jl")
@@ -66,7 +79,7 @@ D33). Needs `SciMLBase` loaded (package extension).
 """
 function odefunction end
 
-export SPEC_VERSION, UnsupportedError, ConfigError
+export SPEC_VERSION, UnsupportedError, ConfigError, ReplayMismatchError
 export rhs!, jvp_u!, vjp_u!, vjp_p!, jac!, ft!, hess_u!, hess_p!, ft_vjp_u!, ft_vjp_p!
 export apply!, map_vjp!, map_jvp!
 export toy_problem, TABLEAUS, build_run, forward!, replay, gradient, odefunction

@@ -214,9 +214,10 @@ applied. Generic over the element types of `u` and `p` (the frozen-tape
 tangent pushes `Dual` numbers through it). With `states`, pushes
 `(uₙ, tₙ, hₙ, pₙ, maskₙ, tₙ₊₁, t_K1)` for every step, `t_K1` the time
 stage 1 was evaluated at (`tₙ₋₁ + hₙ₋₁` when it was reused, spec/methods.md §3.3); `visit(tₙ₊₁, uₙ₊₁)` is called
-after every step.
+after every step. The record's clips are checked first ([`check_clips`](@ref)).
 """
 function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float64}; states = nothing, visit = nothing)
+    check_clips(leaf, rec)
     u = copy(u0)
     clipmap = Dict(rec.clips)
     lb = filter(b -> b.second === :leaf, leaf.bindings)
@@ -239,6 +240,37 @@ function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float
         visit === nothing || visit(tnew, u)
     end
     return u
+end
+
+"""
+    check_clips(leaf, rec)
+
+Check a leaf record's clips against the leaf and the record (spec/tape.md §2):
+the leaf clips (`domain.on_violation: "clip"`), each step index names one of
+the record's steps at most once, and each step's DOF indices are ascending,
+distinct, and in the leaf's clip domain (`domain.nonnegative`). Anything else
+is a [`ReplayMismatchError`](@ref), since replaying it would clip DOFs the
+forward run could not have clipped.
+"""
+function check_clips(leaf::LeafNode, rec::LeafRecord)
+    isempty(rec.clips) && return nothing
+    leaf.on_violation === :clip ||
+        throw(ReplayMismatchError("$(rec.path): the tape records clips, but leaf $(leaf.id) does not clip"))
+    seen = Set{Int}()
+    for (k, idx) in rec.clips
+        0 <= k < length(rec.steps) ||
+            throw(ReplayMismatchError("$(rec.path): clip at step $k, but the record has $(length(rec.steps)) steps"))
+        k in seen && throw(ReplayMismatchError("$(rec.path): step $k has two clip entries"))
+        push!(seen, k)
+        isempty(idx) && throw(ReplayMismatchError("$(rec.path): clip entry of step $k lists no DOFs"))
+        for (n, i) in enumerate(idx)
+            n > 1 && i <= idx[n - 1] &&
+                throw(ReplayMismatchError("$(rec.path): clipped DOFs of step $k are not ascending and distinct"))
+            insorted(i + 1, leaf.nonnegative) ||
+                throw(ReplayMismatchError("$(rec.path): step $k clips DOF $i, outside the clip domain of leaf $(leaf.id)"))
+        end
+    end
+    return nothing
 end
 
 """

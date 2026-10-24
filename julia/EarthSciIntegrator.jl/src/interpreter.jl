@@ -5,7 +5,8 @@
 # points, and its Δ is `tb - ta`:
 # - macro step k runs over [t₀ + k·dt, t₀ + (k+1)·dt] (multiplied, not
 #   accumulated), the last one ending at t_f exactly (by the stop rule of
-#   spec/methods.md §10);
+#   spec/methods.md §10); a boundary within the landing tolerance of an output
+#   time is that time exactly (spec/run-config.md §5, `macro_bounds`);
 # - a `strang` node's halves run over [ta, tm] and [tm, tb] with
 #   tm = ta + (tb - ta)/2, its last child over [ta, tb];
 # - a `subcycle` node's substep i (0-based) runs over [ta + i·δ, ta + (i+1)·δ]
@@ -15,7 +16,7 @@
     Functional
 
 `adjoint.functional` (spec/run-config.md §7.2): the `sum` or `mean` of one
-variable over `dofs`, at the final time or at every output time.
+variable over `dofs`, at the final time or at every output time after `t₀`.
 """
 struct Functional
     reduction::Symbol
@@ -50,7 +51,7 @@ mutable struct Run
     macro_dt::Float64
     bounds::Vector{Float64}           # macro-step boundaries t₀ … t_f
     reasons::Vector{String}
-    output_times::Vector{Float64}     # sorted; always includes t_f
+    output_times::Vector{Float64}     # sorted, each in (t₀, t_f]: exactly those listed (a listed t₀ dropped), t_f by default
     functional::Union{Nothing, Functional}
     wrt_u0::Bool
     wrt_p::Vector{Int}                # parameter indices differentiated
@@ -104,12 +105,17 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
     haskey(step, "dt") || throw(UnsupportedError("a step without dt (macro steps from the root leaf's accepted steps, D49) is not implemented in this stage"))
     dt = parse_duration(step["dt"], prob)
     t0, tf = Float64(tspan[1]), Float64(tspan[2])
-    bounds, reasons = macro_bounds(t0, tf, dt)
 
+    # Output times are exactly the listed ones, t_f alone by default; t_f is not
+    # added to a list that omits it, and a listed t₀ adds nothing, since the
+    # initial state is always reported (spec/run-config.md §7.3).
     outs = saveat === nothing ? [tf] : sort!(unique!(Float64[Float64(x) for x in saveat]))
-    tf in outs || push!(outs, tf)
     for τ in outs
-        (τ > t0 && τ <= tf) || throw(ConfigError("output time $τ outside ($t0, $tf]"))
+        (t0 <= τ <= tf) || throw(ConfigError("output time $τ outside [$t0, $tf]"))
+    end
+    filter!(!=(t0), outs)
+    bounds, reasons = macro_bounds(t0, tf, dt, outs)
+    for τ in outs
         # Output times are tstops. Under a fixed step.dt they must be macro-step
         # boundaries (spec/run-config.md §8 rule 9), except that when the root is a
         # single leaf they are stops inside its interval (spec/methods.md §10).
@@ -178,13 +184,17 @@ function build_functional(f::AbstractDict, prob::ToyProblem)
 end
 
 """
-    macro_bounds(t0, tf, dt) -> (bounds, reasons)
+    macro_bounds(t0, tf, dt, tstops=Float64[]) -> (bounds, reasons)
 
-The macro-step boundaries under a fixed `step.dt`: `t₀ + k·dt`, the last one
-`t_f` exactly, decided by the stop rule of spec/methods.md §10. The reason is
+The macro-step boundaries under a fixed `step.dt` (spec/run-config.md §5,
+"Fixed boundaries"): `t₀ + k·dt`, the last one `t_f` exactly, decided by the
+stop rule of spec/methods.md §10. A boundary `b` strictly between `t₀` and
+`t_f` with a tstop `τ` within the landing tolerance,
+`|τ - b| ≤ 100 eps(max(|τ|, |b|))`, is `τ` exactly (the first such `τ` of the
+sorted `tstops`); the next step's stop test starts from it. The reason is
 `"step.dt"`, or `"tstop"` for a last step shortened to land on `t_f`.
 """
-function macro_bounds(t0::Float64, tf::Float64, dt::Float64)
+function macro_bounds(t0::Float64, tf::Float64, dt::Float64, tstops::AbstractVector{Float64} = Float64[])
     bounds = [t0]
     reasons = String[]
     k = 1
@@ -196,7 +206,9 @@ function macro_bounds(t0::Float64, tf::Float64, dt::Float64)
             push!(reasons, h < dt - 100 * eps(max(abs(ta), abs(tf))) ? "tstop" : "step.dt")
             break
         end
-        push!(bounds, t0 + k * dt)
+        b = t0 + k * dt
+        i = findfirst(τ -> τ != tf && abs(τ - b) <= 100 * eps(max(abs(τ), abs(b))), tstops)
+        push!(bounds, i === nothing ? b : tstops[i])
         push!(reasons, "step.dt")
         k += 1
     end
@@ -246,6 +258,23 @@ struct RunFailure <: Exception
     msg::String
 end
 
+"""
+    tape_record(tape, key, R, ta, tb) -> R
+
+The tape's record `key` (an invocation path, or `"macro:<k>"`), checked to be
+an `R` over the interval the schedule gives the invocation, `[ta, tb]`, with
+`t` and `dt` bitwise equal to `ta` and `tb - ta`. Anything else is a
+[`ReplayMismatchError`](@ref): the tape is not one of this run.
+"""
+function tape_record(tape::Tape, key::AbstractString, ::Type{R}, ta::Float64, tb::Float64) where {R <: TapeRecord}
+    haskey(tape, key) || throw(ReplayMismatchError("the tape has no record $key"))
+    rec = tape[key]
+    rec isa R || throw(ReplayMismatchError("tape record $key is a $(nameof(typeof(rec))), the schedule needs a $(nameof(R))"))
+    (rec.t == ta && rec.dt == tb - ta) ||
+        throw(ReplayMismatchError("tape record $key has t = $(rec.t), dt = $(rec.dt); the schedule gives t = $ta, dt = $(tb - ta)"))
+    return rec
+end
+
 function _stops(run::Run, node::LeafNode, ta, tb)
     stops = Float64[]
     if node === run.root
@@ -277,7 +306,7 @@ function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Fl
             throw(RunFailure(out.record.retcode, "leaf $(node.id) ($path) ended with $(out.record.retcode)"))
         return out.u
     else
-        rec = mode.tape[path]::LeafRecord
+        rec = tape_record(mode.tape, path, LeafRecord, ta, tb)
         mode.trace === nothing || push!(mode.trace, (:leaf, node, rec, copy(u), pinv, stops))
         return leaf_replay(node, u, pinv, rec, stops; visit = mode.visit)
     end
@@ -294,7 +323,7 @@ function apply_frozen(op::AbstractMapOperator, u, p, t, Δ, mask)
     out = similar(u, promote_type(eltype(u), eltype(p)))
     m = Vector{Bool}(undef, length(mask))
     apply!(op, out, m, u, p, t, Δ)
-    m == mask || error("map $(opname(op)) took a different discrete decision on replay")
+    m == mask || throw(ReplayMismatchError("map $(opname(op)) took a different discrete decision on replay"))
     return out
 end
 
@@ -310,7 +339,7 @@ function advance!(run::Run, ctx::ExecCtx, node::MapNode, u, ta::Float64, tb::Flo
         push!(mode.tape, MapRecord(path, ta, Δ, mask))
         return out
     else
-        rec = mode.tape[path]::MapRecord
+        rec = tape_record(mode.tape, path, MapRecord, ta, tb)
         mode.trace === nothing || push!(mode.trace, (:map, node, rec, copy(u), p, ta))
         return apply_frozen(node.op, u, p, ta, Δ, rec.mask)
     end
@@ -348,8 +377,8 @@ function advance!(run::Run, ctx::ExecCtx, node::SubcycleNode, u, ta::Float64, tb
     if mode isa ForwardMode
         push!(mode.tape, SubcycleRecord(path, ta, tb - ta, node.n))
     else
-        rec = mode.tape[path]::SubcycleRecord
-        rec.n == node.n || error("subcycle $path: tape has $(rec.n) substeps, schedule $(node.n)")
+        rec = tape_record(mode.tape, path, SubcycleRecord, ta, tb)
+        rec.n == node.n || throw(ReplayMismatchError("subcycle $path: tape has $(rec.n) substeps, schedule $(node.n)"))
     end
     return u
 end
@@ -414,10 +443,12 @@ end
     replay_macro(run, k, u, p; tape=run.tape, trace=nothing, visit=nothing) -> u
 
 Replay macro step `k` from state `u` with parameters `p` (any element types)
-using the tape's step sequences and masks (spec/tape.md §3).
+using the tape's step sequences and masks (spec/tape.md §3). The tape's macro
+record `k` must have the run's boundaries, `t` and `dt` bitwise.
 """
 function replay_macro(run::Run, k::Integer, u, p; tape::Tape = run.tape, trace = nothing, visit = nothing)
     ta, tb = run.bounds[k + 1], run.bounds[k + 2]
+    tape_record(tape, "macro:$k", MacroRecord, ta, tb)
     ctx = ExecCtx(k, tb - ta, Dict{String, Int}(), ReplayMode(tape, p, trace, visit))
     return advance!(run, ctx, run.root, u, ta, tb)
 end
@@ -435,7 +466,9 @@ function replay(run::Run, u0 = run.u0, p = run.p; tape::Tape = run.tape)
     pp = convert(Vector{T}, copy(p))
     outputs = Tuple{Float64, Vector{T}}[]
     visit = (t, x) -> (t in run.output_times && !(t in run.bounds) && push!(outputs, (t, copy(x))))
-    for k in 0:(length(run.bounds) - 2)
+    K = length(run.bounds) - 1
+    haskey(tape, "macro:$K") && throw(ReplayMismatchError("the tape has more than the run's $K macro steps"))
+    for k in 0:(K - 1)
         u = replay_macro(run, k, u, pp; tape, visit)
         tb = run.bounds[k + 2]
         tb in run.output_times && push!(outputs, (tb, copy(u)))
@@ -444,12 +477,17 @@ function replay(run::Run, u0 = run.u0, p = run.p; tape::Tape = run.tape)
     return u, outputs
 end
 
-"""The functional `J` of a run's outputs (spec/adjoint.md §2.1)."""
-function functional_value(run::Run, outputs)
+"""
+    functional_value(run, u, outputs) -> J
+
+The functional `J` of a run (spec/adjoint.md §2.1) from its end state `u` and
+its `outputs` (`(t, u)` pairs; a pair at `t₀` adds nothing).
+"""
+function functional_value(run::Run, u, outputs)
     F = run.functional
     F === nothing && error("the run config has no adjoint.functional")
     if F.over === :final
-        return phi(F, last(outputs)[2])
+        return phi(F, u)
     else
         return sum(phi(F, u) for (t, u) in outputs if t > run.tspan[1])
     end

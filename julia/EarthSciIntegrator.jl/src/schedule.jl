@@ -123,12 +123,14 @@ function _dofs(prob, names)
 end
 
 """
-    build_node(spec, prob, id) -> Node
+    build_node(spec, prob, path) -> Node
 
-Build a schedule node from its run-config object. Node ids the run config
-gives are kept; the others are named by their path from the root (`root`,
-`root.0`, … for `sequence` and `strang` children, `<id>.subcycle` for a
-`subcycle`'s child; spec/plan.md §3).
+Build a schedule node from its run-config object; `path` is its position path
+from the root. Node ids the run config gives are kept; the others are named by
+the path (spec/plan.md §3): `root`, then `<path>.<i>` for the 0-based `i`th
+child of a `sequence` or `strang` and `<path>.subcycle` for a `subcycle`'s
+child. The path is built from positions alone, whatever ids the ancestors
+have: the unnamed first child of a node `transport` at `root.0` is `root.0.0`.
 """
 function build_node(spec::AbstractDict, prob::ToyProblem, path::String)
     kinds = [k for k in _COMBINATORS if haskey(spec, k)]
@@ -141,13 +143,13 @@ function build_node(spec::AbstractDict, prob::ToyProblem, path::String)
         for k in keys(spec)
             k in ("id", kind) || throw(ConfigError("unknown key '$k' on $kind node $id"))
         end
-        kids = Node[build_node(c, prob, "$id.$(i - 1)") for (i, c) in enumerate(spec[kind])]
+        kids = Node[build_node(c, prob, "$path.$(i - 1)") for (i, c) in enumerate(spec[kind])]
         kind == "strang" && length(kids) < 2 && throw(ConfigError("strang node $id needs at least two children"))
         return kind == "sequence" ? SequenceNode(id, kids) : StrangNode(id, kids)
     elseif kind == "subcycle"
         haskey(spec, "limits") && throw(UnsupportedError("subcycle with limits (node $id): step limits need observed limit operators, which arrive with the planner"))
         haskey(spec, "n") || throw(ConfigError("subcycle node $id needs n or limits"))
-        return SubcycleNode(id, build_node(spec["subcycle"], prob, "$id.subcycle"), Int(spec["n"]))
+        return SubcycleNode(id, build_node(spec["subcycle"], prob, "$path.subcycle"), Int(spec["n"]))
     elseif kind == "map"
         name = String(spec["map"])
         haskey(prob.maps, name) || throw(ConfigError("map node $id names '$name', which is not a map operator of $(prob.name)"))

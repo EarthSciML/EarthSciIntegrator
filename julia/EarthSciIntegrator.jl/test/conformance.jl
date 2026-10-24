@@ -224,7 +224,7 @@ function check_fd_gradient(case, run, chk)
     δp = zeros(length(run.p))
     δp[run.wrt_p] .= direction(rng, run.p[run.wrt_p])
     D = dot(ū0, δu) + dot(p̄, δp)
-    J(ε) = functional_value(run, replay(run, run.u0 .+ ε .* δu, run.p .+ ε .* δp)[2])
+    J(ε) = functional_value(run, replay(run, run.u0 .+ ε .* δu, run.p .+ ε .* δp)...)
     errs = Float64[]
     for ε in chk["epsilons"]
         fd = (J(ε) - J(-ε)) / (2ε)

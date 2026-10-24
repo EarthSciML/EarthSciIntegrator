@@ -44,7 +44,7 @@ function oracle_problem(run; inplace = true)
     f = odefunction(run.root; inplace)
     prob = ODEProblem(f, copy(run.u0), run.tspan, copy(run.p))
     kw = (; adaptive = false, dt = run.tspan[2] - run.tspan[1], tstops = ends, saveat = copy(run.output_times),
-        save_start = false)
+        save_start = false, save_end = true)
     return prob, kw
 end
 
