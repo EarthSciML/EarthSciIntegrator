@@ -31,7 +31,7 @@
 # spec's Ŵ⁻¹r with Ŵ = I - dtγ J:
 #   k₁ = (M⁻¹(f₀ + dtγ f_t))·σ,  U₂ = uₙ + (h/2) k₁,  f₁ = f(U₂, tₙ + h/2),
 #   k₂ = (M⁻¹(f₁ - k₁))·σ + k₁,  u_{n+1} = uₙ + h k₂,  f₂ = f(u_{n+1}, tₙ + h),
-#   k₃ = (M⁻¹(((f₂ - c₃₂(k₂ - f₁)) - 2(k₁ - f₀)) + h f_t))·σ,
+#   k₃ = (M⁻¹(((f₂ - c₃₂(k₂ - f₁)) - 2(k₁ - f₀)) + h d f_t))·σ,
 #   e = (h/6)((k₁ - 2k₂) + k₃),
 # with h/2 and h/6 formed as `h / 2` and `h / 6` (OrdinaryDiffEq's `dto2`,
 # `dto6`). The adjoint's transposed solves are (M⁻ᵀb)·σ.
@@ -220,7 +220,9 @@ function rosenbrock_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h
             @inbounds for j in eachindex(r3)
                 r3[j] = (f2[j] - c32 * (kk2[j] - f1[j])) - 2 * (kk1[j] - f0[j])
             end
-            st.ft === nothing || _addto!(r3, h, st.ft)
+            # h d f_t keeps the estimate third order; OrdinaryDiffEq adds h f_t, which makes it
+            # second order when f depends on t (spec/methods.md §4.3, D62).
+            st.ft === nothing || _addto!(r3, h * m.d[1], st.ft)
             kk3 = lu_solve(st.F, r3) .* inv(h * m.d[1])
             dto6 = h / 6
             e = similar(f2)
