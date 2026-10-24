@@ -602,10 +602,20 @@ fn check_reference(case: &Case, fwd: &ForwardRun<f64>, rtol: f64, paths: &Paths)
 /// differences of the frozen-tape map `(J(x + εδ) − J(x − εδ))/2ε`, at every
 /// epsilon. The directions are: a pseudo-random one over every requested
 /// input, one over `u0` only, and each requested parameter alone. A
-/// direction's entry for input `x` is `r·|x|` (`r` in `[−1, 1]`), or `r` when
-/// `x = 0`, so inputs of very different size are perturbed comparably. A
-/// direction passes when its smallest relative error over the epsilons is
-/// within `rtol`.
+/// direction's entry for input `x` is `r·|x|` (`r` in `[−1, 1]`), so inputs of
+/// very different size are perturbed comparably. For a state component that
+/// starts at zero, `|x|` is replaced by the largest magnitude the component
+/// takes at the run's checkpoints and outputs (1 if it stays zero): a unit
+/// perturbation of a component whose natural size is 1e-5 (Robertson's
+/// `y₂`) leaves the region where the frozen-tape map is smooth at the case's
+/// epsilons.
+///
+/// The error of a direction is `|fd − ⟨∇J, δ⟩|` divided by the largest
+/// `|⟨∇J, δ⟩|` over all the directions, not by the direction's own: where the
+/// functional is invariant in a direction (`advection_reaction`'s total mass
+/// under the transport speed `v`) the exact derivative is zero, and the
+/// difference quotient is roundoff. A direction passes when its smallest
+/// error over the epsilons is within `rtol`.
 pub fn check_fd(
     spec: &RunSpec<f64>,
     fwd: &ForwardRun<f64>,
@@ -628,11 +638,29 @@ pub fn check_fd(
         (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
     };
     let scale = |x: f64| if x != 0.0 { x.abs() } else { 1.0 };
+    // The size of each state component over the run, for those starting at 0.
+    let mut usize_ = vec![0.0f64; nu];
+    for u in fwd
+        .checkpoints
+        .iter()
+        .map(|c| &c.u)
+        .chain(fwd.outputs.iter().map(|o| &o.1))
+    {
+        for (m, x) in usize_.iter_mut().zip(u) {
+            *m = m.max(x.abs());
+        }
+    }
+    let uscale = |j: usize| {
+        if u0[j] != 0.0 {
+            u0[j].abs()
+        } else {
+            scale(usize_[j])
+        }
+    };
     // Directions as (label, δu0, δp).
     let mut dirs: Vec<(String, Vec<f64>, Vec<f64>)> = Vec::new();
-    let du: Vec<f64> = u0
-        .iter()
-        .map(|&x| if spec.wrt_u0 { rnd() * scale(x) } else { 0.0 })
+    let du: Vec<f64> = (0..nu)
+        .map(|j| if spec.wrt_u0 { rnd() * uscale(j) } else { 0.0 })
         .collect();
     let dp: Vec<f64> = p
         .iter()
@@ -654,12 +682,23 @@ pub fn check_fd(
             ));
         }
     }
+    let exact_of = |du: &[f64], dp: &[f64]| -> f64 {
+        g.u0.iter().zip(du).map(|(a, b)| a * b).sum::<f64>()
+            + g.p.iter().zip(dp).map(|(a, b)| a * b).sum::<f64>()
+    };
+    // Each direction's error is relative to its own directional derivative,
+    // floored at 1e-3 of the largest, since some are exactly zero
+    // (spec/adjoint.md §7.2).
+    let floor = 1e-3
+        * dirs
+            .iter()
+            .map(|(_, du, dp)| exact_of(du, dp).abs())
+            .fold(f64::MIN_POSITIVE, f64::max);
     let mut worst = 0.0f64;
     let mut worst_label = String::new();
     let mut trend = String::new();
     for (label, du, dp) in &dirs {
-        let exact: f64 = g.u0.iter().zip(du).map(|(a, b)| a * b).sum::<f64>()
-            + g.p.iter().zip(dp).map(|(a, b)| a * b).sum::<f64>();
+        let exact = exact_of(du, dp);
         let mut best = f64::INFINITY;
         let mut errs = Vec::new();
         for &eps in epsilons {
@@ -676,7 +715,7 @@ pub fn check_fd(
                 (Err(e), _) | (_, Err(e)) => return Outcome::Fail(format!("{label}: replay: {e}")),
             };
             let fd = (jp - jm) / (2.0 * eps);
-            let e = (fd - exact).abs() / exact.abs().max(f64::MIN_POSITIVE);
+            let e = (fd - exact).abs() / exact.abs().max(floor);
             errs.push(e);
             best = best.min(e);
         }
@@ -691,7 +730,7 @@ pub fn check_fd(
         }
     }
     let msg = format!(
-        "{} directions; worst {worst_label}: relative error {} at the best epsilon (rtol {rtol:e}; over epsilons {trend})",
+        "{} directions; worst {worst_label}: relative error {} at the best epsilon (floored at 1e-3 of the largest directional derivative; rtol {rtol:e}; over epsilons {trend})",
         dirs.len(),
         fmt_e(worst)
     );
@@ -761,7 +800,7 @@ pub fn check_replay(spec: &RunSpec<f64>, fwd: &ForwardRun<f64>, u0: &[f64], p: &
         let mut u = cp.u.clone();
         let mut persist = cp.leaves.clone();
         let recs = match spec.macro_step(k, &mut u, &mut persist, p, t0, t1, delta, None, None) {
-            Ok(((r, _), _)) => r,
+            Ok(mo) => mo.records,
             Err(e) => return Outcome::Fail(format!("controller-on replay of macro step {k}: {e}")),
         };
         let seg = fwd.tape.macro_segment(k);

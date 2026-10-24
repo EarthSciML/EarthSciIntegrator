@@ -18,92 +18,10 @@
 
 use crate::Scalar;
 
-/// The layout and Jacobian structure an operator declares (§2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Structure {
-    /// No structure; DOF order is the operator set's own.
-    Dense,
-    /// `ncells` cells of `n` DOFs each, species-major: DOF `i` of cell `c`
-    /// is at index `i·ncells + c`. The Jacobian is zero between cells.
-    BlockDiagonal { ncells: usize, n: usize },
-}
-
-impl Structure {
-    /// The coarsest structure all of `structures` share (§2): equal
-    /// `block_diagonal` structures stay block diagonal; any other mix is dense.
-    pub fn common(structures: impl IntoIterator<Item = Structure>) -> Structure {
-        let mut it = structures.into_iter();
-        let Some(first) = it.next() else {
-            return Structure::Dense;
-        };
-        if it.all(|s| s == first) {
-            first
-        } else {
-            Structure::Dense
-        }
-    }
-}
-
-/// Storage `jac` accumulates into (§4).
-#[derive(Debug, Clone, PartialEq)]
-pub enum MatrixStorage<T> {
-    /// An `N × N` column-major matrix: entry `(i, j)` at `j·N + i`.
-    Dense { n: usize, data: Vec<T> },
-    /// `ncells` dense `n × n` blocks, lane-innermost: entry `(i, j)` of cell
-    /// `c` at `(i·n + j)·ncells + c`.
-    BlockDiagonal {
-        ncells: usize,
-        n: usize,
-        data: Vec<T>,
-    },
-}
-
-impl<T: Scalar> MatrixStorage<T> {
-    /// Zeroed storage for a structure over a state of length `n_state`.
-    pub fn zeros(structure: Structure, n_state: usize) -> Self {
-        match structure {
-            Structure::Dense => MatrixStorage::Dense {
-                n: n_state,
-                data: vec![T::zero(); n_state * n_state],
-            },
-            Structure::BlockDiagonal { ncells, n } => MatrixStorage::BlockDiagonal {
-                ncells,
-                n,
-                data: vec![T::zero(); ncells * n * n],
-            },
-        }
-    }
-
-    /// Adds `v` to the entry at state indices `(row, col)`. For block-diagonal
-    /// storage both indices must be in the same cell.
-    pub fn add(&mut self, row: usize, col: usize, v: T) {
-        match self {
-            MatrixStorage::Dense { n, data } => data[col * *n + row] += v,
-            MatrixStorage::BlockDiagonal { ncells, n, data } => {
-                let (i, c) = (row / *ncells, row % *ncells);
-                let (j, c2) = (col / *ncells, col % *ncells);
-                assert_eq!(c, c2, "block-diagonal entry ({row}, {col}) crosses cells");
-                data[(i * *n + j) * *ncells + c] += v;
-            }
-        }
-    }
-
-    /// The entry at state indices `(row, col)` (zero off the blocks).
-    pub fn get(&self, row: usize, col: usize) -> T {
-        match self {
-            MatrixStorage::Dense { n, data } => data[col * *n + row],
-            MatrixStorage::BlockDiagonal { ncells, n, data } => {
-                let (i, c) = (row / *ncells, row % *ncells);
-                let (j, c2) = (col / *ncells, col % *ncells);
-                if c != c2 {
-                    T::zero()
-                } else {
-                    data[(i * *n + j) * *ncells + c]
-                }
-            }
-        }
-    }
-}
+/// The layout and Jacobian structure (§2) and the matrix storage `jac`
+/// accumulates into (§4) live in the solvers crate, beside the linear
+/// solvers that read them.
+pub use earthsci_integrator_solvers::linalg::{MatrixStorage, Structure};
 
 /// A call of §3, for refusals that name the missing call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
