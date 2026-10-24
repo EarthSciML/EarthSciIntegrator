@@ -66,7 +66,14 @@ The run config's `adjoint.functional` (architecture §4.2, §10) defines
 
 - **The integral term is discretized as an integrated auxiliary state** (D26). The planner adds a state $q$ with $q' = \psi(u, p, t)$ and $q(t_0) = 0$, and sets $\int \psi \approx q(t_f)$. The integral is therefore the quadrature the forward method induces, and its adjoint is that method's adjoint applied to the augmented state $(u, q)$. Because nothing reads $q$, $\bar q \equiv 1$ throughout the reverse pass. Each stage's contribution reduces to the stage cotangent of $q$ times $\nabla_u \psi$ and $\nabla_p \psi$ at that stage.
 
-- **Which leaf integrates $q$** (D39). Under splitting, $\psi$ reads state that several leaves write, and the leaf that integrates $q$ decides the quadrature. The planner attaches $q$ to the last leaf of the macro-step schedule, so $\psi$ sees the state after every process. `adjoint.functional.integrate_in` names a different leaf by node id.
+- **Which leaf integrates $q$** (D39). Under splitting, $\psi$ reads state that several leaves write, and the leaf that integrates $q$ decides the quadrature. The planner attaches $q$ to the last leaf of the macro-step schedule, so $\psi$ sees the state after every process. `adjoint.functional.integrate_in` names a different leaf by node id. $q$ is integrated on every invocation of that leaf node, so under `strang` the two half-step invocations of the first child each integrate their half; per invocation $q$ is summed from zero and then added to the run total, which makes replay of $q$ bitwise.
+- **$q$ is not in the error norm** (spec/methods.md §7), so asking for a gradient never changes the steps the forward run takes.
+- **Increments.** With $\psi$ evaluated at each stage state and the stage's time, one step adds:
+  - explicit Runge–Kutta: $\Delta q = \sum_i (h b_i)\, \psi(U_i)$;
+  - transformed-form Rosenbrock, with $\psi$ linear in $u$ and independent of $t$, and $\sigma = 1/(h\gamma)$: $k_{q,i} = \big(\psi(U_i) + \sum_j (C_{ij}/h)\, k_{q,j} + \psi(k_i)\big)/\sigma$ and $\Delta q = \sum_i b_i k_{q,i}$, the method applied to $q' = \psi(u)$, whose Jacobian row is $\nabla_u\psi$ and has no $q$ column;
+  - Rosenbrock23, likewise: $k_{q,1} = \psi(u_n) + h d\,\psi(k_1)$, $k_{q,2} = \big((\psi(U_2) - k_{q,1}) + h d\,(\psi(k_2) - \psi(k_1))\big) + k_{q,1}$, $\Delta q = h\, k_{q,2}$.
+  
+  A general $\psi$ under Rosenbrock methods, and other families, follow with their M1 stage. At M1 a functional with an integral term is accepted only for a schedule that is a single leaf, and refused otherwise.
 
 ### 2.2 The tape and what is held fixed
 
@@ -200,7 +207,7 @@ v1 leaves form $J$ and $f_t$ at $(u_n, p, t_n; F)$ every step (U8). The mass mat
 u_{n+1} = u_n + \sum_i b_i k_i .
 ```
 
-This is the arithmetic of `OrdinaryDiffEqRosenbrock`'s generic `perform_step!`. That code stores $W = J - I/(h\gamma)$ and negates the solve, which is $\hat W$ with the sign moved. The optimization that skips an $f$ evaluation when two stages share $(A_{i\cdot}, c_i)$ does not change the math.
+This is the arithmetic of `OrdinaryDiffEqRosenbrock`'s generic `perform_step!` (summation order and grouping in spec/methods.md §4.1). That code stores $W = J - I/(h\gamma)$ and negates the solve, which is $\hat W$ with the sign moved. The optimization that skips an $f$ evaluation when two stages share $(A_{i\cdot}, c_i)$ does not change the math.
 
 *Linearization.* Since $d\hat W = -dJ$, differentiating $\hat W k_i = r_i$ gives
 
@@ -539,7 +546,11 @@ The frozen-tape replay:
 - holds $(t_n, h_n)$, every mask, branch and firing, and the epoch map at their recorded values;
 - tightens implicit-stage and `solve`-node tolerances well below $\epsilon^2$. The adjoint is the exact implicit-function derivative, while finite differences of a loosely converged Newton carry an error of order tol/$\epsilon$.
 
-Fixtures are scaled so a good $\epsilon$ exists. reseact's "never validate at the default initial condition" applies: perturb from sampled non-default states.
+Fixtures are scaled so a good $\epsilon$ exists. In the conformance check (spec/toy-problems.md §2.1):
+- a direction's component for an input whose value is zero is scaled by that input's largest magnitude over the run's outputs and checkpoints, not by 1, so a perturbation of a species that starts at zero stays within the problem's range (Robertson's $y_2$ perturbed by $10^{-3}$ diverges);
+- each direction's error is relative to its own directional derivative, or to $10^{-3}$ times the largest directional derivative over the case's directions if that is larger, since some are exactly zero (in `advection_reaction`, $\partial\mathcal J/\partial v = 0$ because transport conserves mass). A direction whose derivative is small is still checked on its own scale: a single parameter's gradient with the wrong sign or 100 times too large fails at `rtol` $10^{-6}$ even when its derivative is $10^{-6}$ of the largest.
+
+reseact's "never validate at the default initial condition" applies: perturb from sampled non-default states.
 
 ### 7.3 Oracles (D31)
 
@@ -548,6 +559,8 @@ Fixtures are scaled so a good $\epsilon$ exists. reseact's "never validate at th
   - one representative per remaining v1 family.
 
   Both sides must differentiate the same map. The OrdinaryDiffEq solve therefore runs with `adaptive = false` and the tape's step sequence imposed (`dt` and `tstops` from the tape). *Assumption:* ReverseDiff through an adaptive solve would also differentiate the controller, which this spec excludes. ReverseDiff differentiates TRBDF2's Newton iterations, so agreement for implicit families is at the Newton tolerance. OrdinaryDiffEq's TRBDF2 and Kvaerno methods also take each step's explicit first stage from the previous step's last stage, which equals $f(u_n)$ only to the Newton tolerance (spec/methods.md §5), so the same bound applies to their forward trajectories. OrdinaryDiffEq's Kvaerno3/4 evaluate stage 2 at the wrong time (spec/methods.md §5.4), so they are oracles only on autonomous problems.
+  ReverseDiff tapes every scalar operation of OrdinaryDiffEq's dense LU, about $N^3$ per step for $N$ states. When $N^3$ times the number of steps exceeds $10^7$ (photostationary_cells with Rosenbrock23: 49 states over 733 steps), the check differentiates the same OrdinaryDiffEq solve, with the same method, imposed steps and map, in forward mode with ForwardDiff instead, and says so.
+  *Informative.* ReverseDiff through OrdinaryDiffEqRosenbrock 2.7.5 fails: its out-of-place cache types `JacReuseState.cached_dT` (`rosenbrock_caches.jl:51`) like the state, a `TrackedArray`, and the in-place path fails in LinearSolve's typed cache. The Julia oracle therefore makes `tgrad` a ReverseDiff primitive whose pullback uses ForwardDiff Jacobians of `ft`.
 - **Enzyme on a whole step** (Julia, decisions §1.4 option B), for the same toy problems and as a fallback oracle for any leaf.
 
 ### 7.4 Bitwise replay

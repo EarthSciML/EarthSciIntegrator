@@ -610,11 +610,11 @@ fn check_reference(case: &Case, fwd: &ForwardRun<f64>, rtol: f64, paths: &Paths)
 /// `y₂`) leaves the region where the frozen-tape map is smooth at the case's
 /// epsilons.
 ///
-/// The error of a direction is `|fd − ⟨∇J, δ⟩|` divided by the largest
-/// `|⟨∇J, δ⟩|` over all the directions, not by the direction's own: where the
-/// functional is invariant in a direction (`advection_reaction`'s total mass
-/// under the transport speed `v`) the exact derivative is zero, and the
-/// difference quotient is roundoff. A direction passes when its smallest
+/// The error of a direction is `|fd − ⟨∇J, δ⟩|` divided by the direction's own
+/// `|⟨∇J, δ⟩|`, or by 1e-3 of the largest over all the directions if that is
+/// larger: where the functional is invariant in a direction
+/// (`advection_reaction`'s total mass under the transport speed `v`) the exact
+/// derivative is zero, and the difference quotient is roundoff. A direction passes when its smallest
 /// error over the epsilons is within `rtol`.
 pub fn check_fd(
     spec: &RunSpec<f64>,

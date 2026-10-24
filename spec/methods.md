@@ -105,15 +105,19 @@ After a rejected step the start point is unchanged, so the stored first stage st
 ### 4.1 Step
 
 - **Transformed form** (`A`, `C`, `gamma`, `c`, `d`, `b`; ROS2, ROS3P, Rodas3/4/5P and the KPP methods): the equations of [`adjoint.md`](adjoint.md) §4.2, $\hat W = I/(h\gamma) - J(u_n)$, stage $i$ evaluated at $t_n + c_i h$ with $h\,d_i\,f_t(u_n)$ added. This is OrdinaryDiffEqRosenbrock's generic step (`src/rosenbrock_perform_step.jl:431-540`), which stores $W = J - I/(h\gamma)$ and negates the solve.
-- **Rosenbrock23** (`d`, `c32`): the ode23s step of [`adjoint.md`](adjoint.md) §4.2 (OrdinaryDiffEqRosenbrock `src/rosenbrock_perform_step.jl:249-330`), $W = I - h d\,J(u_n)$.
-- A stage whose row of $A$ and whose $c_i$ equal the previous stage's MAY reuse the previous stage's $f$ value (OrdinaryDiffEq does this for Rodas4; KPP flags it in `kpp.new_f`). This changes no arithmetic.
+  - **Arithmetic.** $\hat W$'s diagonal entries are $1/(h\gamma) - J_{ii}$, each rounded once; its off-diagonal entries are $-J_{ij}$. The stage right-hand side is grouped $r_i = \big(f(U_i) + (h d_i)\, f_t\big) + s_i$, with $s_i = \sum_j (C_{ij}/h)\, k_j$ summed in ascending $j$ starting from zero; the $f_t$ term is absent when $d_i = 0$ or $f_t$ is not formed (§4.2). This is the grouping of OrdinaryDiffEqRosenbrock 2.7.5's out-of-place step (`:487-497`); its in-place `_stage_rhs!` (`:645-663`) groups differently. $U_i = u_n + \sum_j A_{ij} k_j$, $u_{n+1} = u_n + \sum_i b_i k_i$ and $e = \sum_i \tilde b_i k_i$ are summed in ascending order. Every sum here skips zero coefficients, where OrdinaryDiffEq multiplies them through; the two differ at most in the sign of a zero.
+- **Rosenbrock23** (`d`, `c32`): the ode23s step of [`adjoint.md`](adjoint.md) §4.2 (OrdinaryDiffEqRosenbrock `src/rosenbrock_perform_step.jl:249-330`). $W = I - h d\,J(u_n)$ mathematically; in arithmetic, $M = I/(h d) - J(u_n)$ is factored and $W^{-1} r$ is computed as $(M^{-1} r) \cdot \tfrac{1}{h d}$, as OrdinaryDiffEq does with the sign moved. The adjoint's transposed solves are scaled the same way. With $\sigma = 1/(hd)$ the step is
+  $k_1 = W^{-1}(f_0 + h d\, f_t)$, $U_2 = u_n + \tfrac{h}{2} k_1$ at $t_n + h/2$, $k_2 = \big(M^{-1}(f_1 - k_1)\big)\sigma + k_1$, $u_{n+1} = u_n + h k_2$.
+  $f_2 = f(u_{n+1}, t_n + h)$ is evaluated on every step, fixed steps included, because it is the next step's $f_0$ (§3.3); $k_3$ needs no further evaluation, so a leaf makes two right-hand-side calls per step after its first, adaptive or not (41 for `forced_decay` at 20 fixed steps).
+- From the third stage on, a stage whose row of $A$ and whose $c_i$ equal the previous stage's MAY reuse the previous stage's $f$ value. OrdinaryDiffEq does this (`:463-466`), which applies to ROS3P, KPP_Ros3 and KPP_Ros4, not to Rodas3 or Rodas4; KPP flags it in `kpp.new_f`. This changes no arithmetic, only right-hand-side counts.
 
 ### 4.2 Jacobian, time gradient and $W$
 
 - $J$ and $f_t$ are formed at $(u_n, t_n)$ on every step attempt, from the leaf's band models (the `jacobian` option), and $W$ is factored once per attempt. v1 Rosenbrock leaves never reuse $J$ across steps ([`adjoint.md`](adjoint.md) §4.2).
 - *Informative.* OrdinaryDiffEq reuses $J$ across steps for W-methods (OrdinaryDiffEqDifferentiation `src/derivative_utils.jl:46-171`). Rosenbrock23 is marked a W-method but defaults to `max_jac_age = 1`, which forms $J$ every step; the Rodas and ROS methods are not W-methods and always form $J$. So the forward behaviour matches OrdinaryDiffEq's defaults for every v1 Rosenbrock method.
 - $f_t$ is formed only when some $d_i \ne 0$ and the leaf's operators depend on $t$ explicitly or through forcing within the current epoch. Otherwise it is zero.
-- **A singular $W$** (a failed factorization) rejects the step as if its scaled error were 2, as OrdinaryDiffEq does (`set_EEst!(integrator, 2)`, `src/rosenbrock_perform_step.jl:272`, `:448`). The controller then shrinks the step (§8.5).
+- **A singular $W$** (a failed factorization) always rejects the step, and the new size is the controller's rejection size at $E = 2$, as OrdinaryDiffEq sets `set_EEst!(integrator, 2)` (`src/rosenbrock_perform_step.jl:272`, `:448`) (§8.5). The rejection holds under the PID controller too, whose factor at $E = 2$ can exceed `pid_accept_safety`. At fixed `dt` a singular $W$ ends the leaf with `Unstable` (§12).
+- **Linear solves.** `dense_lu` and `block_lu` factor by Julia's `generic_lufact!` arithmetic: partial pivoting choosing the first row of largest magnitude (strict comparison), multipliers $a_{ik} \cdot (1/a_{kk})$, and column-oriented triangular solves (forward over ascending columns, back over descending columns with $x_j = y_j / u_{jj}$). The transposed solve of the adjoint uses the same factors. `block_lu` applies this to every lane at once; with `pivot: false` it skips the row exchanges. A LAPACK factorization would differ only at roundoff, but the two implementations agree bitwise only under this rule.
 - **Precision.** $W$ and its factors may be stored in a lower precision than the state (architecture §8, the `jacobian` and `factors` roles). Classical Rosenbrock methods assume an exact $J$, so the planner refuses a low-precision $W$ with them unless overridden (run-config §7.1).
 
 ### 4.3 Error estimates
@@ -122,10 +126,13 @@ After a rejected step the start point is unchanged, so the stored first stage st
 - **Rosenbrock23:** with $f_0 = f(u_n, t_n)$, $f_1 = f(U_2, t_n + h/2)$ and $f_2 = f(u_{n+1}, t_n + h)$,
 
   ```math
-  W k_3 = f_2 - c_{32}(k_2 - f_1) - 2(k_1 - f_0) + h\, f_t(u_n), \qquad e = \tfrac{h}{6}\,(k_1 - 2k_2 + k_3) .
+  W k_3 = f_2 - c_{32}(k_2 - f_1) - 2(k_1 - f_0) + h d\, f_t(u_n), \qquad e = \tfrac{h}{6}\,(k_1 - 2k_2 + k_3) .
   ```
 
   $f_2$ is the next step's $f_0$ (§3.3).
+
+  The $f_t$ term is $h d\, f_t$, the same as the first stage's, which makes $e$ a third-order estimate, $O(h^3)$, on problems that depend on $t$ explicitly (D62).
+  *Deviation:* OrdinaryDiffEq adds $h f_t$ (`src/rosenbrock_perform_step.jl:104`, `:298`). That leaves $\tfrac{h}{6}\, h (1 - d)\, f_t$ in the estimate, which is then second order (1.99 on `forced_decay`, against 3) and overstates the error as $h \to 0$, so its steps on time-dependent problems are smaller than the tolerance requires. $u_{n+1}$ is the same either way, so fixed-step runs and the oracle (D31) are unaffected; adaptive Rosenbrock23 step sequences on time-dependent problems differ from OrdinaryDiffEq's.
 
 ### 4.4 KPP methods
 
@@ -300,7 +307,7 @@ $\beta$ defaults to (`beta1`, `beta2`, `pid_beta3`). Accept when $\phi \ge$ `pid
 
 - **Domain violation** (§11) or **non-finite $E$** (§7): $h \leftarrow h \cdot q_{\min}$, as OrdinaryDiffEq does for `isoutofdomain` (OrdinaryDiffEqCore `src/integrators/integrator_utils.jl:136`, `:616`).
 - **Newton failure** (§5.2): $h \leftarrow h/\texttt{failfactor}$, and $\theta_{\text{prev}}$ resets to 1.
-- **Singular $W$** (§4.2): handled as $E = 2$ by the controller's rejection rule.
+- **Singular $W$** (§4.2): always a rejection, with the size the controller's rejection rule gives at $E = 2$.
 
 The controller's error history ($E_{\text{old}}$, the PID $\varepsilon$s) changes only on acceptance.
 
@@ -347,7 +354,7 @@ An ordinary step's end time is $t_n + h$, accumulated in f64. Over a long fixed-
 - **Check.** After a step attempt, and before the accept decision, every listed DOF of $u_{n+1}$ must be $\ge 0$. A negative value is a violation. NaN is not a violation here; it shows up as a non-finite $E$ (§7) or, at fixed `dt`, as `Unstable` (§12).
 - **`reject`** (default): a violation rejects the step (§8.5). A fixed-`dt` leaf cannot shrink, so a violation there ends the leaf with `DomainViolation` (§12).
 - **`clip`**: after acceptance, $u_{n+1,j} \leftarrow \max(u_{n+1,j}, 0)$ on the listed DOFs, and the mask is recorded for the adjoint ([`adjoint.md`](adjoint.md) §5.7). The clipped state invalidates any stored first-same-as-last evaluation (§3.3).
-- **`check_stages`** (Rosenbrock only): a negative listed component of any stage state $U_i$ is also a violation (the pre-dawn NO failure, architecture §5.3).
+- **`check_stages`** (Rosenbrock only): a negative listed component of any stage state $U_i$ is also a violation (the pre-dawn NO failure, architecture §5.3). A stage violation always rejects, under `clip` too, since a stage cannot be clipped.
 
 *Informative.* OrdinaryDiffEq's `isoutofdomain` is the same reject-and-shrink rule; `clip` and `check_stages` have no OrdinaryDiffEq counterpart.
 
@@ -360,7 +367,7 @@ A leaf returns one code per invocation (per cell under `dt_scope: cell`, reduced
 | `Success` | the leaf reached the end of its interval |
 | `MaxIters` | more than `control.maxiters` step attempts (accepted plus rejected) in this invocation; default 1 000 000 for adaptive leaves, unlimited at fixed `dt` (OrdinaryDiffEqCore `src/solve.jl:308`) |
 | `DtLessThanMin` | an adaptive leaf's step size is at or below `dtmin` (when `dtmin` > 0), checked before every step attempt, unless the previous attempt was accepted and this step is a stop step (the leaf's first attempt of the run counts as following a rejection) |
-| `Unstable` | a rejected step's size is at or below $\epsilon(|t|)$; or a fixed-`dt` step produced a non-finite state |
+| `Unstable` | a rejected step's size is at or below $\epsilon(|t|)$; or a fixed-`dt` step produced a non-finite state or had a singular $W$ (§4.2) |
 | `DtNaN` | the step size became NaN |
 | `ConvergenceFailure` | a Newton failure at fixed `dt` (§5.2) |
 | `DomainViolation` | a domain violation at fixed `dt` (§11). No SciMLBase equivalent; Julia's SciMLBase surface reports `ReturnCode.Unstable` and records `DomainViolation` in the leaf's statistics |
