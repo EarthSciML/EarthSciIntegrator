@@ -339,7 +339,7 @@ PISM's "explicit horizontal at old time" (architecture §5). The leaf's operator
 u_{n+1} = u_n + h\, f_E(u_n) + h\, f_I(u_{n+1}),
 ```
 
-with the implicit equation converged by Newton, or by one linear solve when $f_I$ is linear in $u$, as eqice's column diffusion is. With $W = I - hJ_I(u_{n+1})$:
+with the implicit equation converged by Newton, which takes one linear solve to roundoff when $f_I$ is linear in $u$, as eqice's column diffusion is. With $W = I - hJ_I(u_{n+1})$:
 
 ```math
 W^\top \omega = \lambda_{n+1}, \qquad
@@ -349,7 +349,7 @@ W^\top \omega = \lambda_{n+1}, \qquad
 
 and $\bar F$ likewise.
 
-The implicit part is solved to convergence by default (D43). The leaf option `implicit_solve: "linearized"` instead takes a single linearized (Rosenbrock–Euler) step: $W$ is formed at $u_n$ and the step is a one-stage Rosenbrock method, whose adjoint is §4.2 with one stage, including `hess_u`. When $f_I$ is linear in $u$ the two coincide, and the planner records `converged`.
+The implicit part is solved to convergence by default (D43). The leaf option `implicit_solve: "linearized"` instead takes a single linearized (Rosenbrock–Euler) step: $W$ is formed at $u_n$ and the step is a one-stage Rosenbrock method, whose adjoint is §4.2 with one stage, including `hess_u`. The two coincide only when $f_I$ is linear in $u$ and independent of $t$: the linearized step evaluates $f_I$ at $(u_n, t_n)$, the converged step at $(u_{n+1}, t_n + h)$, so for $f_I = -k u + c(t)$ they differ by $h(I - hJ)^{-1}(c(t_n + h) - c(t_n))$. The leaf runs the `implicit_solve` it asks for in every case; neither the planner nor an implementation substitutes one for the other.
 
 ### 4.5 Legacy fixed steps: θ-method, forward Euler, backward Euler
 

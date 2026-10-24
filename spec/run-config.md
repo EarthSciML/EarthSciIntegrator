@@ -131,7 +131,7 @@ A bound parameter is a constant of the adjoint's frozen tape, so it cannot appea
 
 ### 4.5 IMEX partitions
 
-`imex: {"explicit": ..., "implicit": ...}` splits a leaf's terms between the explicit and implicit parts of an IMEX method. Entries are operator names, or locality names that select the leaf's terms of that locality. Every term of the leaf must land in exactly one part; `explicit` may be omitted, meaning "everything not implicit". In v1 the only IMEX method is `IMEXEuler` (D35). Its implicit part is solved to convergence by Newton with the leaf's `linsolve` unless `implicit_solve: "linearized"` asks for a single linearized step (D43); the two coincide when the implicit terms are linear in the state.
+`imex: {"explicit": ..., "implicit": ...}` splits a leaf's terms between the explicit and implicit parts of an IMEX method. Entries are operator names, or locality names that select the leaf's terms of that locality. Every term of the leaf must land in exactly one part; `explicit` may be omitted, meaning "everything not implicit". `implicit` is required, and an empty implicit list is refused. In v1 the only IMEX method is `IMEXEuler` (D35). Its implicit part is solved to convergence by Newton with the leaf's `linsolve` unless `implicit_solve: "linearized"` asks for a single linearized step (D43); the two coincide when the implicit terms are linear in the state and independent of $t$, since the linearized step evaluates $f_I$ at $(u_n, t_n)$ and the converged step at $(u_{n+1}, t_n + h)$ (for $f_I = -k u + c(t)$ they differ by $h(I - hJ)^{-1}(c(t_n + h) - c(t_n))$). Implementations run the `implicit_solve` the leaf asks for in every case and never substitute one for the other.
 
 ### 4.6 `frozen`
 

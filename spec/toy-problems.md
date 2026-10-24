@@ -6,7 +6,7 @@ M1's gate (architecture §14) is conformance tiers 2 and 3 on toy problems. The 
 
 Each problem below fixes its equations, operators, layout, parameters, initial state and interval exactly. Both implementations MUST implement every listed operator call (operator-interface.md §3) with hand-derived derivatives, not automatic differentiation, so the derivatives themselves are under test. The Julia implementation's ForwardDiff Jacobian of `rhs` is a test oracle for them.
 
-Indices are 0-based. "Cell" coordinates are $x_c = (c + \tfrac12)/\text{ncells}$. The names given to state components ($y$, $\mathrm{O_3}$, $A$, …) are the variable names a run config uses for them, for example in `adjoint.functional`; a problem with cells has one index set, `cell`. At M1 every toy leaf runs with `dt_scope: global` (tape.md covers no other scope until M3), whatever D17's default for its locality. A problem's operators exist under the names given here, so a case's run config names them in its schedule and has no `operators` key.
+Indices are 0-based. "Cell" coordinates are $x_c = (c + \tfrac12)/\text{ncells}$. The names given to state components ($y$, $\mathrm{O_3}$, $A$, …) are the variable names a run config uses for them, for example in `adjoint.functional`; a problem with cells has one index set, `cell`. At M1 every toy leaf runs with `dt_scope: global` (tape.md covers no other scope until M3), whatever D17's default for its locality. Toy operators carry no locality, so at M1 an `imex` partition (spec/run-config.md §4.5) names operators only, and a locality name in it is refused. A problem's operators exist under the names given here, so a case's run config names them in its schedule and has no `operators` key.
 
 ## 1. Problems
 
