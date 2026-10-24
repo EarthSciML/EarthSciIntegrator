@@ -137,8 +137,9 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
     # OrdinaryDiffEq (its `accept_step` starts false).
     prev_accepted = cs.accepted_any
     # BackwardEuler's divided-difference estimate reads the previous accepted step
-    # (u_{n-1}, t_{n-1}) of this invocation (spec/methods.md §5.5); it resets with
-    # every invocation, after a skipped tiny stop step and after a clip.
+    # (u_{n-1}, t_{n-1}) of this invocation (spec/methods.md §5.5), the state as
+    # accepted (after any clip); it resets with every invocation and after a
+    # skipped tiny stop step.
     hist = nothing
     istop = 1
     while true
@@ -247,7 +248,7 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         # stop, as OrdinaryDiffEq does; replay reproduces this (leaf_replay).
         fsal = (res.fsal !== nothing && !clipped) ? res.fsal : nothing
         fsal_h = h
-        hist = clipped ? nothing : (u, t)
+        hist = (u, t)
         res.dq === nothing || (qint = qint + res.dq)
         u = unew
         t = tnew

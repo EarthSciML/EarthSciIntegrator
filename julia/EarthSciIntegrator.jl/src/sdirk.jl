@@ -8,8 +8,8 @@
 #   shared by every implicit stage (§5.3). A solve W⁻¹r is computed as
 #   M⁻¹(r·σ) in the Newton iteration, which is OrdinaryDiffEqNonlinearSolve's
 #   `ztmp = (dt*f(ustep) - z)*invγdt`, `dz = W \ ztmp` (`src/newton.jl:874-893`,
-#   with its W = J - σI negated), and as (M⁻¹e)·σ for the smoothed error
-#   estimate.
+#   with its W = J - σI negated), and likewise as M⁻¹(e·σ) for the smoothed
+#   error estimate and M⁻ᵀ(R·σ) for the adjoint's transposed solves.
 # - Newton iteration m (§5.2): Zᵢ = τᵢ + γ z (elementwise `τ[j] + γ*z[j]`),
 #   r = (h f(Zᵢ, tₙ + cᵢh) - z)·σ elementwise as `(h*f[j] - z[j])*σ`,
 #   Δz = M⁻¹r, δₘ = ‖Δz‖ in §7's norm with uₙ and Zᵢ, z ← z + Δz.
@@ -308,13 +308,13 @@ _stage_time(m::SDIRKMethod, t, h, i) = (i == 1 && m.explicit_first) ? t : t + m.
 
 """
 Δq of the integrated functional (q' = ψ(u), spec/adjoint.md §2.1): the method
-on the augmented state at the exact stages, Δq = Σ (h bᵢ) ψ(Zᵢ).
+on the augmented state at the exact stages, Δq = Σ bᵢ (h ψ(Zᵢ)).
 """
 function sdirk_dq(m::SDIRKMethod, st, ψ, h)
     dq = nothing
     for i in 1:m.s
         m.b[i] == 0 && continue
-        v = (h * m.b[i]) * ψ(st.Z[i])
+        v = m.b[i] * (h * ψ(st.Z[i]))
         dq = dq === nothing ? v : dq + v
     end
     return dq
@@ -343,7 +343,7 @@ function sdirk_step(m::SDIRKMethod, ctx::ImplicitContext, u, p, t, h, adaptive::
                 bt == 0 && continue
                 e === nothing ? (e = convert(eltype(u1), bt) .* st.z[i]) : _addto!(e, bt, st.z[i])
             end
-            E = e === nothing ? 0.0 : error_norm(lu_solve(st.F, e) .* st.σ, u, u1, ctx.tol)
+            E = e === nothing ? 0.0 : error_norm(lu_solve(st.F, e .* st.σ), u, u1, ctx.tol)
         elseif est === :divided_difference
             # OrdinaryDiffEqSDIRK `src/generic_imex_perform_step.jl:2401-2420`, in its
             # arithmetic: dt1 = h(t + h - t_{n-1}), dt2 = (t - t_{n-1})(t + h - t_{n-1}),
@@ -375,7 +375,7 @@ Wᵢᵀωᵢ = h(bᵢλ + Σ_{j>i} a_ji σⱼ) with Wᵢ = I - hγJ(Zᵢ) refact
 converged stage (D42; Wᵢ = I for an explicit first stage), σᵢ = J(Zᵢ)ᵀωᵢ;
 `adaptive` is the leaf's, which the replayed Newton iteration needs;
 λₙ = λ + Σσᵢ, p̄ = Σ f_p(Zᵢ)ᵀωᵢ, sums over ascending stages. The transposed
-solve is (Mᵢ⁻ᵀ rhs)·σ with Mᵢ = σI - J(Zᵢ). With the integrated functional
+solve is Mᵢ⁻ᵀ(rhs·σ) with Mᵢ = σI - J(Zᵢ). With the integrated functional
 (q̄ = 1) the q stage's cotangent is h bᵢ, which adds hγ·h bᵢ ∇ψ to an
 implicit stage's right-hand side and h bᵢ ∇ψ to σᵢ.
 """
@@ -407,7 +407,7 @@ function sdirk_adjoint_step(m::SDIRKMethod, ctx::ImplicitContext, u, p, t, h, λ
             ωq == 0 || _addto!(rhs, h * γ * ωq, ψ.w)
             Fi = _factor_at(ctx, ops, Zi, p, ti, σW)
             issuccess_lu(Fi) || error("W is singular at the converged stage $i (t = $t, h = $h)")
-            lu_solve_transpose(Fi, rhs) .* σW
+            lu_solve_transpose(Fi, rhs .* σW)
         end
         σ[i] = zeros(N)
         vjp_u!(ops, σ[i], Zi, p, ti, ω)
@@ -494,7 +494,7 @@ end
 
 """
 spec/adjoint.md §4.4–§4.5: Wᵀω = λ with W = I - hγJ_I(u_{n+1}) refactored at
-the converged state, solved as (M⁻ᵀλ)·σ; λₙ = ω + c_E J_g(uₙ)ᵀω and
+the converged state, solved as M⁻ᵀ(λ·σ); λₙ = ω + c_E J_g(uₙ)ᵀω and
 p̄ = c_E g_p(uₙ)ᵀω + hγ f_{I,p}(u_{n+1})ᵀω (θ: c_E = h(1-θ), γ = θ; IMEX
 Euler: c_E = h, γ = 1). With the integrated functional (θ-method only) the
 q stage's cotangent is 1, which adds hγ∇ψ to the right-hand side and c_E∇ψ
@@ -515,7 +515,7 @@ function one_stage_adjoint(m::Union{ThetaMethod, IMEXEulerMethod}, ctx::Implicit
         ψ === nothing || _addto!(rhs, h * γ, ψ.w)
         Fx = _factor_at(ctx, opsI, st.Z, p, t + h, st.σ)
         issuccess_lu(Fx) || error("W is singular at the converged state (t = $t, h = $h)")
-        lu_solve_transpose(Fx, rhs) .* st.σ
+        lu_solve_transpose(Fx, rhs .* st.σ)
     end
     λn = copy(ω)
     if g !== nothing
@@ -547,16 +547,19 @@ function imex_linearized_stage(ctx::ImplicitContext, u, p, t, h)
     jac!(ctx.opsI, J, u, p, t)
     F = factor_W(J, inv(h), ctx.ls)
     issuccess_lu(F) || return nothing, F
-    r = _feval(ctx.ops, u, p, t, T)
+    # f_E + f_I, each part one right-hand-side evaluation (as in the Rust implementation).
+    r = _feval(ctx.opsI, u, p, t, T)
+    ctx.opsE === nothing || (r = _feval(ctx.opsE, u, p, t, T) .+ r)
     return lu_solve(F, r), F
 end
 
 function imex_linearized_step(ctx::ImplicitContext, u, p, t, h)
     k, _ = imex_linearized_stage(ctx, u, p, t, h)
-    k === nothing && return StepResult(u, 2.0, nothing, 1, true, false, nothing, false)
+    nf = ctx.opsE === nothing ? 1 : 2
+    k === nothing && return StepResult(u, 2.0, nothing, 0, true, false, nothing, false)
     u1 = convert(Vector{eltype(k)}, copy(u))
     _addto!(u1, 1.0, k)
-    return StepResult(u1, NaN, nothing, 1, false, false, nothing, false)
+    return StepResult(u1, NaN, nothing, nf, false, false, nothing, false)
 end
 
 function imex_linearized_adjoint(ctx::ImplicitContext, u, p, t, h, λ)
