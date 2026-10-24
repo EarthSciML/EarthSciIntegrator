@@ -306,6 +306,10 @@ pub struct BlockLu<T> {
     lu: Vec<T>,
     /// Row interchanges per lane: `piv[k·ncells + c]`.
     piv: Vec<usize>,
+    /// Scratch per lane for one pivot column: its largest magnitude, and the
+    /// pivot's reciprocal.
+    amax: Vec<f64>,
+    inv: Vec<T>,
     ok: bool,
 }
 
@@ -320,6 +324,8 @@ impl<T: Scalar> BlockLu<T> {
             piv: (0..n)
                 .flat_map(|k| std::iter::repeat_n(k, ncells))
                 .collect(),
+            amax: vec![0.0; ncells],
+            inv: vec![T::zero(); ncells],
             ok: false,
         }
     }
@@ -339,9 +345,10 @@ impl<T: Scalar> BlockLu<T> {
                 for c in 0..nc {
                     self.piv[pk + c] = k;
                 }
-                let mut amax: Vec<f64> = (0..nc)
-                    .map(|c| self.lu[at(k, k) + c].to_f64().abs())
-                    .collect();
+                let amax = &mut self.amax;
+                for (c, m) in amax.iter_mut().enumerate() {
+                    *m = self.lu[at(k, k) + c].to_f64().abs();
+                }
                 for i in k + 1..n {
                     let ai = at(i, k);
                     for c in 0..nc {
@@ -369,7 +376,7 @@ impl<T: Scalar> BlockLu<T> {
             } else if (0..nc).any(|c| self.lu[at(k, k) + c] == T::zero()) {
                 return false;
             }
-            let mut inv = vec![T::zero(); nc];
+            let inv = &mut self.inv;
             for (c, v) in inv.iter_mut().enumerate() {
                 *v = T::from_f64(1.0) / self.lu[at(k, k) + c];
             }

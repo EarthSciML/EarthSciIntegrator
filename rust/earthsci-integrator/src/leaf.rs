@@ -152,6 +152,16 @@ pub struct LeafWork<T> {
     fsal: Vec<T>,
 }
 
+impl<T> LeafWork<T> {
+    /// The Rosenbrock workspace, for a Rosenbrock leaf.
+    pub fn ros(&mut self) -> Option<&mut RosWork<T>> {
+        match &mut self.m {
+            MethodWork::Ros(w) => Some(w),
+            MethodWork::Erk(_) => None,
+        }
+    }
+}
+
 /// The method's workspace.
 pub enum MethodWork<T> {
     Erk(ErkWork<T>),
@@ -620,9 +630,17 @@ impl<T: Scalar> LeafSpec<T> {
         persist: &mut LeafPersist,
         call: &LeafCall<'_>,
     ) -> Result<LeafOutcome<T>, Error> {
-        let n = u.len();
+        let mut w = self.take_work(u.len())?;
+        w.m.reset_nf();
+        let out = self.invoke_with(&mut w, u, persist, call);
+        self.put_work(w);
+        out
+    }
+
+    /// A workspace for a state of length `n`: a pooled one, or a new one.
+    pub fn take_work(&self, n: usize) -> Result<LeafWork<T>, Error> {
         let pooled = self.work.lock().ok().and_then(|mut v| v.pop());
-        let mut w = match pooled {
+        Ok(match pooled {
             Some(w) if w.fsal.len() == n => w,
             _ => LeafWork {
                 m: match &self.method {
@@ -634,13 +652,14 @@ impl<T: Scalar> LeafSpec<T> {
                 },
                 fsal: vec![T::zero(); n],
             },
-        };
-        w.m.reset_nf();
-        let out = self.invoke_with(&mut w, u, persist, call);
+        })
+    }
+
+    /// Returns a workspace from [`take_work`](Self::take_work) to the pool.
+    pub fn put_work(&self, w: LeafWork<T>) {
         if let Ok(mut v) = self.work.lock() {
             v.push(w);
         }
-        out
     }
 
     fn invoke_with(

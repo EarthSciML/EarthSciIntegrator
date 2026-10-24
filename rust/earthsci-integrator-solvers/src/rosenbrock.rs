@@ -108,7 +108,14 @@ impl Rosenbrock {
                     e => return Err(format!("{}: error estimate {e:?}", t.name)),
                 };
                 let s = t.stages;
-                if a.len() != s || cmat.len() != s || c.len() != s || d.len() != s || b.len() != s {
+                if a.len() != s
+                    || cmat.len() != s
+                    || c.len() != s
+                    || d.len() != s
+                    || b.len() != s
+                    || btilde.as_ref().is_some_and(|bt| bt.len() != s)
+                    || a.iter().chain(&cmat).any(|row| row.len() != s)
+                {
                     return Err(format!("{}: coefficient sizes differ from stages", t.name));
                 }
                 // OrdinaryDiffEqRosenbrock src/rosenbrock_perform_step.jl:470-474:
@@ -232,7 +239,6 @@ impl Rosenbrock {
     ) -> Option<f64> {
         let dtgamma = h * self.w_gamma();
         let sigma = 1.0 / dtgamma;
-        w.jac.clear();
         jac(&mut w.jac, un, t);
         w.w.shifted_negation(&w.jac, T::from_f64(sigma));
         if w.lu.factor(&w.w) {

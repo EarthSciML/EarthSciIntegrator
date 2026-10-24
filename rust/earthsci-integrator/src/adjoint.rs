@@ -194,13 +194,24 @@ fn leaf_adjoint<T: Scalar>(
     let mut l: Vec<T> = lam.iter().map(|&x| T::from_f64(x)).collect();
     // A Rosenbrock leaf refactors W at each step's u_n, which reproduces the
     // forward factorization bit for bit (spec/adjoint.md §3, `solve_Wt`).
-    let mut rw = match &leaf.method {
-        LeafMethod::Ros(m, ls) => Some(
-            m.workspace::<T>(l.len(), leaf.structure, *ls)
-                .map_err(|e| Error::Config(format!("leaf {}: {e}", leaf.id)))?,
-        ),
-        LeafMethod::Erk(_) => None,
-    };
+    let mut lw = leaf.take_work(l.len())?;
+    let out = leaf_adjoint_steps(leaf, steps, &mut l, pbar, bound, lw.ros());
+    leaf.put_work(lw);
+    out?;
+    for (a, x) in lam.iter_mut().zip(&l) {
+        *a = x.to_f64();
+    }
+    Ok(())
+}
+
+fn leaf_adjoint_steps<T: Scalar>(
+    leaf: &LeafSpec<T>,
+    steps: &[StepData<T>],
+    l: &mut [T],
+    pbar: &mut [f64],
+    bound: &[bool],
+    mut rw: Option<&mut RosWork<T>>,
+) -> Result<(), Error> {
     for st in steps.iter().rev() {
         // The clip after the step: λ ← m ⊙ λ, zero on the clipped DOFs (§5.7).
         if let Some(clipped) = &st.clip {
@@ -213,14 +224,11 @@ fn leaf_adjoint<T: Scalar>(
             continue;
         }
         let pc = match (&leaf.method, rw.as_mut()) {
-            (LeafMethod::Erk(m), _) => erk_adjoint_step(leaf, m, st, &mut l),
-            (LeafMethod::Ros(m, _), Some(w)) => ros_adjoint_step(leaf, m, w, st, &mut l)?,
-            (LeafMethod::Ros(..), None) => unreachable!("workspace made above"),
+            (LeafMethod::Erk(m), _) => erk_adjoint_step(leaf, m, st, l),
+            (LeafMethod::Ros(m, _), Some(w)) => ros_adjoint_step(leaf, m, w, st, l)?,
+            (LeafMethod::Ros(..), None) => unreachable!("a Rosenbrock leaf's workspace"),
         };
         accumulate(pbar, &pc, bound);
-    }
-    for (a, x) in lam.iter_mut().zip(&l) {
-        *a = x.to_f64();
     }
     Ok(())
 }
@@ -354,11 +362,10 @@ pub fn erk_adjoint_step<T: Scalar>(
 /// Whether a Rosenbrock leaf forms parameter cotangents: every operator
 /// provides `vjp_p` and `hess_p`, and `ft_vjp_p` where `f_t` is formed.
 fn ros_has_p_adjoint<T: Scalar>(leaf: &LeafSpec<T>, forms_ft: bool) -> bool {
-    leaf.ops.iter().all(|o| {
-        o.provides(Call::VjpP)
-            && o.provides(Call::HessP)
-            && (!forms_ft || !o.depends_on_t() || o.provides(Call::FtVjpP))
-    })
+    leaf.has_vjp_p()
+        && leaf.ops.iter().all(|o| {
+            o.provides(Call::HessP) && (!forms_ft || !o.depends_on_t() || o.provides(Call::FtVjpP))
+        })
 }
 
 /// `x ← c·x` with the coefficient rounded to `T`.

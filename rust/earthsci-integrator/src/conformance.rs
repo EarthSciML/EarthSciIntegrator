@@ -686,10 +686,14 @@ pub fn check_fd(
         g.u0.iter().zip(du).map(|(a, b)| a * b).sum::<f64>()
             + g.p.iter().zip(dp).map(|(a, b)| a * b).sum::<f64>()
     };
-    let denom = dirs
-        .iter()
-        .map(|(_, du, dp)| exact_of(du, dp).abs())
-        .fold(f64::MIN_POSITIVE, f64::max);
+    // Each direction's error is relative to its own directional derivative,
+    // floored at 1e-3 of the largest, since some are exactly zero
+    // (spec/adjoint.md §7.2).
+    let floor = 1e-3
+        * dirs
+            .iter()
+            .map(|(_, du, dp)| exact_of(du, dp).abs())
+            .fold(f64::MIN_POSITIVE, f64::max);
     let mut worst = 0.0f64;
     let mut worst_label = String::new();
     let mut trend = String::new();
@@ -711,7 +715,7 @@ pub fn check_fd(
                 (Err(e), _) | (_, Err(e)) => return Outcome::Fail(format!("{label}: replay: {e}")),
             };
             let fd = (jp - jm) / (2.0 * eps);
-            let e = (fd - exact).abs() / denom;
+            let e = (fd - exact).abs() / exact.abs().max(floor);
             errs.push(e);
             best = best.min(e);
         }
@@ -726,7 +730,7 @@ pub fn check_fd(
         }
     }
     let msg = format!(
-        "{} directions; worst {worst_label}: error {} relative to the largest directional derivative, at the best epsilon (rtol {rtol:e}; over epsilons {trend})",
+        "{} directions; worst {worst_label}: relative error {} at the best epsilon (floored at 1e-3 of the largest directional derivative; rtol {rtol:e}; over epsilons {trend})",
         dirs.len(),
         fmt_e(worst)
     );

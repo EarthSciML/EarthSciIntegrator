@@ -264,6 +264,17 @@ fn build_leaf<T: Scalar>(
                 }
             }
             let ls = linsolve(l.linsolve.as_ref(), structure, id)?;
+            // The block solve covers ncells·n entries; any others would pass
+            // through it unsolved.
+            if let Structure::BlockDiagonal { ncells, n } = structure {
+                if ncells * n != pb.n {
+                    return Err(Error::Config(format!(
+                        "leaf {id}: the operators' block_diagonal structure covers \
+                         {ncells}·{n} DOFs, but the state has {} (operator-interface.md §2)",
+                        pb.n
+                    )));
+                }
+            }
             LeafMethod::Ros(m, ls)
         }
         f => {
@@ -457,13 +468,28 @@ fn linsolve(
             match k.as_str() {
                 "dense_lu" => Some(LinsolveKind::DenseLu),
                 "block_lu" => {
-                    if opts.get("refine").is_some_and(|r| r.as_u64() != Some(0)) {
-                        return Err(Error::Unimplemented(format!(
-                            "leaf {id}: block_lu.refine needs low-precision factors (M5)"
-                        )));
+                    let Value::Object(opts) = opts else {
+                        return Err(Error::Config(format!("leaf {id}: block_lu options {opts}")));
+                    };
+                    for (key, val) in opts {
+                        match (key.as_str(), val) {
+                            ("pivot", Value::Bool(_)) => {}
+                            ("refine", r) if r.as_u64() == Some(0) => {}
+                            ("refine", r) if r.as_u64().is_some() => {
+                                return Err(Error::Unimplemented(format!(
+                                    "leaf {id}: block_lu.refine needs low-precision factors (M5)"
+                                )))
+                            }
+                            (k, v) => {
+                                return Err(Error::Config(format!(
+                                    "leaf {id}: block_lu.{k} = {v} (pivot takes a boolean, \
+                                     refine a non-negative integer)"
+                                )))
+                            }
+                        }
                     }
                     Some(LinsolveKind::BlockLu {
-                        pivot: opts.get("pivot").and_then(|p| p.as_bool()).unwrap_or(true),
+                        pivot: opts.get("pivot").and_then(Value::as_bool).unwrap_or(true),
                     })
                 }
                 o => {
@@ -1306,5 +1332,33 @@ mod tests {
         assert!(glob("*", "a.b"));
         assert!(glob("a*c", "abbc"));
         assert!(!glob("a*c", "abb"));
+    }
+
+    #[test]
+    fn linsolve_options() {
+        let block = Structure::BlockDiagonal { ncells: 2, n: 3 };
+        let ls = |v: serde_json::Value| linsolve(Some(&v), block, "l");
+        assert!(matches!(
+            ls(serde_json::json!({"block_lu": {"pivot": false}})),
+            Ok(LinsolveKind::BlockLu { pivot: false })
+        ));
+        assert!(matches!(
+            ls(serde_json::json!({"block_lu": {"refine": 0}})),
+            Ok(LinsolveKind::BlockLu { pivot: true })
+        ));
+        for bad in [
+            serde_json::json!({"block_lu": {"pivot": "false"}}),
+            serde_json::json!({"block_lu": {"pivot": 0}}),
+            serde_json::json!({"block_lu": {"refine": null}}),
+            serde_json::json!({"block_lu": {"refine": -1}}),
+            serde_json::json!({"block_lu": {"restart": 30}}),
+            serde_json::json!({"block_lu": true}),
+        ] {
+            assert!(matches!(ls(bad.clone()), Err(Error::Config(_))), "{bad}");
+        }
+        assert!(matches!(
+            ls(serde_json::json!({"block_lu": {"refine": 1}})),
+            Err(Error::Unimplemented(_))
+        ));
     }
 }
