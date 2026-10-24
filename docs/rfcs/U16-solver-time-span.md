@@ -27,23 +27,23 @@ Add one optional field to the existing `solver` block:
 
 | Field | Type | Description |
 |---|---|---|
-| `time_span` | `{start, end}` | Each a number in the document's time units (the units of the independent variable, §11.3), or an RFC 3339 timestamp in UTC. `end` is after `start`. |
+| `time_span` | `{start, end}` | Both numbers in the document's time units (the units of the independent variable, §11.3), or both RFC 3339 timestamps in UTC. `end` is after `start`. |
 
 - **Units.** A number is in the document's time units, as `tests[].time_span` already is (§6.6.2). This proposal reuses that shape on purpose, so `{start, end}` means one thing across the format.
-- **Timestamps.** A string is an RFC 3339 UTC timestamp (`Z` suffix required). It means the POSIX time of that instant (seconds since `1970-01-01T00:00:00Z`, no leap seconds), converted to the document's time units. This matches how data loaders already describe their available range (§8.3 `temporal.start`/`end`, ISO 8601 datetimes) and how EarthSciMLBase spells a `tspan` from `DateTime`s. *Assumption:* EarthSciAST has no other time origin a timestamp could be relative to; if one exists, the timestamp should be relative to it instead.
+- **Timestamps.** A string is an RFC 3339 UTC timestamp (`Z` suffix required). It means the POSIX time of that instant (seconds since `1970-01-01T00:00:00Z`, no leap seconds), converted to the document's time units. A timestamp therefore puts time zero at 1970-01-01, so it suits only documents whose time is POSIX time; a document whose $t = 0$ is its own start uses numbers. A document whose independent variable has no units cannot use timestamps. This matches how data loaders already describe their available range (§8.3 `temporal.start`/`end`, ISO 8601 datetimes) and how EarthSciMLBase spells a `tspan` from `DateTime`s. *Assumption:* EarthSciAST has no other time origin a timestamp could be relative to; if one exists, the timestamp should be relative to it instead.
 - **Advisory.** Like every `solver` field, a binding MAY ignore it. A binding that honours it MUST let an explicit interval at the call site override it.
 - **Round-trip and versioning** as for the other `solver` fields: parsed, validated, round-tripped verbatim, rejected below the version that introduces it.
 - **Mounted components.** Solver hints on mounted component files are dropped at assembly (U1), so only the top-level document's `time_span` survives. This is the intended behaviour: the interval belongs to the run, not to a component.
 
 ## Validation
 
-- `start` and `end` each a number or a string matching the RFC 3339 UTC pattern.
-- `end` after `start` (a load-time check, since the schema cannot compare a timestamp with a number).
-- A document mixing a number and a timestamp is legal; both convert to the document's time units.
+- `start` and `end` both numbers, or both strings matching the RFC 3339 UTC pattern (months 01–12, hours 00–23, no second 60).
+- `end` after `start` (a load-time check, since JSON Schema cannot compare two values).
+- Each timestamp names a day its month has, and timestamps appear only when the independent variable has time units (load-time checks).
 
 ## How EarthSciIntegrator uses it
 
-The integrator's run interval comes from, in order of preference: the caller (API argument or command-line option), the run config's `time` key, then this field (D60, spec/run-config.md §1.1). The most preferred source that gives an interval gives all of it. The plan records the resolved interval and its source.
+The integrator's run interval comes from, in order of preference: the caller (API argument or command-line option), the run config's `time` key, then this field (D60, spec/run-config.md §1.1). The most preferred source that gives an interval gives all of it. The plan records the resolved interval in seconds.
 
 ## Alternatives
 

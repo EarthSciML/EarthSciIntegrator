@@ -28,14 +28,13 @@
       "allOf": [{"$ref": "#/$defs/resolvedNode"}, {"$ref": "#/$defs/noAuto"}]
     },
     "time": {
-      "description": "The resolved run interval in seconds, and the source that gave it (spec/run-config.md §1.1, D60).",
+      "description": "The resolved run interval in seconds (spec/run-config.md §1.1, D60). Which source gave it is not recorded, so the same interval always gives the same plan.",
       "type": "object",
-      "required": ["start", "end", "source"],
+      "required": ["start", "end"],
       "additionalProperties": false,
       "properties": {
         "start": {"type": "number"},
-        "end": {"type": "number"},
-        "source": {"enum": ["caller", "run_config", "model"]}
+        "end": {"type": "number"}
       }
     },
     "step": {

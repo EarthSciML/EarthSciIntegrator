@@ -103,16 +103,59 @@
       "$.schedule"
     ]
   },
+  "time-duration-parameter.json": {
+    "keyword": "pattern",
+    "at": [
+      "$.time.duration"
+    ]
+  },
   "time-end-and-duration.json": {
     "keyword": "oneOf",
     "at": [
       "$.time"
     ]
   },
+  "time-leap-second.json": {
+    "keyword": "pattern",
+    "at": [
+      "$.time.start"
+    ]
+  },
   "time-local-timestamp.json": {
     "keyword": "pattern",
     "at": [
       "$.time.start"
+    ]
+  },
+  "time-mixed-forms.json": {
+    "keyword": "type",
+    "at": [
+      "$.time.end",
+      "$.time.start"
+    ]
+  },
+  "time-month-13.json": {
+    "keyword": "pattern",
+    "at": [
+      "$.time.start"
+    ]
+  },
+  "time-start-only.json": {
+    "keyword": "required",
+    "at": [
+      "$.time"
+    ]
+  },
+  "time-unknown-key.json": {
+    "keyword": "additionalProperties",
+    "at": [
+      "$.time"
+    ]
+  },
+  "time-without-start.json": {
+    "keyword": "required",
+    "at": [
+      "$.time"
     ]
   },
   "two-combinators.json": {
