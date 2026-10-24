@@ -23,10 +23,17 @@ const SDIRK = ["BackwardEuler", "TRBDF2", "SDIRK2", "Kvaerno3", "Kvaerno4"]
                 merge(Dict("leaf" => "photochemistry"), implicit(alg; dt = 20.0, linsolve = "block_lu")), Dict("dt" => 600),
                 [0, 1200.0]; adjoint = xgrad("O3", "final", "mean"), checks = XGRAD))
             # Adaptive with interior stops; every adaptive method's estimate, including
-            # BackwardEuler's divided difference.
+            # BackwardEuler's divided difference. The adjoint differentiates the exact
+            # stage equations at the stages the forward Newton iteration converged to,
+            # so it matches finite differences of the tightly converged map only to
+            # about the Newton tolerance relative to the stages (spec/adjoint.md
+            # "exact up to the nonlinear-solve tolerance"): at reltol 1e-5 the
+            # finite-difference check gets rtol 1e-5 (measured up to 3e-6 on a
+            # direction whose derivative is small).
             run_xcase(xcase("x.van_der_pol.$alg.adaptive", "toy:van_der_pol/nonstiff",
                 merge(Dict("leaf" => "oscillator"), implicit(alg; control = Dict("reltol" => 1e-5, "abstol" => 1e-7))),
-                Dict("dt" => 6.3), [0, 6.3]; adjoint = xgrad("y", "saveat"), saveat = [1.0, 3.0, 6.3], checks = XGRAD))
+                Dict("dt" => 6.3), [0, 6.3]; adjoint = xgrad("y", "saveat"), saveat = [1.0, 3.0, 6.3],
+                checks = [XGRAD[1], merge(XGRAD[2], Dict("rtol" => 1e-5)), XGRAD[3]]))
         end
         # Splitting: SDIRK leaves inside strang, with a functional of B.
         reaction = merge(Dict("leaf" => "reaction"), implicit("TRBDF2"; control = Dict("reltol" => 1e-6, "abstol" => 1e-8)))
