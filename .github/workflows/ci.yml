@@ -113,6 +113,6 @@ jobs:
         with:
           name: rust-m1-results
           path: rust-results
-      # Every M1 method is implemented in both languages, so a case only one
-      # implementation ran fails the job.
+      # Every M1 method is implemented in both languages, so a case that
+      # either implementation did not run fails the job.
       - run: python tests/conformance/m1/compare_results.py julia-results rust-results --require-both

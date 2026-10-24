@@ -8,8 +8,8 @@ case in cases.json that has a `cross_language` check, and their tapes
 Usage: python tests/conformance/m1/compare_results.py JULIA_DIR RUST_DIR [--require-both]
 
 A case for which neither implementation wrote a result is skipped (its methods
-are not implemented yet). A case only one of them wrote is reported and, with
---require-both, fails. A result with a missing field or a value that is not a
+are not implemented yet), and a case only one of them wrote is reported; with
+--require-both, either fails. A result with a missing field or a value that is not a
 finite number fails. Exits 1 if any comparison fails, or if either directory
 is absent.
 """
@@ -174,7 +174,7 @@ def main():
     ap.add_argument("julia_dir", type=Path)
     ap.add_argument("rust_dir", type=Path)
     ap.add_argument("--require-both", action="store_true",
-                    help="fail a case only one implementation ran")
+                    help="fail a case that either implementation did not run")
     args = ap.parse_args()
     # A suite that wrote no result files uploads no artifact, so CI's
     # download leaves the directory absent; say so rather than skip every case.
@@ -192,7 +192,7 @@ def main():
             continue
         status, msg = compare_case(case["id"], chk, args.julia_dir, args.rust_dir)
         counts[status] += 1
-        if status == "fail" or (status == "one-sided" and args.require_both):
+        if status == "fail" or (status != "pass" and args.require_both):
             failed = True
         print(f"{status.upper():9} {case['id']}: {msg}")
     print(f"\ncross_language: {counts['pass']} passed, {counts['fail']} failed, "
