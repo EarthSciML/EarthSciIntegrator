@@ -656,14 +656,15 @@ impl<T: Scalar> LeafSpec<T> {
                     }
                     dq
                 }
-                // Δq = (h(1−θ)) ψ(u_n) + (hθ) ψ(u_{n+1}).
+                // Δq = (h(1−θ)) ψ(u_n) + θ (h ψ(u_{n+1})), the grouping of
+                // spec/adjoint.md §2.1.
                 ImplicitForm::Theta { theta } => {
                     let mut dq = 0.0;
                     if *theta != 1.0 {
                         dq += (h * (1.0 - theta)) * self.psi(&w.y[0]);
                     }
                     if *theta != 0.0 {
-                        dq += (h * theta) * self.psi(&w.y[1]);
+                        dq += theta * (h * self.psi(&w.y[1]));
                     }
                     dq
                 }
