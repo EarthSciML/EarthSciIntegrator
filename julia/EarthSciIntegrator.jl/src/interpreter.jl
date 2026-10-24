@@ -147,6 +147,8 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
                 throw(UnsupportedError("functional.integrate_in naming a leaf other than the root is not implemented in this stage"))
             root isa LeafNode ||
                 throw(UnsupportedError("a functional over \"time\" is implemented for single-leaf schedules only in this stage"))
+            root.method isa IMEXEulerMethod &&
+                throw(UnsupportedError("a functional over \"time\" on an IMEX Euler leaf is not implemented: spec/adjoint.md §2.1 does not say which part integrates q"))
             root.method isa ShuOsherERK &&
                 throw(UnsupportedError("a functional over \"time\" on a Shu–Osher leaf ($(root.tab.name)) is not implemented in this stage"))
             w = functional.reduction === :sum ? 1.0 : 1.0 / length(functional.dofs)
@@ -180,6 +182,11 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
         # when the method forms f_t (spec/adjoint.md §3).
         for leaf in values(leaves), op in leaf.ops.ops
             need = isempty(wrt_p) ? Symbol[] : [:vjp_p]
+            if leaf.method isa IMEXEulerMethod && leaf.method.linearized && op in leaf.imex[2].ops
+                # The linearized step's adjoint is a one-stage Rosenbrock adjoint (D43).
+                push!(need, :hess_u)
+                isempty(wrt_p) || push!(need, :hess_p)
+            end
             if leaf.method isa RosenbrockMethod
                 push!(need, :hess_u)
                 isempty(wrt_p) || push!(need, :hess_p)

@@ -57,8 +57,8 @@ end
 
 The persistent state of one leaf's controller (spec/methods.md §8.6): the
 proposed next step, the error history (`Eold` for PI, the PID `ε₂`, `ε₃`),
-the Newton rate and η (used by implicit families, kept here so checkpoints hold
-them, spec/tape.md §4), and whether the leaf has accepted a step. It persists
+and whether the leaf has accepted a step. The Newton iteration keeps no state
+across step attempts (spec/methods.md §5.2, D63). It persists
 across the leaf's invocations and macro steps.
 """
 mutable struct ControllerState
@@ -69,16 +69,14 @@ mutable struct ControllerState
     pid_eps::NTuple{3, Float64}
     dt_factor::Float64      # PID: the last attempt's factor
     accepted_any::Bool
-    θprev::Float64
-    ηold::Float64
 end
 
 function ControllerState(cc::Union{Nothing, ControllerConstants})
     qoldinit = cc === nothing ? 1.0e-4 : cc.qoldinit
-    return ControllerState(NaN, qoldinit, 1.0, 1.0, (1.0, 1.0, 1.0), 1.0, false, 1.0, 1.0)
+    return ControllerState(NaN, qoldinit, 1.0, 1.0, (1.0, 1.0, 1.0), 1.0, false)
 end
 
-Base.copy(s::ControllerState) = ControllerState(s.h, s.Eold, s.q11, s.q, s.pid_eps, s.dt_factor, s.accepted_any, s.θprev, s.ηold)
+Base.copy(s::ControllerState) = ControllerState(s.h, s.Eold, s.q11, s.q, s.pid_eps, s.dt_factor, s.accepted_any)
 function Base.:(==)(a::ControllerState, b::ControllerState)
     return all(f -> isequal(getfield(a, f), getfield(b, f)), fieldnames(ControllerState))
 end
