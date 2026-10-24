@@ -29,7 +29,7 @@
 //! - `U_2 = u_n + (h/2)·k_1`, `f_1 = f(U_2, t_n + h/2)`;
 //! - `k_2 = (M⁻¹ (f_1 − k_1))·σ + k_1`, `u_{n+1} = u_n + h·k_2`;
 //! - `f_2 = f(u_{n+1}, t_n + h)` (the next step's `f_0`, §3.3);
-//! - `k_3 = (M⁻¹ (((f_2 − c32·(k_2 − f_1)) − 2·(k_1 − f_0)) + h·f_t))·σ`,
+//! - `k_3 = (M⁻¹ (((f_2 − c32·(k_2 − f_1)) − 2·(k_1 − f_0)) + γ·f_t))·σ`,
 //!   `e = (h/6)·((k_1 − 2·k_2) + k_3)`.
 //!
 //! `M = Ŵ/γ` with spec/adjoint.md §4.2's `Ŵ = I − hdJ`, so the step is the
@@ -412,14 +412,16 @@ impl Rosenbrock {
                 let Some(norm) = norm else {
                     return RosOutcome::Done(None);
                 };
-                // k3 = (M⁻¹ (((f2 − c32 (k2 − f1)) − 2 (k1 − f0)) + h f_t)) σ.
+                // k3 = (M⁻¹ (((f2 − c32 (k2 − f1)) − 2 (k1 − f0)) + γ f_t)) σ, with
+                // γ = h d, which keeps the estimate third order; OrdinaryDiffEq adds h f_t,
+                // which makes it second order when f depends on t (methods.md §4.3, D62).
                 let c32 = T::from_f64(*c32);
                 let two = T::from_f64(2.0);
                 for j in 0..un.len() {
                     let mut v =
                         w.fend[j] - c32 * (w.k[1][j] - w.f1[j]) - two * (w.k[0][j] - w.f0[j]);
                     if has_ft {
-                        v += hc * w.ft[j];
+                        v += gam * w.ft[j];
                     }
                     w.r[j] = v;
                 }
@@ -595,16 +597,11 @@ mod tests {
             let e1 = est(0.02);
             let e2 = est(0.01);
             let ratio = (e1 / e2).log2();
-            // The local error estimate of an order-p method is O(h^(p+1)).
-            // Rosenbrock23's is O(h²) on this non-autonomous problem: its
-            // third stage adds h·f_t where Shampine and Reichelt's ode23s
-            // adds h·d·f_t (spec/methods.md §4.3, as OrdinaryDiffEq does),
-            // which leaves (h/6)·h(1−d)·f_t in the estimate.
-            let eo = if matches!(m.form, RosForm::Ode23s { .. }) {
-                1.7
-            } else {
-                m.order.min(m.embedded_order.unwrap()) as f64 + 1.0
-            };
+            // The local error estimate of an order-p method is O(h^(p+1)),
+            // Rosenbrock23's included on this non-autonomous problem because
+            // its third stage adds h·d·f_t (spec/methods.md §4.3); with
+            // OrdinaryDiffEq's h·f_t it would be O(h²).
+            let eo = m.order.min(m.embedded_order.unwrap()) as f64 + 1.0;
             assert!(
                 ratio > eo - 0.7,
                 "{}: estimate order {ratio}, expected ~{eo}",
