@@ -162,6 +162,7 @@ Then, for both:
 - `hit_multiples` additionally makes every multiple of a duration a tstop.
 - `resolution` floors Δ to a multiple of it, and Δ is never less than one `resolution` unless a tstop is closer.
 - **Ties.** Each macro step records the reason for its size: the first source achieving the minimum, taking the entries of `limits` in the order listed (a `{"max": ...}` entry counts at its own position in the list), then the next tstop. The reason is deterministic, so two implementations agree on it (PISM bugs.md #11). Adaptive `subcycle` substeps (§4.8) record their reason by the same rule over the subcycle's `limits`, then the time remaining.
+- **Fixed boundaries.** Under `dt`, macro step $k$ runs over $[t_0 + k\,\texttt{dt},\ t_0 + (k+1)\,\texttt{dt}]$, each end computed by multiplication, and the last ends at $t_f$. A tstop $\tau$ falls on a boundary $b$ when $|\tau - b| \le 100\,\epsilon(\max(|\tau|, |b|))$, the landing tolerance of spec/methods.md §10; that boundary is then $\tau$ exactly. So with `dt` 0.1 an output at 0.3 falls on $3 \times 0.1 = 0.30000000000000004$, and the state is reported at 0.3.
 - The macro step has no error control of its own (D49). Leaves adapt inside it. A schedule whose root is a single adaptive leaf behaves like an ordinary adaptive integration, because the planner then gives that leaf's accepted steps the role of macro steps.
 
 ## 6. Partition
@@ -187,7 +188,7 @@ Time, dt, error norms, reductions and adjoint accumulators are always f64 and ar
 
 ### 7.2 `adjoint`
 
-- `functional`: the reduction (`mean` or `sum`) of one quantity, restricted by `where` (index-set name → 1-based index or inclusive range), `over` the run: `time` (the integral term, spec/adjoint.md §2.1), `final` (the end state), or `saveat` (a point term at each output time). For `time`, `integrate_in` names the leaf, by node id, that integrates the term; the default is the last leaf of the macro-step schedule (D39).
+- `functional`: the reduction (`mean` or `sum`) of one quantity, restricted by `where` (index-set name → 1-based index or inclusive range), `over` the run: `time` (the integral term, spec/adjoint.md §2.1), `final` (the end state), or `saveat` (a point term at each output time after $t_0$). For `time`, `integrate_in` names the leaf, by node id, that integrates the term; the default is the last leaf of the macro-step schedule (D39).
 - `wrt`: what to differentiate with respect to. `params:numeric` is every numeric scalar parameter; `params:<pattern>`, `fields:<pattern>` (gridded array parameters) and `forcing:<pattern>` (forcing fields, accumulated per provider record, D5) take a glob over qualified names, where `*` matches any characters including dots; `u0` is the initial state.
 - `checkpoint`: `every` (`macro_step` or a count of macro steps), `store` levels, and the `schedule` the planner computes (D34): `all`, `revolve` or `multilevel`, with `snapshots` slots.
 
@@ -195,7 +196,7 @@ The math is in [`adjoint.md`](adjoint.md).
 
 ### 7.3 `output` and `restart`
 
-- `output.sinks`: EarthSciIO sinks by `path`, with `variables` and their own `saveat`; `output.saveat` is the default. Output times are tstops, so `saveat` never needs dense output in v1.
+- `output.sinks`: EarthSciIO sinks by `path`, with `variables` and their own `saveat`; `output.saveat` is the default. Output times are tstops, so `saveat` never needs dense output in v1. The output times are exactly the listed ones; with no `saveat` they are $t_f$ alone, and $t_f$ is not added to a list that omits it. A listed $t_0$ is accepted and adds nothing: the initial state is always reported, and a functional over `saveat` has no term at $t_0$. A time outside $[t_0, t_f]$ is refused.
 - `output.accumulators`: name → observed. The planner adds each as an integrated state (D26).
 - `restart`: `path`, cadence `every`, and `from`, a restart store to start from. Restart is bitwise for the same decomposition (architecture §11).
 
