@@ -91,6 +91,8 @@ end
 function check_oracle(case, run, chk)
     id = case["id"]
     sol = oracle_solve(run, ode_alg(run.root.tab.name))
+    SciMLBase.successful_retcode(sol) ||
+        return record!(id, "oracle", false, "OrdinaryDiffEq's solve with the imposed steps ended with $(sol.retcode)")
     err = relerr(run.u, sol.u[end])
     record!(id, "oracle", err <= chk["rtol"], "end-state relative difference $err, rtol $(chk["rtol"])")
 end
@@ -250,7 +252,12 @@ function check_fd_gradient(case, run, chk)
     δp = zeros(length(run.p))
     δp[run.wrt_p] .= direction(rng, run.p[run.wrt_p])
     D = dot(ū0, δu) + dot(p̄, δp)
-    J(ε) = functional_value(run, replay(run, run.u0 .+ ε .* δu, run.p .+ ε .* δp)...)
+    # Implicit stages are converged to roundoff on these replays (spec/adjoint.md
+    # §7.2): the adjoint is the exact implicit-function derivative, while central
+    # differences of a loosely converged Newton carry an error of order tol/ε.
+    J(ε) = EarthSciIntegrator.with_tight_newton() do
+        functional_value(run, replay(run, run.u0 .+ ε .* δu, run.p .+ ε .* δp)...)
+    end
     errs = Float64[]
     for ε in chk["epsilons"]
         fd = (J(ε) - J(-ε)) / (2ε)
@@ -260,6 +267,8 @@ function check_fd_gradient(case, run, chk)
     record!(id, "fd_gradient", best <= chk["rtol"],
         "relative error of central differences at ε = $(chk["epsilons"]): $errs (directional derivative $D), rtol $(chk["rtol"])")
 end
+
+const REVERSEDIFF_BROKEN = Set(["Kvaerno4"])
 
 function check_reverse_diff(case, run, chk)
     id = case["id"]
@@ -275,7 +284,13 @@ function check_reverse_diff(case, run, chk)
     # method, same imposed steps, same map) is differentiated in forward mode
     # with ForwardDiff instead, and the check says so.
     nsteps = sum(length(r.steps) for r in run.tape.records if r isa LeafRecord)
-    forward_mode = length(prob.u0)^3 * nsteps > 10^7
+    too_large = length(prob.u0)^3 * nsteps > 10^7
+    # ReverseDiffAdjoint through OrdinaryDiffEqSDIRK 2.9.8's Kvaerno4 returns a zero
+    # gradient (van_der_pol.stiff.Kvaerno4.adaptive: exactly zero for u0 and p, where
+    # ForwardDiff through the same solve and our adjoint agree to 1e-8), so the same
+    # solve is differentiated in forward mode there too.
+    untraceable = run.root.tab.name in REVERSEDIFF_BROKEN
+    forward_mode = too_large || untraceable
     if forward_mode
         fprob, _ = oracle_problem(run; inplace = false)
         if run.root.ψ !== nothing
@@ -307,7 +322,8 @@ function check_reverse_diff(case, run, chk)
     eu = run.wrt_u0 ? relerr(ū0, gu) : 0.0
     ep = isempty(run.wrt_p) ? 0.0 : relerr(p̄[run.wrt_p], gp[run.wrt_p])
     err = max(eu, ep)
-    how = forward_mode ? "ForwardDiff through the same OrdinaryDiffEq solve (too large for ReverseDiffAdjoint's tape)" :
+    how = too_large ? "ForwardDiff through the same OrdinaryDiffEq solve (too large for ReverseDiffAdjoint's tape)" :
+          untraceable ? "ForwardDiff through the same OrdinaryDiffEq solve (ReverseDiffAdjoint returns a zero gradient through OrdinaryDiffEq's $(run.root.tab.name))" :
           "ReverseDiffAdjoint"
     record!(id, "reverse_diff", err <= chk["rtol"],
         "relative difference from $how: u0 $eu, p $ep; rtol $(chk["rtol"])")
