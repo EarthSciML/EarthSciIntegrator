@@ -313,10 +313,6 @@ pub struct LeafPersist {
     pub proposal: Option<f64>,
     /// The controller's history, for adaptive leaves.
     pub ctrl: Option<ControllerState>,
-    /// Newton rate `θ_prev` and `η_old` (spec/methods.md §5.2; unused by
-    /// explicit leaves, kept so checkpoints have their final shape).
-    pub theta_prev: f64,
-    pub eta_old: f64,
 }
 
 impl LeafPersist {
@@ -325,8 +321,6 @@ impl LeafPersist {
         LeafPersist {
             proposal: None,
             ctrl,
-            theta_prev: 1.0,
-            eta_old: 1.0,
         }
     }
 
@@ -337,10 +331,7 @@ impl LeafPersist {
         let cs = |c: &Option<ControllerState>| {
             c.map(|c| (b(c.eold), b(c.pid_eps[0]), b(c.pid_eps[1]), c.accepted_any))
         };
-        ob(self.proposal) == ob(o.proposal)
-            && cs(&self.ctrl) == cs(&o.ctrl)
-            && b(self.theta_prev) == b(o.theta_prev)
-            && b(self.eta_old) == b(o.eta_old)
+        ob(self.proposal) == ob(o.proposal) && cs(&self.ctrl) == cs(&o.ctrl)
     }
 }
 

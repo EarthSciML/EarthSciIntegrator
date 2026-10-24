@@ -627,7 +627,7 @@ pub fn check_fd(
     let p = spec.problem.p.clone();
     let (nu, np) = (u0.len(), p.len());
     let jfun = |u: &[f64], pp: &[f64]| -> Result<f64, Error> {
-        let r = spec.replay(u, pp, &fwd.tape)?;
+        let r = spec.replay_frozen(u, pp, &fwd.tape)?;
         spec.functional_value(&r)
     };
     let mut seed = 0x2545_f491_4f6c_dd1du64;

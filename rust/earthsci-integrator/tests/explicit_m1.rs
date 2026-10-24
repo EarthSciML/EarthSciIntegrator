@@ -356,7 +356,7 @@ fn refusals() {
         Error::Config(_)
     ));
     assert!(
-        matches!(err(json!({"leaf": "decay", "alg": "TRBDF2", "dt": 0.1})), Error::Unimplemented(m) if m.contains("TRBDF2"))
+        matches!(err(json!({"leaf": "decay", "alg": "auto", "dt": 0.1})), Error::Unimplemented(m) if m.contains("planner"))
     );
     assert!(matches!(
         err(json!({"leaf": "decay", "alg": "Tsit5", "control": {"dt_scope": "cell"}})),

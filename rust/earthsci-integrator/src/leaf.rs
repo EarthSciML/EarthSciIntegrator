@@ -1,16 +1,18 @@
 //! A leaf: advances the sum of its operators over one interval with one
 //! method (spec/run-config.md §4.2, spec/methods.md).
 //!
-//! The method is a [`LeafMethod`]. M1 implements the explicit Runge–Kutta
-//! and Rosenbrock families; SDIRK, IMEX Euler and θ-method leaves are
-//! refused when the schedule is built and join as further variants, sharing
-//! the step loop below (landing on stops, control, domain, return codes).
+//! The method is a [`LeafMethod`]: explicit Runge–Kutta, Rosenbrock, or an
+//! implicit method (SDIRK/ESDIRK, the θ-method, IMEX Euler). All share the
+//! step loop below (landing on stops, control, domain, return codes).
 
 use crate::operator::{Call, MatrixStorage, MuPair, Operator, Structure};
 use crate::tape::{LeafPersist, Retcode};
 use crate::{Error, Scalar};
 use earthsci_integrator_solvers::controller::{Controller, Decision};
 use earthsci_integrator_solvers::erk::{ErkForm, ErkWork, ExplicitRk};
+use earthsci_integrator_solvers::implicit::{
+    Implicit, ImplicitForm, ImplicitOutcome, ImplicitWork, NewtonMode, Part,
+};
 use earthsci_integrator_solvers::initdt::{initial_dt, InitDtInput};
 use earthsci_integrator_solvers::linalg::LinsolveKind;
 use earthsci_integrator_solvers::norm::{error_norm, Tolerances};
@@ -26,13 +28,18 @@ pub enum LeafMethod {
     Erk(ExplicitRk),
     /// Rosenbrock (spec/methods.md §4), with the leaf's linear solver.
     Ros(Rosenbrock, LinsolveKind),
+    /// SDIRK/ESDIRK, θ-method or IMEX Euler (spec/methods.md §5–§6), with the
+    /// leaf's linear solver.
+    Imp(Implicit, LinsolveKind),
 }
 
 impl LeafMethod {
     /// Operator calls the method's forward step needs from an operator
     /// (operator-interface.md §3): `ft` only from operators that depend on
-    /// `t`, and only when the method reads `f_t`.
-    pub fn forward_calls(&self, op_depends_on_t: bool) -> Vec<Call> {
+    /// `t`, and only when the method reads `f_t`. `op_in_w` says whether the
+    /// operator's Jacobian enters the method's `W`: every operator except an
+    /// IMEX Euler leaf's explicit-part operators.
+    pub fn forward_calls(&self, op_depends_on_t: bool, op_in_w: bool) -> Vec<Call> {
         match self {
             LeafMethod::Erk(_) => vec![Call::Rhs],
             LeafMethod::Ros(m, _) => {
@@ -42,16 +49,55 @@ impl LeafMethod {
                 }
                 v
             }
+            LeafMethod::Imp(m, _) => {
+                if m.w_gamma().is_some() && op_in_w {
+                    vec![Call::Rhs, Call::Jac]
+                } else {
+                    vec![Call::Rhs]
+                }
+            }
         }
     }
     /// Operator calls the method's adjoint step needs from an operator
     /// (spec/adjoint.md §3): Rosenbrock adds `hess_u` (unless the operator
     /// is linear in `u`, where it is zero), `hess_p`, and the `ft_vjp_*`
-    /// of operators that depend on `t`.
-    pub fn adjoint_calls(&self, wrt_p: bool, op_depends_on_t: bool, op_linear: bool) -> Vec<Call> {
+    /// of operators that depend on `t`. SDIRK, θ-method and IMEX Euler
+    /// adjoints refactor `W` at the converged stages, so they add `jac`;
+    /// linearized IMEX Euler is a one-stage Rosenbrock adjoint and adds the
+    /// second-order calls (spec/adjoint.md §4.3–§4.5). The implicit families
+    /// ask `jac` and the second-order calls only of operators in `W`
+    /// (`op_in_w`, as for [`forward_calls`](Self::forward_calls)).
+    pub fn adjoint_calls(
+        &self,
+        wrt_p: bool,
+        op_depends_on_t: bool,
+        op_linear: bool,
+        op_in_w: bool,
+    ) -> Vec<Call> {
         let mut v = vec![Call::VjpU];
         if wrt_p {
             v.push(Call::VjpP);
+        }
+        if let LeafMethod::Imp(m, _) = self {
+            if m.w_gamma().is_some() && op_in_w {
+                v.push(Call::Jac);
+            }
+            if op_in_w
+                && matches!(
+                    m.form,
+                    ImplicitForm::ImexEuler {
+                        linearized: true,
+                        ..
+                    }
+                )
+            {
+                if !op_linear {
+                    v.push(Call::HessU);
+                }
+                if wrt_p {
+                    v.push(Call::HessP);
+                }
+            }
         }
         if let LeafMethod::Ros(m, _) = self {
             if !op_linear {
@@ -74,6 +120,7 @@ impl LeafMethod {
         match self {
             LeafMethod::Erk(m) => m.adaptive(),
             LeafMethod::Ros(m, _) => m.adaptive(),
+            LeafMethod::Imp(m, _) => m.adaptive(),
         }
     }
     /// The method's order (for the first step).
@@ -81,6 +128,7 @@ impl LeafMethod {
         match self {
             LeafMethod::Erk(m) => m.order,
             LeafMethod::Ros(m, _) => m.order,
+            LeafMethod::Imp(m, _) => m.order,
         }
     }
 }
@@ -141,6 +189,9 @@ pub struct LeafSpec<T: Scalar> {
     /// `time`, as `(dofs, w)`, when this leaf integrates its auxiliary state
     /// (spec/adjoint.md §2.1, D26).
     pub integrand: Option<(Vec<usize>, f64)>,
+    /// IMEX Euler: per operator, whether it is in the implicit part
+    /// (run-config §4.5); empty for other methods.
+    pub imex_implicit: Vec<bool>,
     /// Workspaces kept across invocations, one per invocation in flight.
     pub work: Mutex<Vec<LeafWork<T>>>,
 }
@@ -157,7 +208,14 @@ impl<T> LeafWork<T> {
     pub fn ros(&mut self) -> Option<&mut RosWork<T>> {
         match &mut self.m {
             MethodWork::Ros(w) => Some(w),
-            MethodWork::Erk(_) => None,
+            _ => None,
+        }
+    }
+    /// The implicit-method workspace, for an SDIRK, θ-method or IMEX leaf.
+    pub fn imp(&mut self) -> Option<&mut ImplicitWork<T>> {
+        match &mut self.m {
+            MethodWork::Imp(w) => Some(w),
+            _ => None,
         }
     }
 }
@@ -166,6 +224,7 @@ impl<T> LeafWork<T> {
 pub enum MethodWork<T> {
     Erk(ErkWork<T>),
     Ros(Box<RosWork<T>>),
+    Imp(Box<ImplicitWork<T>>),
 }
 
 impl<T: Scalar> MethodWork<T> {
@@ -173,24 +232,28 @@ impl<T: Scalar> MethodWork<T> {
         match self {
             MethodWork::Erk(w) => &w.unew,
             MethodWork::Ros(w) => &w.unew,
+            MethodWork::Imp(w) => &w.unew,
         }
     }
     fn unew_mut(&mut self) -> &mut Vec<T> {
         match self {
             MethodWork::Erk(w) => &mut w.unew,
             MethodWork::Ros(w) => &mut w.unew,
+            MethodWork::Imp(w) => &mut w.unew,
         }
     }
     fn has_fend(&self) -> bool {
         match self {
             MethodWork::Erk(w) => w.has_fend,
             MethodWork::Ros(w) => w.has_fend,
+            MethodWork::Imp(_) => false,
         }
     }
     fn fend_mut(&mut self) -> &mut Vec<T> {
         match self {
             MethodWork::Erk(w) => &mut w.fend,
             MethodWork::Ros(w) => &mut w.fend,
+            MethodWork::Imp(w) => &mut w.fend,
         }
     }
     /// Stage states.
@@ -198,25 +261,30 @@ impl<T: Scalar> MethodWork<T> {
         match self {
             MethodWork::Erk(w) => &w.y,
             MethodWork::Ros(w) => &w.y,
+            MethodWork::Imp(w) => &w.y,
         }
     }
-    /// Rosenbrock stage increments (none for explicit methods).
+    /// Rosenbrock stage increments, implicit stage unknowns `z_i` (none
+    /// for explicit methods).
     fn k(&self) -> &[Vec<T>] {
         match self {
             MethodWork::Erk(_) => &[],
             MethodWork::Ros(w) => &w.k,
+            MethodWork::Imp(w) => &w.z,
         }
     }
     fn nf(&self) -> usize {
         match self {
             MethodWork::Erk(w) => w.nf,
             MethodWork::Ros(w) => w.nf,
+            MethodWork::Imp(w) => w.nf,
         }
     }
     fn reset_nf(&mut self) {
         match self {
             MethodWork::Erk(w) => w.nf = 0,
             MethodWork::Ros(w) => w.nf = 0,
+            MethodWork::Imp(w) => w.nf = 0,
         }
     }
 }
@@ -229,6 +297,8 @@ struct Attempt {
     tk1: f64,
     /// `W` was singular (spec/methods.md §4.2); nothing else was computed.
     singular: bool,
+    /// A Newton solve failed (spec/methods.md §5.2).
+    newton_fail: bool,
 }
 
 /// One accepted step as the adjoint needs it.
@@ -239,9 +309,11 @@ pub struct StepData<T> {
     /// Parameters the step's evaluations saw (bound parameters set).
     pub p: Vec<f64>,
     /// Stage states: Butcher `U_i`; Shu–Osher `u^(j)`, `j = 0..s`;
-    /// Rosenbrock `U_i` (`U_1 = u_n`).
+    /// Rosenbrock `U_i` (`U_1 = u_n`); SDIRK the converged `Z_i`; θ-method
+    /// and IMEX Euler `[u_n, u_{n+1}]`.
     pub y: Vec<Vec<T>>,
-    /// Rosenbrock stage increments `k_i` (empty for explicit methods).
+    /// Rosenbrock stage increments `k_i`; implicit stage unknowns `z_i`
+    /// (linearized IMEX Euler: its increment); empty for explicit methods.
     pub k: Vec<Vec<T>>,
     /// The DOFs the clip after the step zeroed, if it clipped.
     pub clip: Option<Vec<usize>>,
@@ -271,6 +343,9 @@ pub struct LeafCall<'a> {
     pub replay: Option<Replay<'a>>,
     /// Keep the stage values of every accepted step for the adjoint.
     pub record_stages: bool,
+    /// Converge implicit stages to roundoff: the frozen-tape replay of the
+    /// finite-difference check (spec/adjoint.md §7.2).
+    pub tight_newton: bool,
 }
 
 /// What one invocation did.
@@ -354,13 +429,91 @@ impl<T: Scalar> LeafSpec<T> {
         }
     }
 
+    /// Whether operator `k` is in `part` (every operator outside IMEX Euler).
+    fn in_part(&self, k: usize, part: Part) -> bool {
+        match part {
+            Part::All => true,
+            Part::Implicit => self.imex_implicit.get(k).copied().unwrap_or(true),
+            Part::Explicit => !self.imex_implicit.get(k).copied().unwrap_or(true),
+        }
+    }
+
+    /// The operators of `part`, in declared order.
+    fn part_ops(&self, part: Part) -> impl Iterator<Item = &Arc<dyn Operator<T>>> {
+        self.ops
+            .iter()
+            .enumerate()
+            .filter(move |(k, _)| self.in_part(*k, part))
+            .map(|(_, o)| o)
+    }
+
+    /// `out = Σ_{k ∈ part} f_k(u, p, t)`.
+    pub fn rhs_part(&self, part: Part, out: &mut [T], u: &[T], p: &[f64], t: f64) {
+        out.iter_mut().for_each(|x| *x = T::zero());
+        for op in self.part_ops(part) {
+            op.rhs(out, u, p, t);
+        }
+    }
+
+    /// `out = Σ_{k ∈ part} J_k(u)` in the leaf's matrix storage.
+    pub fn jac_part(&self, part: Part, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
+        out.clear();
+        for op in self.part_ops(part) {
+            op.jac(out, u, p, t);
+        }
+    }
+
+    /// `out += Σ_{k ∈ part} J_k(u)ᵀ w`.
+    pub fn vjp_u_part(&self, part: Part, out: &mut [T], u: &[T], p: &[f64], t: f64, w: &[T]) {
+        for op in self.part_ops(part) {
+            op.vjp_u(out, u, p, t, w);
+        }
+    }
+
+    /// `out += Σ_{k ∈ part} f_{k,p}(u)ᵀ w`.
+    pub fn vjp_p_part(&self, part: Part, out: &mut [f64], u: &[T], p: &[f64], t: f64, w: &[T]) {
+        for op in self.part_ops(part) {
+            op.vjp_p(out, u, p, t, w);
+        }
+    }
+
+    /// `out += Σ_{k ∈ part} ∇_u Σ_i μ_iᵀ J_k(u) w_i` (zero for operators linear in `u`).
+    pub fn hess_u_part(
+        &self,
+        part: Part,
+        out: &mut [T],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        mu: &[MuPair<'_, T>],
+    ) {
+        for op in self.part_ops(part).filter(|o| !o.linear_in_u()) {
+            op.hess_u(out, u, p, t, mu);
+        }
+    }
+
+    /// `out += Σ_{k ∈ part} ∇_p Σ_i μ_iᵀ J_k(u) w_i`.
+    pub fn hess_p_part(
+        &self,
+        part: Part,
+        out: &mut [f64],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        mu: &[MuPair<'_, T>],
+    ) {
+        for op in self.part_ops(part) {
+            op.hess_p(out, u, p, t, mu);
+        }
+    }
+
     /// Whether the leaf forms `f_t` for its Rosenbrock method: some `d_i ≠ 0`
     /// and some operator depends on `t` (spec/methods.md §4.2). At M1 there
     /// is no forcing, so explicit dependence is the only kind.
     pub fn forms_ft(&self) -> bool {
         match &self.method {
             LeafMethod::Ros(m, _) => m.uses_ft() && self.ops.iter().any(|o| o.depends_on_t()),
-            LeafMethod::Erk(_) => false,
+            LeafMethod::Erk(_) | LeafMethod::Imp(..) => false,
         }
     }
 
@@ -491,6 +644,34 @@ impl<T: Scalar> LeafSpec<T> {
                     h * kq2
                 }
             },
+            (LeafMethod::Imp(m, _), MethodWork::Imp(w)) => match &m.form {
+                // The augmented stage z_q,i = h ψ(Z_i), exact since ψ does not
+                // read q: Δq = Σ_i b_i (h ψ(Z_i)).
+                ImplicitForm::Sdirk { b, .. } => {
+                    let mut dq = 0.0;
+                    for (i, &bi) in b.iter().enumerate() {
+                        if bi != 0.0 {
+                            dq += bi * (h * self.psi(&w.y[i]));
+                        }
+                    }
+                    dq
+                }
+                // Δq = (h(1−θ)) ψ(u_n) + θ (h ψ(u_{n+1})), the grouping of
+                // spec/adjoint.md §2.1.
+                ImplicitForm::Theta { theta } => {
+                    let mut dq = 0.0;
+                    if *theta != 1.0 {
+                        dq += (h * (1.0 - theta)) * self.psi(&w.y[0]);
+                    }
+                    if *theta != 0.0 {
+                        dq += theta * (h * self.psi(&w.y[1]));
+                    }
+                    dq
+                }
+                ImplicitForm::ImexEuler { .. } => {
+                    unreachable!("the build refuses an integral term on an IMEX Euler leaf")
+                }
+            },
             _ => unreachable!("the leaf's workspace matches its method"),
         }
     }
@@ -600,8 +781,13 @@ impl<T: Scalar> LeafSpec<T> {
             });
         }
         if skipped {
-            // Nothing is computed; the stored first-same-as-last value is dropped.
+            // Nothing is computed; the stored first-same-as-last value is
+            // dropped, and so is the divided-difference history: the step
+            // before this state is no longer `(u_{n−1}, t_{n−1})`.
             *cache = None;
+            if let MethodWork::Imp(iw) = w {
+                iw.has_prev = false;
+            }
         } else {
             // Keep f(u_{n+1}, t_n + h) unless clipped.
             *cache = if clip.is_none() && w.has_fend() {
@@ -611,6 +797,16 @@ impl<T: Scalar> LeafSpec<T> {
                 None
             };
             out.integral += self.q_increment(w, h);
+            if let MethodWork::Imp(iw) = w {
+                // BackwardEuler's divided difference reads the previous step:
+                // `u` is the state this step started from, i.e. the previous
+                // accepted state after its clip, if it was clipped. The
+                // history resets only at an invocation's start and after a
+                // skipped tiny stop step.
+                iw.prev_u.copy_from_slice(u);
+                iw.prev_t = t;
+                iw.has_prev = true;
+            }
             u.copy_from_slice(w.unew());
         }
         if let Some(mk) = clip {
@@ -646,6 +842,10 @@ impl<T: Scalar> LeafSpec<T> {
                 m: match &self.method {
                     LeafMethod::Erk(m) => MethodWork::Erk(m.workspace(n)),
                     LeafMethod::Ros(m, ls) => MethodWork::Ros(Box::new(
+                        m.workspace(n, self.structure, *ls)
+                            .map_err(|e| Error::Config(format!("leaf {}: {e}", self.id)))?,
+                    )),
+                    LeafMethod::Imp(m, ls) => MethodWork::Imp(Box::new(
                         m.workspace(n, self.structure, *ls)
                             .map_err(|e| Error::Config(format!("leaf {}: {e}", self.id)))?,
                     )),
@@ -703,6 +903,20 @@ impl<T: Scalar> LeafSpec<T> {
         let leaf_bound = self.binds.iter().any(|b| b.1 == BindKind::Leaf);
 
         let forms_ft = self.forms_ft();
+        let adaptive = self.dt_mode == DtMode::Adaptive;
+        // The divided-difference history resets at every invocation
+        // (spec/methods.md §5.5, §13 assumption 7).
+        if let MethodWork::Imp(iw) = w {
+            iw.has_prev = false;
+        }
+        // Replay uses the forward run's mode, so it reproduces it bitwise.
+        let newton_mode = if call.tight_newton {
+            NewtonMode::Tight
+        } else if adaptive {
+            NewtonMode::Adaptive
+        } else {
+            NewtonMode::Fixed
+        };
         // One step of size h from (u, t) into `w`: E when wanted, the time of
         // its first stage, and whether W was singular.
         let take = |w: &mut MethodWork<T>,
@@ -729,6 +943,7 @@ impl<T: Scalar> LeafSpec<T> {
                         e,
                         tk1,
                         singular: false,
+                        newton_fail: false,
                     }
                 }
                 (LeafMethod::Ros(m, _), MethodWork::Ros(w)) => {
@@ -745,12 +960,46 @@ impl<T: Scalar> LeafSpec<T> {
                             e: None,
                             tk1,
                             singular: true,
+                            newton_fail: false,
                         },
                         RosOutcome::Done(e) => Attempt {
                             e,
                             tk1,
                             singular: false,
+                            newton_fail: false,
                         },
+                    }
+                }
+                (LeafMethod::Imp(m, _), MethodWork::Imp(w)) => {
+                    let mut fp = |part: Part, o: &mut [T], uu: &[T], tt: f64| {
+                        self.rhs_part(part, o, uu, pb, tt)
+                    };
+                    let mut jp = |part: Part, o: &mut MatrixStorage<T>, uu: &[T], tt: f64| {
+                        self.jac_part(part, o, uu, pb, tt)
+                    };
+                    let mut nrm =
+                        |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol, dofs);
+                    let o = m.step(
+                        w,
+                        &mut fp,
+                        &mut jp,
+                        u,
+                        t,
+                        h,
+                        newton_mode,
+                        want_err,
+                        &mut nrm,
+                    );
+                    let (e, singular, newton_fail) = match o {
+                        ImplicitOutcome::Singular => (None, true, false),
+                        ImplicitOutcome::NewtonFailure => (None, false, true),
+                        ImplicitOutcome::Done(e) => (e, false, false),
+                    };
+                    Attempt {
+                        e,
+                        tk1: t,
+                        singular,
+                        newton_fail,
                     }
                 }
                 _ => unreachable!("the leaf's workspace matches its method"),
@@ -789,6 +1038,12 @@ impl<T: Scalar> LeafSpec<T> {
                             self.id
                         )));
                     }
+                    if a.newton_fail {
+                        return Err(Error::Run(format!(
+                            "replay: leaf {}: Newton failed on recorded step {i}",
+                            self.id
+                        )));
+                    }
                     if let Some(mk) = &mask {
                         self.clip_frozen(w.unew_mut(), mk)?;
                     }
@@ -814,7 +1069,6 @@ impl<T: Scalar> LeafSpec<T> {
             return Ok(out);
         }
 
-        let adaptive = self.dt_mode == DtMode::Adaptive;
         let dtmin = self.dtmin;
         let dtmax = self.dtmax.unwrap_or(t1 - t0);
         // fix_dt_at_bounds: [max(dtmin, eps(t)), dtmax].
@@ -912,8 +1166,14 @@ impl<T: Scalar> LeafSpec<T> {
                 t = tnew;
                 continue;
             }
-            let Attempt { e, tk1, singular } = take(w, &mut pbuf, fsal, cache, u, t, h, adaptive);
+            let Attempt {
+                e,
+                tk1,
+                singular,
+                newton_fail,
+            } = take(w, &mut pbuf, fsal, cache, u, t, h, adaptive);
             let violation = !singular
+                && !newton_fail
                 && ((self.violates(w.unew()) && !self.domain.as_ref().is_some_and(|d| d.clip))
                     || self.stage_violates(w));
             if let Some(ctrl) = ctrl {
@@ -929,6 +1189,10 @@ impl<T: Scalar> LeafSpec<T> {
                     // E = 2 can pass accept_safety); the new size is the
                     // controller's rejection size for E = 2.
                     Some(ctrl.reject(&ctrl.evaluate(cs, e), h))
+                } else if newton_fail {
+                    // spec/methods.md §5.2 step 8, §8.5: h ← h/failfactor
+                    // (OrdinaryDiffEqCore src/integrators/controllers.jl:488-491).
+                    Some(h / ctrl.failfactor)
                 } else if !e.is_finite() || violation {
                     // spec/methods.md §7 (non-finite E) and §8.5 (domain).
                     Some(h * ctrl.qmin)
@@ -967,6 +1231,11 @@ impl<T: Scalar> LeafSpec<T> {
                 }
             } else {
                 // A singular W at fixed dt cannot shrink the step: Unstable.
+                if newton_fail {
+                    // A fixed step cannot shrink: ConvergenceFailure (§12).
+                    out.retcode = Retcode::ConvergenceFailure;
+                    break;
+                }
                 if singular || w.unew().iter().any(|x| !x.is_finite()) {
                     out.retcode = Retcode::Unstable;
                     break;
