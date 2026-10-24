@@ -13,6 +13,7 @@
 pub mod adjoint;
 pub mod config;
 pub mod conformance;
+pub mod jltrig;
 pub mod leaf;
 pub mod operator;
 pub mod schedule;

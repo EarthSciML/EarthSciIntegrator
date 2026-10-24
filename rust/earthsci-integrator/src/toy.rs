@@ -9,6 +9,10 @@ use crate::{Error, Scalar};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
+/// Julia's `sin` and `cos`, so the toy problems' right-hand sides agree
+/// with the Julia implementation's bit for bit (see [`crate::jltrig`]).
+use crate::jltrig::{cos, sin};
+
 /// A toy problem: its operators, layout, parameters, initial state,
 /// interval and the facts the conformance checks use.
 pub struct ToyProblem<T: Scalar> {
@@ -136,7 +140,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             let mut cells = Vec::new();
             for (c, a) in u0.iter_mut().take(nc).enumerate() {
                 let x = (c as f64 + 0.5) / nc as f64;
-                *a = 1.0 + 0.5 * (2.0 * PI * x).sin();
+                *a = 1.0 + 0.5 * sin(2.0 * PI * x);
             }
             for v in ["A", "B"] {
                 for c in 0..nc {
@@ -184,7 +188,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
 /// `p = (k, ω)` and `u(0) = u0`.
 pub fn forced_decay_exact(t: f64, u0: f64, p: &[f64]) -> f64 {
     let (k, w) = (p[0], p[1]);
-    let a = |t: f64| (k * (w * t).sin() - w * (w * t).cos()) / (k * k + w * w);
+    let a = |t: f64| (k * sin(w * t) - w * cos(w * t)) / (k * k + w * w);
     (u0 - a(0.0)) * (-k * t).exp() + a(t)
 }
 
@@ -247,7 +251,7 @@ impl<T: Scalar> Operator<T> for Decay {
         ALL_CALLS.contains(&call)
     }
     fn rhs(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
-        acc(&mut out[0], -p[0] * f(u[0]) + (p[1] * t).sin());
+        acc(&mut out[0], -p[0] * f(u[0]) + sin(p[1] * t));
     }
     fn jvp_u(&self, out: &mut [T], _u: &[T], p: &[f64], _t: f64, v: &[T]) {
         acc(&mut out[0], -p[0] * f(v[0]));
@@ -257,13 +261,13 @@ impl<T: Scalar> Operator<T> for Decay {
     }
     fn vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, w: &[T]) {
         out[0] += -f(u[0]) * f(w[0]);
-        out[1] += t * (p[1] * t).cos() * f(w[0]);
+        out[1] += t * cos(p[1] * t) * f(w[0]);
     }
     fn jac(&self, out: &mut MatrixStorage<T>, _u: &[T], p: &[f64], _t: f64) {
         out.add(0, 0, T::from_f64(-p[0]));
     }
     fn ft(&self, out: &mut [T], _u: &[T], p: &[f64], t: f64) {
-        acc(&mut out[0], p[1] * (p[1] * t).cos());
+        acc(&mut out[0], p[1] * cos(p[1] * t));
     }
     fn hess_u(&self, _out: &mut [T], _u: &[T], _p: &[f64], _t: f64, _mu: &[MuPair<'_, T>]) {}
     fn hess_p(&self, out: &mut [f64], _u: &[T], _p: &[f64], _t: f64, mu: &[MuPair<'_, T>]) {
@@ -276,7 +280,7 @@ impl<T: Scalar> Operator<T> for Decay {
     fn ft_vjp_p(&self, out: &mut [f64], _u: &[T], p: &[f64], t: f64, nu: &[T]) {
         // ν ω cos(ω t): ∂/∂ω = ν (cos ωt − ω t sin ωt).
         let w = p[1];
-        out[1] += f(nu[0]) * ((w * t).cos() - w * t * (w * t).sin());
+        out[1] += f(nu[0]) * (cos(w * t) - w * t * sin(w * t));
     }
 }
 
@@ -384,8 +388,9 @@ impl<T: Scalar> Operator<T> for Kinetics {
         let (y1, y2, y3) = (f(u[0]), f(u[1]), f(u[2]));
         let (k1, k2, k3) = (p[0], p[1], p[2]);
         acc(&mut out[0], -k1 * y1 + k3 * y2 * y3);
-        acc(&mut out[1], k1 * y1 - k3 * y2 * y3 - k2 * y2 * y2);
-        acc(&mut out[2], k2 * y2 * y2);
+        // k2·(y2²), as Julia's `k2 * y2^2` rounds it.
+        acc(&mut out[1], k1 * y1 - k3 * y2 * y3 - k2 * (y2 * y2));
+        acc(&mut out[2], k2 * (y2 * y2));
     }
     fn jvp_u(&self, out: &mut [T], u: &[T], p: &[f64], _t: f64, v: &[T]) {
         let (_, y2, y3) = (f(u[0]), f(u[1]), f(u[2]));
@@ -432,15 +437,16 @@ impl<T: Scalar> Operator<T> for Kinetics {
     fn hess_u(&self, out: &mut [T], u: &[T], p: &[f64], _t: f64, mu: &[MuPair<'_, T>]) {
         let _ = u;
         let (k2, k3) = (p[1], p[2]);
-        let (mut g2, mut g3) = (0.0, 0.0);
+        // Accumulated pair by pair, in Julia's order.
         for (mi, wi) in mu {
             let (m1, m2, m3) = (f(mi[0]), f(mi[1]), f(mi[2]));
             let (a2, a3) = (f(wi[1]), f(wi[2]));
-            g2 += m1 * k3 * a3 + m2 * (-2.0 * k2 * a2 - k3 * a3) + m3 * 2.0 * k2 * a2;
-            g3 += m1 * k3 * a2 - m2 * k3 * a2;
+            acc(
+                &mut out[1],
+                m1 * k3 * a3 + m2 * (-2.0 * k2 * a2 - k3 * a3) + m3 * 2.0 * k2 * a2,
+            );
+            acc(&mut out[2], m1 * k3 * a2 - m2 * k3 * a2);
         }
-        acc(&mut out[1], g2);
-        acc(&mut out[2], g3);
     }
     fn hess_p(&self, out: &mut [f64], u: &[T], _p: &[f64], _t: f64, mu: &[MuPair<'_, T>]) {
         let (y2, y3) = (f(u[1]), f(u[2]));
@@ -473,7 +479,7 @@ impl Photochemistry {
         2.0 * PI * c as f64 / PHOTO_NCELLS as f64
     }
     fn jc(p: &[f64], t: f64, c: usize) -> f64 {
-        0.5 * p[0] * (1.0 + (p[2] * t + Self::phase(c)).sin())
+        0.5 * p[0] * (1.0 + sin(p[2] * t + Self::phase(c)))
     }
     fn cell<T: Scalar>(u: &[T], c: usize) -> (f64, f64, f64) {
         let nc = PHOTO_NCELLS;
@@ -545,9 +551,9 @@ impl<T: Scalar> Operator<T> for Photochemistry {
             let (no2, no, o3) = Self::cell(u, c);
             let ws = Self::signed(w, c);
             let arg = p[2] * t + Self::phase(c);
-            g0 += ws * 0.5 * (1.0 + arg.sin()) * no2;
+            g0 += ws * 0.5 * (1.0 + sin(arg)) * no2;
             g1 += ws * (-no * o3);
-            g2 += ws * 0.5 * p[0] * arg.cos() * t * no2;
+            g2 += ws * 0.5 * p[0] * cos(arg) * t * no2;
         }
         out[0] += g0;
         out[1] += g1;
@@ -569,7 +575,9 @@ impl<T: Scalar> Operator<T> for Photochemistry {
         let nc = PHOTO_NCELLS;
         for c in 0..nc {
             let (no2, _, _) = Self::cell(u, c);
-            let drdt = 0.5 * p[0] * p[2] * (p[2] * t + Self::phase(c)).cos() * no2;
+            // In Julia's order, so the two agree bitwise: Rosenbrock23's error
+            // estimate cancels to O(h³) and magnifies any rounding in f_t.
+            let drdt = 0.5 * p[0] * cos(p[2] * t + Self::phase(c)) * p[2] * no2;
             for (s, sg) in PHOTO_SGN.iter().enumerate() {
                 acc(&mut out[s * nc + c], sg * drdt);
             }
@@ -597,9 +605,9 @@ impl<T: Scalar> Operator<T> for Photochemistry {
             for (mi, wi) in mu {
                 let m = Self::signed(mi, c);
                 let (a_no2, a_no, a_o3) = Self::cell(wi, c);
-                g0 += m * 0.5 * (1.0 + arg.sin()) * a_no2;
+                g0 += m * 0.5 * (1.0 + sin(arg)) * a_no2;
                 g1 += m * (-o3 * a_no - no * a_o3);
-                g2 += m * 0.5 * p[0] * arg.cos() * t * a_no2;
+                g2 += m * 0.5 * p[0] * cos(arg) * t * a_no2;
             }
         }
         out[0] += g0;
@@ -610,7 +618,7 @@ impl<T: Scalar> Operator<T> for Photochemistry {
         for (c, o) in out.iter_mut().take(PHOTO_NCELLS).enumerate() {
             let n = Self::signed(nu, c);
             let arg = p[2] * t + Self::phase(c);
-            acc(o, n * 0.5 * p[0] * p[2] * arg.cos());
+            acc(o, n * 0.5 * p[0] * p[2] * cos(arg));
         }
     }
     fn ft_vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, nu: &[T]) {
@@ -619,8 +627,8 @@ impl<T: Scalar> Operator<T> for Photochemistry {
             let (no2, _, _) = Self::cell(u, c);
             let n = Self::signed(nu, c);
             let arg = p[2] * t + Self::phase(c);
-            g0 += n * 0.5 * p[2] * arg.cos() * no2;
-            g2 += n * 0.5 * p[0] * (arg.cos() - p[2] * t * arg.sin()) * no2;
+            g0 += n * 0.5 * p[2] * cos(arg) * no2;
+            g2 += n * 0.5 * p[0] * (cos(arg) - p[2] * t * sin(arg)) * no2;
         }
         out[0] += g0;
         out[2] += g2;
