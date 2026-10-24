@@ -8,9 +8,12 @@ using OrdinaryDiffEqLowOrderRK: Euler, Heun, RK4, BS3
 using OrdinaryDiffEqTsit5: Tsit5
 using OrdinaryDiffEqSSPRK: SSPRK33, SSPRK43, SSPRK104
 using OrdinaryDiffEqRosenbrock: Rosenbrock23, ROS2, ROS3P, Rodas3, Rodas4, Rodas5P
+using OrdinaryDiffEqSDIRK: ImplicitEuler, TRBDF2, SDIRK2, Kvaerno3, Kvaerno4, NLNewton
 using SciMLSensitivity: ReverseDiffAdjoint
 import Zygote
 import ReverseDiff
+
+const SDIRK_NEWTON = NLNewton(; κ = 1.0e-6)
 
 """OrdinaryDiffEq's algorithm for a method (the table's `ordinarydiffeq_algorithm`)."""
 function ode_alg(alg::AbstractString)
@@ -21,7 +24,16 @@ function ode_alg(alg::AbstractString)
         # The ODEFunction carries `jac` and `tgrad` from the operators, which
         # OrdinaryDiffEq's Rosenbrock methods use instead of differentiating f.
         "Rosenbrock23" => Rosenbrock23(), "ROS2" => ROS2(), "ROS3P" => ROS3P(), "Rodas3" => Rodas3(),
-        "Rodas4" => Rodas4(), "Rodas5P" => Rodas5P())[name]
+        "Rodas4" => Rodas4(), "Rodas5P" => Rodas5P(),
+        # The SDIRK methods' Newton matrices use the same `jac`. Their Newton
+        # iteration runs at κ = 1e-6 instead of the default 1/100, so OrdinaryDiffEq's
+        # stages are converged well inside the oracle's tolerance: at the default,
+        # its Kvaerno4 (which reuses its Jacobian across steps and takes each
+        # explicit first stage from the previous step's last stage) ends
+        # robertson.Kvaerno4.adaptive's imposed step sequence with ConvergenceFailure.
+        "ImplicitEuler" => ImplicitEuler(; nlsolve = SDIRK_NEWTON), "TRBDF2" => TRBDF2(; nlsolve = SDIRK_NEWTON),
+        "SDIRK2" => SDIRK2(; nlsolve = SDIRK_NEWTON), "Kvaerno3" => Kvaerno3(; nlsolve = SDIRK_NEWTON),
+        "Kvaerno4" => Kvaerno4(; nlsolve = SDIRK_NEWTON))[name]
 end
 
 """

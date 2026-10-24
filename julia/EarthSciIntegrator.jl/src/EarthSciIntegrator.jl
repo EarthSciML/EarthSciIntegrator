@@ -4,17 +4,16 @@
 Julia implementation of the EarthSciIntegrator spec (`spec/` at the repository
 root).
 
-M1, first and second stages: the operator interface
-(spec/operator-interface.md), the six hand-written toy problems
-(spec/toy-problems.md), the coefficient tables (spec/tableaus), the explicit
-Runge–Kutta and Rosenbrock families with their controllers (spec/methods.md
-§3, §4, §7–§12), `dense_lu` and batched `block_lu` linear solves, the schedule
-interpreter for `leaf`, `sequence`, `strang`, `subcycle` and `map`, the tape
-with replay and checkpoints (spec/tape.md), functionals at the final time, at
-output times and integrated over time (single-leaf schedules), and the
-discrete adjoint of all of these (spec/adjoint.md §4.1, §4.2, §5, §6). SDIRK,
-IMEX Euler and θ-method leaves are refused with an [`UnsupportedError`](@ref)
-until the next stages add them.
+M1: the operator interface (spec/operator-interface.md), the six
+hand-written toy problems (spec/toy-problems.md), the coefficient tables
+(spec/tableaus), every v1 method family (explicit Runge–Kutta, Rosenbrock,
+SDIRK and ESDIRK, IMEX Euler and the θ-method) with the Newton iteration and
+the controllers (spec/methods.md §3–§12), `dense_lu` and batched `block_lu`
+linear solves, the schedule interpreter for `leaf`, `sequence`, `strang`,
+`subcycle` and `map`, the tape with replay and checkpoints (spec/tape.md),
+functionals at the final time, at output times and integrated over time
+(single-leaf schedules), and the discrete adjoint of all of these
+(spec/adjoint.md §4.1–§4.5, §5, §6).
 """
 module EarthSciIntegrator
 
@@ -67,6 +66,7 @@ include("control.jl")
 include("erk.jl")
 include("linsolve.jl")
 include("rosenbrock.jl")
+include("sdirk.jl")
 include("schedule.jl")
 include("tape.jl")
 include("leaf.jl")

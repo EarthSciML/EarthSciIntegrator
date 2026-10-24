@@ -300,7 +300,7 @@ stages (spec/adjoint.md §6.4).
 """
 function rosenbrock_adjoint_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h, λ; tk1 = t, ψ = nothing)
     st = rosenbrock_stages(m, ctx, u, p, t, h, nothing; tk1)
-    st.singular && error("rosenbrock adjoint: W is singular on replay at t = $t, h = $h")
+    st.singular && throw(ReplayMismatchError("rosenbrock adjoint: W is singular on replay at t = $t, h = $h"))
     N, P = length(u), length(p)
     ops = ctx.ops
     F = st.F

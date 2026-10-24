@@ -61,7 +61,8 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         @test TABLEAUS["Rodas4"].family === :rosenbrock
         @test EarthSciIntegrator.method_for(TABLEAUS["Rodas4"]) isa EarthSciIntegrator.RosenbrockMethod
         @test EarthSciIntegrator.method_for(TABLEAUS["Rosenbrock23"]).form === :rosenbrock23
-        @test_throws UnsupportedError EarthSciIntegrator.method_for(TABLEAUS["TRBDF2"])
+        @test EarthSciIntegrator.method_for(TABLEAUS["TRBDF2"]) isa EarthSciIntegrator.SDIRKMethod
+        @test EarthSciIntegrator.method_for(TABLEAUS["Theta"]; theta = 0.5).theta == 0.5
     end
 
     @testset "error norm, controllers and stops" begin
@@ -120,9 +121,9 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         @test build_run(base; tspan = (0, 2)) isa EarthSciIntegrator.Run
         bad = deepcopy(base); bad["esm_integrator"] = "0.2.0"
         @test_throws ConfigError build_run(bad; tspan = (0, 2))
-        bad = deepcopy(base); bad["schedule"]["alg"] = "TRBDF2"
+        bad = deepcopy(base); bad["schedule"]["alg"] = "Theta"     # Theta needs the leaf option theta
         err = try build_run(bad; tspan = (0, 2)); nothing; catch e; e; end
-        @test err isa UnsupportedError && occursin("TRBDF2", err.msg)
+        @test err isa ConfigError && occursin("theta", err.msg)
         bad = deepcopy(base); bad["schedule"]["alg"] = "SSPRK33"; delete!(bad["schedule"], "dt")
         @test_throws ConfigError build_run(bad; tspan = (0, 2))      # no error estimate: dt required (D52)
         bad = deepcopy(base); bad["schedule"]["leaf"] = "nonexistent"
@@ -358,4 +359,5 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     include("conformance.jl")
     include("rosenbrock.jl")
     include("extra.jl")
+    include("implicit.jl")
 end

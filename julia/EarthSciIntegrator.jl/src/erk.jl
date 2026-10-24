@@ -61,18 +61,25 @@ end
 """
     method_for(tab) -> AbstractMethod
 
-The family dispatch: the step implementation for a method's table. Families
-not implemented in this stage are refused with an [`UnsupportedError`](@ref).
+The family dispatch: the step implementation for a method's table. `theta`
+is the leaf's θ for the θ-method, `linearized` IMEX Euler's
+`implicit_solve: "linearized"`. A family or form without an implementation is
+refused with an [`UnsupportedError`](@ref).
 """
-function method_for(tab::Tableau)
+function method_for(tab::Tableau; theta::Float64 = NaN, linearized::Bool = false)
     if tab.family === :explicit_rk
         tab.form === :butcher && return ButcherERK(tab)
         tab.form === :shu_osher && return ShuOsherERK(tab)
     elseif tab.family === :rosenbrock
         tab.form in (:rosenbrock_transformed, :rosenbrock23) && return RosenbrockMethod(tab)
+    elseif tab.family === :sdirk
+        tab.form === :sdirk && return SDIRKMethod(tab)
+    elseif tab.family === :theta
+        tab.form === :theta && return ThetaMethod(tab, theta)
+    elseif tab.family === :imex
+        tab.form === :imex_euler && return IMEXEulerMethod(tab, linearized)
     end
-    throw(UnsupportedError("method $(tab.name) (family $(tab.family), form $(tab.form)) is not implemented yet; " *
-                           "this stage implements the explicit Runge–Kutta and Rosenbrock families"))
+    throw(UnsupportedError("method $(tab.name) (family $(tab.family), form $(tab.form)) is not implemented"))
 end
 
 # `y .= x + coef * K`, elementwise, with coef converted to the element type.
@@ -101,9 +108,11 @@ struct StepResult{V}
     singular::Bool          # Rosenbrock: W failed to factor (spec/methods.md §4.2)
     stage_violation::Bool   # Rosenbrock: a stage state violated domain.check_stages (§11)
     dq::Any                 # increment of the time-integrated functional q, or nothing
+    newton_fail::Bool       # implicit families: a Newton solve failed (spec/methods.md §5.2)
 end
-StepResult(u, E, fsal, nf) = StepResult(u, E, fsal, nf, false, false, nothing)
-StepResult(u, E, fsal, nf, singular, violation) = StepResult(u, E, fsal, nf, singular, violation, nothing)
+StepResult(u, E, fsal, nf) = StepResult(u, E, fsal, nf, false, false, nothing, false)
+StepResult(u, E, fsal, nf, singular, violation) = StepResult(u, E, fsal, nf, singular, violation, nothing, false)
+StepResult(u, E, fsal, nf, singular, violation, dq) = StepResult(u, E, fsal, nf, singular, violation, dq, false)
 
 """
     Integrand(dofs, weight)
