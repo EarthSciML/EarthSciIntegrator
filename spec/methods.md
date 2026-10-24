@@ -306,13 +306,14 @@ The controller's error history ($E_{\text{old}}$, the PID $\varepsilon$s) change
 ### 8.6 Proposal, bounds and state
 
 - **Proposal.** After an accepted step at time $t_{n+1}$ with proposal $\hat h$: $\hat h \leftarrow (t_{n+1} + \hat h) - t_{n+1}$, rounded in f64 (OrdinaryDiffEqCore `src/integrators/integrator_utils.jl:1215-1231`), then clamped to $[\max(\texttt{dtmin}, \epsilon(t_{n+1})),\ \texttt{dtmax}]$.
-- **Shortened steps.** When a step was shortened to land on a stop (§10) and accepted, the proposal is computed from the unshortened size the controller had chosen, not from the shortened one (`src/integrators/integrator_utils.jl:633-638`).
+- **Shortened steps.** Let a stop step (§10) be accepted with size $h_s$, shortened from the controller's size $h$. The controller (§8.2–§8.4) computes the next proposal from $h_s' = \max(h_s, \texttt{dtmin}, \epsilon(t_n))$, with $t_n$ the step's start, ($h_s'/q$, or $h_s'\phi$ under PID) when the leaf's previous step attempt was accepted, and from $h$ when this attempt was the leaf's first of the run or followed a rejection (D61). This is what OrdinaryDiffEqCore 4.19.0 does: the restore at `src/integrators/integrator_utils.jl:633-638` takes the size that `modify_dt_for_tstops!` saved, and after an accepted step that function runs twice (`apply_step!`, `:191`, then `loopheader!`, `:123`), so the second call saves the shortened size, after `fix_dt_at_bounds!` (`:122`, `:1265-1278`) has raised it to $\max(\texttt{dtmin}, \epsilon(t))$; on the first step and after a rejection it runs once and the unshortened size is restored. An invocation always ends on an accepted step, so at the start of a later invocation the previous attempt counts as accepted, and no extra state is kept. On van der Pol with Tsit5 at reltol 1e-8 this reproduces OrdinaryDiffEq's accepted, rejected and right-hand-side counts exactly.
+  *Informative.* Under splitting every invocation ends on a stop, so a short landing step makes the next invocation start from a short proposal, which then grows by at most `qmax` per step. That costs extra steps in every macro step (in every cell under `dt_scope: cell`); D61 accepts the cost for parity with OrdinaryDiffEq.
 - **State.** Each leaf (each shard or cell, under `dt_scope: shard` or `cell`) keeps its proposal, $E_{\text{old}}$ or the PID history, $\theta_{\text{prev}}$ and $\eta_{\text{old}}$ (§5.2), and whether it has accepted a step. The state persists across the leaf's invocations and macro steps, and is part of checkpoints and restarts (architecture §10, §11). A fresh run starts it at the initial values above, with the first step from §9.
 - `dtmax` defaults to the length of the leaf's current interval; `dtmin` defaults to 0.
 
 ## 9. First step
 
-When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped as in §8.6. Otherwise it is OrdinaryDiffEqCore's `_ode_initdt_oop` (`src/initdt.jl:354-468`), at the leaf's first invocation, with $p$ = `order`, and in f64:
+When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped as in §8.6. Otherwise it is OrdinaryDiffEqCore's `_ode_initdt_oop` (`src/initdt.jl:354-468`), at the leaf's first invocation, with $p$ = `order`, and in f64. In it, `dtmax` is capped at the distance from $t_0$ to the invocation's first stop (§10), as `_determine_initdt` passes it (`src/integrators/integrator_interface.jl:679-690`); `dt0` is not capped, since the stop rule shortens it:
 
 1. $\mathrm{sk}_j = \mathrm{abstol}_j + |u_{0,j}|\,\mathrm{reltol}$; $d_0 = \lVert u_0/\mathrm{sk} \rVert$, $f_0 = f(u_0, t_0)$, $d_1 = \lVert f_0/\mathrm{sk} \rVert$ (RMS norms).
 2. $\delta_{\min}$ = the next float above $\max(\texttt{dtmin}, \epsilon(t_0))$; $h_{\text{small}} = \max(\delta_{\min}, 10^{-6})$.
@@ -321,6 +322,8 @@ When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped 
 5. $u_1 = u_0 + h_0 f_0$, $f_1 = f(u_1, t_0 + h_0)$. If $f_1 = f_0$ exactly, return $\max(\delta_{\min}, 100 h_0)$.
 6. $d_2 = \lVert (f_1 - f_0)/\mathrm{sk} \rVert / h_0$. If $\max(d_1, d_2) \le 10^{-15}$, $h_1 = \max(h_{\text{small}}, 10^{-3} h_0)$; else $h_1 = 10^{-(2 + \log_{10}\max(d_1, d_2))/p}$.
 7. Return $\max(\delta_{\min}, \min(100 h_0, h_1, \texttt{dtmax}))$.
+
+A `bind_dt: "leaf"` parameter has no step size to take during these evaluations, so an adaptive leaf with one must give `control.dt0` (run-config §8 rule 15).
 
 Under `dt_scope: cell` the first step is computed per cell. *Assumption:* the two extra $f$ evaluations are per cell too; they are pointwise kernels, so this costs two lane-pool evaluations.
 
@@ -333,7 +336,7 @@ Before each step attempt, with $h$ the controller's size and $d$ the distance to
 - if $h + \mathrm{tol} < d$, the step is an ordinary one;
 - otherwise the step is a **stop step** of size $\min(h, d)$, and when accepted its end time is set to $t_{\text{stop}}$ exactly, not to $t + h$ (`fixed_t_for_tstop_error!`, `:1032-1038`).
 
-Fixed-`dt` leaves follow the same rule: substeps of `dt`, the last shortened to land on the stop (run-config §4.2). A stop step shorter than $\epsilon(|t|)$ is accepted without computing it (`handle_tstop_step!`, `:329-337`).
+Fixed-`dt` leaves follow the same rule: substeps of `dt`, the last shortened to land on the stop (run-config §4.2). A stop step shorter than $\epsilon(|t|)$ is accepted without computing it (`handle_tstop_step!`, `:329-337`): $t$ becomes $t_{\text{stop}}$ and the step counts as accepted in the statistics, but the proposal, the controller's error history and whether the leaf has accepted a step are unchanged. OrdinaryDiffEq instead runs its controller on the previous attempt's $E$ and the tiny size, which makes the next step tiny; the spec departs from it here (D61).
 
 ## 11. Domain enforcement
 
@@ -353,7 +356,7 @@ A leaf returns one code per invocation (per cell under `dt_scope: cell`, reduced
 |---|---|
 | `Success` | the leaf reached the end of its interval |
 | `MaxIters` | more than `control.maxiters` step attempts (accepted plus rejected) in this invocation; default 1 000 000 for adaptive leaves, unlimited at fixed `dt` (OrdinaryDiffEqCore `src/solve.jl:308`) |
-| `DtLessThanMin` | an adaptive leaf's step size is at or below `dtmin` (when `dtmin` > 0), unless the step is an accepted stop step |
+| `DtLessThanMin` | an adaptive leaf's step size is at or below `dtmin` (when `dtmin` > 0), checked before every step attempt, unless the previous attempt was accepted and this step is a stop step (the leaf's first attempt of the run counts as following a rejection) |
 | `Unstable` | a rejected step's size is at or below $\epsilon(|t|)$; or a fixed-`dt` step produced a non-finite state |
 | `DtNaN` | the step size became NaN |
 | `ConvergenceFailure` | a Newton failure at fixed `dt` (§5.2) |
