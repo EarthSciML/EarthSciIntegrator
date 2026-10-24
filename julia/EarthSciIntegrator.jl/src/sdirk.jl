@@ -39,7 +39,8 @@
 #    (spec/methods.md §5.3 states that intent; spec/tape.md §3 requires replay
 #    to be bitwise).
 # Also as in `nlsolve!`: the floating-point-limit and divergence tests return
-# before the iteration's Δz is applied; running out of iterations is a failure.
+# before the iteration's Δz is applied and before θ_prev is updated; running
+# out of iterations is a failure.
 #
 # Forward sensitivities (spec/adjoint.md §2.3, §7.1): with `Dual` numbers in
 # the state or parameters, the Newton iteration runs on the primal values (so
@@ -202,12 +203,13 @@ function _newton(fI, F, σ, τ::Vector{Float64}, γ, h, ti, z0::Vector{Float64},
         isfinite(ndz) || return z, false, nf
         if iter > 1
             θm = max(0.3 * θ[], ndz / ndzprev)
-            θ[] = θm
             if abs(θm - 1) <= 100 * sqrt(eps(1.0))
                 # The floating-point limit (§5.2 step 6), tested before Δz is applied.
                 return z, ndz <= 1, nf
             end
             θm > 2 && return z, false, nf
+            # θ_prev is stored only after both tests, as `nlsolve!` does (`:228-230`).
+            θ[] = θm
         else
             θm = θ[]
         end
