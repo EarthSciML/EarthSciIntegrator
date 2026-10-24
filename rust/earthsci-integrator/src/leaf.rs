@@ -36,8 +36,10 @@ pub enum LeafMethod {
 impl LeafMethod {
     /// Operator calls the method's forward step needs from an operator
     /// (operator-interface.md §3): `ft` only from operators that depend on
-    /// `t`, and only when the method reads `f_t`.
-    pub fn forward_calls(&self, op_depends_on_t: bool) -> Vec<Call> {
+    /// `t`, and only when the method reads `f_t`. `op_in_w` says whether the
+    /// operator's Jacobian enters the method's `W`: every operator except an
+    /// IMEX Euler leaf's explicit-part operators.
+    pub fn forward_calls(&self, op_depends_on_t: bool, op_in_w: bool) -> Vec<Call> {
         match self {
             LeafMethod::Erk(_) => vec![Call::Rhs],
             LeafMethod::Ros(m, _) => {
@@ -48,7 +50,7 @@ impl LeafMethod {
                 v
             }
             LeafMethod::Imp(m, _) => {
-                if m.w_gamma().is_some() {
+                if m.w_gamma().is_some() && op_in_w {
                     vec![Call::Rhs, Call::Jac]
                 } else {
                     vec![Call::Rhs]
@@ -62,23 +64,33 @@ impl LeafMethod {
     /// of operators that depend on `t`. SDIRK, θ-method and IMEX Euler
     /// adjoints refactor `W` at the converged stages, so they add `jac`;
     /// linearized IMEX Euler is a one-stage Rosenbrock adjoint and adds the
-    /// second-order calls (spec/adjoint.md §4.3–§4.5).
-    pub fn adjoint_calls(&self, wrt_p: bool, op_depends_on_t: bool, op_linear: bool) -> Vec<Call> {
+    /// second-order calls (spec/adjoint.md §4.3–§4.5). The implicit families
+    /// ask `jac` and the second-order calls only of operators in `W`
+    /// (`op_in_w`, as for [`forward_calls`](Self::forward_calls)).
+    pub fn adjoint_calls(
+        &self,
+        wrt_p: bool,
+        op_depends_on_t: bool,
+        op_linear: bool,
+        op_in_w: bool,
+    ) -> Vec<Call> {
         let mut v = vec![Call::VjpU];
         if wrt_p {
             v.push(Call::VjpP);
         }
         if let LeafMethod::Imp(m, _) = self {
-            if m.w_gamma().is_some() {
+            if m.w_gamma().is_some() && op_in_w {
                 v.push(Call::Jac);
             }
-            if matches!(
-                m.form,
-                ImplicitForm::ImexEuler {
-                    linearized: true,
-                    ..
-                }
-            ) {
+            if op_in_w
+                && matches!(
+                    m.form,
+                    ImplicitForm::ImexEuler {
+                        linearized: true,
+                        ..
+                    }
+                )
+            {
                 if !op_linear {
                     v.push(Call::HessU);
                 }

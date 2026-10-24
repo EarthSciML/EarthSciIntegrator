@@ -316,10 +316,17 @@ fn build_leaf<T: Scalar>(
     dofs.dedup();
 
     // Calls the method and its adjoint need (operator-interface.md §3).
-    for op in &ops {
-        let mut calls = method.forward_calls(op.depends_on_t());
+    for (k, op) in ops.iter().enumerate() {
+        // An IMEX Euler leaf's explicit-part operators never enter W.
+        let in_w = imex_implicit.get(k).copied().unwrap_or(true);
+        let mut calls = method.forward_calls(op.depends_on_t(), in_w);
         if needs.adjoint {
-            calls.extend(method.adjoint_calls(needs.wrt_p, op.depends_on_t(), op.linear_in_u()));
+            calls.extend(method.adjoint_calls(
+                needs.wrt_p,
+                op.depends_on_t(),
+                op.linear_in_u(),
+                in_w,
+            ));
         }
         for c in &calls {
             if !op.provides(*c) {
@@ -478,7 +485,15 @@ fn imex_partition(
         match m.get(key) {
             None => Ok(None),
             Some(Value::String(s)) => Ok(Some(vec![s.clone()])),
-            Some(Value::Array(a)) if !a.is_empty() => a
+            Some(Value::Array(a)) if a.is_empty() => Err(Error::Config(format!(
+                "leaf {id}: imex.{key} is empty{}",
+                if key == "implicit" {
+                    " (an empty implicit part would make IMEX Euler forward Euler)"
+                } else {
+                    ""
+                }
+            ))),
+            Some(Value::Array(a)) => a
                 .iter()
                 .map(|x| {
                     x.as_str()
@@ -493,8 +508,12 @@ fn imex_partition(
     if let Some(k) = m.keys().find(|k| *k != "explicit" && *k != "implicit") {
         return Err(Error::Config(format!("leaf {id}: imex key {k:?}")));
     }
-    let implicit = list("implicit")?
-        .ok_or_else(|| Error::Config(format!("leaf {id}: imex needs implicit")))?;
+    // An empty implicit part would make IMEX Euler a forward Euler step.
+    let implicit = list("implicit")?.ok_or_else(|| {
+        Error::Config(format!(
+            "leaf {id}: imex needs a non-empty implicit part (an empty one would be forward Euler)"
+        ))
+    })?;
     let explicit = list("explicit")?;
     for nm in implicit.iter().chain(explicit.iter().flatten()) {
         if !names.contains(nm) {

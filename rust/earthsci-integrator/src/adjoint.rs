@@ -727,7 +727,13 @@ pub fn imp_adjoint_step<T: Scalar>(
             }
             let pairs: [MuPair<'_, T>; 1] = [(&mu, &st.k[0])];
             leaf.hess_u_part(Part::Implicit, lam, un, p, t, &pairs);
-            if with_p && leaf.ops.iter().all(|o| o.provides(Call::HessP)) {
+            let implicit_hess_p = leaf
+                .ops
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| leaf.imex_implicit.get(*k).copied().unwrap_or(true))
+                .all(|(_, o)| o.provides(Call::HessP));
+            if with_p && implicit_hess_p {
                 leaf.vjp_p(&mut pc, un, p, t, &mu);
                 leaf.hess_p_part(Part::Implicit, &mut pc, un, p, t, &pairs);
             }

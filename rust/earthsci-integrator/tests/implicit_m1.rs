@@ -303,23 +303,38 @@ fn newton_failure() {
             o.map(|f| f.accepted)
         ),
     }
-    // Adaptive from a first step of 0.5, the same leaf rejects and halves
-    // until Newton converges, and then follows the error estimate.
+    // Adaptive BackwardEuler from a first step of 0.5. The first step of an
+    // invocation has E = 1 exactly (spec/methods.md §5.5), so its error
+    // estimate cannot reject it, and no domain is set: every rejection
+    // before the first accepted step is a Newton failure. Each halves the
+    // step (failfactor 2), so the first accepted step is 0.5/2^k after k
+    // rejections, where any controller rejection would scale by its own factor.
     let r = rc(
         "toy:robertson",
-        json!({"leaf": "kinetics", "alg": "TRBDF2",
+        json!({"leaf": "kinetics", "alg": "BackwardEuler",
                "control": {"reltol": 1e-6, "abstol": 1e-10, "dt0": 0.5}}),
         1.0,
         Some(grad_all("y3", "final")),
     );
     let s = spec(&r, (0.0, 1.0), None);
     let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    let h1 = fwd
+        .tape
+        .records
+        .iter()
+        .find_map(|rec| match rec {
+            earthsci_integrator::tape::TapeRecord::Leaf { steps, .. } => Some(steps[0][1]),
+            _ => None,
+        })
+        .unwrap();
+    let k = (0.5 / h1).log2();
     println!(
-        "adaptive from dt0 0.5: {} accepted, {} rejected",
+        "adaptive from dt0 0.5: {} accepted, {} rejected, first accepted step {h1} = 0.5/2^{k}",
         fwd.accepted, fwd.rejected
     );
-    assert!(fwd.rejected > 0);
-    check_gradient(&r, (0.0, 1.0), None, "TRBDF2 after Newton failures");
+    assert!(k >= 1.0 && k.fract() == 0.0, "first step {h1}");
+    assert!(fwd.rejected >= k as u64);
+    check_gradient(&r, (0.0, 1.0), None, "BackwardEuler after Newton failures");
 }
 
 #[test]
@@ -363,6 +378,13 @@ fn implicit_refusals() {
             None,
         ),
         "IMEXEuler without imex",
+    );
+    config_err(
+        build(
+            json!({"leaf": "decay", "alg": "IMEXEuler", "dt": 0.1, "imex": {"implicit": []}}),
+            None,
+        ),
+        "IMEXEuler with an empty implicit part",
     );
     config_err(
         build(
@@ -422,5 +444,170 @@ fn f32_state() {
     let g64 = s64.gradient(&f64run, &s64.problem.p).unwrap();
     for (a, b) in g32.u0.iter().zip(&g64.u0) {
         assert!((a - b).abs() < 1e-2 * b.abs().max(1.0), "{a} vs {b}");
+    }
+    // Parameter gradients: each within 1% of its f64 value, or of 1e-3 of
+    // the largest where it is much smaller (k2 is 3e7, so ∂y3/∂k2 is tiny).
+    let pmax = g64.p.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    assert!(pmax > 0.0);
+    for (i, (a, b)) in g32.p.iter().zip(&g64.p).enumerate() {
+        println!("f32 vs f64 ∂y3/∂p[{i}]: {a:.6e} vs {b:.6e}");
+        assert!(
+            (a - b).abs() < 1e-2 * b.abs().max(1e-3 * pmax),
+            "p[{i}]: {a} vs {b}"
+        );
+    }
+}
+
+/// van der Pol split into a linear rotation `y' = z, z' = −y`, which
+/// provides no `jac` (an explicit part needs none), and a nonlinear damping
+/// `z' = μ(1 − y²) z`, which provides every call.
+mod split_vdp {
+    use earthsci_integrator::operator::{Call, MatrixStorage, MuPair, Operator, Structure};
+
+    pub struct Rotation;
+    impl Operator<f64> for Rotation {
+        fn name(&self) -> &str {
+            "rotation"
+        }
+        fn structure(&self) -> Structure {
+            Structure::Dense
+        }
+        fn depends_on_t(&self) -> bool {
+            false
+        }
+        fn linear_in_u(&self) -> bool {
+            true
+        }
+        fn writes(&self) -> Vec<usize> {
+            vec![0, 1]
+        }
+        fn provides(&self, call: Call) -> bool {
+            matches!(call, Call::Rhs | Call::JvpU | Call::VjpU | Call::VjpP)
+        }
+        fn rhs(&self, out: &mut [f64], u: &[f64], _p: &[f64], _t: f64) {
+            out[0] += u[1];
+            out[1] += -u[0];
+        }
+        fn jvp_u(&self, out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, v: &[f64]) {
+            out[0] += v[1];
+            out[1] += -v[0];
+        }
+        fn vjp_u(&self, out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, w: &[f64]) {
+            out[0] += -w[1];
+            out[1] += w[0];
+        }
+        fn vjp_p(&self, _out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, _w: &[f64]) {}
+    }
+
+    pub struct Damping;
+    impl Operator<f64> for Damping {
+        fn name(&self) -> &str {
+            "damping"
+        }
+        fn structure(&self) -> Structure {
+            Structure::Dense
+        }
+        fn depends_on_t(&self) -> bool {
+            false
+        }
+        fn linear_in_u(&self) -> bool {
+            false
+        }
+        fn writes(&self) -> Vec<usize> {
+            vec![1]
+        }
+        fn provides(&self, _call: Call) -> bool {
+            true
+        }
+        fn rhs(&self, out: &mut [f64], u: &[f64], p: &[f64], _t: f64) {
+            out[1] += p[0] * (1.0 - u[0] * u[0]) * u[1];
+        }
+        fn jvp_u(&self, out: &mut [f64], u: &[f64], p: &[f64], _t: f64, v: &[f64]) {
+            let (y, z, m) = (u[0], u[1], p[0]);
+            out[1] += -2.0 * m * y * z * v[0] + m * (1.0 - y * y) * v[1];
+        }
+        fn vjp_u(&self, out: &mut [f64], u: &[f64], p: &[f64], _t: f64, w: &[f64]) {
+            let (y, z, m) = (u[0], u[1], p[0]);
+            out[0] += -2.0 * m * y * z * w[1];
+            out[1] += m * (1.0 - y * y) * w[1];
+        }
+        fn vjp_p(&self, out: &mut [f64], u: &[f64], _p: &[f64], _t: f64, w: &[f64]) {
+            out[0] += (1.0 - u[0] * u[0]) * u[1] * w[1];
+        }
+        fn jac(&self, out: &mut MatrixStorage<f64>, u: &[f64], p: &[f64], _t: f64) {
+            let (y, z, m) = (u[0], u[1], p[0]);
+            out.add(1, 0, -2.0 * m * y * z);
+            out.add(1, 1, m * (1.0 - y * y));
+        }
+        fn ft(&self, _out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64) {}
+        fn hess_u(&self, out: &mut [f64], u: &[f64], p: &[f64], _t: f64, mu: &[MuPair<'_, f64>]) {
+            let (y, z, m) = (u[0], u[1], p[0]);
+            for (mi, wi) in mu {
+                out[0] += mi[1] * (-2.0 * m * z * wi[0] - 2.0 * m * y * wi[1]);
+                out[1] += mi[1] * (-2.0 * m * y * wi[0]);
+            }
+        }
+        fn hess_p(&self, out: &mut [f64], u: &[f64], _p: &[f64], _t: f64, mu: &[MuPair<'_, f64>]) {
+            let (y, z) = (u[0], u[1]);
+            for (mi, wi) in mu {
+                out[0] += mi[1] * (-2.0 * y * z * wi[0] + (1.0 - y * y) * wi[1]);
+            }
+        }
+        fn ft_vjp_u(&self, _o: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, _n: &[f64]) {}
+        fn ft_vjp_p(&self, _o: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, _n: &[f64]) {}
+    }
+}
+
+/// IMEX Euler with an explicit part and a nonlinear implicit part, converged
+/// and linearized: the explicit part's `J_Eᵀ`, the transposed solves and, for
+/// the linearized step, the second-order term are checked together. The
+/// explicit operator provides no `jac`, which an IMEX leaf must accept.
+#[test]
+fn imex_nonlinear_implicit_part() {
+    use earthsci_integrator::schedule::{Needs, Schedule};
+    use std::sync::Arc;
+    for solve in ["converged", "linearized"] {
+        let r = rc(
+            "toy:van_der_pol/nonstiff",
+            json!({"leaf": ["rotation", "damping"], "alg": "IMEXEuler",
+                   "imex": {"implicit": "damping"}, "implicit_solve": solve, "dt": 0.05,
+                   "control": {"reltol": 1e-8, "abstol": 1e-10}}),
+            3.0,
+            Some(grad_all("y", "final")),
+        );
+        // The van der Pol problem with the two split operators in place of
+        // `oscillator`; RunSpec::new builds its schedule from `oscillator`,
+        // which is then rebuilt against the split operators.
+        let base = rc(
+            "toy:van_der_pol/nonstiff",
+            json!({"leaf": "oscillator", "alg": "IMEXEuler",
+                   "imex": {"implicit": "oscillator"}, "dt": 0.05}),
+            3.0,
+            Some(grad_all("y", "final")),
+        );
+        let mut s = spec(&base, (0.0, 3.0), None);
+        s.problem.operators = vec![Arc::new(split_vdp::Rotation), Arc::new(split_vdp::Damping)];
+        let needs = Needs {
+            adjoint: true,
+            wrt_p: true,
+        };
+        s.schedule = Schedule::build(&r.schedule_node().unwrap(), &s.problem, needs).unwrap();
+        let u0 = s.u0();
+        let p = s.problem.p.clone();
+        let fwd = s.forward(&u0, &p).unwrap();
+        let g = s.gradient(&fwd, &p).unwrap();
+        println!(
+            "IMEX {solve} split van der Pol: gradient {:?} {:?}",
+            g.u0, g.p
+        );
+        assert!(g.p[0] != 0.0);
+        assert_pass(
+            check_fd(&s, &fwd, &g, 1e-6, &[1e-3, 1e-4, 1e-5]),
+            &format!("IMEX {solve} split van der Pol fd"),
+        );
+        assert_pass(
+            check_replay(&s, &fwd, &u0, &p),
+            &format!("IMEX {solve} split van der Pol replay"),
+        );
     }
 }

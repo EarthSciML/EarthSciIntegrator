@@ -137,6 +137,7 @@ const MAX_ITERS: usize = 10;
 /// The tight mode's limits: an increment norm this small is roundoff.
 const TIGHT_ITERS: usize = 100;
 const TIGHT_DELTA: f64 = 1e-12;
+const TIGHT_STALL: usize = 3;
 
 impl Implicit {
     /// Builds the method from a table. `theta` is the θ-method's leaf option;
@@ -423,8 +424,11 @@ impl Implicit {
                     }
                     SdirkEstimate::DividedDifference(cc) => {
                         if !w.has_prev {
-                            // No previous step in this invocation: E = 1 (§5.5).
-                            return ImplicitOutcome::Done(Some(1.0));
+                            // No previous step in this invocation: E = 1
+                            // (§5.5), unless u_{n+1} is not finite, which
+                            // rejects like a non-finite estimate (§7).
+                            let ok = w.unew.iter().all(|x| x.is_finite());
+                            return ImplicitOutcome::Done(Some(if ok { 1.0 } else { f64::NAN }));
                         }
                         // OrdinaryDiffEqSDIRK src/generic_imex_perform_step.jl:2401-2420,
                         // with t + dt for t_{n+1} as OrdinaryDiffEq writes it.
@@ -583,6 +587,9 @@ fn newton<T: Scalar>(
     let fp_limit = 100.0 * f64::EPSILON.sqrt();
     w.newton_solves += 1;
     let mut ndzprev = 1.0f64;
+    // The tight mode's smallest increment norm so far, and how many
+    // iterations in a row have not gone below it.
+    let (mut best, mut stall) = (f64::INFINITY, 0usize);
     for iter in 1..=maxiters {
         for j in 0..n {
             w.ustep[j] = w.tau[j] + g * w.zc[j];
@@ -602,18 +609,25 @@ fn newton<T: Scalar>(
             return false;
         }
         if tight {
-            // Stop at roundoff: when the increment no longer shrinks (keeping
-            // the previous iterate) or is negligible.
-            if iter > 1 && ndz >= ndzprev {
-                return ndzprev < 1e-6;
-            }
+            // Iterate to roundoff: every increment is applied; stop when one
+            // is below TIGHT_DELTA, or when TIGHT_STALL iterations in a row
+            // fail to go below the smallest so far (roundoff wobble). It
+            // converged if the smallest was below 1e-6.
             for j in 0..n {
                 w.zc[j] += w.r[j];
             }
             if ndz < TIGHT_DELTA {
                 return true;
             }
-            ndzprev = ndz;
+            if ndz < best {
+                best = ndz;
+                stall = 0;
+            } else {
+                stall += 1;
+                if stall >= TIGHT_STALL {
+                    return best < 1e-6;
+                }
+            }
             continue;
         }
         let theta = if iter > 1 {
@@ -641,7 +655,7 @@ fn newton<T: Scalar>(
         }
         ndzprev = ndz;
     }
-    false
+    tight && best < 1e-6
 }
 
 /// Workspace and outputs of an implicit step.
