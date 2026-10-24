@@ -9,6 +9,16 @@ using EarthSciIntegrator: SDIRKMethod, ThetaMethod, IMEXEulerMethod, newton_stag
 
 const SDIRK = ["BackwardEuler", "TRBDF2", "SDIRK2", "Kvaerno3", "Kvaerno4"]
 
+# u' = -u without `jac`: usable where no Jacobian of it is formed.
+struct NoJacDecay <: EarthSciIntegrator.AbstractOperator end
+EarthSciIntegrator.opname(::NoJacDecay) = "nojac"
+EarthSciIntegrator.structure(::NoJacDecay) = EarthSciIntegrator.DenseStructure()
+EarthSciIntegrator.depends_on_t(::NoJacDecay) = false
+EarthSciIntegrator.rhs!(::NoJacDecay, out, u, p, t) = (out[1] += -u[1]; out)
+EarthSciIntegrator.jvp_u!(::NoJacDecay, out, u, p, t, v) = (out[1] += -v[1]; out)
+EarthSciIntegrator.vjp_u!(::NoJacDecay, out, u, p, t, w) = (out[1] += -w[1]; out)
+EarthSciIntegrator.vjp_p!(::NoJacDecay, out, u, p, t, w) = out
+
 @testset "implicit families beyond cases.json" begin
     implicit(alg; kw...) = merge(Dict{String, Any}("alg" => alg, "jacobian" => "symbolic"), Dict{String, Any}(string(k) => v for (k, v) in kw))
 
@@ -62,10 +72,20 @@ const SDIRK = ["BackwardEuler", "TRBDF2", "SDIRK2", "Kvaerno3", "Kvaerno4"]
         run = forward!(build_run(xcase("", "toy:advection_reaction", ar, Dict("dt" => 0.05), [0, 0.1])["run_config"]; tspan = (0, 0.1)))
         @test run.root.imex[1].ops == (run.prob.operators["transport"],)
         @test run.root.imex[2].ops == (run.prob.operators["reaction"],)
-        # Linear implicit part: "linearized" is the same step, so the leaf records converged.
+        # "linearized" runs as asked, also with a linear implicit part: on forced_decay,
+        # whose implicit part depends on t, it evaluates f_I at (uₙ, tₙ) instead of
+        # (u_{n+1}, tₙ + h), so the two differ; reaction (linear, autonomous) they agree to roundoff.
         lin = merge(ar, Dict("implicit_solve" => "linearized"))
-        rl = build_run(xcase("", "toy:advection_reaction", lin, Dict("dt" => 0.05), [0, 0.1])["run_config"]; tspan = (0, 0.1))
-        @test !rl.root.method.linearized
+        rl = forward!(build_run(xcase("", "toy:advection_reaction", lin, Dict("dt" => 0.05), [0, 0.1])["run_config"]; tspan = (0, 0.1)))
+        rc = forward!(build_run(xcase("", "toy:advection_reaction", ar, Dict("dt" => 0.05), [0, 0.1])["run_config"]; tspan = (0, 0.1)))
+        @test rl.root.method.linearized && isapprox(rl.u, rc.u; rtol = 1e-12)
+        fd(solve) = Dict{String, Any}("esm_integrator" => "0.1.0", "model" => "toy:forced_decay",
+            "schedule" => Dict("leaf" => "decay", "alg" => "IMEXEuler", "dt" => 0.1, "imex" => Dict("implicit" => "decay"),
+                "implicit_solve" => solve), "step" => Dict("dt" => 2))
+        ul, uc = forward!(build_run(fd("linearized"); tspan = (0, 2))).u, forward!(build_run(fd("converged"); tspan = (0, 2))).u
+        @test abs(ul[1] - uc[1]) > 1e-3
+        run_xcase(xcase("x.forced_decay.IMEXEuler.linearized", "toy:forced_decay", fd("linearized")["schedule"], Dict("dt" => 2),
+            [0, 2.0]; adjoint = xgrad("u"), checks = XGRAD))
         # A nonlinear implicit part: the linearized step (a one-stage Rosenbrock
         # method, D43) and its adjoint, which includes hess_u.
         for solve in ("converged", "linearized")
@@ -87,6 +107,10 @@ const SDIRK = ["BackwardEuler", "TRBDF2", "SDIRK2", "Kvaerno3", "Kvaerno4"]
         @test bad(Dict("implicit" => "reaction", "explicit" => ["transport", "reaction"])) isa ConfigError
         @test bad(Dict("implicit" => "reaction", "explicit" => String[])) isa ConfigError
         @test bad(Dict("implicit" => "chemistry")) isa ConfigError
+        @test occursin("locality names are not supported", bad(Dict("implicit" => "pointwise")).msg)
+        @test bad(Dict("implicit" => String[])) isa ConfigError          # no implicit part: refused, not forward Euler
+        @test bad(Dict("implicit" => 3)) isa ConfigError
+        @test bad(["reaction"]) isa ConfigError
         @test bad(Dict("explicit" => "transport")) isa ConfigError
         @test bad(Dict("implicit" => ["transport", "reaction"])) === nothing
     end
@@ -113,6 +137,10 @@ const SDIRK = ["BackwardEuler", "TRBDF2", "SDIRK2", "Kvaerno3", "Kvaerno4"]
                 adjoint = xgrad("z"), checks = XGRAD))
         end
         @test_throws ConfigError build_run(dec("Theta"; dt = 0.1, theta = 1.5); tspan = (0, 2))
+        @test_throws ConfigError build_run(dec("Theta"; dt = 0.1, theta = "half"); tspan = (0, 2))
+        @test_throws ConfigError build_run(dec("Theta"; dt = 0.1, theta = true); tspan = (0, 2))
+        @test_throws ConfigError build_run(dec("TRBDF2"; dt = 0.1, implicit_solve = 1); tspan = (0, 2))
+        @test_throws ConfigError build_run(dec("TRBDF2"; dt = 0.1, implicit_solve = "exact"); tspan = (0, 2))
         @test_throws ConfigError build_run(dec("Theta"; dt = 0.1); tspan = (0, 2))
         @test_throws ConfigError build_run(dec("TRBDF2"; dt = 0.1, theta = 0.5); tspan = (0, 2))
         @test_throws UnsupportedError build_run(dec("TRBDF2"; dt = 0.1, implicit_solve = "linearized"); tspan = (0, 2))
@@ -150,6 +178,23 @@ const SDIRK = ["BackwardEuler", "TRBDF2", "SDIRK2", "Kvaerno3", "Kvaerno4"]
         @test_throws UnsupportedError build_run(imex; tspan = (0, 2))
     end
 
+    @testset "jac only from operators whose Jacobian is formed" begin
+        sdm = toy_problem("toy:source_decay_map")
+        ops = Dict{String, EarthSciIntegrator.AbstractOperator}("source" => sdm.operators["source"], "nojac" => NoJacDecay())
+        prob = EarthSciIntegrator.ToyProblem("nojac", 1, [1.0], sdm.p, sdm.pnames, (0.0, 1.0), ops, sdm.maps, ["u" => [1]],
+            Function[], nothing, false)
+        cfg(sched) = Dict{String, Any}("esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
+            "schedule" => merge(Dict{String, Any}("leaf" => ["source", "nojac"], "dt" => 0.1), sched), "step" => Dict("dt" => 1))
+        build(sched) = build_run(cfg(sched); tspan = (0, 1), prob)
+        # IMEX Euler forms J of its implicit part only; θ = 0 forms none.
+        r = forward!(build(Dict("alg" => "IMEXEuler", "imex" => Dict("implicit" => "source"))))
+        @test r.retcode == "Success"
+        @test forward!(build(Dict("alg" => "Theta", "theta" => 0.0))).retcode == "Success"
+        @test_throws ConfigError build(Dict("alg" => "IMEXEuler", "imex" => Dict("implicit" => "nojac")))
+        @test_throws ConfigError build(Dict("alg" => "Theta", "theta" => 0.5))
+        @test_throws ConfigError build(Dict("alg" => "BackwardEuler"))
+    end
+
     @testset "Newton iteration" begin
         # A linear stage converges in two iterations: the first is exact, the second's
         # increment is roundoff. The first converges alone only with δ₁ < 1e-5.
@@ -185,7 +230,16 @@ const SDIRK = ["BackwardEuler", "TRBDF2", "SDIRK2", "Kvaerno3", "Kvaerno4"]
         run = forward!(build_run(rob(implicit("SDIRK2"; control = Dict("dt0" => 40.0, "reltol" => 1e-6, "abstol" => 1e-10)));
             tspan = (0, 40)))
         @test run.retcode == "Success" && run.rejected >= 1
-        @test first(r for r in run.tape.records if r isa LeafRecord).steps[1][2] <= 20.0
+        # The first attempt (h = 40) fails in Newton, not in the error test, and the
+        # Newton-failure branch halves the step (h/failfactor = 20): an error-test
+        # rejection would give 40/min(5, E^β₁/γ) and a non-finite one 40·qmin = 8.
+        adaptive_rob = build_run(rob(implicit("SDIRK2"; control = Dict("dt0" => 40.0, "reltol" => 1e-6, "abstol" => 1e-10))); tspan = (0, 40))
+        @test EarthSciIntegrator.method_step(adaptive_rob.root, nothing, adaptive_rob.p, adaptive_rob.u0, 0.0, 40.0, nothing, true).newton_fail
+        one_attempt = build_run(rob(implicit("SDIRK2"; control = Dict("dt0" => 40.0, "reltol" => 1e-6, "abstol" => 1e-10, "maxiters" => 1)));
+            tspan = (0, 40))
+        forward!(one_attempt)
+        @test one_attempt.retcode == "MaxIters" && one_attempt.rejected == 1
+        @test one_attempt.controllers["root"].h == 20.0
         # forced_decay with k = 1/(hγ) makes W = I - hγJ = 1 + hγk... exactly zero for k = -1/(hγ).
         h = 0.1
         p = [-1 / h, 3.0]

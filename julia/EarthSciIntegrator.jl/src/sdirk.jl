@@ -237,7 +237,7 @@ function stage_tangent(ctx::ImplicitContext, opsI, τ, zp, γ, h, ti, p)
     N = length(zp)
     Zp = [_f64(τ[j]) + γ * zp[j] for j in 1:N]
     Fex = _factor_at(ctx, opsI, Zp, p, ti, σ)
-    issuccess_lu(Fex) || error("W is singular at a converged implicit stage (t = $ti)")
+    issuccess_lu(Fex) || throw(ReplayMismatchError("W is singular at a converged implicit stage (t = $ti)"))
     Zd = [τ[j] + γ * zp[j] for j in 1:N]
     fz = _feval(opsI, Zd, p, ti, T)
     r = [(h * fz[j] - zp[j]) * σ for j in 1:N]
@@ -406,7 +406,7 @@ function sdirk_adjoint_step(m::SDIRKMethod, ctx::ImplicitContext, u, p, t, h, λ
         else
             ωq == 0 || _addto!(rhs, h * γ * ωq, ψ.w)
             Fi = _factor_at(ctx, ops, Zi, p, ti, σW)
-            issuccess_lu(Fi) || error("W is singular at the converged stage $i (t = $t, h = $h)")
+            issuccess_lu(Fi) || throw(ReplayMismatchError("W is singular at the converged stage $i (t = $t, h = $h)"))
             lu_solve_transpose(Fi, rhs .* σW)
         end
         σ[i] = zeros(N)
@@ -514,7 +514,7 @@ function one_stage_adjoint(m::Union{ThetaMethod, IMEXEulerMethod}, ctx::Implicit
         rhs = copy(λ)
         ψ === nothing || _addto!(rhs, h * γ, ψ.w)
         Fx = _factor_at(ctx, opsI, st.Z, p, t + h, st.σ)
-        issuccess_lu(Fx) || error("W is singular at the converged state (t = $t, h = $h)")
+        issuccess_lu(Fx) || throw(ReplayMismatchError("W is singular at the converged state (t = $t, h = $h)"))
         lu_solve_transpose(Fx, rhs .* st.σ)
     end
     λn = copy(ω)

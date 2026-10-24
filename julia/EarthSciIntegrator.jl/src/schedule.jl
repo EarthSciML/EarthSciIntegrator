@@ -209,8 +209,9 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         throw(ConfigError("leaf $id: theta is an option of the Theta method, not $alg"))
     haskey(spec, "imex") && tab.family !== :imex &&
         throw(ConfigError("leaf $id: imex is an option of IMEX methods (IMEXEuler), not $alg"))
-    isolve = String(get(spec, "implicit_solve", "converged"))
-    isolve in ("converged", "linearized") || throw(ConfigError("leaf $id: implicit_solve '$isolve' (converged or linearized)"))
+    isolve = get(spec, "implicit_solve", "converged")
+    isolve in ("converged", "linearized") ||
+        throw(ConfigError("leaf $id: implicit_solve $(repr(isolve)) (\"converged\" or \"linearized\")"))
     haskey(spec, "implicit_solve") && !(tab.family in (:imex, :theta, :sdirk)) &&
         throw(ConfigError("leaf $id: implicit_solve is an option of implicit methods, not $alg"))
     isolve == "linearized" && tab.family !== :imex &&
@@ -218,17 +219,30 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     theta = NaN
     if tab.family === :theta
         haskey(spec, "theta") || throw(ConfigError("leaf $id: the Theta method needs the leaf option theta (spec/methods.md §6)"))
-        theta = Float64(spec["theta"])
+        th = spec["theta"]
+        (th isa Real && !(th isa Bool)) || throw(ConfigError("leaf $id: theta = $(repr(th)) is not a number"))
+        theta = Float64(th)
         0 <= theta <= 1 || throw(ConfigError("leaf $id: theta = $theta is outside [0, 1]"))
     end
     imex = nothing
     if tab.family === :imex
         haskey(spec, "imex") || throw(ConfigError("leaf $id: IMEXEuler needs the leaf option imex (spec/run-config.md §4.5)"))
-        part(x) = x === nothing ? nothing : x isa AbstractString ? [String(x)] : String.(x)
+        spec["imex"] isa AbstractDict || throw(ConfigError("leaf $id: imex must be an object with implicit and explicit parts"))
+        function part(x)
+            x === nothing && return nothing
+            x isa AbstractString && return [String(x)]
+            (x isa AbstractVector && all(e -> e isa AbstractString, x)) ||
+                throw(ConfigError("leaf $id: an imex part is a name or a list of names, not $(repr(x))"))
+            return String.(x)
+        end
         impl, expl = part(get(spec["imex"], "implicit", nothing)), part(get(spec["imex"], "explicit", nothing))
-        impl === nothing && throw(ConfigError("leaf $id: imex needs an implicit part"))
+        (impl === nothing || isempty(impl)) &&
+            throw(ConfigError("leaf $id: imex needs a non-empty implicit part (with none, the step is forward Euler)"))
         for n in vcat(impl, something(expl, String[]))
-            n in names || throw(ConfigError("leaf $id: imex names '$n', which is not an operator of the leaf"))
+            # Entries may also be locality names (spec/run-config.md §4.5); the toy
+            # operators declare no locality, so M1 accepts operator names only.
+            n in names || throw(ConfigError("leaf $id: imex names '$n', which is not an operator of the leaf; " *
+                                            "locality names are not supported at M1"))
         end
         expl === nothing && (expl = [n for n in names if !(n in impl)])
         # Every term in exactly one part (spec/run-config.md §8 rule 6).
@@ -239,9 +253,6 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         # Each part sums its operators in the leaf's declared order.
         opsI = OperatorSum([prob.operators[n] for n in names if n in impl])
         opsE = isempty(expl) ? nothing : OperatorSum([prob.operators[n] for n in names if n in expl])
-        # The two solves coincide when the implicit terms are linear in u, and the
-        # converged form is recorded then (spec/adjoint.md §4.4).
-        linear_in_u(opsI) && (isolve = "converged")
         imex = (opsE, opsI)
     end
     method = method_for(tab; theta, linearized = isolve == "linearized")
@@ -258,10 +269,13 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         jacobian in ("auto", "symbolic") ||
             throw(UnsupportedError("leaf $id: jacobian '$jacobian' is not implemented in this stage (symbolic is)"))
         linsolve = parse_linsolve(get(spec, "linsolve", nothing), structure(opsum), id)
-        # operator-interface.md §3: `jac` for Rosenbrock leaves, `ft` for those
-        # whose operators depend on t.
+        # operator-interface.md §3: `jac` from the operators whose Jacobian the method
+        # forms (all of them, except IMEX Euler's explicit part and every operator of
+        # a θ = 0 leaf), `ft` for Rosenbrock leaves whose operators depend on t.
+        jac_ops = imex !== nothing ? collect(imex[2].ops) : (method isa ThetaMethod && method.theta == 0) ? [] : ops
         for op in ops
-            provides(op, :jac) || throw(ConfigError("operator '$(opname(op))' of leaf $id does not provide jac, which $alg needs"))
+            op in jac_ops && !provides(op, :jac) &&
+                throw(ConfigError("operator '$(opname(op))' of leaf $id does not provide jac, which $alg needs"))
             method isa RosenbrockMethod && method.uses_ft && depends_on_t(op) && !provides(op, :ft) &&
                 throw(ConfigError("operator '$(opname(op))' of leaf $id depends on t but does not provide ft, which $alg needs"))
         end
