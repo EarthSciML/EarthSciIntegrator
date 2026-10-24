@@ -146,6 +146,12 @@ impl<T: Scalar> Schedule<T> {
                     ));
                 }
                 let n = n.ok_or_else(|| Error::Config("subcycle needs n".into()))?;
+                if n < 1 {
+                    return Err(Error::Config(format!(
+                        "subcycle {}: n = {n}; it must be at least 1 (run-config §4.8)",
+                        id_or(id)
+                    )));
+                }
                 // The child is `<id>.subcycle` (spec/plan.md §3's `root.1.every` pattern).
                 let id = id_or(id);
                 let child =
@@ -364,6 +370,15 @@ fn build_leaf<T: Scalar>(
         };
         binds.push((i, k));
     }
+    // spec/methods.md §9: the first step evaluates f before there is a step
+    // whose size a "leaf" binding could give.
+    if dt_mode == DtMode::Adaptive && dt0.is_none() && binds.iter().any(|b| b.1 == BindKind::Leaf) {
+        return Err(Error::Config(format!(
+            "leaf {id}: an adaptive leaf with a bind_dt \"leaf\" parameter needs control.dt0, \
+             because the first-step algorithm evaluates f before any step size exists \
+             (spec/methods.md §9, run-config §8 rule 14)"
+        )));
+    }
 
     Ok(LeafSpec {
         id: id.to_string(),
@@ -381,6 +396,7 @@ fn build_leaf<T: Scalar>(
         maxiters: ctl.maxiters,
         domain,
         binds,
+        work: Default::default(),
     })
 }
 
@@ -502,8 +518,17 @@ impl<'a, T: Scalar> Exec<'a, T> {
                 let path = self.path(id);
                 let leaf = &self.sched.leaves[*idx];
                 let rec = self.recorded(&path)?;
+                // Replay takes the recorded steps and reproduces the recorded
+                // rejected count, which leaves no other trace (spec/tape.md §2).
+                let mut replayed_rejected = None;
                 let replay = match rec {
-                    Some(TapeRecord::Leaf { steps, clips, .. }) => {
+                    Some(TapeRecord::Leaf {
+                        steps,
+                        clips,
+                        rejected,
+                        ..
+                    }) => {
+                        replayed_rejected = Some(*rejected);
                         Some((steps.as_slice(), clips.as_slice()))
                     }
                     Some(_) => {
@@ -539,7 +564,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     dt: delta,
                     steps: out.steps.clone(),
                     accepted: out.accepted,
-                    rejected: out.rejected,
+                    rejected: replayed_rejected.unwrap_or(out.rejected),
                     retcode: out.retcode,
                     clips: out.clips.clone(),
                 });
@@ -756,13 +781,31 @@ impl<T: Scalar> RunSpec<T> {
         out_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
         out_times.dedup();
         if let Some(adj) = &rc.adjoint {
+            // Parameters bound by bind_dt are tape constants (spec/adjoint.md §5.8).
+            let mut bound = vec![false; problem.p.len()];
+            for l in &schedule.leaves {
+                for &(i, _) in &l.binds {
+                    bound[i] = true;
+                }
+            }
             for w in &adj.wrt {
                 if w == "u0" {
                     wrt_u0 = true;
                 } else if let Some(pat) = w.strip_prefix("params:") {
+                    // A name refers to one parameter, refused when bound
+                    // (run-config §8 rule 11); a pattern skips bound ones.
+                    let is_pattern = pat == "numeric" || pat.contains('*');
                     let mut any = false;
                     for (i, name) in problem.param_names.iter().enumerate() {
                         if pat == "numeric" || glob(pat, name) {
+                            if bound[i] {
+                                if !is_pattern {
+                                    return Err(Error::Config(format!(
+                                        "wrt {w:?} names a parameter bound by bind_dt, a constant of the frozen tape (run-config §8 rule 11, spec/adjoint.md §5.8)"
+                                    )));
+                                }
+                                continue;
+                            }
                             wrt_p[i] = true;
                             any = true;
                         }
@@ -851,11 +894,22 @@ impl<T: Scalar> RunSpec<T> {
             }
             // Output times are tstops: macro-step boundaries under a fixed
             // step.dt (run-config §8 rule 9), or stops inside the interval of a
-            // root leaf (spec/methods.md §10).
-            if !bounds.contains(&x) && !matches!(schedule.root, SNode::Leaf { .. }) {
-                return Err(Error::Config(format!(
-                    "output time {x} is not a multiple of step.dt = {macro_dt}"
-                )));
+            // root leaf that substeps (spec/methods.md §10). A "step" or
+            // "accumulated" leaf takes exactly one step of the node's Δ
+            // (run-config §4.2), so it cannot land on one.
+            if !bounds.contains(&x) {
+                let substeps = match schedule.root {
+                    SNode::Leaf { idx, .. } => matches!(
+                        schedule.leaves[idx].dt_mode,
+                        DtMode::Adaptive | DtMode::Fixed(_)
+                    ),
+                    _ => false,
+                };
+                if !substeps {
+                    return Err(Error::Config(format!(
+                        "output time {x} is not a multiple of step.dt = {macro_dt}, and the schedule root is not a leaf that substeps to land on it (run-config §4.2, §8 rule 9)"
+                    )));
+                }
             }
         }
         if let Some(f) = &functional {

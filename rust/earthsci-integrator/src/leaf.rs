@@ -14,7 +14,7 @@ use earthsci_integrator_solvers::erk::{ErkWork, ExplicitRk};
 use earthsci_integrator_solvers::initdt::{initial_dt, InitDtInput};
 use earthsci_integrator_solvers::norm::{error_norm, Tolerances};
 use earthsci_integrator_solvers::scalar::eps_f64;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// The leaf's method.
 #[derive(Debug, Clone)]
@@ -106,6 +106,15 @@ pub struct LeafSpec<T: Scalar> {
     pub domain: Option<DomainSpec>,
     /// `(parameter index, binding)`.
     pub binds: Vec<(usize, BindKind)>,
+    /// Workspaces kept across invocations, one per invocation in flight.
+    pub work: Mutex<Vec<LeafWork<T>>>,
+}
+
+/// A leaf's step workspace: the method's, and the stored
+/// first-same-as-last value (spec/methods.md §3.3).
+pub struct LeafWork<T> {
+    erk: ErkWork<T>,
+    fsal: Vec<T>,
 }
 
 /// One accepted step as the adjoint needs it.
@@ -167,17 +176,26 @@ impl<T: Scalar> LeafSpec<T> {
         LeafPersist::new(self.controller.as_ref().map(|c| c.initial_state()))
     }
 
-    /// Parameters with the bound ones set for a step of size `h`.
-    fn bound_params(&self, p: &[f64], h: f64, call: &LeafCall<'_>) -> Vec<f64> {
-        let mut q = p.to_vec();
+    /// Parameters with the bound ones set for a step of size `h`: `p` itself
+    /// when the leaf binds nothing, else `buf` (a copy of `p`) with them set.
+    fn params<'b>(
+        &self,
+        p: &'b [f64],
+        buf: &'b mut [f64],
+        h: f64,
+        call: &LeafCall<'_>,
+    ) -> &'b [f64] {
+        if self.binds.is_empty() {
+            return p;
+        }
         for &(i, k) in &self.binds {
-            q[i] = match k {
+            buf[i] = match k {
                 BindKind::Leaf => h,
                 BindKind::Node => call.delta,
                 BindKind::Macro => call.macro_dt,
             };
         }
-        q
+        buf
     }
 
     /// `out = Σ_k f_k(u, p, t)`, operators in declared order (operator-interface.md §3).
@@ -247,7 +265,31 @@ impl<T: Scalar> LeafSpec<T> {
     ) -> Result<LeafOutcome<T>, Error> {
         let LeafMethod::Erk(m) = &self.method;
         let n = u.len();
-        let mut w: ErkWork<T> = m.workspace(n);
+        let pooled = self.work.lock().ok().and_then(|mut v| v.pop());
+        let mut w = match pooled {
+            Some(w) if w.fsal.len() == n => w,
+            _ => LeafWork {
+                erk: m.workspace(n),
+                fsal: vec![T::zero(); n],
+            },
+        };
+        w.erk.nf = 0;
+        let out = self.invoke_with(m, &mut w, u, persist, call);
+        if let Ok(mut v) = self.work.lock() {
+            v.push(w);
+        }
+        out
+    }
+
+    fn invoke_with(
+        &self,
+        m: &ExplicitRk,
+        lw: &mut LeafWork<T>,
+        u: &mut [T],
+        persist: &mut LeafPersist,
+        call: &LeafCall<'_>,
+    ) -> Result<LeafOutcome<T>, Error> {
+        let LeafWork { erk: w, fsal } = lw;
         let mut out = LeafOutcome {
             steps: Vec::new(),
             accepted: 0,
@@ -263,21 +305,34 @@ impl<T: Scalar> LeafSpec<T> {
         let mut stops: Vec<f64> = call.stops.to_vec();
         stops.push(t1);
         let next_stop = |t: f64| stops.iter().copied().find(|&s| s > t).unwrap_or(t1);
-        // spec/methods.md §3.3: the stored first-same-as-last value, with the
-        // time it was evaluated at, is invalid at entry to every invocation.
-        let mut cache: Option<(Vec<T>, f64)> = None;
+        // Bound parameters are written into a copy of p (none when nothing is bound).
+        let mut pbuf: Vec<f64> = if self.binds.is_empty() {
+            Vec::new()
+        } else {
+            call.p.to_vec()
+        };
+        // spec/methods.md §3.3: the stored first-same-as-last value, in `fsal`,
+        // is valid while `cache` holds the time it was evaluated at and the
+        // size of the step that bound its parameters. It is invalid at entry
+        // to every invocation, and with `bind_dt: "leaf"` parameters only a
+        // step of that same size reuses it, since they change with h.
+        let mut cache: Option<(f64, f64)> = None;
+        let leaf_bound = self.binds.iter().any(|b| b.1 == BindKind::Leaf);
 
-        // One step of size h from (u, t); returns E when wanted, the
-        // parameters the step saw and the time of its first stage.
+        // One step of size h from (u, t) into `w`; returns E when wanted and
+        // the time of its first stage.
         let take = |w: &mut ErkWork<T>,
+                    pbuf: &mut [f64],
+                    fsal: &[T],
+                    cache: Option<(f64, f64)>,
                     u: &[T],
                     t: f64,
                     h: f64,
-                    cache: &Option<(Vec<T>, f64)>,
                     want_err: bool|
-         -> (Option<f64>, Vec<f64>, f64) {
-            let pb = self.bound_params(call.p, h, call);
-            let mut f = |o: &mut [T], uu: &[T], tt: f64| self.rhs(o, uu, &pb, tt);
+         -> (Option<f64>, f64) {
+            let pb = self.params(call.p, pbuf, h, call);
+            let reuse = cache.filter(|&(_, hb)| !leaf_bound || hb == h);
+            let mut f = |o: &mut [T], uu: &[T], tt: f64| self.rhs(o, uu, pb, tt);
             let tol = &self.tol;
             let dofs = &self.dofs;
             let mut norm = |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol, dofs);
@@ -287,11 +342,20 @@ impl<T: Scalar> LeafSpec<T> {
                 u,
                 t,
                 h,
-                cache.as_ref().map(|c| c.0.as_slice()),
+                reuse.map(|_| fsal),
                 if want_err { Some(&mut norm) } else { None },
             );
-            let tk1 = cache.as_ref().map_or(m.stage_time(0, t, h), |c| c.1);
-            (e, pb, tk1)
+            let tk1 = reuse.map_or(m.stage_time(0, t, h), |c| c.0);
+            (e, tk1)
+        };
+        // After an accepted step: keep f(u_{n+1}, t_n + h) unless clipped.
+        let keep = |w: &mut ErkWork<T>, fsal: &mut Vec<T>, clipped: bool, t: f64, h: f64| {
+            if !clipped && w.has_fend {
+                std::mem::swap(fsal, &mut w.fend);
+                Some((t + h, h))
+            } else {
+                None
+            }
         };
 
         // Replay: the recorded steps, controller off (spec/tape.md §3).
@@ -308,7 +372,7 @@ impl<T: Scalar> LeafSpec<T> {
                         out.stage_data.push(StepData {
                             t,
                             h,
-                            p: self.bound_params(call.p, h, call),
+                            p: self.params(call.p, &mut pbuf, h, call).to_vec(),
                             y: Vec::new(),
                             clip: None,
                             tk1: t,
@@ -316,30 +380,25 @@ impl<T: Scalar> LeafSpec<T> {
                         });
                     }
                 } else {
-                    let (_, pb, tk1) = take(&mut w, u, t, h, &cache, false);
-                    let mut unew = w.unew.clone();
+                    let (_, tk1) = take(w, &mut pbuf, fsal, cache, u, t, h, false);
                     let mut clip = None;
                     if let Some((_, mask)) = clips.iter().find(|(k, _)| *k == i) {
-                        self.clip_frozen(&mut unew, mask);
+                        self.clip_frozen(&mut w.unew, mask);
                         clip = Some(mask.clone());
                     }
                     if call.record_stages {
                         out.stage_data.push(StepData {
                             t,
                             h,
-                            p: pb,
+                            p: self.params(call.p, &mut pbuf, h, call).to_vec(),
                             y: w.y.clone(),
                             clip: clip.clone(),
                             tk1,
                             skipped: false,
                         });
                     }
-                    cache = if clip.is_none() && w.has_fend {
-                        Some((w.fend.clone(), t + h))
-                    } else {
-                        None
-                    };
-                    u.copy_from_slice(&unew);
+                    cache = keep(w, fsal, clip.is_some(), t, h);
+                    u.copy_from_slice(&w.unew);
                     if let Some(mk) = clip {
                         out.clips.push((i, mk));
                     }
@@ -373,7 +432,8 @@ impl<T: Scalar> LeafSpec<T> {
             let h0 = match self.dt0 {
                 Some(d) => fix(d, t0),
                 None => {
-                    let pb = self.bound_params(call.p, 0.0, call);
+                    // The build refuses a "leaf" binding here (spec/methods.md §9).
+                    let pb = self.params(call.p, &mut pbuf, 0.0, call);
                     let inp = InitDtInput {
                         u0: u,
                         t0,
@@ -383,7 +443,7 @@ impl<T: Scalar> LeafSpec<T> {
                         dofs: &self.dofs,
                         order: self.method.order(),
                     };
-                    let (h0, nf) = initial_dt(&inp, &mut |o, uu, tt| self.rhs(o, uu, &pb, tt));
+                    let (h0, nf) = initial_dt(&inp, &mut |o, uu, tt| self.rhs(o, uu, pb, tt));
                     out.rhs_calls += nf as u64;
                     h0
                 }
@@ -402,7 +462,11 @@ impl<T: Scalar> LeafSpec<T> {
             .unwrap_or(if adaptive { 1_000_000 } else { u64::MAX });
         let mut t = t0;
         let mut iter: u64 = 0;
-        let mut last_rejected = false;
+        // Whether the leaf's previous step attempt was accepted. An invocation
+        // ends on an accepted step, so at entry this is whether the leaf has
+        // accepted a step: the first attempt of the run counts as following a
+        // rejection, as in OrdinaryDiffEq (its `accept_step` starts false).
+        let mut prev_accepted = persist.ctrl.as_ref().is_some_and(|c| c.accepted_any);
         loop {
             if t >= t1 {
                 break;
@@ -411,18 +475,20 @@ impl<T: Scalar> LeafSpec<T> {
             let hc = if adaptive { fix(hctrl, t) } else { fixed_dt };
             let (h, is_stop) = stop_rule(t, hc, ts);
             iter += 1;
-            // Limits and return codes (spec/methods.md §12), checked before the
-            // attempt in SciMLBase `check_error`'s order.
+            // Limits and return codes (spec/methods.md §12), checked before
+            // every attempt in SciMLBase `check_error`'s order. A step at or
+            // below dtmin is allowed only when the previous attempt was
+            // accepted and this one lands on the stop.
             if h.is_nan() {
                 out.retcode = Retcode::DtNaN;
                 break;
             } else if iter > maxiters {
                 out.retcode = Retcode::MaxIters;
                 break;
-            } else if adaptive && dtmin > 0.0 && h <= dtmin && (last_rejected || t + h < ts) {
+            } else if adaptive && dtmin > 0.0 && h <= dtmin && (!prev_accepted || t + h < ts) {
                 out.retcode = Retcode::DtLessThanMin;
                 break;
-            } else if adaptive && last_rejected && h <= eps_f64(t) {
+            } else if adaptive && !prev_accepted && h <= eps_f64(t) {
                 out.retcode = Retcode::Unstable;
                 break;
             }
@@ -430,11 +496,13 @@ impl<T: Scalar> LeafSpec<T> {
             if is_stop && h < eps_f64(t) {
                 // handle_tstop_step!: accepted without computing it; recorded
                 // and counted, and the stored first-same-as-last value dropped.
+                // Nothing else changes: not the proposal, the controller's
+                // history or whether the leaf has accepted a step (spec/methods.md §10).
                 if call.record_stages {
                     out.stage_data.push(StepData {
                         t,
                         h,
-                        p: self.bound_params(call.p, h, call),
+                        p: self.params(call.p, &mut pbuf, h, call).to_vec(),
                         y: Vec::new(),
                         clip: None,
                         tk1: t,
@@ -444,16 +512,14 @@ impl<T: Scalar> LeafSpec<T> {
                 out.steps.push([t, h]);
                 out.accepted += 1;
                 cache = None;
-                last_rejected = false;
                 t = tnew;
                 if t != t1 && call.stops.contains(&t) {
                     out.stop_states.push((t, u.to_vec()));
                 }
                 continue;
             }
-            let (e, pb, tk1) = take(&mut w, u, t, h, &cache, adaptive);
-            let mut unew = w.unew.clone();
-            let violation = self.violates(&unew) && !self.domain.as_ref().is_some_and(|d| d.clip);
+            let (e, tk1) = take(w, &mut pbuf, fsal, cache, u, t, h, adaptive);
+            let violation = self.violates(&w.unew) && !self.domain.as_ref().is_some_and(|d| d.clip);
             if let Some(ctrl) = ctrl {
                 let cs = persist
                     .ctrl
@@ -469,14 +535,22 @@ impl<T: Scalar> LeafSpec<T> {
                         // h is the step attempted, shortened if it was a stop step.
                         Decision::Reject => Some(ctrl.reject(&ev, h)),
                         Decision::Accept => {
-                            // D61 (spec/methods.md §8.6): the proposal comes
-                            // from the size of the step actually taken, so after
-                            // a step shortened to land on a stop it comes from
-                            // the shortened size, as OrdinaryDiffEqCore 4.19.0
-                            // does (its second modify_dt_for_tstops! call, in
-                            // loopheader!, overwrites dtpropose with the
-                            // shortened dt).
-                            let prop = ctrl.accept(cs, &ev, e, h);
+                            // D61 (spec/methods.md §8.6): after a stop step
+                            // shortened from the controller's size hc, the
+                            // proposal comes from the shortened h when the
+                            // previous attempt was accepted, and from hc when
+                            // this is the leaf's first attempt of the run or
+                            // follows a rejection. OrdinaryDiffEqCore 4.19.0
+                            // restores the size modify_dt_for_tstops! saved;
+                            // after an accepted step its second call (in
+                            // loopheader!) saves the shortened size, raised
+                            // to dtmin by the fix_dt_at_bounds! before it.
+                            let hb = match (is_stop, prev_accepted) {
+                                (false, _) => h,
+                                (true, true) => fix(h, t),
+                                (true, false) => hc,
+                            };
+                            let prop = ctrl.accept(cs, &ev, e, hb);
                             hctrl = fix((tnew + prop) - tnew, tnew);
                             None
                         }
@@ -485,11 +559,11 @@ impl<T: Scalar> LeafSpec<T> {
                 if let Some(hn) = reject_to {
                     out.rejected += 1;
                     hctrl = hn;
-                    last_rejected = true;
+                    prev_accepted = false;
                     continue;
                 }
             } else {
-                if unew.iter().any(|x| !x.is_finite()) {
+                if w.unew.iter().any(|x| !x.is_finite()) {
                     out.retcode = Retcode::Unstable;
                     break;
                 }
@@ -499,13 +573,13 @@ impl<T: Scalar> LeafSpec<T> {
                 }
             }
             // Accepted.
-            let clip = self.clip(&mut unew);
+            let clip = self.clip(&mut w.unew);
             let k = out.steps.len();
             if call.record_stages {
                 out.stage_data.push(StepData {
                     t,
                     h,
-                    p: pb,
+                    p: self.params(call.p, &mut pbuf, h, call).to_vec(),
                     y: w.y.clone(),
                     clip: clip.clone(),
                     tk1,
@@ -514,17 +588,12 @@ impl<T: Scalar> LeafSpec<T> {
             }
             out.steps.push([t, h]);
             out.accepted += 1;
-            // The end-of-step value f(u_{n+1}, t_n + h), unless clipped.
-            cache = if clip.is_none() && w.has_fend {
-                Some((w.fend.clone(), t + h))
-            } else {
-                None
-            };
+            cache = keep(w, fsal, clip.is_some(), t, h);
             if let Some(mk) = clip {
                 out.clips.push((k, mk));
             }
-            u.copy_from_slice(&unew);
-            last_rejected = false;
+            u.copy_from_slice(&w.unew);
+            prev_accepted = true;
             t = tnew;
             if t != t1 && call.stops.contains(&t) {
                 out.stop_states.push((t, u.to_vec()));

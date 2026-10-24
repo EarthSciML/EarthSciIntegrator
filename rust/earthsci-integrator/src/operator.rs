@@ -208,6 +208,10 @@ pub trait Operator<T: Scalar>: Send + Sync {
 pub trait MapOperator<T: Scalar>: Send + Sync {
     /// The operator's name in the schedule.
     fn name(&self) -> &str;
+    /// The DOFs (full-state indices, ascending) the map writes. The caller
+    /// fills `out` with `u` before `apply`, so every other DOF passes
+    /// through unchanged, and `map_vjp` covers only the written rows.
+    fn writes(&self) -> Vec<usize>;
     /// Writes `M(u, p, t, Δ)` into `out` (overwrites) and the decisions into `mask`.
     fn apply(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, dt: f64, mask: &mut Vec<u8>);
     /// Like `apply`, with the decisions held at `mask` (the frozen-tape map).

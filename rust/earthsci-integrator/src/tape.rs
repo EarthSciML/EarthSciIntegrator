@@ -27,9 +27,12 @@ pub enum Retcode {
 pub enum TapeRecord {
     Leaf {
         path: String,
+        #[serde(with = "num")]
         t: f64,
+        #[serde(with = "num")]
         dt: f64,
         /// The accepted steps `(t_n, h_n)`.
+        #[serde(with = "num_pairs")]
         steps: Vec<[f64; 2]>,
         accepted: u64,
         rejected: u64,
@@ -44,21 +47,27 @@ pub enum TapeRecord {
     },
     Subcycle {
         path: String,
+        #[serde(with = "num")]
         t: f64,
+        #[serde(with = "num")]
         dt: f64,
         /// Number of substeps.
         n: usize,
     },
     Map {
         path: String,
+        #[serde(with = "num")]
         t: f64,
+        #[serde(with = "num")]
         dt: f64,
         /// The map's recorded discrete decisions.
         mask: Vec<u8>,
     },
     Macro {
         path: String,
+        #[serde(with = "num")]
         t: f64,
+        #[serde(with = "num")]
         dt: f64,
         /// The reason for the macro step's size (spec/run-config.md §5).
         reason: String,
@@ -76,12 +85,155 @@ impl TapeRecord {
         }
     }
 
-    /// Bitwise equality: like `==`, but `0.0` and `-0.0` differ and NaNs
-    /// with equal bits are equal.
+    /// Bitwise equality: like `==`, but numbers compare by their bits, so
+    /// `0.0` and `-0.0` differ and NaNs with equal bits are equal.
     pub fn bitwise_eq(&self, other: &TapeRecord) -> bool {
-        // The serialized form is shortest round-trip, so equal strings mean
-        // equal bits for every finite number.
-        serde_json::to_string(self).ok() == serde_json::to_string(other).ok() && self == other
+        use TapeRecord as R;
+        let b = |x: &f64, y: &f64| x.to_bits() == y.to_bits();
+        match (self, other) {
+            (
+                R::Leaf {
+                    path,
+                    t,
+                    dt,
+                    steps,
+                    accepted,
+                    rejected,
+                    retcode,
+                    clips,
+                },
+                R::Leaf {
+                    path: path2,
+                    t: t2,
+                    dt: dt2,
+                    steps: steps2,
+                    accepted: accepted2,
+                    rejected: rejected2,
+                    retcode: retcode2,
+                    clips: clips2,
+                },
+            ) => {
+                path == path2
+                    && b(t, t2)
+                    && b(dt, dt2)
+                    && steps.len() == steps2.len()
+                    && steps
+                        .iter()
+                        .zip(steps2)
+                        .all(|(x, y)| b(&x[0], &y[0]) && b(&x[1], &y[1]))
+                    && accepted == accepted2
+                    && rejected == rejected2
+                    && retcode == retcode2
+                    && clips == clips2
+            }
+            (
+                R::Subcycle { path, t, dt, n },
+                R::Subcycle {
+                    path: path2,
+                    t: t2,
+                    dt: dt2,
+                    n: n2,
+                },
+            ) => path == path2 && b(t, t2) && b(dt, dt2) && n == n2,
+            (
+                R::Map { path, t, dt, mask },
+                R::Map {
+                    path: path2,
+                    t: t2,
+                    dt: dt2,
+                    mask: mask2,
+                },
+            ) => path == path2 && b(t, t2) && b(dt, dt2) && mask == mask2,
+            (
+                R::Macro {
+                    path,
+                    t,
+                    dt,
+                    reason,
+                },
+                R::Macro {
+                    path: path2,
+                    t: t2,
+                    dt: dt2,
+                    reason: reason2,
+                },
+            ) => path == path2 && b(t, t2) && b(dt, dt2) && reason == reason2,
+            _ => false,
+        }
+    }
+}
+
+/// Numbers in the JSON Lines form (spec/tape.md §5): finite ones in shortest
+/// round-trip form, non-finite ones as the strings `"NaN"`, `"Infinity"` and
+/// `"-Infinity"`, which JSON numbers cannot hold.
+mod num {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(x: &f64, s: S) -> Result<S::Ok, S::Error> {
+        if x.is_finite() {
+            s.serialize_f64(*x)
+        } else if x.is_nan() {
+            s.serialize_str("NaN")
+        } else if *x > 0.0 {
+            s.serialize_str("Infinity")
+        } else {
+            s.serialize_str("-Infinity")
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    pub enum Num {
+        F(f64),
+        S(String),
+    }
+
+    impl Num {
+        pub fn value<E: serde::de::Error>(self) -> Result<f64, E> {
+            match self {
+                Num::F(x) => Ok(x),
+                Num::S(s) => match s.as_str() {
+                    "NaN" => Ok(f64::NAN),
+                    "Infinity" => Ok(f64::INFINITY),
+                    "-Infinity" => Ok(f64::NEG_INFINITY),
+                    o => Err(E::custom(format!("{o:?} is not a number"))),
+                },
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        Num::deserialize(d)?.value()
+    }
+}
+
+/// `steps` with the number form of [`num`].
+mod num_pairs {
+    use super::num::Num;
+    use serde::ser::SerializeSeq;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    struct N(f64);
+
+    impl Serialize for N {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            super::num::serialize(&self.0, s)
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &[[f64; 2]], s: S) -> Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(Some(v.len()))?;
+        for x in v {
+            seq.serialize_element(&[N(x[0]), N(x[1])])?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<[f64; 2]>, D::Error> {
+        Vec::<[Num; 2]>::deserialize(d)?
+            .into_iter()
+            .map(|[a, b]| Ok([a.value()?, b.value()?]))
+            .collect()
     }
 }
 
@@ -283,5 +435,49 @@ mod tests {
         }
         assert_eq!(tape.macro_segment(0).len(), 4);
         assert_eq!(tape.step_counts(), (2, 1));
+    }
+
+    #[test]
+    fn non_finite_numbers_round_trip() {
+        let tape = Tape {
+            records: vec![
+                TapeRecord::Leaf {
+                    path: "0/root".into(),
+                    t: 0.0,
+                    dt: f64::INFINITY,
+                    steps: vec![[0.0, f64::NAN], [-0.0, f64::NEG_INFINITY]],
+                    accepted: 2,
+                    rejected: 0,
+                    retcode: Retcode::DtNaN,
+                    clips: vec![],
+                },
+                TapeRecord::Macro {
+                    path: "0".into(),
+                    t: f64::NAN,
+                    dt: f64::NEG_INFINITY,
+                    reason: "step.dt".into(),
+                },
+            ],
+        };
+        let s = tape.to_jsonl();
+        assert!(
+            s.contains(r#""steps":[[0.0,"NaN"],[-0.0,"-Infinity"]]"#),
+            "{s}"
+        );
+        assert!(s.contains(r#""dt":"Infinity""#), "{s}");
+        let back = Tape::from_jsonl(&s).unwrap();
+        for (a, b) in back.records.iter().zip(&tape.records) {
+            assert!(a.bitwise_eq(b), "{a:?} {b:?}");
+            assert!(a.bitwise_eq(a));
+        }
+        // Bits, not values: 0.0 and -0.0 differ.
+        let mut other = tape.records[0].clone();
+        if let TapeRecord::Leaf { steps, .. } = &mut other {
+            steps[1][0] = 0.0;
+        }
+        assert!(!other.bitwise_eq(&tape.records[0]));
+        assert!(
+            Tape::from_jsonl(r#"{"node":"map","path":"0/m","t":"nan","dt":1,"mask":[]}"#).is_err()
+        );
     }
 }

@@ -455,8 +455,9 @@ fn f32_state() {
     assert!(g.u0.iter().all(|x| x.is_finite()));
 }
 
-/// D61: after a step shortened to land on a stop, the proposal comes from the
-/// shortened size, as in OrdinaryDiffEqCore 4.19.0. OrdinaryDiffEq's Tsit5 on
+/// D61: after a step shortened to land on a stop that followed an accepted
+/// step, the proposal comes from the shortened size, as in OrdinaryDiffEqCore
+/// 4.19.0. OrdinaryDiffEq's Tsit5 on
 /// van_der_pol/nonstiff at reltol 1e-8, abstol 1e-10 with tstops at 1 and 3
 /// takes 170 accepted and 2 rejected steps with 1035 f evaluations.
 #[test]
@@ -475,4 +476,204 @@ fn tsit5_step_counts_match_ordinarydiffeq() {
     for (a, b) in f.final_state().iter().zip(ode) {
         assert!((a - b).abs() < 1e-12, "{a} vs {b}");
     }
+}
+
+/// D61 when the shortened stop step is the leaf's first attempt of the run:
+/// the proposal comes from the unshortened size. OrdinaryDiffEqCore 4.19.0's
+/// Tsit5 on van_der_pol/nonstiff (out-of-place problem, reltol 1e-8, abstol
+/// 1e-10; the `tools/tableaus` project) takes, with `dt = 0.01` and tstops at
+/// 1e-5, 1 and 3, 166 accepted and 5 rejected steps with 1027 f evaluations;
+/// with `dt = 0.1` and tstops at 0.002, 1 and 3, 161, 6 and 1003. Its first
+/// step lands on the first tstop in both. (OrdinaryDiffEq caps the automatic
+/// first step at the first tstop, so these cases give `dt0`.)
+#[test]
+fn tsit5_step_counts_match_ordinarydiffeq_first_step_on_a_stop() {
+    #[allow(clippy::type_complexity)]
+    let cases: [(f64, &[f64], (u64, u64, u64), [f64; 2]); 3] = [
+        (
+            0.1,
+            &[0.002, 1.0, 3.0, 6.3],
+            (161, 6, 1003),
+            [1.832135188412958, 1.161899074957998],
+        ),
+        (
+            0.05,
+            &[0.01, 1.0, 3.0, 6.3],
+            (162, 4, 997),
+            [1.8321351883177492, 1.161899075326617],
+        ),
+        (
+            0.5,
+            &[0.02, 1.0, 3.0, 6.3],
+            (159, 5, 985),
+            [1.832135188369107, 1.161899075127413],
+        ),
+    ];
+    for (dt0, saveat, counts, ode) in cases {
+        let r = rc(
+            "toy:van_der_pol/nonstiff",
+            json!({"leaf": "oscillator", "alg": "Tsit5",
+                   "control": {"reltol": 1e-8, "abstol": 1e-10, "dt0": dt0}}),
+            6.3,
+            None,
+        );
+        let s = spec(&r, (0.0, 6.3), Some(saveat));
+        let f = s.forward(&s.u0(), &s.problem.p).unwrap();
+        // The first attempt is accepted and lands on the first stop.
+        match &f.tape.records[0] {
+            TapeRecord::Leaf { steps, .. } => assert_eq!(steps[0], [0.0, saveat[0]]),
+            r => panic!("{r:?}"),
+        }
+        assert_eq!((f.accepted, f.rejected, f.rhs_calls), counts, "{saveat:?}");
+        for (a, b) in f.final_state().iter().zip(ode) {
+            assert!((a - b).abs() < 1e-12, "{saveat:?}: {a} vs {b}");
+        }
+    }
+}
+
+/// spec/methods.md §12 with SciMLBase `check_error`: a step at or below dtmin
+/// ends the leaf unless the previous attempt was accepted and the step lands
+/// on a stop; the first attempt of the run follows no accepted step. Matches
+/// OrdinaryDiffEqCore 4.19.0 (DtLessThanMin with the stop at 1e-4; Success
+/// with 12 accepted steps with the stop at 0.1001).
+#[test]
+fn dtmin_and_stop_steps() {
+    let r = rc(
+        "toy:forced_decay",
+        json!({"leaf": "decay", "alg": "Tsit5",
+               "control": {"reltol": 1e-3, "abstol": 1e-6, "dt0": 0.1, "dtmin": 1e-3}}),
+        2.0,
+        None,
+    );
+    let s = spec(&r, (0.0, 2.0), Some(&[1e-4, 2.0]));
+    let e = s.forward(&s.u0(), &s.problem.p).unwrap_err();
+    assert!(
+        matches!(&e, Error::Run(m) if m.contains("DtLessThanMin")),
+        "{e}"
+    );
+    let s = spec(&r, (0.0, 2.0), Some(&[0.1001, 2.0]));
+    let f = s.forward(&s.u0(), &s.problem.p).unwrap();
+    assert_eq!((f.accepted, f.rejected), (12, 0));
+    match &f.tape.records[0] {
+        TapeRecord::Leaf { steps, .. } => assert!(steps[1][1] < 1e-3, "{steps:?}"),
+        r => panic!("{r:?}"),
+    }
+}
+
+/// spec/methods.md §3.3: a first-same-as-last value computed with a
+/// `bind_dt: "leaf"` parameter is not reused by a step of another size.
+#[test]
+fn bind_dt_leaf_invalidates_first_same_as_last() {
+    // Heun with dt 0.3 over macro steps of 1: steps 0.3, 0.3, 0.3, 0.1. The
+    // last step must evaluate its first stage with ω = 0.1, not 0.3.
+    let r = rc(
+        "toy:forced_decay",
+        json!({"leaf": "decay", "alg": "Heun", "dt": 0.3, "bind_dt": {"omega": "leaf"}}),
+        1.0,
+        Some(grad_all("u", "final")),
+    );
+    let s = spec(&r, (0.0, 2.0), None);
+    let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    let k = 2.0f64;
+    let mut u = 1.0f64;
+    for m in 0..2 {
+        let mut t = m as f64;
+        for i in 0..4 {
+            let h = if i < 3 { 0.3 } else { (m + 1) as f64 - t };
+            let f = |u: f64, t: f64| -k * u + (h * t).sin();
+            let k1 = f(u, t);
+            let k2 = f(u + h * k1, t + h);
+            u = u + (h * 0.5) * k1 + (h * 0.5) * k2;
+            t += h;
+        }
+    }
+    assert!(
+        (u - fwd.final_state()[0]).abs() < 1e-12,
+        "{u} {}",
+        fwd.final_state()[0]
+    );
+    check_gradient(&r, (0.0, 2.0), None, "Heun bind_dt leaf, dt 0.3");
+    // Adaptive: every step size differs, and rejections retry at new sizes.
+    let r = rc(
+        "toy:forced_decay",
+        json!({"leaf": "decay", "alg": "Tsit5", "bind_dt": {"omega": "leaf"},
+               "control": {"reltol": 1e-6, "abstol": 1e-8, "dt0": 0.5}}),
+        1.0,
+        Some(grad_all("u", "saveat")),
+    );
+    let s = spec(&r, (0.0, 2.0), Some(&[1.0, 2.0]));
+    let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    assert!(fwd.rejected > 0);
+    check_gradient(&r, (0.0, 2.0), Some(&[1.0, 2.0]), "Tsit5 bind_dt leaf");
+}
+
+#[test]
+fn more_refusals() {
+    let build = |sched: Value, adjoint: Option<Value>, saveat: Option<&[f64]>| {
+        let mut v = json!({"esm_integrator": "0.1.0", "model": "toy:forced_decay", "schedule": sched, "step": {"dt": 1}});
+        if let Some(a) = adjoint {
+            v["adjoint"] = a;
+        }
+        RunConfig::from_value(&v).and_then(|r| RunSpec::<f64>::new(&r, (0.0, 2.0), saveat))
+    };
+    let refused = |r: Result<RunSpec<f64>, Error>, what: &str| match r {
+        Err(Error::Config(m)) => println!("{what}: {m}"),
+        Err(e) => panic!("{what}: {e}"),
+        Ok(_) => panic!("{what}: accepted"),
+    };
+    let bound = json!({"leaf": "decay", "alg": "Heun", "dt": 0.1, "bind_dt": {"omega": "leaf"}});
+    // run-config §8 rule 11: a wrt naming a bound parameter.
+    let adj = |wrt: Value| Some(json!({"functional": {"sum": "u", "over": "final"}, "wrt": wrt}));
+    refused(
+        build(bound.clone(), adj(json!(["params:omega"])), None),
+        "wrt bound",
+    );
+    // A pattern skips the bound parameter, or matches nothing.
+    let s = build(bound.clone(), adj(json!(["params:*"])), None).unwrap();
+    assert_eq!(s.wrt_p, vec![true, false]);
+    refused(
+        build(bound.clone(), adj(json!(["params:om*"])), None),
+        "pattern matching only bound",
+    );
+    // spec/methods.md §9: adaptive, bound to the leaf's step, no dt0.
+    refused(
+        build(
+            json!({"leaf": "decay", "alg": "Tsit5", "bind_dt": {"omega": "leaf"}}),
+            None,
+            None,
+        ),
+        "adaptive bind_dt leaf without dt0",
+    );
+    assert!(build(
+        json!({"leaf": "decay", "alg": "Tsit5", "bind_dt": {"omega": "leaf"}, "control": {"dt0": 0.1}}),
+        None,
+        None
+    )
+    .is_ok());
+    // An output time inside a macro step needs a root leaf that substeps.
+    for dt in ["step", "accumulated"] {
+        refused(
+            build(
+                json!({"leaf": "decay", "alg": "ForwardEuler", "dt": dt}),
+                None,
+                Some(&[0.5, 2.0]),
+            ),
+            dt,
+        );
+    }
+    assert!(build(
+        json!({"leaf": "decay", "alg": "ForwardEuler", "dt": 0.1}),
+        None,
+        Some(&[0.5, 2.0])
+    )
+    .is_ok());
+    // subcycle n = 0.
+    refused(
+        build(
+            json!({"subcycle": {"leaf": "decay", "alg": "Heun", "dt": 0.1}, "n": 0}),
+            None,
+            None,
+        ),
+        "subcycle n = 0",
+    );
 }

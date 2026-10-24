@@ -322,6 +322,8 @@ When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped 
 6. $d_2 = \lVert (f_1 - f_0)/\mathrm{sk} \rVert / h_0$. If $\max(d_1, d_2) \le 10^{-15}$, $h_1 = \max(h_{\text{small}}, 10^{-3} h_0)$; else $h_1 = 10^{-(2 + \log_{10}\max(d_1, d_2))/p}$.
 7. Return $\max(\delta_{\min}, \min(100 h_0, h_1, \texttt{dtmax}))$.
 
+A `bind_dt: "leaf"` parameter has no step size to take during these evaluations, so an adaptive leaf with one must give `control.dt0` (run-config §8 rule 14).
+
 Under `dt_scope: cell` the first step is computed per cell. *Assumption:* the two extra $f$ evaluations are per cell too; they are pointwise kernels, so this costs two lane-pool evaluations.
 
 ## 10. Landing on interval ends and tstops
@@ -353,7 +355,7 @@ A leaf returns one code per invocation (per cell under `dt_scope: cell`, reduced
 |---|---|
 | `Success` | the leaf reached the end of its interval |
 | `MaxIters` | more than `control.maxiters` step attempts (accepted plus rejected) in this invocation; default 1 000 000 for adaptive leaves, unlimited at fixed `dt` (OrdinaryDiffEqCore `src/solve.jl:308`) |
-| `DtLessThanMin` | an adaptive leaf's step size is at or below `dtmin` (when `dtmin` > 0), unless the step is an accepted stop step |
+| `DtLessThanMin` | an adaptive leaf's step size is at or below `dtmin` (when `dtmin` > 0), checked before every step attempt, unless the previous attempt was accepted and this step is a stop step (the leaf's first attempt of the run counts as following a rejection) |
 | `Unstable` | a rejected step's size is at or below $\epsilon(|t|)$; or a fixed-`dt` step produced a non-finite state |
 | `DtNaN` | the step size became NaN |
 | `ConvergenceFailure` | a Newton failure at fixed `dt` (§5.2) |

@@ -853,6 +853,9 @@ impl<T: Scalar> MapOperator<T> for DecayMap {
     fn name(&self) -> &str {
         "decay"
     }
+    fn writes(&self) -> Vec<usize> {
+        vec![0]
+    }
     fn apply(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, dt: f64, mask: &mut Vec<u8>) {
         mask.clear();
         self.apply_frozen(out, u, p, t, dt, mask);

@@ -216,6 +216,7 @@ The schema checks structure. The planner additionally refuses, naming the offend
 11. a `wrt` entry that matches nothing, or names a parameter bound by `bind_dt`;
 12. a `step` with neither `dt` nor `limits` whose schedule root is not a single adaptive `leaf` or `coupled` node (§5);
 13. a leaf with `dt` omitted whose method has no error estimate (§4.2);
-14. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
+14. a leaf with `dt` omitted that has a `bind_dt: "leaf"` parameter but no `control.dt0`, since the first-step algorithm evaluates the right-hand side before any step size exists (spec/methods.md §9);
+15. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
 
 Error codes for these refusals are assigned with the planner (M2).

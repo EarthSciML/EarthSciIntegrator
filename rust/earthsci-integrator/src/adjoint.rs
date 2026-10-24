@@ -11,6 +11,7 @@
 //! parameters are tape constants and get no cotangent (§5.8).
 
 use crate::leaf::{LeafMethod, LeafSpec, StepData};
+use crate::operator::MapOperator;
 use crate::schedule::{AdjRecord, ForwardRun, RunSpec};
 use crate::{Error, Scalar};
 use earthsci_integrator_solvers::erk::{ErkForm, ExplicitRk};
@@ -110,14 +111,17 @@ impl<T: Scalar> RunSpec<T> {
                         mask,
                     } => {
                         let m = &self.schedule.maps[*map];
-                        let w: Vec<T> = lam.iter().map(|&x| T::from_f64(x)).collect();
-                        let mut ub = vec![T::zero(); n];
-                        let mut pb = vec![0.0; p.len()];
-                        m.op.map_vjp(&mut ub, &mut pb, u_before, p, *t, *dt, mask, &w);
-                        for (l, x) in lam.iter_mut().zip(&ub) {
-                            *l = x.to_f64();
-                        }
-                        accumulate(&mut pbar, &pb, &bound);
+                        map_adjoint(
+                            m.op.as_ref(),
+                            &mut lam,
+                            &mut pbar,
+                            &bound,
+                            u_before,
+                            p,
+                            *t,
+                            *dt,
+                            mask,
+                        );
                     }
                 }
             }
@@ -143,6 +147,34 @@ fn accumulate(pbar: &mut [f64], contrib: &[f64], bound: &[bool]) {
             *a += c;
         }
     }
+}
+
+/// Reverse of one map invocation (§5.7): `λ ← (∂M/∂u)ᵀ λ`, `p̄ += (∂M/∂p)ᵀ λ`.
+/// The map passes the DOFs it does not write through unchanged, so their
+/// cotangents carry over; `map_vjp` gives the written rows' contribution.
+#[allow(clippy::too_many_arguments)]
+fn map_adjoint<T: Scalar>(
+    op: &dyn MapOperator<T>,
+    lam: &mut [f64],
+    pbar: &mut [f64],
+    bound: &[bool],
+    u_before: &[T],
+    p: &[f64],
+    t: f64,
+    dt: f64,
+    mask: &[u8],
+) {
+    let w: Vec<T> = lam.iter().map(|&x| T::from_f64(x)).collect();
+    let mut ub = w.clone();
+    for j in op.writes() {
+        ub[j] = T::zero();
+    }
+    let mut pb = vec![0.0; p.len()];
+    op.map_vjp(&mut ub, &mut pb, u_before, p, t, dt, mask, &w);
+    for (l, x) in lam.iter_mut().zip(&ub) {
+        *l = x.to_f64();
+    }
+    accumulate(pbar, &pb, bound);
 }
 
 /// Reverse of one leaf invocation (§5.1): the family's adjoint step for
@@ -294,4 +326,93 @@ fn sum_ascending(pcs: Vec<Option<Vec<f64>>>, np: usize) -> Vec<f64> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `u₀ ← a·u₀·u₁` on a two-DOF state; `u₁` passes through.
+    struct Product;
+
+    impl MapOperator<f64> for Product {
+        fn name(&self) -> &str {
+            "product"
+        }
+        fn writes(&self) -> Vec<usize> {
+            vec![0]
+        }
+        fn apply(
+            &self,
+            out: &mut [f64],
+            u: &[f64],
+            p: &[f64],
+            t: f64,
+            dt: f64,
+            mask: &mut Vec<u8>,
+        ) {
+            mask.clear();
+            self.apply_frozen(out, u, p, t, dt, mask);
+        }
+        fn apply_frozen(
+            &self,
+            out: &mut [f64],
+            u: &[f64],
+            p: &[f64],
+            _t: f64,
+            _dt: f64,
+            _m: &[u8],
+        ) {
+            out[0] = p[0] * u[0] * u[1];
+        }
+        fn map_vjp(
+            &self,
+            out_u: &mut [f64],
+            out_p: &mut [f64],
+            u: &[f64],
+            p: &[f64],
+            _t: f64,
+            _dt: f64,
+            _mask: &[u8],
+            w: &[f64],
+        ) {
+            out_u[0] += p[0] * u[1] * w[0];
+            out_u[1] += p[0] * u[0] * w[0];
+            out_p[0] += u[0] * u[1] * w[0];
+        }
+        fn map_jvp(
+            &self,
+            out: &mut [f64],
+            u: &[f64],
+            p: &[f64],
+            _t: f64,
+            _dt: f64,
+            _mask: &[u8],
+            v_u: &[f64],
+            v_p: &[f64],
+        ) {
+            out[0] += p[0] * (u[1] * v_u[0] + u[0] * v_u[1]) + u[0] * u[1] * v_p[0];
+        }
+    }
+
+    #[test]
+    fn map_adjoint_keeps_untouched_dofs() {
+        // M(u) = (a u₀ u₁, u₁): λ ← (a u₁ λ₀, a u₀ λ₀ + λ₁), p̄ = u₀ u₁ λ₀.
+        let (u, p) = ([2.0, 3.0], [5.0]);
+        let mut lam = [7.0, 11.0];
+        let mut pbar = [0.0];
+        map_adjoint(
+            &Product,
+            &mut lam,
+            &mut pbar,
+            &[false],
+            &u,
+            &p,
+            0.0,
+            1.0,
+            &[],
+        );
+        assert_eq!(lam, [5.0 * 3.0 * 7.0, 5.0 * 2.0 * 7.0 + 11.0]);
+        assert_eq!(pbar, [2.0 * 3.0 * 7.0]);
+    }
 }

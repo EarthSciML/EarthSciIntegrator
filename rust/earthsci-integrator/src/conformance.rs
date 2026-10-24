@@ -732,14 +732,7 @@ pub fn check_replay(spec: &RunSpec<f64>, fwd: &ForwardRun<f64>, u0: &[f64], p: &
         return Outcome::Fail("replay produced a different number of invocations".into());
     }
     for (a, b) in rep.tape.records.iter().zip(&fwd.tape.records) {
-        let (mut a, mut b) = (a.clone(), b.clone());
-        // Rejected counts are not replayed.
-        for r in [&mut a, &mut b] {
-            if let crate::tape::TapeRecord::Leaf { rejected, .. } = r {
-                *rejected = 0;
-            }
-        }
-        if !a.bitwise_eq(&b) {
+        if !a.bitwise_eq(b) {
             return Outcome::Fail(format!("replay differs at {}", a.path()));
         }
     }

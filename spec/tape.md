@@ -60,7 +60,7 @@ For tests and debugging, an implementation can write its tape as JSON Lines, one
 {"path": "0", "node": "macro", "t": 0, "dt": 0.025, "reason": "step.dt"}
 ```
 
-- Numbers are written in shortest round-trip form, so a tape read back is bitwise the tape written.
+- Numbers are written in shortest round-trip form, so a tape read back is bitwise the tape written. JSON numbers cannot hold NaN or infinities, so these are written as the strings `"NaN"`, `"Infinity"` and `"-Infinity"`; `"NaN"` reads back as the canonical quiet NaN.
 - The macro-step record follows the invocations of its step.
 - The form is for comparison and diagnosis. Implementations need not hold the tape in this form in memory.
 - Cross-language comparison of tapes is by path and count, not by value: step sizes agree across languages only to tolerance (D10).
