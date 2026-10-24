@@ -126,12 +126,13 @@ After a rejected step the start point is unchanged, so the stored first stage st
 - **Rosenbrock23:** with $f_0 = f(u_n, t_n)$, $f_1 = f(U_2, t_n + h/2)$ and $f_2 = f(u_{n+1}, t_n + h)$,
 
   ```math
-  W k_3 = f_2 - c_{32}(k_2 - f_1) - 2(k_1 - f_0) + h\, f_t(u_n), \qquad e = \tfrac{h}{6}\,(k_1 - 2k_2 + k_3) .
+  W k_3 = f_2 - c_{32}(k_2 - f_1) - 2(k_1 - f_0) + h d\, f_t(u_n), \qquad e = \tfrac{h}{6}\,(k_1 - 2k_2 + k_3) .
   ```
 
   $f_2$ is the next step's $f_0$ (§3.3).
 
-  *Deviation.* This is OrdinaryDiffEq's estimate (`:104`, `:298`), followed under D56. Shampine and Reichelt's ode23s adds $h d\, f_t$ here, the same term as the first stage; with $h f_t$ the estimate leaves a term $\tfrac{h}{6}\, h (1 - d)\, f_t$, so it is second order instead of third on problems that depend on $t$ explicitly (order 1.99 on `forced_decay`, against 3 with $h d f_t$). Step sizes on such problems are then more conservative than ode23s's; the solution's order is unaffected.
+  The $f_t$ term is $h d\, f_t$, the same as the first stage's, which makes $e$ a third-order estimate, $O(h^3)$, on problems that depend on $t$ explicitly (D62).
+  *Deviation:* OrdinaryDiffEq adds $h f_t$ (`src/rosenbrock_perform_step.jl:104`, `:298`). That leaves $\tfrac{h}{6}\, h (1 - d)\, f_t$ in the estimate, which is then second order (1.99 on `forced_decay`, against 3) and overstates the error as $h \to 0$, so its steps on time-dependent problems are smaller than the tolerance requires. $u_{n+1}$ is the same either way, so fixed-step runs and the oracle (D31) are unaffected; adaptive Rosenbrock23 step sequences on time-dependent problems differ from OrdinaryDiffEq's.
 
 ### 4.4 KPP methods
 
