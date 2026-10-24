@@ -103,6 +103,12 @@
       "$.schedule"
     ]
   },
+  "theta-without-theta.json": {
+    "keyword": "required",
+    "at": [
+      "$.schedule"
+    ]
+  },
   "time-duration-parameter.json": {
     "keyword": "pattern",
     "at": [
