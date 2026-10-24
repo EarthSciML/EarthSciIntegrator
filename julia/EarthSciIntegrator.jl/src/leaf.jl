@@ -27,18 +27,19 @@ end
 fixed_dt(leaf::LeafNode, Δ) = leaf.dt isa Float64 ? leaf.dt : Δ
 
 """
-    proposal_base(hc, h, isstop) -> size
+    proposal_base(hc, h, isstop, prev_accepted, t, dtmin, dtmax) -> size
 
 The step size the controller's proposal after an accepted step is computed
-from. For a step shortened to land on a stop or the interval end this is the
-shortened step `h` actually taken, as OrdinaryDiffEqCore 4.19 does in effect
-(its `loopheader!` calls `modify_dt_for_tstops!` again after the accept). This
-follows the user's decision of 2026-10-23 to follow OrdinaryDiffEq here; the
-merged spec/methods.md §8.6 still says the unshortened size `hc`, and is being
-updated. This is the single place the rule lives: return `isstop ? hc : h`
-for the other reading.
+from (spec/methods.md §8.6, D61). For a stop step shortened from the
+controller's size `hc` to `h`, it is `h` raised to `max(dtmin, eps(t))` when
+the leaf's previous attempt was accepted, and `hc` when this attempt is the
+leaf's first of the run or follows a rejection. OrdinaryDiffEqCore 4.19.0
+restores the size `modify_dt_for_tstops!` saved; after an accepted step that
+function runs twice (`apply_step!`, then `loopheader!` after
+`fix_dt_at_bounds!`), so the second call saves the shortened, clamped size.
 """
-proposal_base(hc, h, isstop::Bool) = h
+proposal_base(hc, h, isstop::Bool, prev_accepted::Bool, t, dtmin, dtmax) =
+    !isstop ? h : prev_accepted ? fix_dt_at_bounds(h, t, dtmin, dtmax) : hc
 
 """
     LeafOutcome
@@ -95,13 +96,19 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         if leaf.dt0 !== nothing
             cs.h = fix_dt_at_bounds(leaf.dt0, t, dtmin, dtmax)
         else
-            cs.h, n0 = initial_step(fp(p), u, t, tab.order, leaf.tol, dtmin, dtmax)
+            # dtmax capped at the first stop, as OrdinaryDiffEqCore's
+            # _determine_initdt does (spec/methods.md §9).
+            cs.h, n0 = initial_step(fp(p), u, t, tab.order, leaf.tol, dtmin, min(dtmax, stops[1] - t))
             nf += n0
         end
     end
     hctrl = adaptive ? cs.h : NaN
     iter = 0
-    last_rejected = false
+    # Whether the leaf's previous attempt was accepted. An invocation ends on an
+    # accepted step, so at entry this is whether the leaf has accepted a step:
+    # the first attempt of the run counts as following a rejection, as in
+    # OrdinaryDiffEq (its `accept_step` starts false).
+    prev_accepted = cs.accepted_any
     istop = 1
     while true
         # Record states at interior stops already reached.
@@ -122,10 +129,10 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         elseif iter > leaf.maxiters
             rec.retcode = "MaxIters"
             break
-        elseif adaptive && dtmin > 0 && h <= dtmin && (last_rejected || t + h < ts)
+        elseif adaptive && dtmin > 0 && h <= dtmin && (!prev_accepted || t + h < ts)
             rec.retcode = "DtLessThanMin"
             break
-        elseif adaptive && last_rejected && h <= eps(abs(t))
+        elseif adaptive && !prev_accepted && h <= eps(abs(t))
             rec.retcode = "Unstable"
             break
         end
@@ -135,7 +142,7 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
             rec.accepted += 1
             t = ts
             fsal = nothing
-            last_rejected = false
+            prev_accepted = true
             continue
         end
         pp = pstep(h)
@@ -149,19 +156,19 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
                 # spec/methods.md §7 and §8.5: h ← h·qmin.
                 hctrl = h * cc.qmin
                 rec.rejected += 1
-                last_rejected = true
+                prev_accepted = false
                 continue
             end
             q = controller_factor!(cs, leaf.controller, cc, E, tab)
             if accepts(leaf.controller, cc, E, q)
                 tnew = isstop ? ts : t + h
-                hhat = controller_accept!(cs, leaf.controller, cc, E, q, proposal_base(hc, h, isstop))
+                hhat = controller_accept!(cs, leaf.controller, cc, E, q, proposal_base(hc, h, isstop, prev_accepted, t, dtmin, dtmax))
                 cs.accepted_any = true
                 hctrl = propose(hhat, tnew, dtmin, dtmax)
             else
                 hctrl = controller_reject(cs, leaf.controller, cc, h)
                 rec.rejected += 1
-                last_rejected = true
+                prev_accepted = false
                 continue
             end
         else
@@ -192,7 +199,7 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         fsal = (res.fsal !== nothing && !clipped) ? res.fsal : nothing
         u = unew
         t = tnew
-        last_rejected = false
+        prev_accepted = true
     end
     adaptive && (cs.h = hctrl)
     return LeafOutcome(u, rec, nf, interior)

@@ -145,3 +145,39 @@ end
     c = xcase("rc", "toy:van_der_pol/stiff", Dict("leaf" => "oscillator", "alg" => "ForwardEuler", "dt" => 0.1), Dict("dt" => 1), [0, 1.0])
     @test forward!(build_case(c)).retcode == "Unstable"
 end
+
+# Stops near the start, against OrdinaryDiffEqCore 4.19.0's Tsit5 with these
+# tstops (van der Pol, nonstiff, reltol 1e-8, abstol 1e-10). With dt0 the first
+# step lands on the first stop and the next proposal comes from the
+# unshortened size (spec/methods.md §8.6, D61); without dt0 the automatic first
+# step is capped at the first stop (§9).
+@testset "proposal after a stop and the first-step cap" begin
+    vdp(control, saveat) = forward!(build_case(xcase("x.vdp.stops", "toy:van_der_pol/nonstiff",
+        Dict("leaf" => "oscillator", "alg" => "Tsit5", "control" => control), Dict("dt" => 6.3), [0, 6.3]; saveat)))
+    tol = Dict{String, Any}("reltol" => 1e-8, "abstol" => 1e-10)
+    for (dt0, saveat, counts, ode) in [
+            (0.1, [0.002, 1.0, 3.0, 6.3], (161, 6, 1003), [1.832135188412958, 1.161899074957998]),
+            (0.05, [0.01, 1.0, 3.0, 6.3], (162, 4, 997), [1.8321351883177492, 1.161899075326617]),
+            (0.5, [0.02, 1.0, 3.0, 6.3], (159, 5, 985), [1.832135188369107, 1.161899075127413]),
+            (nothing, [0.002, 1.0, 3.0, 6.3], (165, 3, 1011), [1.8321351883562347, 1.1618990751839322]),
+            (nothing, [0.01, 1.0, 3.0, 6.3], (165, 2, 1005), [1.832135188414688, 1.1618990749463005])]
+        control = dt0 === nothing ? tol : merge(tol, Dict{String, Any}("dt0" => dt0))
+        run = vdp(control, saveat)
+        @test run.retcode == "Success"
+        @test (run.accepted, run.rejected, run.nf) == counts
+        @test maximum(abs.(last(run.outputs)[2] .- ode)) < 1e-12
+    end
+    # spec/methods.md §12: a step at or below dtmin ends the leaf unless the
+    # previous attempt was accepted and the step lands on a stop; the first
+    # attempt of the run follows no accepted step (OrdinaryDiffEq: DtLessThanMin
+    # with the stop at 1e-4, Success with 12 accepted steps with it at 0.1001).
+    decay(saveat) = forward!(build_case(xcase("x.decay.dtmin", "toy:forced_decay",
+        Dict("leaf" => "decay", "alg" => "Tsit5",
+            "control" => Dict("reltol" => 1e-3, "abstol" => 1e-6, "dt0" => 0.1, "dtmin" => 1e-3)),
+        Dict("dt" => 2.0), [0, 2.0]; saveat)))
+    @test decay([1e-4, 2.0]).retcode == "DtLessThanMin"
+    let run = decay([0.1001, 2.0])
+        @test run.retcode == "Success"
+        @test run.accepted == 12
+    end
+end
