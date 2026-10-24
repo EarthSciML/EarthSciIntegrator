@@ -9,11 +9,14 @@ Usage: python tests/conformance/m1/compare_results.py JULIA_DIR RUST_DIR [--requ
 
 A case for which neither implementation wrote a result is skipped (its methods
 are not implemented yet). A case only one of them wrote is reported and, with
---require-both, fails. Exits 1 if any comparison fails.
+--require-both, fails. A result with a missing field or a value that is not a
+finite number fails. Exits 1 if any comparison fails, or if either directory
+is absent.
 """
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -32,6 +35,26 @@ def load_tape(path):
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     except FileNotFoundError:
         return None
+
+
+def malformed(res):
+    """What makes a result unusable for comparison: a missing field, or a
+    value that is not a finite number. Either would otherwise slip through,
+    since a comparison with NaN is never greater than rtol."""
+    keys = ["t", "u", "stats"] + (["gradient"] if "functional" in res else [])
+    missing = [k for k in keys if k not in res]
+    if missing:
+        return f"missing {', '.join(missing)}"
+    values = [("t", res["t"]), ("u", [x for row in res["u"] for x in row])]
+    if "functional" in res:
+        values += [("functional", [res["functional"]])]
+        values += [(f"gradient.{k}", v) for k, v in res["gradient"].items()]
+    for name, xs in values:
+        bad = [x for x in xs if isinstance(x, bool) or not isinstance(x, (int, float))
+               or not math.isfinite(x)]
+        if bad:
+            return f"{name} has a value that is not a finite number: {bad[0]!r}"
+    return None
 
 
 def compare_states(jl, rs, rtol):
@@ -112,6 +135,10 @@ def compare_case(case_id, chk, jdir, rdir):
         return "skipped", "neither implementation ran it"
     if jl is None or rs is None:
         return "one-sided", f"only {'rust' if jl is None else 'julia'} ran it"
+    bad = [f"{who} result: {m}" for who, res in (("julia", jl), ("rust", rs))
+           if (m := malformed(res))]
+    if bad:
+        return "fail", "; ".join(bad)
     rtol = chk["rtol"]
     errs = []
     jt = load_tape(jdir / f"{case_id}.tape.jsonl")
@@ -149,6 +176,13 @@ def main():
     ap.add_argument("--require-both", action="store_true",
                     help="fail a case only one implementation ran")
     args = ap.parse_args()
+    # A suite that wrote no result files uploads no artifact, so CI's
+    # download leaves the directory absent; say so rather than skip every case.
+    absent = [f"{who} ({d})" for who, d in (("julia", args.julia_dir), ("rust", args.rust_dir))
+              if not d.is_dir()]
+    if absent:
+        print(f"no result files from {' or '.join(absent)}: did that test job run?")
+        return 1
     cases = json.loads((HERE / "cases.json").read_text())["cases"]
     counts = {"pass": 0, "fail": 0, "skipped": 0, "one-sided": 0}
     failed = False

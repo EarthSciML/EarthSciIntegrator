@@ -100,10 +100,16 @@ jobs:
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@v4
+        # A suite that wrote no result files uploaded none; the comparison
+        # below then names the missing directory.
+        continue-on-error: true
         with:
           name: julia-m1-results-${{ matrix.version }}
           path: julia-results
       - uses: actions/download-artifact@v4
+        # A suite that wrote no result files uploaded none; the comparison
+        # below then names the missing directory.
+        continue-on-error: true
         with:
           name: rust-m1-results
           path: rust-results
