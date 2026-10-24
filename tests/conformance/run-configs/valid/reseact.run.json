@@ -2,6 +2,7 @@
   "esm_integrator": "0.1.0",
   "description": "reseact, the prototype re-hosted (architecture §4.4, M3).",
   "model": "reseact.esm",
+  "time": {"start": "2019-07-01T00:00:00Z", "duration": "48 h"},
   "operators": {
     "transport": {"select": {"locality": ["stencil", "column"]}},
     "chemistry": {"select": {"locality": "pointwise"}}

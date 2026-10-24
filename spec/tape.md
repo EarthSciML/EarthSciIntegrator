@@ -13,7 +13,7 @@ The schedule interpreter advances the model by **invocations**: one call of one 
 ```
 
 - The macro step index counts from 0.
-- The node id is the resolved schedule's (spec/plan.md §3); before M2, the interpreter assigns ids by the same rule (`root`, `root.0`, …): children of `sequence`, `strang` and `coupled` are numbered from 0, and the child of a wrapping node is named by the node's key (`root.1.subcycle`, `root.every`).
+- The node id is the resolved schedule's (spec/plan.md §3); before M2, the interpreter assigns ids by the same rule (`root`, `root.0`, …): children of `sequence` and `strang` are numbered from 0 (a `coupled` node has operators, not children), and the child of a wrapping node is named by the node's key (`root.1.subcycle`, `root.every`).
 - `#<occurrence>` counts, from 0, the invocations of the same node within the same macro step: the two halves of a `strang` child, a `subcycle` child's substeps, and a leaf inside either. It is omitted when 0.
 
 Invocation order within a macro step is the execution order. Paths and order are the same in every implementation for a given run config, because the schedule's structure, not the step sizes, determines them, except for adaptive `subcycle`, whose substep count is itself recorded.
@@ -27,7 +27,7 @@ Invocation order within a macro step is the execution order. Paths and order are
 | `every` | whether it fired, and Δₑ when it did (spec/run-config.md §4.9). |
 | `map` | the mask of discrete decisions the map recorded (operator-interface.md §7). |
 | `solve` | the converged unknowns and the `recover` actions taken (M4b). |
-| macro step | `t`, `Δ`, and the reason string for Δ (spec/run-config.md §5): under a fixed `step.dt`, `step.dt`, or `tstop` when the step was shortened to a tstop. A `subcycle`'s and a macro step's record follow their children's. |
+| macro step | `t`, `Δ`, and the reason string for Δ (spec/run-config.md §5): under a fixed `step.dt`, `step.dt`, or `tstop` when the step was shortened to a tstop. Every record, a `subcycle`'s, an `every`'s and a macro step's included, follows the records of the invocations inside it. |
 
 Clip masks under `domain.on_violation: "clip"` are recorded with the leaf step that clipped. In the serialized form (§5) a leaf record carries `"clips": [[k, [i, ...]], ...]`: the 0-based index $k$ of the accepted step in the record's `steps`, and the ascending 0-based indices $i$, into the leaf's state vector, of the DOFs that step clipped. Steps that clipped nothing are omitted, and so is `clips` when no step clipped. Rejected steps leave no record beyond the rejected count (spec/adjoint.md §2.2).
 
@@ -60,7 +60,7 @@ For tests and debugging, an implementation can write its tape as JSON Lines, one
 {"path": "0", "node": "macro", "t": 0, "dt": 0.025, "reason": "step.dt"}
 ```
 
-- Numbers are written in shortest round-trip form, so a tape read back is bitwise the tape written.
+- Numbers are written in shortest round-trip form, so a tape read back is bitwise the tape written. JSON numbers cannot hold NaN or infinities, so these are written as the strings `"NaN"`, `"Infinity"` and `"-Infinity"`; `"NaN"` reads back as the canonical quiet NaN.
 - The macro-step record follows the invocations of its step.
 - The form is for comparison and diagnosis. Implementations need not hold the tape in this form in memory.
 - Cross-language comparison of tapes is by path and count, not by value: step sizes agree across languages only to tolerance (D10).

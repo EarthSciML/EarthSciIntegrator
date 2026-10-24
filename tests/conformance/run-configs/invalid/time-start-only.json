@@ -1,0 +1,6 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "m.esm",
+  "time": {"start": 0},
+  "schedule": {"map": "m"}
+}
