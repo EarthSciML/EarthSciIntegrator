@@ -548,7 +548,7 @@ The frozen-tape replay:
 
 Fixtures are scaled so a good $\epsilon$ exists. In the conformance check (spec/toy-problems.md §2.1):
 - a direction's component for an input whose value is zero is scaled by that input's largest magnitude over the run's outputs and checkpoints, not by 1, so a perturbation of a species that starts at zero stays within the problem's range (Robertson's $y_2$ perturbed by $10^{-3}$ diverges);
-- each direction's error is relative to the largest directional derivative over all the case's directions, since some are exactly zero (in `advection_reaction`, $\partial\mathcal J/\partial v = 0$ because transport conserves mass).
+- each direction's error is relative to its own directional derivative, or to $10^{-3}$ times the largest directional derivative over the case's directions if that is larger, since some are exactly zero (in `advection_reaction`, $\partial\mathcal J/\partial v = 0$ because transport conserves mass). A direction whose derivative is small is still checked on its own scale: a single parameter's gradient with the wrong sign or 100 times too large fails even when its derivative is $10^{-6}$ of the largest.
  reseact's "never validate at the default initial condition" applies: perturb from sampled non-default states.
 
 ### 7.3 Oracles (D31)
