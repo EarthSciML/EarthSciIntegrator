@@ -785,7 +785,11 @@ impl<T: Scalar> LeafSpec<T> {
             };
             out.integral += self.q_increment(w, h);
             if let MethodWork::Imp(iw) = w {
-                // BackwardEuler's divided difference reads the previous step.
+                // BackwardEuler's divided difference reads the previous step:
+                // `u` is the state this step started from, i.e. the previous
+                // accepted state after its clip, if it was clipped. The
+                // history resets only at an invocation's start and after a
+                // skipped tiny stop step.
                 iw.prev_u.copy_from_slice(u);
                 iw.prev_t = t;
                 iw.has_prev = true;

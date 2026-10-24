@@ -500,9 +500,21 @@ impl Implicit {
                 };
                 w.y[0].copy_from_slice(un);
                 if *linearized {
-                    // (σI − J_I(u_n)) Δ = f_E(u_n) + f_I(u_n), σ = 1/h (D43).
-                    f(Part::All, &mut w.r, un, t);
-                    w.nf += 1;
+                    // (σI − J_I(u_n)) Δ = f_E(u_n) + f_I(u_n), σ = 1/h (D43),
+                    // with each part summed on its own and f_E first, as the
+                    // Julia implementation forms it (not the leaf's operator
+                    // order, which can interleave the parts).
+                    if *has_explicit {
+                        f(Part::Explicit, &mut w.r, un, t);
+                        f(Part::Implicit, &mut w.fs, un, t);
+                        w.nf += 2;
+                        for j in 0..n {
+                            w.r[j] += w.fs[j];
+                        }
+                    } else {
+                        f(Part::Implicit, &mut w.r, un, t);
+                        w.nf += 1;
+                    }
                     w.lu.solve(&mut w.r);
                     for j in 0..n {
                         w.unew[j] = un[j] + w.r[j];
