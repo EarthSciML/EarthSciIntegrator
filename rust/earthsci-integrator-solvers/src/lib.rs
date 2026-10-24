@@ -6,6 +6,8 @@
 //!   compile time (D54).
 //! - [`erk`]: explicit Runge–Kutta steps, Butcher and Shu–Osher forms (§3).
 //! - [`rosenbrock`]: Rosenbrock steps, transformed and ode23s forms (§4).
+//! - [`implicit`]: SDIRK/ESDIRK, θ-method and IMEX Euler steps with their
+//!   Newton iteration (§5–§6).
 //! - [`linalg`]: matrix storage and the `dense_lu` and `block_lu` solvers.
 //! - [`norm`]: the error norm (§7).
 //! - [`controller`]: PI, I and PID step-size control (§8).
@@ -16,6 +18,7 @@
 
 pub mod controller;
 pub mod erk;
+pub mod implicit;
 pub mod initdt;
 pub mod linalg;
 pub mod norm;
