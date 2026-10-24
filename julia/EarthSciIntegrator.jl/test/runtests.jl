@@ -128,6 +128,66 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         @test_throws ConfigError build_run(bad; tspan = (0, 2))
         bad = deepcopy(base); bad["schedule"] = Dict("every" => base["schedule"], "period" => 1)
         @test_throws UnsupportedError build_run(bad; tspan = (0, 2))
+        # Durations are positive and finite (spec/run-config.md §2.2): step.dt,
+        # a leaf's dt, and control.dt0, dtmin, dtmax.
+        refused(cfg; kw...) = try
+            build_run(cfg; tspan = (0, 2), kw...); nothing
+        catch e
+            e isa ConfigError ? e : rethrow()
+        end
+        for x in (0, 0.0, -1, "0 s", "0.0 min", Inf, NaN)
+            bad = deepcopy(base); bad["step"] = Dict{String, Any}("dt" => x)
+            @test refused(bad) isa ConfigError
+            bad = deepcopy(base); bad["schedule"]["dt"] = x
+            @test refused(bad) isa ConfigError
+            for k in ("dt0", "dtmin", "dtmax")
+                bad = deepcopy(base); delete!(bad["schedule"], "dt"); bad["schedule"]["control"] = Dict(k => x)
+                @test refused(bad) isa ConfigError
+            end
+        end
+        let e = (bad = deepcopy(base); bad["step"] = Dict{String, Any}("dt" => 0); refused(bad))
+            @test occursin("step.dt", e.msg) && occursin("positive", e.msg)
+        end
+        # A subcycle count below 1 (run-config §4.8).
+        for n in (0, -2, 1.5)
+            bad = deepcopy(base); bad["schedule"] = Dict("subcycle" => base["schedule"], "n" => n)
+            @test refused(bad) isa ConfigError
+        end
+        ok = deepcopy(base); ok["schedule"] = Dict("subcycle" => base["schedule"], "n" => 1)
+        @test build_run(ok; tspan = (0, 2)) isa EarthSciIntegrator.Run
+        # domain.on_violation is reject or clip.
+        for (ov, good) in (("reject", true), ("clip", true), ("ignore", false), ("Clip", false))
+            cfg = deepcopy(base); cfg["schedule"]["domain"] = Dict("nonnegative" => "all", "on_violation" => ov)
+            @test (refused(cfg) === nothing) == good
+        end
+        # run-config §8 rule 15: an adaptive leaf with a "leaf" binding needs control.dt0.
+        adaptive_bound = Dict("leaf" => "decay", "alg" => "Tsit5", "bind_dt" => Dict("omega" => "leaf"))
+        bad = merge(base, Dict("schedule" => adaptive_bound))
+        e = refused(bad)
+        @test e isa ConfigError && occursin("dt0", e.msg) && occursin("rule 15", e.msg)
+        ok = merge(base, Dict("schedule" => merge(adaptive_bound, Dict("control" => Dict("dt0" => 0.1)))))
+        @test build_run(ok; tspan = (0, 2)) isa EarthSciIntegrator.Run
+        ok = merge(base, Dict("schedule" => merge(adaptive_bound, Dict("bind_dt" => Dict("omega" => "node")))))
+        @test build_run(ok; tspan = (0, 2)) isa EarthSciIntegrator.Run
+        # run-config §8 rule 11: a wrt naming a bound parameter is refused; a
+        # pattern skips bound parameters, and is refused if it then matches nothing.
+        bound = merge(base, Dict("schedule" => Dict("leaf" => "decay", "alg" => "Heun", "dt" => 0.1,
+            "bind_dt" => Dict("omega" => "leaf"))))
+        adj(w) = merge(bound, Dict("adjoint" => Dict("functional" => Dict("sum" => "u", "over" => "final"), "wrt" => w)))
+        @test refused(adj(["params:omega"])) isa ConfigError
+        @test refused(adj(["params:om*"])) isa ConfigError
+        @test build_run(adj(["params:*"]); tspan = (0, 2)).wrt_p == [1]
+        @test build_run(adj(["u0", "params:numeric"]); tspan = (0, 2)).wrt_p == [1]
+        # An output time inside a macro step needs a root leaf that substeps: a
+        # leaf with dt "step" or "accumulated" takes one step of the whole interval.
+        for dt in ("step", "accumulated")
+            cfg = merge(base, Dict("schedule" => Dict("leaf" => "decay", "alg" => "ForwardEuler", "dt" => dt), "step" => Dict("dt" => 1)))
+            e = refused(cfg; saveat = [0.5, 2.0])
+            @test e isa ConfigError && occursin("substeps", e.msg)
+            @test refused(cfg; saveat = [1.0, 2.0]) === nothing
+        end
+        cfg = merge(base, Dict("step" => Dict("dt" => 1)))
+        @test refused(cfg; saveat = [0.5, 2.0]) === nothing
     end
 
     @testset "tape: paths, JSON Lines" begin
@@ -205,6 +265,25 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
             @test Jx(vcat(run.u0, run.p)) == J
             @test isapprox(vcat(ū0, p̄), g; rtol = 1e-12)
         end
+    end
+
+    @testset "a map writing some entries leaves the others" begin
+        # source_decay_map with a second variable v that neither the leaf nor
+        # the map writes: v keeps its initial value, forward and on replay.
+        sdm = toy_problem("toy:source_decay_map")
+        prob = EarthSciIntegrator.ToyProblem("source_decay_map_v", 2, [0.0, 7.0], sdm.p, sdm.pnames, sdm.tspan,
+            sdm.operators, sdm.maps, ["u" => [1], "v" => [2]], Function[], nothing, false)
+        cfg = Dict("esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
+            "schedule" => Dict("sequence" => [Dict("leaf" => "source", "alg" => "RK4", "dt" => "step"), Dict("map" => "decay")]),
+            "step" => Dict("dt" => 0.5))
+        run = forward!(build_run(cfg; tspan = (0, 2), prob))
+        @test run.retcode == "Success"
+        @test run.u[2] === 7.0 && all(o -> o[2][2] === 7.0, run.outputs)
+        @test replay(run)[1] == run.u
+        ud, _ = replay(run, ForwardDiff.Dual.(run.u0, 1.0), run.p)
+        @test ForwardDiff.value.(ud) == run.u
+        out = EarthSciIntegrator.apply_frozen(sdm.maps["decay"], [1.0, 7.0], ForwardDiff.Dual.(sdm.p, 1.0), 0.0, 0.5, Bool[])
+        @test eltype(out) <: ForwardDiff.Dual && ForwardDiff.value(out[2]) === 7.0
     end
 
     @testset "node ids by position" begin

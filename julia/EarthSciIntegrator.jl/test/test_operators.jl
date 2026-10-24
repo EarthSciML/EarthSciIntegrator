@@ -86,9 +86,10 @@ function check_map(prob::ToyProblem, name, op; rng)
     map_vjp!(op, ou, op_, u, p, t, Δ, mask, w)
     @test ou .- bu ≈ Ju' * w
     @test op_ .- bp ≈ Jp' * w
-    jv = zeros(N)
-    map_jvp!(op, jv, u, p, t, Δ, mask, vu, vp)
-    @test jv ≈ Ju * vu + Jp * vp
+    bj = randn(rng, N)
+    jv = copy(bj)
+    map_jvp!(op, jv, u, p, t, Δ, mask, vu, vp)            # accumulates
+    @test jv .- bj ≈ Ju * vu + Jp * vp
 end
 
 @testset "operators against ForwardDiff" begin

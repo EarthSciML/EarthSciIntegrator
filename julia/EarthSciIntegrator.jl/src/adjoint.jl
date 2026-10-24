@@ -1,11 +1,10 @@
 # The reverse pass (spec/adjoint.md §5, §6; architecture §10).
 #
 # Per macro step in reverse: restore the checkpoint, replay the macro step on
-# the tape recording the input state of every leaf and map invocation, then
-# run the adjoints of those invocations in reverse execution order. Within a
-# leaf invocation the steps are replayed again from its input state to recover
-# each step's start state, and the method's adjoint step is applied for
-# n = N-1 … 0 (§5.1). The reverse of `sequence`, `strang` and `subcycle` is the
+# the tape recording the input state of every leaf and map invocation and the
+# start state of every leaf step, then run the adjoints of those invocations in
+# reverse execution order: within a leaf invocation the method's adjoint step
+# is applied for n = N-1 … 0 (§5.1). The reverse of `sequence`, `strang` and `subcycle` is the
 # reverse execution order (§5.2–§5.4); `bind_dt` parameters get no cotangent
 # (§5.8).
 
@@ -16,9 +15,7 @@ Reverse one leaf invocation. `seeds` maps interior output times to
 `∇φ` (point terms of the functional at stops inside the invocation).
 """
 function leaf_adjoint!(entry, λ, p̄, seeds)
-    _, leaf, rec, uin, pinv, stops = entry
-    states = []
-    leaf_replay(leaf, uin, pinv, rec, stops; states)
+    _, leaf, _, _, _, stops, states = entry
     tb = last(stops)
     for (u, t, h, pp, mask, tnew, tk1) in Iterators.reverse(states)
         if tnew != tb && haskey(seeds, tnew)

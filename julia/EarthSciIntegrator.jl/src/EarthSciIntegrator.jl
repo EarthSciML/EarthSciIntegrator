@@ -25,7 +25,7 @@ const SPEC_VERSION = v"0.1.0"
     UnsupportedError(msg)
 
 Raised when a run config asks for something this implementation does not
-support yet (spec/run-config.md §8 rule 14): a method family not implemented
+support yet (spec/run-config.md §8 rule 16): a method family not implemented
 in this stage, a combinator not yet interpreted, and the like.
 """
 struct UnsupportedError <: Exception

@@ -103,6 +103,43 @@ const ADAPTIVE_EXPLICIT = ["Heun", "RK4", "BS3", "Tsit5", "SSPRK43"]
     run_xcase(xcase("x.forced_decay.bind_dt", "toy:forced_decay",
         Dict("leaf" => "decay", "alg" => "RK4", "dt" => 0.1, "bind_dt" => Dict("omega" => "node")), Dict("dt" => 0.5), [0, 2.0];
         adjoint = xgrad("u"), checks = XGRAD))
+    # spec/methods.md §3.3: a first-same-as-last value evaluated with a
+    # bind_dt "leaf" parameter is reused only by a step of the same size. Heun
+    # with dt 0.3 over macro steps of 1 takes 0.3, 0.3, 0.3, 0.1; the last step
+    # evaluates its first stage with ω = 0.1 (the Rust test
+    # bind_dt_leaf_invalidates_first_same_as_last).
+    heun_bound = xcase("x.forced_decay.Heun.bind_dt_leaf", "toy:forced_decay",
+        Dict("leaf" => "decay", "alg" => "Heun", "dt" => 0.3, "bind_dt" => Dict("omega" => "leaf")), Dict("dt" => 1), [0, 2.0];
+        adjoint = xgrad("u"), checks = XGRAD)
+    run_xcase(heun_bound)
+    let run = forward!(build_case(heun_bound))
+        k = 2.0
+        u = 1.0
+        for m in 0:1
+            t = Float64(m)
+            for i in 0:3
+                h = i < 3 ? 0.3 : (m + 1) - t
+                f(x, τ) = -k * x + sin(h * τ)
+                k1 = f(u, t)
+                k2 = f(u + h * k1, t + h)
+                u = u + (h * 0.5) * k1 + (h * 0.5) * k2
+                t += h
+            end
+        end
+        @test abs(run.u[1] - u) < 1e-12
+        # Per macro step: 3 evaluations on the first step, 2 on the two steps of
+        # the same size, 3 on the shortened last one.
+        @test run.nf == 2 * (3 + 2 + 2 + 3)
+        @test replay(run)[1] == run.u
+    end
+    # Adaptive: every step size differs, and rejections retry at new sizes.
+    let c = xcase("x.forced_decay.Tsit5.bind_dt_leaf", "toy:forced_decay",
+            Dict("leaf" => "decay", "alg" => "Tsit5", "bind_dt" => Dict("omega" => "leaf"),
+                "control" => Dict("reltol" => 1e-6, "abstol" => 1e-8, "dt0" => 0.5)), Dict("dt" => 1), [0, 2.0];
+            adjoint = xgrad("u", "saveat"), saveat = [1.0, 2.0], checks = XGRAD)
+        run_xcase(c)
+        @test forward!(build_case(c)).rejected > 0
+    end
     # Clips on the tape (spec/tape.md §2): [[k, [i, ...]], ...], k the 0-based step
     # index within `steps`, i the 0-based clipped DOFs; absent when nothing clipped.
     let run = forward!(build_case(xcase("x.forced_decay.clip", "toy:forced_decay",

@@ -103,7 +103,7 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
         k in ("dt", "hit") || throw(UnsupportedError("step.$k is not implemented in this stage"))
     end
     haskey(step, "dt") || throw(UnsupportedError("a step without dt (macro steps from the root leaf's accepted steps, D49) is not implemented in this stage"))
-    dt = parse_duration(step["dt"], prob)
+    dt = parse_duration(step["dt"], prob, "step.dt")
     t0, tf = Float64(tspan[1]), Float64(tspan[2])
 
     # Output times are exactly the listed ones, t_f alone by default; t_f is not
@@ -119,8 +119,10 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
         # Output times are tstops. Under a fixed step.dt they must be macro-step
         # boundaries (spec/run-config.md §8 rule 9), except that when the root is a
         # single leaf they are stops inside its interval (spec/methods.md §10).
-        τ in bounds || root isa LeafNode ||
-            throw(ConfigError("output time $τ is not a multiple of step.dt = $dt"))
+        # A leaf with dt "step" or "accumulated" takes exactly one step of its
+        # interval (spec/run-config.md §4.2), so it cannot land on one.
+        τ in bounds || (root isa LeafNode && (root.dt === nothing || root.dt isa Float64)) ||
+            throw(ConfigError("output time $τ is not a multiple of step.dt = $dt, and the schedule root is not a leaf that substeps to land on it (run-config §4.2, §8 rule 9)"))
     end
 
     functional = nothing
@@ -143,9 +145,15 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
                 pat = w[8:end]
                 sel = pat == "numeric" ? collect(1:length(prob.pnames)) :
                       findall(n -> occursin(_glob(pat), n), prob.pnames)
+                # A name refers to one parameter, refused when bound by bind_dt
+                # (run-config §8 rule 11); a pattern skips bound ones and is
+                # refused when it then matches nothing, as in the Rust implementation.
+                is_pattern = pat == "numeric" || occursin('*', pat)
+                !is_pattern && any(in(bound), sel) &&
+                    throw(ConfigError("wrt '$w' names a parameter bound by bind_dt, a constant of the frozen tape (run-config §8 rule 11, spec/adjoint.md §5.8)"))
+                sel = setdiff(sel, bound)
                 isempty(sel) && throw(ConfigError("wrt '$w' matches nothing"))
-                any(in(bound), sel) && pat != "numeric" && throw(ConfigError("wrt '$w' names a parameter bound by bind_dt"))
-                append!(wrt_p, setdiff(sel, bound))
+                append!(wrt_p, sel)
             else
                 throw(UnsupportedError("wrt '$w': only u0 and params are implemented in this stage"))
             end
@@ -235,7 +243,8 @@ end
 """
 Replay mode: step sequences and masks from `tape`, parameters `p` (any
 element type); with `trace`, every leaf and map invocation is recorded for the
-reverse pass; `visit(t, u)` is called after every replayed leaf step.
+reverse pass (a leaf's entry also holds the per-step states of
+[`leaf_replay`](@ref)); `visit(t, u)` is called after every replayed leaf step.
 """
 struct ReplayMode{P, V}
     tape::Tape
@@ -307,8 +316,11 @@ function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Fl
         return out.u
     else
         rec = tape_record(mode.tape, path, LeafRecord, ta, tb)
-        mode.trace === nothing || push!(mode.trace, (:leaf, node, rec, copy(u), pinv, stops))
-        return leaf_replay(node, u, pinv, rec, stops; visit = mode.visit)
+        mode.trace === nothing && return leaf_replay(node, u, pinv, rec, stops; visit = mode.visit)
+        # The per-step states the reverse pass needs are recorded on this replay.
+        states = []
+        push!(mode.trace, (:leaf, node, rec, copy(u), pinv, stops, states))
+        return leaf_replay(node, u, pinv, rec, stops; states, visit = mode.visit)
     end
 end
 
@@ -320,7 +332,8 @@ re-applied and its decisions checked against the record; a flip is an error,
 since the frozen-tape map is then not the one recorded.
 """
 function apply_frozen(op::AbstractMapOperator, u, p, t, Δ, mask)
-    out = similar(u, promote_type(eltype(u), eltype(p)))
+    # A map that writes only some entries leaves the others as they were.
+    out = copyto!(similar(u, promote_type(eltype(u), eltype(p))), u)
     m = Vector{Bool}(undef, length(mask))
     apply!(op, out, m, u, p, t, Δ)
     m == mask || throw(ReplayMismatchError("map $(opname(op)) took a different discrete decision on replay"))
@@ -334,7 +347,7 @@ function advance!(run::Run, ctx::ExecCtx, node::MapNode, u, ta::Float64, tb::Flo
     mode = ctx.mode
     if mode isa ForwardMode
         mask = Vector{Bool}(undef, mask_length(node.op, length(u)))
-        out = similar(u)
+        out = copy(u)               # entries the map does not write stay as they were
         apply!(node.op, out, mask, u, p, ta, Δ)
         push!(mode.tape, MapRecord(path, ta, Δ, mask))
         return out

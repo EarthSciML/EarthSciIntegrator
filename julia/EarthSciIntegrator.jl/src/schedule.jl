@@ -84,17 +84,31 @@ nodekind(::SubcycleNode) = "subcycle"
 
 const _UNITS = Dict("s" => 1.0, "min" => 60.0, "h" => 3600.0, "day" => 86400.0)
 
-"""Seconds of a duration: a number, `"<number> <unit>"`, or a parameter name."""
-function parse_duration(x, prob)
-    x isa Real && return Float64(x)
-    x isa AbstractString || throw(ConfigError("not a duration: $(repr(x))"))
-    m = match(r"^([0-9.]+(?:[eE][-+]?[0-9]+)?) ?(s|min|h|day)$", x)
-    if m !== nothing
-        return parse(Float64, m.captures[1]) * _UNITS[m.captures[2]]
+"""
+Seconds of a duration: a number, `"<number> <unit>"`, or a parameter name. A
+duration is positive and finite (spec/run-config.md §2.2); anything else is a
+[`ConfigError`](@ref) naming `what`, the key it was given for.
+"""
+function parse_duration(x, prob, what = "duration")
+    v = if x isa Real && !(x isa Bool)
+        Float64(x)
+    elseif x isa AbstractString
+        m = match(r"^([0-9.]+(?:[eE][-+]?[0-9]+)?) ?(s|min|h|day)$", x)
+        if m !== nothing
+            n = tryparse(Float64, m.captures[1])
+            n === nothing && throw(ConfigError("$what: '$x' is not a duration"))
+            n * _UNITS[m.captures[2]]
+        else
+            i = findfirst(==(x), prob.pnames)
+            i === nothing && throw(ConfigError("$what: duration '$x' is neither '<number> <unit>' nor a parameter"))
+            Float64(prob.p[i])
+        end
+    else
+        throw(ConfigError("$what: not a duration: $(repr(x))"))
     end
-    i = findfirst(==(x), prob.pnames)
-    i === nothing && throw(ConfigError("duration '$x' is neither '<number> <unit>' nor a parameter"))
-    return prob.p[i]
+    (v > 0 && isfinite(v)) ||
+        throw(ConfigError("$what = $(repr(x)) is $v s; a duration must be positive and finite (spec/run-config.md §2.2)"))
+    return v
 end
 
 # ---------------------------------------------------------------------------
@@ -149,7 +163,10 @@ function build_node(spec::AbstractDict, prob::ToyProblem, path::String)
     elseif kind == "subcycle"
         haskey(spec, "limits") && throw(UnsupportedError("subcycle with limits (node $id): step limits need observed limit operators, which arrive with the planner"))
         haskey(spec, "n") || throw(ConfigError("subcycle node $id needs n or limits"))
-        return SubcycleNode(id, build_node(spec["subcycle"], prob, "$path.subcycle"), Int(spec["n"]))
+        n = spec["n"]
+        (n isa Integer && !(n isa Bool) && n >= 1) ||
+            throw(ConfigError("subcycle $id: n = $(repr(n)); it must be an integer of at least 1 (run-config §4.8)"))
+        return SubcycleNode(id, build_node(spec["subcycle"], prob, "$path.subcycle"), Int(n))
     elseif kind == "map"
         name = String(spec["map"])
         haskey(prob.maps, name) || throw(ConfigError("map node $id names '$name', which is not a map operator of $(prob.name)"))
@@ -188,7 +205,7 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     elseif spec["dt"] == "accumulated"
         :accumulated
     else
-        parse_duration(spec["dt"], prob)
+        parse_duration(spec["dt"], prob, "leaf $id: dt")
     end
     if dt === nothing && !has_error_estimate(tab)
         throw(ConfigError("leaf $id: $alg has no error estimate, so the leaf must give dt (D52)"))
@@ -222,11 +239,23 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     if dom !== nothing
         get(dom, "check_stages", false) && throw(UnsupportedError("domain.check_stages applies to Rosenbrock leaves only (leaf $id)"))
         haskey(dom, "nonnegative") && (nonneg = _dofs(prob, dom["nonnegative"]))
-        onv = Symbol(get(dom, "on_violation", "reject"))
+        ov = get(dom, "on_violation", "reject")
+        ov in ("reject", "clip") ||
+            throw(ConfigError("leaf $id: domain.on_violation $(repr(ov)) (reject or clip)"))
+        onv = Symbol(ov)
     end
-    getd(k) = haskey(ctrl, k) ? parse_duration(ctrl[k], prob) : nothing
-    return LeafNode(id, names, opsum, tab, method, dt, tol, getd("dt0"), something(getd("dtmin"), 0.0), getd("dtmax"),
-        controller, maxiters, nonneg, onv, _bindings(spec, prob))
+    getd(k) = haskey(ctrl, k) ? parse_duration(ctrl[k], prob, "leaf $id: control.$k") : nothing
+    dt0 = getd("dt0")
+    bindings = _bindings(spec, prob)
+    # spec/methods.md §9: the first-step algorithm evaluates f before there is a
+    # step whose size a "leaf" binding could give (run-config §8 rule 15).
+    if dt === nothing && dt0 === nothing && any(b -> b.second === :leaf, bindings)
+        throw(ConfigError("leaf $id: an adaptive leaf with a bind_dt \"leaf\" parameter needs control.dt0, " *
+            "because the first-step algorithm evaluates f before any step size exists " *
+            "(spec/methods.md §9, run-config §8 rule 15)"))
+    end
+    return LeafNode(id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
+        controller, maxiters, nonneg, onv, bindings)
 end
 
 """

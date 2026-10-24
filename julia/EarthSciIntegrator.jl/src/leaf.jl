@@ -89,8 +89,16 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
     u = copy(u0)
     t = ta
     nf = 0
-    fsal = nothing                          # invalid at entry (spec/methods.md §3.3)
-    pstep(h) = apply_bindings(p, filter(b -> b.second === :leaf, leaf.bindings), h, 0.0, 0.0)
+    # spec/methods.md §3.3: the stored first-same-as-last value f(u_{n+1}) is
+    # invalid at entry to every invocation. It was evaluated with the "leaf"
+    # bindings of the step that produced it (size `fsal_h`), so with any such
+    # binding only a step of that same size reuses it, as in the Rust
+    # implementation; leaf_replay makes the same choice.
+    fsal = nothing
+    fsal_h = NaN
+    lb = filter(b -> b.second === :leaf, leaf.bindings)
+    leaf_bound = !isempty(lb)
+    pstep(h) = apply_bindings(p, lb, h, 0.0, 0.0)
     fp(pp) = (out, x, τ) -> eval_rhs!(out, leaf.ops, x, pp, τ)
     if adaptive && isnan(cs.h)
         if leaf.dt0 !== nothing
@@ -146,7 +154,8 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
             continue
         end
         pp = pstep(h)
-        res = erk_step(leaf.method, fp(pp), u, t, h, fsal, adaptive, leaf.tol)
+        k1 = (fsal !== nothing && (!leaf_bound || fsal_h == h)) ? fsal : nothing
+        res = erk_step(leaf.method, fp(pp), u, t, h, k1, adaptive, leaf.tol)
         nf += res.nf
         unew = res.u
         violation = leaf.on_violation === :reject && _domain_violation(leaf, unew)
@@ -191,12 +200,11 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
             push!(rec.clips, (length(rec.steps) - 1) => _clip!(leaf, unew))
             clipped = true
         end
-        # First same as last: reuse f(u_{n+1}) only if it was evaluated at the
-        # step's end time and the state was not clipped (spec/methods.md §3.3).
         # First same as last: reuse f(u_{n+1}, tₙ + h) unless the state was clipped
         # (spec/methods.md §3.3). It is reused even when tₙ₊₁ was snapped to a
         # stop, as OrdinaryDiffEq does; replay reproduces this (leaf_replay).
         fsal = (res.fsal !== nothing && !clipped) ? res.fsal : nothing
+        fsal_h = h
         u = unew
         t = tnew
         prev_accepted = true
@@ -213,7 +221,9 @@ Re-execute a leaf invocation with the step sequence of its tape record
 applied. Generic over the element types of `u` and `p` (the frozen-tape
 tangent pushes `Dual` numbers through it). With `states`, pushes
 `(uₙ, tₙ, hₙ, pₙ, maskₙ, tₙ₊₁, t_K1)` for every step, `t_K1` the time
-stage 1 was evaluated at (`tₙ₋₁ + hₙ₋₁` when it was reused, spec/methods.md §3.3); `visit(tₙ₊₁, uₙ₊₁)` is called
+stage 1 was evaluated at (`tₙ₋₁ + hₙ₋₁` when it was reused, spec/methods.md §3.3;
+with a `bind_dt: "leaf"` parameter only when `hₙ = hₙ₋₁`, as in
+[`leaf_forward`](@ref)); `visit(tₙ₊₁, uₙ₊₁)` is called
 after every step. The record's clips are checked first ([`check_clips`](@ref)).
 """
 function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float64}; states = nothing, visit = nothing)
@@ -222,20 +232,23 @@ function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float
     clipmap = Dict(rec.clips)
     lb = filter(b -> b.second === :leaf, leaf.bindings)
     fsal_method = leaf.tab.first_same_as_last
+    leaf_bound = !isempty(lb)
     tk1_next = nothing      # time of a reused first stage, as in leaf_forward
+    hprev = NaN             # size of the step that stored it
     for (n, (t, h)) in enumerate(rec.steps)
         ts = next_stop(stops, t)
         _, isstop = stop_rule(t, h, ts)
         tnew = isstop ? ts : t + h
         pp = apply_bindings(p, lb, h, 0.0, 0.0)
         mask = get(clipmap, n - 1, nothing)    # 0-based clipped DOFs of this step
-        tk1 = something(tk1_next, t)
+        tk1 = (tk1_next !== nothing && (!leaf_bound || hprev == h)) ? tk1_next : t
         states === nothing || push!(states, (copy(u), t, h, pp, mask, tnew, tk1))
         if isstop && h < eps(abs(t))
             tk1_next = nothing
         else
             u = leaf_step(leaf, u, pp, t, h, mask, tk1)
             tk1_next = fsal_method && mask === nothing ? t + h : nothing
+            hprev = h
         end
         visit === nothing || visit(tnew, u)
     end

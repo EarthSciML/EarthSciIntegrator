@@ -566,7 +566,7 @@ function map_vjp!(::DecayMap, out_u, out_p, u, p, t, Δ, mask, w)
 end
 function map_jvp!(::DecayMap, out, u, p, t, Δ, mask, v_u, v_p)
     e = exp(-p[2] * Δ)
-    out[1] = e * v_u[1] + (-Δ * u[1] * e) * v_p[2]
+    out[1] += e * v_u[1] + (-Δ * u[1] * e) * v_p[2]
     return out
 end
 
