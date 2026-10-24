@@ -1,7 +1,8 @@
 //! Rust implementation of the EarthSciIntegrator spec (`spec/` at the
 //! repository root).
 //!
-//! Crate layout (M1: explicit Runge–Kutta and Rosenbrock methods):
+//! Crate layout (M1: explicit Runge–Kutta, Rosenbrock, SDIRK/ESDIRK, θ-method
+//! and IMEX Euler methods):
 //! - this crate: the operator interface ([`operator`]), the toy problems
 //!   ([`toy`]), run-config parsing ([`config`]), the leaf ([`leaf`]), the
 //!   schedule interpreter ([`schedule`]), the tape and checkpoints

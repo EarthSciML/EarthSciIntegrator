@@ -1,5 +1,6 @@
 //! The discrete adjoint (spec/adjoint.md): explicit Runge–Kutta steps
-//! (§4.1), Rosenbrock steps (§4.2), maps and clips (§5.7), the combinators
+//! (§4.1), Rosenbrock steps (§4.2), SDIRK/ESDIRK steps (§4.3), IMEX Euler
+//! (§4.4) and the θ-method (§4.5), maps and clips (§5.7), the combinators
 //! (§5.1–§5.4, §5.8) and the accumulation of `ū0` and `p̄` (§6).
 //!
 //! The reverse pass runs macro steps last first. For each it restores the
@@ -10,11 +11,12 @@
 //! `strang` and `subcycle` is that reversal (§5.2–§5.4); `bind_dt`
 //! parameters are tape constants and get no cotangent (§5.8).
 
-use crate::leaf::{LeafMethod, LeafSpec, StepData};
+use crate::leaf::{LeafMethod, LeafSpec, LeafWork, StepData};
 use crate::operator::{Call, MapOperator, MatrixStorage, MuPair};
 use crate::schedule::{AdjRecord, ForwardRun, RunSpec};
 use crate::{Error, Scalar};
 use earthsci_integrator_solvers::erk::{ErkForm, ExplicitRk};
+use earthsci_integrator_solvers::implicit::{Implicit, ImplicitForm, ImplicitWork, Part};
 use earthsci_integrator_solvers::rosenbrock::{RosForm, RosWork, Rosenbrock};
 
 /// The functional and its gradient.
@@ -193,9 +195,10 @@ fn leaf_adjoint<T: Scalar>(
 ) -> Result<(), Error> {
     let mut l: Vec<T> = lam.iter().map(|&x| T::from_f64(x)).collect();
     // A Rosenbrock leaf refactors W at each step's u_n, which reproduces the
-    // forward factorization bit for bit (spec/adjoint.md §3, `solve_Wt`).
+    // forward factorization bit for bit (spec/adjoint.md §3, `solve_Wt`); an
+    // implicit leaf refactors W at each converged stage (§4.3, D42).
     let mut lw = leaf.take_work(l.len())?;
-    let out = leaf_adjoint_steps(leaf, steps, &mut l, pbar, bound, lw.ros());
+    let out = leaf_adjoint_steps(leaf, steps, &mut l, pbar, bound, &mut lw);
     leaf.put_work(lw);
     out?;
     for (a, x) in lam.iter_mut().zip(&l) {
@@ -210,7 +213,7 @@ fn leaf_adjoint_steps<T: Scalar>(
     l: &mut [T],
     pbar: &mut [f64],
     bound: &[bool],
-    mut rw: Option<&mut RosWork<T>>,
+    lw: &mut LeafWork<T>,
 ) -> Result<(), Error> {
     for st in steps.iter().rev() {
         // The clip after the step: λ ← m ⊙ λ, zero on the clipped DOFs (§5.7).
@@ -223,10 +226,16 @@ fn leaf_adjoint_steps<T: Scalar>(
             // A tiny stop step taken without computing it: the identity.
             continue;
         }
-        let pc = match (&leaf.method, rw.as_mut()) {
-            (LeafMethod::Erk(m), _) => erk_adjoint_step(leaf, m, st, l),
-            (LeafMethod::Ros(m, _), Some(w)) => ros_adjoint_step(leaf, m, w, st, l)?,
-            (LeafMethod::Ros(..), None) => unreachable!("a Rosenbrock leaf's workspace"),
+        let pc = match &leaf.method {
+            LeafMethod::Erk(m) => erk_adjoint_step(leaf, m, st, l),
+            LeafMethod::Ros(m, _) => {
+                let w = lw.ros().expect("a Rosenbrock leaf's workspace");
+                ros_adjoint_step(leaf, m, w, st, l)?
+            }
+            LeafMethod::Imp(m, _) => {
+                let w = lw.imp().expect("an implicit leaf's workspace");
+                imp_adjoint_step(leaf, m, w, st, l)?
+            }
         };
         accumulate(pbar, &pc, bound);
     }
@@ -539,6 +548,188 @@ pub fn ros_adjoint_step<T: Scalar>(
                 if let Some(v) = &nu {
                     leaf.ft_vjp_p(&mut pc, un, p, t, v);
                 }
+            }
+        }
+    }
+    Ok(pc)
+}
+
+/// Refactors `M = σI − J_part(u, t)` for an implicit leaf's adjoint
+/// (spec/adjoint.md §4.3, D42), naming the step on failure.
+#[allow(clippy::too_many_arguments)]
+fn refactor<T: Scalar>(
+    leaf: &LeafSpec<T>,
+    m: &Implicit,
+    w: &mut ImplicitWork<T>,
+    part: Part,
+    u: &[T],
+    p: &[f64],
+    t: f64,
+    h: f64,
+) -> Result<f64, Error> {
+    let mut jac =
+        |pt: Part, o: &mut MatrixStorage<T>, uu: &[T], tt: f64| leaf.jac_part(pt, o, uu, p, tt);
+    m.factor(w, &mut jac, part, u, t, h).ok_or_else(|| {
+        Error::Run(format!(
+            "adjoint: leaf {}: W is singular at the converged stage at t = {t}",
+            leaf.id
+        ))
+    })
+}
+
+/// `x ← M⁻ᵀ (x·σ)`: the transposed solve with `W = I − hγJ = hγ M`.
+fn solve_wt<T: Scalar>(w: &ImplicitWork<T>, x: &mut [T], sigma: f64) {
+    scale(x, sigma);
+    w.lu.solve_t(x);
+}
+
+/// One SDIRK, θ-method or IMEX Euler adjoint step (spec/adjoint.md
+/// §4.3–§4.5): maps `λ_{n+1}` (in `lam`) to `λ_n` and returns the step's `p̄`
+/// contribution. Every transposed system is the exact one at the converged
+/// stage: `W` is refactored there (`block_lu`/`dense_lu`, D42), not taken from
+/// the forward factorization at `u_n`.
+///
+/// - SDIRK: for `i = s … 1`, `R_i = h(b_i λ_{n+1} + Σ_{j>i} a_ji ρ_j)`, plus
+///   `hγ ζ_i` for the integral term (`ζ_i = (h b_i) ∇ψ`, the cotangent the
+///   increment `Δq = Σ_i b_i h ψ(Z_i)` sends into `Z_i`), `W_iᵀ ω_i = R_i` with
+///   `W_i = I − hγ J(Z_i, t_n + c_i h)` (the identity for an explicit first
+///   stage, whose `γ` is 0), `ρ_i = J(Z_i)ᵀ ω_i + ζ_i`; then
+///   `λ_n = λ_{n+1} + Σ_i ρ_i` and `p̄ += Σ_i f_p(Z_i)ᵀ ω_i`, ascending `i`.
+/// - θ-method: `Wᵀ ω = λ_{n+1} + (hθ)∇ψ` with `W = I − hθ J(u_{n+1}, t_n + h)`,
+///   `λ_n = ω + J(u_n)ᵀ ((h(1−θ)) ω) + (h(1−θ))∇ψ`,
+///   `p̄ += f_p(u_n)ᵀ((h(1−θ))ω) + f_p(u_{n+1})ᵀ((hθ)ω)`.
+/// - IMEX Euler: `Wᵀ ω = λ_{n+1}` with `W = I − h J_I(u_{n+1}, t_n + h)`,
+///   `λ_n = ω + J_E(u_n)ᵀ (hω)`, `p̄ += f_{E,p}(u_n)ᵀ(hω) + f_{I,p}(u_{n+1})ᵀ(hω)`.
+/// - Linearized IMEX Euler, a one-stage Rosenbrock step with `Ŵ = σI − J_I(u_n)`,
+///   `σ = 1/h`, `Ŵ k = f(u_n)`: `μ = Ŵ⁻ᵀ λ_{n+1}`,
+///   `λ_n = λ_{n+1} + J(u_n)ᵀ μ + ∇_u(μᵀ J_I(u) k)`, `p̄ += f_p(u_n)ᵀ μ + ∇_p(μᵀ J_I k)`
+///   (§4.2 with one stage, D43).
+pub fn imp_adjoint_step<T: Scalar>(
+    leaf: &LeafSpec<T>,
+    m: &Implicit,
+    w: &mut ImplicitWork<T>,
+    st: &StepData<T>,
+    lam: &mut [T],
+) -> Result<Vec<f64>, Error> {
+    let n = lam.len();
+    let np = st.p.len();
+    let (t, h, p) = (st.t, st.h, st.p.as_slice());
+    let with_p = leaf.has_vjp_p();
+    let mut pc = vec![0.0; np];
+    match &m.form {
+        ImplicitForm::Sdirk {
+            a,
+            b,
+            c,
+            gamma,
+            explicit_first,
+            ..
+        } => {
+            let s = m.stages;
+            let mut rho: Vec<Vec<T>> = vec![Vec::new(); s];
+            let mut pcs: Vec<Option<Vec<f64>>> = vec![None; s];
+            for i in (0..s).rev() {
+                let mut om = vec![T::zero(); n];
+                if b[i] != 0.0 {
+                    axpy(&mut om, h * b[i], lam);
+                }
+                for j in i + 1..s {
+                    if a[j][i] != 0.0 {
+                        axpy(&mut om, h * a[j][i], &rho[j]);
+                    }
+                }
+                let zq = h * b[i];
+                let explicit = i == 0 && *explicit_first;
+                let ti = if explicit { t } else { t + c[i] * h };
+                if !explicit {
+                    add_psi_grad(&mut om, leaf, h * gamma * zq);
+                    let sigma = refactor(leaf, m, w, Part::All, &st.y[i], p, ti, h)?;
+                    solve_wt(w, &mut om, sigma);
+                }
+                let mut ri = vec![T::zero(); n];
+                leaf.vjp_u(&mut ri, &st.y[i], p, ti, &om);
+                add_psi_grad(&mut ri, leaf, zq);
+                if with_p {
+                    let mut pi = vec![0.0; np];
+                    leaf.vjp_p(&mut pi, &st.y[i], p, ti, &om);
+                    pcs[i] = Some(pi);
+                }
+                rho[i] = ri;
+            }
+            for ri in &rho {
+                for (l, &x) in lam.iter_mut().zip(ri) {
+                    *l += x;
+                }
+            }
+            if with_p {
+                pc = sum_ascending(pcs, np);
+            }
+        }
+        ImplicitForm::Theta { theta } => {
+            let th = *theta;
+            let (un, unew) = (&st.y[0], &st.y[1]);
+            let mut om = lam.to_vec();
+            add_psi_grad(&mut om, leaf, h * th);
+            if th != 0.0 {
+                let sigma = refactor(leaf, m, w, Part::All, unew, p, t + h, h)?;
+                solve_wt(w, &mut om, sigma);
+            }
+            lam.copy_from_slice(&om);
+            if th != 1.0 {
+                let mut v = om.clone();
+                scale(&mut v, h * (1.0 - th));
+                leaf.vjp_u_part(Part::All, lam, un, p, t, &v);
+                add_psi_grad(lam, leaf, h * (1.0 - th));
+                if with_p {
+                    leaf.vjp_p(&mut pc, un, p, t, &v);
+                }
+            }
+            if with_p && th != 0.0 {
+                let mut v = om;
+                scale(&mut v, h * th);
+                leaf.vjp_p(&mut pc, unew, p, t + h, &v);
+            }
+        }
+        ImplicitForm::ImexEuler {
+            linearized: false,
+            has_explicit,
+        } => {
+            let (un, unew) = (&st.y[0], &st.y[1]);
+            let mut om = lam.to_vec();
+            let sigma = refactor(leaf, m, w, Part::Implicit, unew, p, t + h, h)?;
+            solve_wt(w, &mut om, sigma);
+            lam.copy_from_slice(&om);
+            let mut v = om;
+            scale(&mut v, h);
+            if *has_explicit {
+                leaf.vjp_u_part(Part::Explicit, lam, un, p, t, &v);
+                if with_p {
+                    leaf.vjp_p_part(Part::Explicit, &mut pc, un, p, t, &v);
+                }
+            }
+            if with_p {
+                leaf.vjp_p_part(Part::Implicit, &mut pc, unew, p, t + h, &v);
+            }
+        }
+        ImplicitForm::ImexEuler {
+            linearized: true, ..
+        } => {
+            let un = &st.y[0];
+            // Ŵ = σI − J_I(u_n) with σ = 1/h is the forward factorization, bit
+            // for bit, as for Rosenbrock (spec/adjoint.md §3).
+            refactor(leaf, m, w, Part::Implicit, un, p, t, h)?;
+            let mut mu = lam.to_vec();
+            w.lu.solve_t(&mut mu);
+            let mut s1 = vec![T::zero(); n];
+            leaf.vjp_u(&mut s1, un, p, t, &mu);
+            for (l, &x) in lam.iter_mut().zip(&s1) {
+                *l += x;
+            }
+            let pairs: [MuPair<'_, T>; 1] = [(&mu, &st.k[0])];
+            leaf.hess_u_part(Part::Implicit, lam, un, p, t, &pairs);
+            if with_p && leaf.ops.iter().all(|o| o.provides(Call::HessP)) {
+                leaf.vjp_p(&mut pc, un, p, t, &mu);
+                leaf.hess_p_part(Part::Implicit, &mut pc, un, p, t, &pairs);
             }
         }
     }

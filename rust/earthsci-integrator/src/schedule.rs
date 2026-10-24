@@ -16,6 +16,7 @@ use crate::toy::ToyProblem;
 use crate::{Error, Scalar};
 use earthsci_integrator_solvers::controller::{Controller, ControllerKind};
 use earthsci_integrator_solvers::erk::ExplicitRk;
+use earthsci_integrator_solvers::implicit::Implicit;
 use earthsci_integrator_solvers::linalg::LinsolveKind;
 use earthsci_integrator_solvers::norm::Tolerances;
 use earthsci_integrator_solvers::rosenbrock::Rosenbrock;
@@ -243,12 +244,27 @@ fn build_leaf<T: Scalar>(
     let tab =
         tableau(&alg).ok_or_else(|| Error::Config(format!("leaf {id}: unknown alg {alg:?}")))?;
     let structure = Structure::common(ops.iter().map(|o| o.structure()));
+    // The implicit families' options (run-config §4.2, §4.5).
+    if l.theta.is_some() && tab.family != Family::Theta {
+        return Err(Error::Config(format!(
+            "leaf {id}: theta applies to Theta only"
+        )));
+    }
+    if (l.imex.is_some() || l.implicit_solve.is_some()) && tab.family != Family::Imex {
+        return Err(Error::Config(format!(
+            "leaf {id}: imex and implicit_solve apply to IMEXEuler only"
+        )));
+    }
+    let imex_implicit = if tab.family == Family::Imex {
+        imex_partition(l.imex.as_ref(), &names, id)?
+    } else {
+        Vec::new()
+    };
     let method = match tab.family {
         Family::ExplicitRk => {
             LeafMethod::Erk(ExplicitRk::from_tableau(tab).map_err(Error::Config)?)
         }
-        Family::Rosenbrock => {
-            let m = Rosenbrock::from_tableau(tab).map_err(Error::Config)?;
+        Family::Rosenbrock | Family::Sdirk | Family::Theta | Family::Imex => {
             match l.jacobian.as_deref() {
                 None | Some("auto") | Some("symbolic") => {}
                 Some("ad") => {
@@ -275,12 +291,24 @@ fn build_leaf<T: Scalar>(
                     )));
                 }
             }
-            LeafMethod::Ros(m, ls)
-        }
-        f => {
-            return Err(Error::Unimplemented(format!(
-                "leaf {id}: {alg} ({f:?} family) is not implemented in the Rust implementation yet"
-            )))
+            if tab.family == Family::Rosenbrock {
+                LeafMethod::Ros(Rosenbrock::from_tableau(tab).map_err(Error::Config)?, ls)
+            } else {
+                // IMEX Euler: converged by default (D43).
+                let linearized = match l.implicit_solve.as_deref() {
+                    None | Some("converged") => false,
+                    Some("linearized") => true,
+                    Some(o) => {
+                        return Err(Error::Config(format!(
+                            "leaf {id}: implicit_solve {o:?} (converged or linearized)"
+                        )))
+                    }
+                };
+                let has_explicit = imex_implicit.iter().any(|&i| !i);
+                let m = Implicit::from_tableau(tab, l.theta, linearized, has_explicit)
+                    .map_err(|e| Error::Config(format!("leaf {id}: {e}")))?;
+                LeafMethod::Imp(m, ls)
+            }
         }
     };
     let mut dofs: Vec<usize> = ops.iter().flat_map(|o| o.writes()).collect();
@@ -304,17 +332,6 @@ fn build_leaf<T: Scalar>(
         }
     }
 
-    // Options explicit leaves do not take.
-    if l.theta.is_some() {
-        return Err(Error::Config(format!(
-            "leaf {id}: theta applies to Theta only"
-        )));
-    }
-    if l.imex.is_some() || l.implicit_solve.is_some() {
-        return Err(Error::Config(format!(
-            "leaf {id}: imex and implicit_solve apply to IMEXEuler only"
-        )));
-    }
     if l.frozen.is_some() {
         return Err(Error::Unimplemented(format!(
             "leaf {id}: frozen tendencies are not implemented at M1"
@@ -436,8 +453,70 @@ fn build_leaf<T: Scalar>(
         domain,
         binds,
         integrand: None,
+        imex_implicit,
         work: Default::default(),
     })
+}
+
+/// IMEX Euler's partition (run-config §4.5): per operator of the leaf, in
+/// declared order, whether it is implicit. Entries are operator names;
+/// `explicit` omitted means every term not listed as implicit. Every term
+/// must land in exactly one part. The toy problems' operators carry no
+/// locality, so locality names are not accepted.
+fn imex_partition(
+    v: Option<&serde_json::Value>,
+    names: &[String],
+    id: &str,
+) -> Result<Vec<bool>, Error> {
+    use serde_json::Value;
+    let Some(Value::Object(m)) = v else {
+        return Err(Error::Config(format!(
+            "leaf {id}: IMEXEuler needs an imex partition (run-config §4.5)"
+        )));
+    };
+    let list = |key: &str| -> Result<Option<Vec<String>>, Error> {
+        match m.get(key) {
+            None => Ok(None),
+            Some(Value::String(s)) => Ok(Some(vec![s.clone()])),
+            Some(Value::Array(a)) if !a.is_empty() => a
+                .iter()
+                .map(|x| {
+                    x.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| Error::Config(format!("leaf {id}: imex.{key} entry {x}")))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some),
+            Some(o) => Err(Error::Config(format!("leaf {id}: imex.{key} {o}"))),
+        }
+    };
+    if let Some(k) = m.keys().find(|k| *k != "explicit" && *k != "implicit") {
+        return Err(Error::Config(format!("leaf {id}: imex key {k:?}")));
+    }
+    let implicit = list("implicit")?
+        .ok_or_else(|| Error::Config(format!("leaf {id}: imex needs implicit")))?;
+    let explicit = list("explicit")?;
+    for nm in implicit.iter().chain(explicit.iter().flatten()) {
+        if !names.contains(nm) {
+            return Err(Error::Config(format!(
+                "leaf {id}: imex names {nm:?}, which is not an operator of the leaf \
+                 (locality names need operator localities, which the toy problems do not have)"
+            )));
+        }
+    }
+    let mut parts = Vec::with_capacity(names.len());
+    for nm in names {
+        let imp = implicit.contains(nm);
+        let exp = explicit.as_ref().map_or(!imp, |e| e.contains(nm));
+        if imp == exp {
+            return Err(Error::Config(format!(
+                "leaf {id}: operator {nm:?} is in {} part of the imex partition (run-config §8 rule 6)",
+                if imp { "both" } else { "neither" }
+            )));
+        }
+        parts.push(imp);
+    }
+    Ok(parts)
 }
 
 /// The leaf's `linsolve` (spec/run-config.md §4.2). Omitted or `"auto"`, it
@@ -597,6 +676,8 @@ struct Exec<'a, T: Scalar> {
     /// The integral term's increment over this macro step (D26).
     integral: f64,
     occ: HashMap<String, usize>,
+    /// Converge implicit stages to roundoff (spec/adjoint.md §7.2).
+    tight_newton: bool,
 }
 
 /// What one macro step produced.
@@ -693,6 +774,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     stops: &stops,
                     replay,
                     record_stages: self.adj.is_some(),
+                    tight_newton: self.tight_newton,
                 };
                 let out = leaf.invoke(u, &mut self.persist[*idx], &call)?;
                 self.rhs_calls += out.rhs_calls;
@@ -1040,6 +1122,17 @@ impl<T: Scalar> RunSpec<T> {
                                 .into(),
                         ));
                     };
+                    if matches!(&schedule.leaves[*idx].method, LeafMethod::Imp(m, _) if m.is_imex())
+                    {
+                        // spec/adjoint.md §2.1 gives the increment of q for the
+                        // explicit and Rosenbrock families only; for IMEX Euler
+                        // it would have to say which part ψ belongs to.
+                        return Err(Error::Unimplemented(
+                            "a functional over \"time\" on an IMEXEuler leaf: the spec does not \
+                             say whether the integrand is treated explicitly or implicitly"
+                                .into(),
+                        ));
+                    }
                     if let Some(name) = &f.integrate_in {
                         if name != id {
                             return Err(Error::Config(format!(
@@ -1128,7 +1221,7 @@ impl<T: Scalar> RunSpec<T> {
     /// Runs forward from `u0` with parameters `p`, recording the tape and
     /// a checkpoint at every macro-step boundary.
     pub fn forward(&self, u0: &[T], p: &[f64]) -> Result<ForwardRun<T>, Error> {
-        self.run(u0, p, None)
+        self.run(u0, p, None, false)
     }
 
     /// Replays the run of `tape` from `u0` with parameters `p`: every
@@ -1136,10 +1229,25 @@ impl<T: Scalar> RunSpec<T> {
     /// With a perturbed `u0` or `p` this is the frozen-tape map of
     /// spec/adjoint.md §2.2.
     pub fn replay(&self, u0: &[T], p: &[f64], tape: &Tape) -> Result<ForwardRun<T>, Error> {
-        self.run(u0, p, Some(tape))
+        self.run(u0, p, Some(tape), false)
     }
 
-    fn run(&self, u0: &[T], p: &[f64], tape: Option<&Tape>) -> Result<ForwardRun<T>, Error> {
+    /// The frozen-tape map of spec/adjoint.md §7.2 for finite differences:
+    /// a replay of `tape` whose implicit stages are converged to roundoff,
+    /// not to the Newton tolerance, so the differences see the exact-stage
+    /// map the adjoint differentiates. Without implicit leaves it is
+    /// [`replay`](Self::replay).
+    pub fn replay_frozen(&self, u0: &[T], p: &[f64], tape: &Tape) -> Result<ForwardRun<T>, Error> {
+        self.run(u0, p, Some(tape), true)
+    }
+
+    fn run(
+        &self,
+        u0: &[T],
+        p: &[f64],
+        tape: Option<&Tape>,
+        tight_newton: bool,
+    ) -> Result<ForwardRun<T>, Error> {
         let t0 = self.tspan.0;
         let mut u = u0.to_vec();
         let mut persist = self.schedule.initial_persist();
@@ -1175,16 +1283,15 @@ impl<T: Scalar> RunSpec<T> {
                     _ => return Err(Error::Run(format!("replay: no macro record {k}"))),
                 }
             }
-            let mo = self.macro_step(
+            let mo = self.macro_step_with(
                 k,
                 &mut u,
                 &mut persist,
                 p,
-                ta,
-                tb,
-                delta,
+                (ta, tb, delta),
                 index.as_ref(),
                 None,
+                tight_newton,
             )?;
             out.rhs_calls += mo.rhs_calls;
             out.integral += mo.integral;
@@ -1241,6 +1348,21 @@ impl<T: Scalar> RunSpec<T> {
         replay: Option<&HashMap<&str, &TapeRecord>>,
         adj: Option<&mut Vec<AdjRecord<T>>>,
     ) -> Result<MacroOut<T>, Error> {
+        self.macro_step_with(k, u, persist, p, (t0, t1, delta), replay, adj, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn macro_step_with(
+        &self,
+        k: usize,
+        u: &mut [T],
+        persist: &mut [LeafPersist],
+        p: &[f64],
+        (t0, t1, delta): (f64, f64, f64),
+        replay: Option<&HashMap<&str, &TapeRecord>>,
+        adj: Option<&mut Vec<AdjRecord<T>>>,
+        tight_newton: bool,
+    ) -> Result<MacroOut<T>, Error> {
         let ot = &self.output_times;
         let stops = ot[ot.partition_point(|&x| x <= t0)..ot.partition_point(|&x| x < t1)].to_vec();
         let mut ex = Exec {
@@ -1257,6 +1379,7 @@ impl<T: Scalar> RunSpec<T> {
             rhs_calls: 0,
             integral: 0.0,
             occ: HashMap::new(),
+            tight_newton,
         };
         ex.exec(&self.schedule.root, u, t0, t1, true)?;
         if let (Some(a), Some(rec)) = (adj, ex.adj.take()) {

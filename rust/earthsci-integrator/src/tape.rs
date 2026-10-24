@@ -313,8 +313,11 @@ pub struct LeafPersist {
     pub proposal: Option<f64>,
     /// The controller's history, for adaptive leaves.
     pub ctrl: Option<ControllerState>,
-    /// Newton rate `θ_prev` and `η_old` (spec/methods.md §5.2; unused by
-    /// explicit leaves, kept so checkpoints have their final shape).
+    /// Newton rate `θ_prev` and `η_old` (spec/methods.md §5.2, §8.6). Both stay
+    /// at 1: `θ_prev` restarts at 1 with every step attempt, so replay can
+    /// reproduce a step from `(u_n, h)` alone, and `η_old` never reaches
+    /// OrdinaryDiffEq's convergence test (earthsci-integrator-solvers
+    /// `implicit`). They are kept so checkpoints have the spec's shape.
     pub theta_prev: f64,
     pub eta_old: f64,
 }
