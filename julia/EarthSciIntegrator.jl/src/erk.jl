@@ -8,7 +8,7 @@
 # Shu–Osher sums run flat over ascending `j`, the α term before the β term for
 # each `j`. No fused multiply-adds.
 
-"""A method family's step. Families implemented later (Rosenbrock, SDIRK, IMEX, θ) add subtypes."""
+"""A method family's step. Families implemented later (SDIRK, IMEX, θ) add subtypes."""
 abstract type AbstractMethod end
 
 """Explicit Runge–Kutta in Butcher form (`A`, `b`, `c`)."""
@@ -68,9 +68,11 @@ function method_for(tab::Tableau)
     if tab.family === :explicit_rk
         tab.form === :butcher && return ButcherERK(tab)
         tab.form === :shu_osher && return ShuOsherERK(tab)
+    elseif tab.family === :rosenbrock
+        tab.form in (:rosenbrock_transformed, :rosenbrock23) && return RosenbrockMethod(tab)
     end
     throw(UnsupportedError("method $(tab.name) (family $(tab.family), form $(tab.form)) is not implemented yet; " *
-                           "this stage implements the explicit Runge–Kutta family only"))
+                           "this stage implements the explicit Runge–Kutta and Rosenbrock families"))
 end
 
 # `y .= x + coef * K`, elementwise, with coef converted to the element type.
@@ -96,7 +98,10 @@ struct StepResult{V}
     E::Float64
     fsal::Union{Nothing, V}
     nf::Int
+    singular::Bool          # Rosenbrock: W failed to factor (spec/methods.md §4.2)
+    stage_violation::Bool   # Rosenbrock: a stage state violated domain.check_stages (§11)
 end
+StepResult(u, E, fsal, nf) = StepResult(u, E, fsal, nf, false, false)
 
 # ---------------------------------------------------------------------------
 # Butcher form

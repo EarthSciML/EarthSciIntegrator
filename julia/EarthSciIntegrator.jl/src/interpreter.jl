@@ -159,11 +159,23 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
             end
         end
         sort!(unique!(wrt_p))
-        # operator-interface.md §3: vjp_p is required when an adjoint is taken with respect to p.
-        if !isempty(wrt_p)
-            for leaf in values(leaves), op in leaf.ops.ops
-                provides(op, :vjp_p) ||
-                    throw(ConfigError("operator '$(opname(op))' of leaf $(leaf.id) does not provide vjp_p, which the adjoint with respect to p needs"))
+        # operator-interface.md §3: vjp_p is required when an adjoint is taken
+        # with respect to p; a Rosenbrock adjoint needs hess_u, and hess_p with
+        # respect to p, and ft_vjp_u, ft_vjp_p for operators that depend on t
+        # when the method forms f_t (spec/adjoint.md §3).
+        for leaf in values(leaves), op in leaf.ops.ops
+            need = isempty(wrt_p) ? Symbol[] : [:vjp_p]
+            if leaf.method isa RosenbrockMethod
+                push!(need, :hess_u)
+                isempty(wrt_p) || push!(need, :hess_p)
+                if leaf.method.uses_ft && depends_on_t(op)
+                    push!(need, :ft_vjp_u)
+                    isempty(wrt_p) || push!(need, :ft_vjp_p)
+                end
+            end
+            for call in need
+                provides(op, call) ||
+                    throw(ConfigError("operator '$(opname(op))' of leaf $(leaf.id) does not provide $call, which the adjoint needs"))
             end
         end
     end

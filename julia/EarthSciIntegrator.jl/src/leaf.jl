@@ -69,6 +69,19 @@ function _clip!(leaf::LeafNode, u)
 end
 
 """
+    method_step(leaf, f!, p, u, t, h, k1, adaptive) -> StepResult
+
+One forward step attempt with the leaf's method: [`erk_step`](@ref) or
+[`rosenbrock_step`](@ref). `f!(out, u, t)` is the right-hand side with the
+step's parameters `p`.
+"""
+function method_step(leaf::LeafNode, f!, p, u, t, h, k1, adaptive::Bool)
+    m = leaf.method
+    m isa RosenbrockMethod && return rosenbrock_step(m, rosenbrock_context(leaf), u, p, t, h, k1, adaptive, leaf.tol)
+    return erk_step(m, f!, u, t, h, k1, adaptive, leaf.tol)
+end
+
+"""
     leaf_forward(leaf, cs, u, p, ta, tb, path, Δmacro, stops) -> LeafOutcome
 
 Advance `leaf` over `[ta, tb]` from `u` with its controller (state `cs`,
@@ -155,10 +168,12 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         end
         pp = pstep(h)
         k1 = (fsal !== nothing && (!leaf_bound || fsal_h == h)) ? fsal : nothing
-        res = erk_step(leaf.method, fp(pp), u, t, h, k1, adaptive, leaf.tol)
+        res = method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive)
         nf += res.nf
         unew = res.u
-        violation = leaf.on_violation === :reject && _domain_violation(leaf, unew)
+        # A negative stage state under domain.check_stages is a violation whatever
+        # on_violation says, since a stage cannot be clipped (spec/methods.md §11).
+        violation = (leaf.on_violation === :reject && _domain_violation(leaf, unew)) || res.stage_violation
         if adaptive
             E = res.E
             if !isfinite(E) || violation
@@ -169,7 +184,9 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
                 continue
             end
             q = controller_factor!(cs, leaf.controller, cc, E, tab)
-            if accepts(leaf.controller, cc, E, q)
+            # A singular W rejects as if E were 2 (spec/methods.md §4.2, §8.5),
+            # whatever the PID factor for E = 2 would say.
+            if !res.singular && accepts(leaf.controller, cc, E, q)
                 tnew = isstop ? ts : t + h
                 hhat = controller_accept!(cs, leaf.controller, cc, E, q, proposal_base(hc, h, isstop, prev_accepted, t, dtmin, dtmax))
                 cs.accepted_any = true
@@ -181,7 +198,9 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
                 continue
             end
         else
-            if !all(x -> isfinite(x), unew)
+            # A singular W at fixed dt: the step's solve would divide by a zero
+            # pivot, so it ends the leaf like a non-finite state (spec/methods.md §12).
+            if res.singular || !all(x -> isfinite(x), unew)
                 rec.retcode = "Unstable"
                 break
             end
@@ -294,8 +313,14 @@ indices of the DOFs the step clipped, as recorded on the tape),
 generic over element types; the frozen-tape step map `Φₙ` of spec/adjoint.md §1.
 """
 function leaf_step(leaf::LeafNode, u, p, t, h, mask, tk1 = t)
-    f! = (out, x, τ) -> eval_rhs!(out, leaf.ops, x, p, τ)
-    u1 = erk_step(leaf.method, f!, u, t, h, nothing, false, nothing; tk1).u
+    u1 = if leaf.method isa RosenbrockMethod
+        st = rosenbrock_stages(leaf.method, rosenbrock_context(leaf), u, p, t, h, nothing; tk1)
+        st.singular && throw(ReplayMismatchError("W is singular on replay of the step at t = $t, h = $h of leaf $(leaf.id)"))
+        st.u1
+    else
+        f! = (out, x, τ) -> eval_rhs!(out, leaf.ops, x, p, τ)
+        erk_step(leaf.method, f!, u, t, h, nothing, false, nothing; tk1).u
+    end
     if mask !== nothing
         u1 = copy(u1)
         for i in mask
@@ -319,6 +344,10 @@ function leaf_step_adjoint(leaf::LeafNode, u, p, t, h, mask, λ, skipped::Bool =
         end
     end
     skipped && return copy(λ), zeros(length(p))
-    λn, p̄, _ = erk_adjoint_step(leaf.method, leaf.ops, u, p, t, h, λ; tk1)
+    λn, p̄, _ = if leaf.method isa RosenbrockMethod
+        rosenbrock_adjoint_step(leaf.method, rosenbrock_context(leaf), u, p, t, h, λ; tk1)
+    else
+        erk_adjoint_step(leaf.method, leaf.ops, u, p, t, h, λ; tk1)
+    end
     return λn, p̄
 end

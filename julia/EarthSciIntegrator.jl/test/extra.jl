@@ -94,7 +94,7 @@ const ADAPTIVE_EXPLICIT = ["Heun", "RK4", "BS3", "Tsit5", "SSPRK43"]
         @test whole.dofs == collect(1:128)
         l = run.root
         lw = EarthSciIntegrator.LeafNode(l.id, l.opnames, l.ops, l.tab, l.method, l.dt, whole, l.dt0, l.dtmin, l.dtmax,
-            l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings)
+            l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages)
         cs = EarthSciIntegrator.ControllerState(l.tab.controller)
         ub = EarthSciIntegrator.leaf_forward(lw, cs, copy(run.u0), run.p, 0.0, 0.1, "0/root", 0.1, [0.1])
         @test ub.record.steps != [s for r in run.tape.records if r isa LeafRecord for s in r.steps]

@@ -29,8 +29,14 @@ struct LeafNode{O <: OperatorSum, M <: AbstractMethod} <: Node
     nonnegative::Vector{Int}
     on_violation::Symbol
     bindings::Bindings
+    linsolve::LinsolveSpec       # the W solver of Rosenbrock leaves (unused by explicit ones)
+    check_stages::Bool           # domain.check_stages (Rosenbrock only)
 end
 is_adaptive(l::LeafNode) = l.dt === nothing
+
+"""The [`RosenbrockContext`](@ref) of a Rosenbrock leaf."""
+rosenbrock_context(l::LeafNode) = RosenbrockContext(l.ops, l.linsolve, structure(l.ops), depends_on_t(l.ops),
+    l.check_stages ? l.nonnegative : Int[])
 
 """`sequence`: the children in order over the whole interval (Lie–Trotter)."""
 struct SequenceNode <: Node
@@ -198,6 +204,22 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     for op in ops, call in (:rhs, :jvp_u, :vjp_u)
         provides(op, call) || throw(ConfigError("operator '$(opname(op))' of leaf $id does not provide $call"))
     end
+    jacobian = String(get(spec, "jacobian", "auto"))
+    jacobian in ("auto", "symbolic", "ad", "fd") || throw(ConfigError("leaf $id: jacobian '$jacobian'"))
+    linsolve = LinsolveSpec(:dense_lu, true)
+    if method isa RosenbrockMethod
+        # At M1 the toy operators' hand-derived `jac` is the symbolic Jacobian.
+        jacobian in ("auto", "symbolic") ||
+            throw(UnsupportedError("leaf $id: jacobian '$jacobian' is not implemented in this stage (symbolic is)"))
+        linsolve = parse_linsolve(get(spec, "linsolve", nothing), structure(opsum), id)
+        # operator-interface.md §3: `jac` for Rosenbrock leaves, `ft` for those
+        # whose operators depend on t.
+        for op in ops
+            provides(op, :jac) || throw(ConfigError("operator '$(opname(op))' of leaf $id does not provide jac, which $alg needs"))
+            method.uses_ft && depends_on_t(op) && !provides(op, :ft) &&
+                throw(ConfigError("operator '$(opname(op))' of leaf $id depends on t but does not provide ft, which $alg needs"))
+        end
+    end
     dt = if !haskey(spec, "dt")
         nothing
     elseif spec["dt"] == "step"
@@ -236,8 +258,11 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     dom = get(spec, "domain", nothing)
     nonneg = Int[]
     onv = :reject
+    check_stages = false
     if dom !== nothing
-        get(dom, "check_stages", false) && throw(UnsupportedError("domain.check_stages applies to Rosenbrock leaves only (leaf $id)"))
+        check_stages = Bool(get(dom, "check_stages", false))
+        check_stages && !(method isa RosenbrockMethod) &&
+            throw(UnsupportedError("domain.check_stages applies to Rosenbrock leaves only (leaf $id)"))
         haskey(dom, "nonnegative") && (nonneg = _dofs(prob, dom["nonnegative"]))
         ov = get(dom, "on_violation", "reject")
         ov in ("reject", "clip") ||
@@ -255,7 +280,7 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
             "(spec/methods.md §9, run-config §8 rule 15)"))
     end
     return LeafNode(id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
-        controller, maxiters, nonneg, onv, bindings)
+        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages)
 end
 
 """

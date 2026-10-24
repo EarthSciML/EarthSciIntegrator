@@ -240,7 +240,7 @@ function check_reverse_diff(case, run, chk)
     alg = ode_alg(run.root.tab.name)
     F = run.functional
     F.over === :final || error("reverse_diff check implemented for final-time functionals")
-    prob, kw = oracle_problem(run; inplace = false)
+    prob, kw = reverse_diff_problem(run)
     w = EarthSciIntegrator.phi_gradient(F, length(run.u0))
     loss = function (u0, p)
         sol = solve(remake(prob; u0, p), alg; sensealg = ReverseDiffAdjoint(), kw...)
@@ -356,7 +356,11 @@ end
     cases = JSON.parsefile(CASES_FILE)["cases"]
     @test length(cases) == 51
     @test JSON.parsefile(CASES_FILE)["esm_integrator"] == string(SPEC_VERSION)
+    # EARTHSCIINTEGRATOR_CASES, a regular expression, runs only the matching
+    # cases (for development; CI runs them all).
+    only = get(ENV, "EARTHSCIINTEGRATOR_CASES", "")
     for case in cases
+        isempty(only) || occursin(Regex(only), case["id"]) || continue
         run_case(case)
     end
     ran = unique(o.case for o in OUTCOMES)

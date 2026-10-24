@@ -2,19 +2,26 @@
 # sequence imposed (`adaptive = false`, `tstops` from our tape), and
 # SciMLSensitivity's ReverseDiffAdjoint through it (spec/adjoint.md §7.3).
 
+import SciMLBase
 using SciMLBase: ODEProblem, solve, remake
 using OrdinaryDiffEqLowOrderRK: Euler, Heun, RK4, BS3
 using OrdinaryDiffEqTsit5: Tsit5
 using OrdinaryDiffEqSSPRK: SSPRK33, SSPRK43, SSPRK104
+using OrdinaryDiffEqRosenbrock: Rosenbrock23, ROS2, ROS3P, Rodas3, Rodas4, Rodas5P
 using SciMLSensitivity: ReverseDiffAdjoint
 import Zygote
+import ReverseDiff
 
 """OrdinaryDiffEq's algorithm for a method (the table's `ordinarydiffeq_algorithm`)."""
 function ode_alg(alg::AbstractString)
     name = TABLEAUS[alg].ordinarydiffeq_algorithm
     name === nothing && error("$alg has no OrdinaryDiffEq counterpart")
     return Dict("Euler" => Euler(), "Heun" => Heun(), "RK4" => RK4(), "BS3" => BS3(), "Tsit5" => Tsit5(),
-        "SSPRK33" => SSPRK33(), "SSPRK43" => SSPRK43(), "SSPRK104" => SSPRK104())[name]
+        "SSPRK33" => SSPRK33(), "SSPRK43" => SSPRK43(), "SSPRK104" => SSPRK104(),
+        # The ODEFunction carries `jac` and `tgrad` from the operators, which
+        # OrdinaryDiffEq's Rosenbrock methods use instead of differentiating f.
+        "Rosenbrock23" => Rosenbrock23(), "ROS2" => ROS2(), "ROS3P" => ROS3P(), "Rodas3" => Rodas3(),
+        "Rodas4" => Rodas4(), "Rodas5P" => Rodas5P())[name]
 end
 
 """
@@ -52,4 +59,32 @@ end
 function oracle_solve(run, alg)
     prob, kw = oracle_problem(run)
     return solve(prob, alg; kw...)
+end
+
+# ReverseDiffAdjoint through OrdinaryDiffEq's out-of-place Rosenbrock methods.
+# OrdinaryDiffEqRosenbrock 2.7.5 stores the time derivative in a slot typed
+# like the state (`JacReuseState.cached_dT`, `src/rosenbrock_caches.jl:51`),
+# which under ReverseDiff is a `TrackedArray`; a `tgrad` (ours, or its own
+# ForwardDiff one) that returns a `Vector` of `TrackedReal`s fails to convert.
+# So the reverse_diff problem's `tgrad` is a ReverseDiff primitive: its value
+# is the operators' `ft`, and its pullback takes ForwardDiff Jacobians of that
+# `ft` in u and p, which keeps the oracle independent of the hand-derived
+# `ft_vjp_u` and `ft_vjp_p` the adjoint uses. (The in-place path fails too, in
+# LinearSolve's typed cache.)
+_ftvec(ops, u, p, t) = (d = zeros(promote_type(eltype(u), eltype(p)), length(u)); EarthSciIntegrator.ft!(ops, d, u, p, t); d)
+tracked_ft(ops, u, p, t) = _ftvec(ops, u, p, t)
+tracked_ft(ops, u::ReverseDiff.TrackedArray, p::ReverseDiff.TrackedArray, t) = ReverseDiff.track(tracked_ft, ops, u, p, t)
+ReverseDiff.@grad function tracked_ft(ops, u, p, t)
+    uv, pv = ReverseDiff.value(u), ReverseDiff.value(p)
+    Ju = ForwardDiff.jacobian(x -> _ftvec(ops, x, pv, t), uv)
+    Jp = ForwardDiff.jacobian(q -> _ftvec(ops, uv, q, t), pv)
+    return _ftvec(ops, uv, pv, t), Δ -> (nothing, Ju' * Δ, Jp' * Δ, nothing)
+end
+
+"""The run's out-of-place problem for ReverseDiffAdjoint, with our step sequence imposed."""
+function reverse_diff_problem(run)
+    prob, kw = oracle_problem(run; inplace = false)
+    ops = run.root.ops
+    f = SciMLBase.ODEFunction{false}(prob.f.f; jac = prob.f.jac, tgrad = (u, p, t) -> tracked_ft(ops, u, p, t))
+    return remake(prob; f), kw
 end
