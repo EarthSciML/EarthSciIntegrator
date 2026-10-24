@@ -715,3 +715,211 @@ fn more_refusals() {
         "subcycle n = 0",
     );
 }
+
+/// spec/run-config.md §5 "Fixed boundaries": a tstop within the landing
+/// tolerance of `t0 + k·dt` falls on that boundary, which becomes the tstop
+/// exactly; here 3 × 0.1 = 0.30000000000000004 becomes 0.3.
+#[test]
+fn fixed_boundaries_snap_to_tstops() {
+    assert_ne!(3.0 * 0.1, 0.3);
+    let r = rc(
+        "toy:forced_decay",
+        json!({"sequence": [{"leaf": "decay", "alg": "RK4", "dt": "step"}]}),
+        0.1,
+        Some(grad_all("u", "saveat")),
+    );
+    let s = spec(&r, (0.0, 1.0), Some(&[0.3]));
+    assert_eq!(s.bounds.len(), 11);
+    assert_eq!(s.bounds[3].to_bits(), 0.3f64.to_bits());
+    assert_eq!(s.bounds[4].to_bits(), (4.0 * 0.1f64).to_bits());
+    assert_eq!(s.bounds[10], 1.0);
+    let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    let ts: Vec<f64> = fwd.outputs.iter().map(|o| o.0).collect();
+    assert_eq!(ts, vec![0.0, 0.3]);
+    assert_eq!(fwd.outputs[1].1, fwd.checkpoints[3].u);
+    match fwd.tape.index().get("2") {
+        Some(TapeRecord::Macro { t, dt, .. }) => {
+            assert_eq!(
+                (t.to_bits(), dt.to_bits()),
+                (0.2f64.to_bits(), (0.3 - 0.2f64).to_bits())
+            )
+        }
+        r => panic!("{r:?}"),
+    }
+    check_gradient(&r, (0.0, 1.0), Some(&[0.3]), "snapped boundary");
+}
+
+/// spec/run-config.md §7.3: output times are exactly the listed ones, the
+/// end alone by default; a listed t0 adds nothing; times outside [t0, t_f]
+/// are refused. A functional over `saveat` has no term at t0 (§7.2).
+#[test]
+fn output_times_as_listed() {
+    let r = rc(
+        "toy:forced_decay",
+        json!({"leaf": "decay", "alg": "RK4", "dt": 0.05}),
+        0.5,
+        Some(grad_all("u", "saveat")),
+    );
+    let times = |saveat: Option<&[f64]>| {
+        let s = spec(&r, (0.0, 2.0), saveat);
+        let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+        let ts: Vec<f64> = fwd.outputs.iter().map(|o| o.0).collect();
+        (s, fwd, ts)
+    };
+    assert_eq!(times(None).2, vec![0.0, 2.0]);
+    assert_eq!(times(Some(&[1.0])).2, vec![0.0, 1.0]);
+    let (s, fwd, ts) = times(Some(&[0.0, 1.0, 0.5]));
+    assert_eq!(ts, vec![0.0, 0.5, 1.0]);
+    assert_eq!(s.functional.as_ref().unwrap().times, vec![0.5, 1.0]);
+    let j = s.functional_value(&fwd).unwrap();
+    assert_eq!(j, fwd.outputs[1].1[0] + fwd.outputs[2].1[0]);
+    check_gradient(&r, (0.0, 2.0), Some(&[0.0, 1.0, 0.5]), "saveat with t0");
+    for bad in [-0.5, 2.5, f64::NAN] {
+        match RunSpec::<f64>::new(&r, (0.0, 2.0), Some(&[bad, 1.0])) {
+            Err(Error::Config(m)) => println!("output time {bad}: {m}"),
+            Err(e) => panic!("{bad}: {e}"),
+            Ok(_) => panic!("output time {bad} accepted"),
+        }
+    }
+}
+
+/// spec/plan.md: unnamed nodes are named by their position path from the
+/// root, whatever ids their ancestors have.
+#[test]
+fn unnamed_node_paths_are_positional() {
+    let r = advection(
+        json!({"sequence": [
+            {"sequence": [{"leaf": "transport", "alg": "SSPRK33", "dt": "step"}], "id": "transport"},
+            {"subcycle": {"leaf": "reaction", "alg": "Heun", "dt": "step"}, "n": 2, "id": "chem"}]}),
+        0.01,
+        None,
+    );
+    let s = spec(&r, (0.0, 0.01), None);
+    let ids: Vec<String> = s.schedule.algs().into_iter().map(|a| a.0).collect();
+    assert_eq!(ids, vec!["root.0.0", "root.1.subcycle"]);
+    let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    let paths: Vec<&str> = fwd.tape.records.iter().map(|r| r.path()).collect();
+    assert_eq!(
+        paths,
+        vec![
+            "0/root.0.0",
+            "0/root.1.subcycle",
+            "0/root.1.subcycle#1",
+            "0/chem",
+            "0"
+        ]
+    );
+}
+
+/// A tape that does not match the run is a replay mismatch, not a panic:
+/// recorded clips outside the leaf's clip domain, macro steps or invocations
+/// over other intervals, and steps that do not start at the invocation.
+#[test]
+#[allow(clippy::type_complexity)]
+fn replay_mismatches_are_errors() {
+    let mismatch = |s: &RunSpec<f64>, tape: &earthsci_integrator::tape::Tape, what: &str| match s
+        .replay(&s.u0(), &s.problem.p, tape)
+    {
+        Err(Error::Run(m)) if m.contains("replay") => println!("{what}: {m}"),
+        Err(e) => panic!("{what}: {e}"),
+        Ok(_) => panic!("{what}: replayed"),
+    };
+    // Edits the first leaf record of a copy of `tape`.
+    let edit_leaf = |tape: &earthsci_integrator::tape::Tape,
+                     f: &dyn Fn(
+        &mut f64,
+        &mut f64,
+        &mut Vec<[f64; 2]>,
+        &mut Vec<(usize, Vec<usize>)>,
+    )| {
+        let mut tp = tape.clone();
+        for r in &mut tp.records {
+            if let TapeRecord::Leaf {
+                t,
+                dt,
+                steps,
+                clips,
+                ..
+            } = r
+            {
+                f(t, dt, steps, clips);
+                break;
+            }
+        }
+        tp
+    };
+    // van_der_pol has DOFs y and z; the clip domain is y alone.
+    let r = rc(
+        "toy:van_der_pol/nonstiff",
+        json!({"leaf": "oscillator", "alg": "RK4", "dt": 0.05, "domain": {"nonnegative": ["y"], "on_violation": "clip"}}),
+        0.5,
+        None,
+    );
+    let s = spec(&r, (0.0, 1.0), None);
+    let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    s.replay(&s.u0(), &s.problem.p, &fwd.tape).unwrap();
+    let set_clip =
+        |k: usize, j: usize| edit_leaf(&fwd.tape, &move |_, _, _, c| *c = vec![(k, vec![j])]);
+    mismatch(&s, &set_clip(0, 2), "clip index past the state");
+    mismatch(&s, &set_clip(0, 1), "clip outside the clip domain");
+    mismatch(&s, &set_clip(99, 0), "clip past the steps");
+    mismatch(
+        &s,
+        &edit_leaf(&fwd.tape, &|_, _, _, c| {
+            *c = vec![(1, vec![0]), (0, vec![0])]
+        }),
+        "clips out of order",
+    );
+    // A leaf without a clip domain.
+    let r = rc(
+        "toy:van_der_pol/nonstiff",
+        json!({"leaf": "oscillator", "alg": "RK4", "dt": 0.05}),
+        0.5,
+        None,
+    );
+    let s = spec(&r, (0.0, 1.0), None);
+    let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    mismatch(
+        &s,
+        &edit_leaf(&fwd.tape, &|_, _, _, c| *c = vec![(0, vec![0])]),
+        "clip without a clip domain",
+    );
+    // Invocation interval and first step.
+    mismatch(
+        &s,
+        &edit_leaf(&fwd.tape, &|t, _, _, _| {
+            *t = f64::from_bits(t.to_bits() + 1)
+        }),
+        "leaf record t",
+    );
+    mismatch(
+        &s,
+        &edit_leaf(&fwd.tape, &|_, dt, _, _| *dt *= 2.0),
+        "leaf record dt",
+    );
+    mismatch(
+        &s,
+        &edit_leaf(&fwd.tape, &|_, _, st, _| st[0][0] = 1e-3),
+        "first step start",
+    );
+    // A macro record over another interval: same records, other step.dt.
+    let mut tp = fwd.tape.clone();
+    for r in &mut tp.records {
+        if let TapeRecord::Macro { dt, .. } = r {
+            *dt = f64::from_bits(dt.to_bits() + 1);
+        }
+    }
+    mismatch(&s, &tp, "macro record dt");
+    let other = spec(
+        &rc(
+            "toy:van_der_pol/nonstiff",
+            json!({"leaf": "oscillator", "alg": "RK4", "dt": 0.05}),
+            0.25,
+            None,
+        ),
+        (0.0, 1.0),
+        None,
+    );
+    let fo = other.forward(&other.u0(), &other.problem.p).unwrap();
+    mismatch(&s, &fo.tape, "another step.dt's tape");
+}

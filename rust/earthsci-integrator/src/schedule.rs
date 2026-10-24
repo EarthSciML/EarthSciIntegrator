@@ -7,7 +7,9 @@
 //! differences use.
 
 use crate::config::{parse_duration, Control, LeafNode, Node, RunConfig};
-use crate::leaf::{BindKind, DomainSpec, DtMode, LeafCall, LeafMethod, LeafSpec, StepData};
+use crate::leaf::{
+    landing_tol, stop_rule, BindKind, DomainSpec, DtMode, LeafCall, LeafMethod, LeafSpec, StepData,
+};
 use crate::operator::{MapOperator, Structure};
 use crate::tape::{Checkpoint, LeafPersist, Retcode, Tape, TapeRecord};
 use crate::toy::ToyProblem;
@@ -15,7 +17,6 @@ use crate::{Error, Scalar};
 use earthsci_integrator_solvers::controller::{Controller, ControllerKind};
 use earthsci_integrator_solvers::erk::ExplicitRk;
 use earthsci_integrator_solvers::norm::Tolerances;
-use earthsci_integrator_solvers::scalar::eps_f64;
 use earthsci_integrator_solvers::tableau::{tableau, Family};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -120,13 +121,14 @@ impl<T: Scalar> Schedule<T> {
                 }
             }
             Node::Sequence { id, children } | Node::Strang { id, children } => {
-                // Children are named `<id>.0`, `<id>.1`, … after this node's
-                // own id (spec/plan.md §3), as the Julia implementation does.
+                // Unnamed children are named by their position path from the
+                // root, `<path>.0`, `<path>.1`, …, whatever ids their
+                // ancestors have (spec/plan.md §3).
                 let id = id_or(id);
                 let kids = children
                     .iter()
                     .enumerate()
-                    .map(|(i, c)| self.build_node(c, &format!("{id}.{i}"), pb, needs))
+                    .map(|(i, c)| self.build_node(c, &format!("{path}.{i}"), pb, needs))
                     .collect::<Result<Vec<_>, _>>()?;
                 if matches!(node, Node::Sequence { .. }) {
                     SNode::Sequence { id, children: kids }
@@ -152,10 +154,10 @@ impl<T: Scalar> Schedule<T> {
                         id_or(id)
                     )));
                 }
-                // The child is `<id>.subcycle` (spec/plan.md §3's `root.1.every` pattern).
+                // The child's path is `<path>.subcycle` (spec/plan.md §3).
                 let id = id_or(id);
                 let child =
-                    Box::new(self.build_node(child, &format!("{id}.subcycle"), pb, needs)?);
+                    Box::new(self.build_node(child, &format!("{path}.subcycle"), pb, needs)?);
                 SNode::Subcycle { id, child, n }
             }
         })
@@ -523,11 +525,18 @@ impl<'a, T: Scalar> Exec<'a, T> {
                 let mut replayed_rejected = None;
                 let replay = match rec {
                     Some(TapeRecord::Leaf {
+                        t,
+                        dt,
                         steps,
                         clips,
                         rejected,
                         ..
                     }) => {
+                        if t.to_bits() != t0.to_bits() || dt.to_bits() != delta.to_bits() {
+                            return Err(Error::Run(format!(
+                                "replay: {path} was recorded at t = {t:?}, dt = {dt:?}, invoked at t = {t0:?}, dt = {delta:?}"
+                            )));
+                        }
                         replayed_rejected = Some(*rejected);
                         Some((steps.as_slice(), clips.as_slice()))
                     }
@@ -695,7 +704,7 @@ pub struct RunSpec<T: Scalar> {
     /// Macro-step boundaries `t0 … t_f`.
     pub bounds: Vec<f64>,
     /// The reason for each macro step's size.
-    pub reasons: Vec<String>,
+    pub reasons: Vec<&'static str>,
     pub functional: Option<FunctionalSpec>,
     pub wrt_u0: bool,
     /// Per parameter: whether its gradient is requested.
@@ -774,11 +783,22 @@ impl<T: Scalar> RunSpec<T> {
         let mut wrt_u0 = false;
         let mut wrt_p = vec![false; problem.p.len()];
         let mut functional = None;
-        // Output times: `saveat` (default the end), always with the end; the
-        // initial state is output at t0 too (spec/toy-problems.md §3's example).
-        let mut out_times: Vec<f64> = saveat.map(|s| s.to_vec()).unwrap_or_default();
-        out_times.push(tspan.1);
-        out_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // Output times: exactly `saveat`, default the end alone; the end is
+        // not added to a list that omits it. The initial state is always
+        // reported first, so a listed t0 adds nothing; a time outside
+        // [t0, t_f] is refused (run-config §7.3).
+        let mut out_times: Vec<f64> = match saveat {
+            Some(s) => s.to_vec(),
+            None => vec![tspan.1],
+        };
+        if let Some(x) = out_times.iter().find(|x| !(tspan.0..=tspan.1).contains(*x)) {
+            return Err(Error::Config(format!(
+                "output time {x} is outside [{}, {}]",
+                tspan.0, tspan.1
+            )));
+        }
+        out_times.retain(|&x| x != tspan.0);
+        out_times.sort_by(f64::total_cmp);
         out_times.dedup();
         if let Some(adj) = &rc.adjoint {
             // Parameters bound by bind_dt are tape constants (spec/adjoint.md §5.8).
@@ -866,6 +886,7 @@ impl<T: Scalar> RunSpec<T> {
             }
             let times = match f.over.as_str() {
                 "final" => vec![tspan.1],
+                // A point term at each output time after t0 (run-config §7.2).
                 "saveat" => out_times.clone(),
                 "time" => {
                     return Err(Error::Unimplemented(
@@ -883,21 +904,23 @@ impl<T: Scalar> RunSpec<T> {
         }
 
         // Macro-step boundaries t0 + k·dt, the last one t_f exactly by the stop
-        // rule of spec/methods.md §10 (multiplied, not accumulated).
-        let (bounds, reasons) = macro_bounds(tspan.0, tspan.1, macro_dt);
+        // rule of spec/methods.md §10 (multiplied, not accumulated); a boundary
+        // within the landing tolerance of a tstop is that tstop (run-config §5).
+        let mut tstops = out_times.clone();
+        if let Some(f) = &functional {
+            tstops.extend(&f.times);
+            tstops.sort_by(f64::total_cmp);
+            tstops.dedup();
+        }
+        let (bounds, reasons) = macro_bounds(tspan.0, tspan.1, macro_dt, &tstops);
+        let is_bound = |x: f64| bounds.binary_search_by(|b| b.total_cmp(&x)).is_ok();
         for &x in &out_times {
-            if x <= tspan.0 || x > tspan.1 {
-                return Err(Error::Config(format!(
-                    "output time {x} is outside ({}, {}]",
-                    tspan.0, tspan.1
-                )));
-            }
             // Output times are tstops: macro-step boundaries under a fixed
             // step.dt (run-config §8 rule 9), or stops inside the interval of a
             // root leaf that substeps (spec/methods.md §10). A "step" or
             // "accumulated" leaf takes exactly one step of the node's Δ
             // (run-config §4.2), so it cannot land on one.
-            if !bounds.contains(&x) {
+            if !is_bound(x) {
                 let substeps = match schedule.root {
                     SNode::Leaf { idx, .. } => matches!(
                         schedule.leaves[idx].dt_mode,
@@ -914,7 +937,7 @@ impl<T: Scalar> RunSpec<T> {
         }
         if let Some(f) = &functional {
             for &x in &f.times {
-                if !bounds.contains(&x) {
+                if !is_bound(x) {
                     return Err(Error::Config(format!(
                         "observation time {x} is not a multiple of step.dt (run-config §8 rule 9)"
                     )));
@@ -976,11 +999,17 @@ impl<T: Scalar> RunSpec<T> {
             let (ta, tb) = (self.bounds[k], self.bounds[k + 1]);
             let delta = tb - ta;
             if let Some(ix) = &index {
-                if !matches!(
-                    ix.get(k.to_string().as_str()),
-                    Some(TapeRecord::Macro { .. })
-                ) {
-                    return Err(Error::Run(format!("replay: no macro record {k}")));
+                // Replay is bitwise, so the recorded macro step must be this
+                // config's, bit for bit.
+                match ix.get(k.to_string().as_str()) {
+                    Some(TapeRecord::Macro { t, dt, .. }) => {
+                        if t.to_bits() != ta.to_bits() || dt.to_bits() != delta.to_bits() {
+                            return Err(Error::Run(format!(
+                                "replay: macro record {k} has t = {t:?}, dt = {dt:?}; this run's macro step {k} has t = {ta:?}, dt = {delta:?}"
+                            )));
+                        }
+                    }
+                    _ => return Err(Error::Run(format!("replay: no macro record {k}"))),
                 }
             }
             let (seg, rhs) = self.macro_step(
@@ -1002,7 +1031,7 @@ impl<T: Scalar> RunSpec<T> {
                 path: k.to_string(),
                 t: ta,
                 dt: delta,
-                reason: self.reasons[k].clone(),
+                reason: self.reasons[k].to_string(),
             });
             out.checkpoints.push(Checkpoint {
                 macro_index: k + 1,
@@ -1010,7 +1039,11 @@ impl<T: Scalar> RunSpec<T> {
                 u: u.clone(),
                 leaves: persist.clone(),
             });
-            if self.output_times.contains(&tb) {
+            if self
+                .output_times
+                .binary_search_by(|x| x.total_cmp(&tb))
+                .is_ok()
+            {
                 out.outputs.push((tb, u.clone()));
             }
         }
@@ -1045,12 +1078,8 @@ impl<T: Scalar> RunSpec<T> {
         replay: Option<&HashMap<&str, &TapeRecord>>,
         adj: Option<&mut Vec<AdjRecord<T>>>,
     ) -> Result<((Vec<TapeRecord>, Vec<(f64, Vec<T>)>), u64), Error> {
-        let stops: Vec<f64> = self
-            .output_times
-            .iter()
-            .copied()
-            .filter(|&x| x > t0 && x < t1)
-            .collect();
+        let ot = &self.output_times;
+        let stops = ot[ot.partition_point(|&x| x <= t0)..ot.partition_point(|&x| x < t1)].to_vec();
         let mut ex = Exec {
             sched: &self.schedule,
             p,
@@ -1074,24 +1103,37 @@ impl<T: Scalar> RunSpec<T> {
 }
 
 /// The macro-step boundaries under a fixed `step.dt`: `t0 + k·dt`, the last
-/// one `t_f` exactly by the stop rule of spec/methods.md §10, with each step's
-/// reason: `"step.dt"`, or `"tstop"` for a last step shortened to land on
-/// `t_f` (spec/run-config.md §5).
-pub fn macro_bounds(t0: f64, tf: f64, dt: f64) -> (Vec<f64>, Vec<String>) {
+/// one `t_f` exactly by the stop rule of spec/methods.md §10, and a boundary
+/// within the landing tolerance of a tstop (`tstops`, ascending) that tstop
+/// exactly (spec/run-config.md §5). With each step's reason: `"step.dt"`, or
+/// `"tstop"` for a last step shortened to land on `t_f`.
+pub fn macro_bounds(t0: f64, tf: f64, dt: f64, tstops: &[f64]) -> (Vec<f64>, Vec<&'static str>) {
+    // The tstop a time falls on, if any: one of the two nearest.
+    let snap = |b: f64| {
+        let i = tstops.partition_point(|&x| x < b);
+        tstops[i.saturating_sub(1)..(i + 1).min(tstops.len())]
+            .iter()
+            .copied()
+            .find(|&tau| (tau - b).abs() <= landing_tol(tau, b))
+    };
     let mut bounds = vec![t0];
     let mut reasons = Vec::new();
     let mut k = 1.0;
     loop {
         let ta = *bounds.last().unwrap();
-        let (h, is_stop) = crate::leaf::stop_rule(ta, dt, tf);
-        if is_stop {
+        let b = t0 + k * dt;
+        let (h, is_stop) = stop_rule(ta, dt, tf);
+        if is_stop || snap(b).is_some_and(|tau| tau >= tf) {
             bounds.push(tf);
-            let tol = 100.0 * eps_f64(ta.abs().max(tf.abs()));
-            reasons.push(if h < dt - tol { "tstop" } else { "step.dt" }.to_string());
+            reasons.push(if h < dt - landing_tol(ta, tf) {
+                "tstop"
+            } else {
+                "step.dt"
+            });
             return (bounds, reasons);
         }
-        bounds.push(t0 + k * dt);
-        reasons.push("step.dt".to_string());
+        bounds.push(snap(b).unwrap_or(b));
+        reasons.push("step.dt");
         k += 1.0;
     }
 }

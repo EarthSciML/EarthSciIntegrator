@@ -250,9 +250,85 @@ impl<T: Scalar> LeafSpec<T> {
     }
 
     /// Applies a recorded clip (the frozen-tape clip): zeroes the listed DOFs.
-    fn clip_frozen(&self, u: &mut [T], clipped: &[usize]) {
+    /// A recorded index outside the leaf's clip domain, or a clip on a leaf
+    /// without one, is a replay mismatch.
+    fn clip_frozen(&self, u: &mut [T], clipped: &[usize]) -> Result<(), Error> {
+        let d = self.domain.as_ref().filter(|d| d.clip).ok_or_else(|| {
+            Error::Run(format!(
+                "replay: leaf {} has a recorded clip but no clip domain",
+                self.id
+            ))
+        })?;
+        if let Some(j) = clipped
+            .iter()
+            .find(|&&j| j >= u.len() || d.dofs.binary_search(&j).is_err())
+        {
+            return Err(Error::Run(format!(
+                "replay: leaf {}: recorded clip of DOF {j}, outside its clip domain",
+                self.id
+            )));
+        }
         for &j in clipped {
             u[j] = T::zero();
+        }
+        Ok(())
+    }
+
+    /// The bookkeeping of an accepted step, shared by the forward loop and
+    /// replay so the two stay bitwise identical: the adjoint's step data, the
+    /// recorded step and clip, the stored first-same-as-last value, the new
+    /// state, and the state at an interior stop it lands on.
+    #[allow(clippy::too_many_arguments)]
+    fn accept(
+        &self,
+        call: &LeafCall<'_>,
+        out: &mut LeafOutcome<T>,
+        lw: (&mut ErkWork<T>, &mut Vec<T>),
+        pbuf: &mut [f64],
+        cache: &mut Option<(f64, f64)>,
+        u: &mut [T],
+        s: Accepted,
+    ) {
+        let (w, fsal) = lw;
+        let Accepted {
+            t,
+            h,
+            tk1,
+            clip,
+            stop,
+        } = s;
+        let skipped = tk1.is_none();
+        if call.record_stages {
+            out.stage_data.push(StepData {
+                t,
+                h,
+                p: self.params(call.p, pbuf, h, call).to_vec(),
+                y: if skipped { Vec::new() } else { w.y.clone() },
+                clip: clip.clone(),
+                tk1: tk1.unwrap_or(t),
+                skipped,
+            });
+        }
+        if skipped {
+            // Nothing is computed; the stored first-same-as-last value is dropped.
+            *cache = None;
+        } else {
+            // Keep f(u_{n+1}, t_n + h) unless clipped.
+            *cache = if clip.is_none() && w.has_fend {
+                std::mem::swap(fsal, &mut w.fend);
+                Some((t + h, h))
+            } else {
+                None
+            };
+            u.copy_from_slice(&w.unew);
+        }
+        if let Some(mk) = clip {
+            out.clips.push((out.steps.len(), mk));
+        }
+        out.steps.push([t, h]);
+        out.accepted += 1;
+        if let Some(ts) = stop {
+            out.stop_states.push((ts, u.to_vec()));
         }
     }
 
@@ -302,9 +378,11 @@ impl<T: Scalar> LeafSpec<T> {
         };
         let (t0, t1) = (call.t0, call.t1);
         // The stops of this invocation: interior output times, then the end.
-        let mut stops: Vec<f64> = call.stops.to_vec();
-        stops.push(t1);
-        let next_stop = |t: f64| stops.iter().copied().find(|&s| s > t).unwrap_or(t1);
+        let mut stops = Stops {
+            stops: call.stops,
+            t1,
+            next: 0,
+        };
         // Bound parameters are written into a copy of p (none when nothing is bound).
         let mut pbuf: Vec<f64> = if self.binds.is_empty() {
             Vec::new()
@@ -348,66 +426,53 @@ impl<T: Scalar> LeafSpec<T> {
             let tk1 = reuse.map_or(m.stage_time(0, t, h), |c| c.0);
             (e, tk1)
         };
-        // After an accepted step: keep f(u_{n+1}, t_n + h) unless clipped.
-        let keep = |w: &mut ErkWork<T>, fsal: &mut Vec<T>, clipped: bool, t: f64, h: f64| {
-            if !clipped && w.has_fend {
-                std::mem::swap(fsal, &mut w.fend);
-                Some((t + h, h))
-            } else {
-                None
-            }
-        };
-
         // Replay: the recorded steps, controller off (spec/tape.md §3).
         if let Some((steps, clips)) = call.replay {
+            if steps.first().is_some_and(|s| s[0] != t0) {
+                return Err(Error::Run(format!(
+                    "replay: leaf {}: the recorded steps start at {:?}, the invocation at {t0:?}",
+                    self.id, steps[0][0]
+                )));
+            }
+            // Clips are recorded in step order, one per step at most.
+            let mut clips = clips.iter().peekable();
             for (i, s) in steps.iter().enumerate() {
                 let (t, h) = (s[0], s[1]);
-                let ts = next_stop(t);
+                let (ts, interior) = stops.next_after(t);
                 let (_, is_stop) = stop_rule(t, h, ts);
                 let tnew = if is_stop { ts } else { t + h };
-                if is_stop && h < eps_f64(t) {
+                let mask = clips.next_if(|c| c.0 == i).map(|c| c.1.clone());
+                let tk1 = if is_stop && h < eps_f64(t) {
                     // A skipped tiny stop step, recognized by the same rule.
-                    cache = None;
-                    if call.record_stages {
-                        out.stage_data.push(StepData {
-                            t,
-                            h,
-                            p: self.params(call.p, &mut pbuf, h, call).to_vec(),
-                            y: Vec::new(),
-                            clip: None,
-                            tk1: t,
-                            skipped: true,
-                        });
+                    if mask.is_some() {
+                        return Err(Error::Run(format!(
+                            "replay: leaf {}: a recorded clip on skipped step {i}",
+                            self.id
+                        )));
                     }
+                    None
                 } else {
                     let (_, tk1) = take(w, &mut pbuf, fsal, cache, u, t, h, false);
-                    let mut clip = None;
-                    if let Some((_, mask)) = clips.iter().find(|(k, _)| *k == i) {
-                        self.clip_frozen(&mut w.unew, mask);
-                        clip = Some(mask.clone());
+                    if let Some(mk) = &mask {
+                        self.clip_frozen(&mut w.unew, mk)?;
                     }
-                    if call.record_stages {
-                        out.stage_data.push(StepData {
-                            t,
-                            h,
-                            p: self.params(call.p, &mut pbuf, h, call).to_vec(),
-                            y: w.y.clone(),
-                            clip: clip.clone(),
-                            tk1,
-                            skipped: false,
-                        });
-                    }
-                    cache = keep(w, fsal, clip.is_some(), t, h);
-                    u.copy_from_slice(&w.unew);
-                    if let Some(mk) = clip {
-                        out.clips.push((i, mk));
-                    }
-                }
-                if tnew != t1 && call.stops.contains(&tnew) {
-                    out.stop_states.push((tnew, u.to_vec()));
-                }
-                out.steps.push(*s);
-                out.accepted += 1;
+                    Some(tk1)
+                };
+                let step = Accepted {
+                    t,
+                    h,
+                    tk1,
+                    clip: mask,
+                    stop: (is_stop && interior).then_some(tnew),
+                };
+                self.accept(call, &mut out, (w, fsal), &mut pbuf, &mut cache, u, step);
+            }
+            if let Some((k, _)) = clips.next() {
+                return Err(Error::Run(format!(
+                    "replay: leaf {}: a recorded clip at step {k} is out of order or past its {} steps",
+                    self.id,
+                    steps.len()
+                )));
             }
             out.rhs_calls = w.nf as u64;
             return Ok(out);
@@ -440,7 +505,7 @@ impl<T: Scalar> LeafSpec<T> {
                         dtmin,
                         // Capped at the first stop, as OrdinaryDiffEqCore's
                         // _determine_initdt does (spec/methods.md §9).
-                        dtmax: dtmax.min(next_stop(t0) - t0),
+                        dtmax: dtmax.min(stops.next_after(t0).0 - t0),
                         tol: &self.tol,
                         dofs: &self.dofs,
                         order: self.method.order(),
@@ -473,7 +538,7 @@ impl<T: Scalar> LeafSpec<T> {
             if t >= t1 {
                 break;
             }
-            let ts = next_stop(t);
+            let (ts, interior) = stops.next_after(t);
             let hc = if adaptive { fix(hctrl, t) } else { fixed_dt };
             let (h, is_stop) = stop_rule(t, hc, ts);
             iter += 1;
@@ -500,24 +565,15 @@ impl<T: Scalar> LeafSpec<T> {
                 // and counted, and the stored first-same-as-last value dropped.
                 // Nothing else changes: not the proposal, the controller's
                 // history or whether the leaf has accepted a step (spec/methods.md §10).
-                if call.record_stages {
-                    out.stage_data.push(StepData {
-                        t,
-                        h,
-                        p: self.params(call.p, &mut pbuf, h, call).to_vec(),
-                        y: Vec::new(),
-                        clip: None,
-                        tk1: t,
-                        skipped: true,
-                    });
-                }
-                out.steps.push([t, h]);
-                out.accepted += 1;
-                cache = None;
+                let step = Accepted {
+                    t,
+                    h,
+                    tk1: None,
+                    clip: None,
+                    stop: interior.then_some(tnew),
+                };
+                self.accept(call, &mut out, (w, fsal), &mut pbuf, &mut cache, u, step);
                 t = tnew;
-                if t != t1 && call.stops.contains(&t) {
-                    out.stop_states.push((t, u.to_vec()));
-                }
                 continue;
             }
             let (e, tk1) = take(w, &mut pbuf, fsal, cache, u, t, h, adaptive);
@@ -576,30 +632,16 @@ impl<T: Scalar> LeafSpec<T> {
             }
             // Accepted.
             let clip = self.clip(&mut w.unew);
-            let k = out.steps.len();
-            if call.record_stages {
-                out.stage_data.push(StepData {
-                    t,
-                    h,
-                    p: self.params(call.p, &mut pbuf, h, call).to_vec(),
-                    y: w.y.clone(),
-                    clip: clip.clone(),
-                    tk1,
-                    skipped: false,
-                });
-            }
-            out.steps.push([t, h]);
-            out.accepted += 1;
-            cache = keep(w, fsal, clip.is_some(), t, h);
-            if let Some(mk) = clip {
-                out.clips.push((k, mk));
-            }
-            u.copy_from_slice(&w.unew);
+            let step = Accepted {
+                t,
+                h,
+                tk1: Some(tk1),
+                clip,
+                stop: (is_stop && interior).then_some(tnew),
+            };
+            self.accept(call, &mut out, (w, fsal), &mut pbuf, &mut cache, u, step);
             prev_accepted = true;
             t = tnew;
-            if t != t1 && call.stops.contains(&t) {
-                out.stop_states.push((t, u.to_vec()));
-            }
         }
         if adaptive {
             persist.proposal = Some(hctrl);
@@ -609,13 +651,52 @@ impl<T: Scalar> LeafSpec<T> {
     }
 }
 
+/// An accepted step, for [`LeafSpec::accept`].
+struct Accepted {
+    t: f64,
+    h: f64,
+    /// The time of the first stage; `None` for a skipped tiny stop step.
+    tk1: Option<f64>,
+    clip: Option<Vec<usize>>,
+    /// The interior stop the step lands on.
+    stop: Option<f64>,
+}
+
+/// The stops of an invocation: its interior stops, ascending, then its end,
+/// walked forward as the steps advance.
+struct Stops<'a> {
+    stops: &'a [f64],
+    t1: f64,
+    /// The first interior stop not yet passed.
+    next: usize,
+}
+
+impl Stops<'_> {
+    /// The first stop after `t`, and whether it is an interior stop (not the
+    /// end). `t` never decreases between calls.
+    fn next_after(&mut self, t: f64) -> (f64, bool) {
+        while self.next < self.stops.len() && self.stops[self.next] <= t {
+            self.next += 1;
+        }
+        match self.stops.get(self.next) {
+            Some(&s) => (s, true),
+            None => (self.t1, false),
+        }
+    }
+}
+
+/// The landing tolerance of spec/methods.md §10, `100 eps(max(|a|, |b|))`:
+/// a time within it of a stop lands on the stop.
+pub fn landing_tol(a: f64, b: f64) -> f64 {
+    100.0 * eps_f64(a.abs().max(b.abs()))
+}
+
 /// spec/methods.md §10: with `d = ts − t` and `tol = 100 eps(max(|t|, |ts|))`,
 /// an ordinary step when `h + tol < d`, otherwise a stop step of size
 /// `min(h, d)` that ends at `ts` exactly.
 pub fn stop_rule(t: f64, h: f64, ts: f64) -> (f64, bool) {
     let d = ts - t;
-    let tol = 100.0 * eps_f64(t.abs().max(ts.abs()));
-    if h + tol < d {
+    if h + landing_tol(t, ts) < d {
         (h, false)
     } else {
         (h.min(d), true)
