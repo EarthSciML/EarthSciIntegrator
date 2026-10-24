@@ -270,8 +270,8 @@ function check_reverse_diff(case, run, chk)
     N = length(run.u0)
     w = F.over === :time ? vcat(zeros(N), 1.0) : EarthSciIntegrator.phi_gradient(F, N)
     # ReverseDiff tapes every scalar operation of OrdinaryDiffEq's dense LU,
-    # about N³ per step: photostationary_cells' 49 states over 6354 steps need
-    # more than 140 GiB. Above a budget the same OrdinaryDiffEq solve (same
+    # about N³ per step, too much for photostationary_cells' 49 states over 733
+    # steps. Above N³ × steps = 1e7 the same OrdinaryDiffEq solve (same
     # method, same imposed steps, same map) is differentiated in forward mode
     # with ForwardDiff instead, and the check says so.
     nsteps = sum(length(r.steps) for r in run.tape.records if r isa LeafRecord)
