@@ -101,6 +101,11 @@ def compare_tapes(jt, rt):
     return []
 
 
+def steps_of(tape):
+    """Every leaf record's accepted (t, h), in order."""
+    return [r["steps"] for r in tape or [] if "steps" in r]
+
+
 def compare_case(case_id, chk, jdir, rdir):
     jl, rs = load(jdir / f"{case_id}.json"), load(rdir / f"{case_id}.json")
     if jl is None and rs is None:
@@ -109,17 +114,23 @@ def compare_case(case_id, chk, jdir, rdir):
         return "one-sided", f"only {'rust' if jl is None else 'julia'} ran it"
     rtol = chk["rtol"]
     errs = []
-    same_steps = jl["stats"]["accepted"] == rs["stats"]["accepted"]
-    note = f"accepted {jl['stats']['accepted']}"
-    if not same_steps:
-        note = f"accepted julia {jl['stats']['accepted']}, rust {rs['stats']['accepted']}"
+    jt = load_tape(jdir / f"{case_id}.tape.jsonl")
+    rt = load_tape(rdir / f"{case_id}.tape.jsonl")
+    same_count = jl["stats"]["accepted"] == rs["stats"]["accepted"]
+    if same_count:
+        errs += compare_tapes(jt, rt)
+    note = (f"accepted {jl['stats']['accepted']}" if same_count else
+            f"accepted julia {jl['stats']['accepted']}, rust {rs['stats']['accepted']}")
+    # The step sequences differ when the counts do, or when any step's
+    # (t, h) does: libm functions may differ in the last bit (spec/adjoint.md
+    # §7.5), and an adaptive controller can turn that into different sizes.
+    differ = not same_count or (not errs and steps_of(jt) != steps_of(rt))
+    if differ:
+        note += ", step sequences differ"
         if "rtol_steps_differ" in chk:
             rtol = chk["rtol_steps_differ"]
         else:
-            errs.append(f"accepted step counts differ ({note})")
-    if same_steps:
-        errs += compare_tapes(load_tape(jdir / f"{case_id}.tape.jsonl"),
-                              load_tape(rdir / f"{case_id}.tape.jsonl"))
+            errs.append("step sequences differ and the case has no rtol_steps_differ")
     s_errs, worst = compare_states(jl, rs, rtol)
     errs += s_errs
     g_errs, g_worst = compare_gradient(jl, rs, rtol)
