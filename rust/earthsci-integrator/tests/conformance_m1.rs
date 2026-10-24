@@ -2,8 +2,8 @@
 //!
 //! Every case whose leaves all use implemented methods runs with the checks
 //! Rust can do; `oracle`, `dot_product` and `reverse_diff` are Julia's, and
-//! `cross_language` runs in a separate CI job that compares the Julia and
-//! Rust result files. Cases that need unimplemented methods
+//! `cross_language` is compared in CI with Julia's result files
+//! (`tests/conformance/m1/compare_results.py`). Cases that need unimplemented methods
 //! are listed as skipped, by name, and never counted as passing. A result
 //! file per case run goes to `$EARTHSCI_RESULTS_DIR` (default
 //! `rust/target/tmp/conformance/m1/rust`). `$EARTHSCI_REFERENCE_DIR`

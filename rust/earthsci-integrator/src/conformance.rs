@@ -230,7 +230,7 @@ pub fn run_case(case: &Case, paths: &Paths) -> CaseReport {
                 Outcome::Skip(JULIA_ONLY.into())
             }
             Check::CrossLanguage { .. } => Outcome::Skip(
-                "cross-language comparison runs in a separate CI job over the Julia and Rust result files; the result file is written".into(),
+                "compared with Julia's result in CI (compare_results.py); the result file is written".into(),
             ),
             Check::Order {
                 vary,

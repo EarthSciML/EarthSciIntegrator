@@ -2,8 +2,9 @@
 #
 # Every case whose leaves all use implemented methods runs with all its checks.
 # Cases that need an unimplemented method or construct are reported as skipped
-# by name (`@test_skip`), and so is the `cross_language` check, which belongs to
-# the next stage; result files for it are written to RESULTS_DIR.
+# by name (`@test_skip`). The `cross_language` check is not run here: CI compares
+# the result files and tapes written to RESULTS_DIR with Rust's
+# (tests/conformance/m1/compare_results.py).
 
 using EarthSciIntegrator: Run, LeafNode, LeafRecord, MapRecord, leaf_replay, leaf_step, leaf_step_adjoint,
     macro_adjoint, replay_macro, rerun_macro, functional_value, write_tape, read_tape, tape_string, stop_rule,
@@ -341,10 +342,7 @@ function run_case(case)
         open(io -> write_tape(io, run.tape), joinpath(RESULTS_DIR, "$id.tape.jsonl"), "w")
         for chk in case["checks"]
             name = chk["check"]
-            if name == "cross_language"
-                @test_skip "cross_language is the next stage's check" == ""
-                continue
-            end
+            name == "cross_language" && continue  # compared in CI, see the header
             @testset "$name" begin
                 CHECKS[name](case, run, chk)
             end
@@ -361,7 +359,7 @@ end
     end
     ran = unique(o.case for o in OUTCOMES)
     println("\nM1 conformance: $(length(ran)) cases run, $(length(SKIPPED)) skipped, ",
-        count(o -> o.passed, OUTCOMES), "/", length(OUTCOMES), " checks passed (cross_language not run in this stage)")
+        count(o -> o.passed, OUTCOMES), "/", length(OUTCOMES), " checks passed (cross_language is compared in CI)")
     for o in OUTCOMES
         println(rpad(o.passed ? "  pass" : "  FAIL", 7), rpad(o.case, 42), rpad(o.check, 15), o.detail)
     end
