@@ -72,14 +72,17 @@ end
 """
     method_step(leaf, f!, p, u, t, h, k1, adaptive) -> StepResult
 
-One forward step attempt with the leaf's method: [`erk_step`](@ref) or
-[`rosenbrock_step`](@ref). `f!(out, u, t)` is the right-hand side with the
+One forward step attempt with the leaf's method: [`erk_step`](@ref),
+[`rosenbrock_step`](@ref), [`sdirk_step`](@ref) or [`one_stage_step`](@ref)
+(θ-method, IMEX Euler). `hist` is BackwardEuler's previous accepted step. `f!(out, u, t)` is the right-hand side with the
 step's parameters `p`.
 """
-function method_step(leaf::LeafNode, f!, p, u, t, h, k1, adaptive::Bool)
+function method_step(leaf::LeafNode, f!, p, u, t, h, k1, adaptive::Bool, hist = nothing)
     m = leaf.method
     m isa RosenbrockMethod &&
         return rosenbrock_step(m, rosenbrock_context(leaf), u, p, t, h, k1, adaptive, leaf.tol; ψ = leaf.ψ)
+    m isa SDIRKMethod && return sdirk_step(m, implicit_context(leaf), u, p, t, h, adaptive, hist; ψ = leaf.ψ)
+    m isa Union{ThetaMethod, IMEXEulerMethod} && return one_stage_step(m, implicit_context(leaf), u, p, t, h; ψ = leaf.ψ)
     return erk_step(m, f!, u, t, h, k1, adaptive, leaf.tol; ψ = leaf.ψ)
 end
 
@@ -133,6 +136,10 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
     # the first attempt of the run counts as following a rejection, as in
     # OrdinaryDiffEq (its `accept_step` starts false).
     prev_accepted = cs.accepted_any
+    # BackwardEuler's divided-difference estimate reads the previous accepted step
+    # (u_{n-1}, t_{n-1}) of this invocation (spec/methods.md §5.5); it resets with
+    # every invocation, after a skipped tiny stop step and after a clip.
+    hist = nothing
     istop = 1
     while true
         # Record states at interior stops already reached.
@@ -166,17 +173,30 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
             rec.accepted += 1
             t = ts
             fsal = nothing
+            hist = nothing
             prev_accepted = true
             continue
         end
         pp = pstep(h)
         k1 = (fsal !== nothing && (!leaf_bound || fsal_h == h)) ? fsal : nothing
-        res = method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive)
+        res = method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive, hist)
         nf += res.nf
         unew = res.u
         # A negative stage state under domain.check_stages is a violation whatever
         # on_violation says, since a stage cannot be clipped (spec/methods.md §11).
         violation = (leaf.on_violation === :reject && _domain_violation(leaf, unew)) || res.stage_violation
+        if res.newton_fail
+            # spec/methods.md §5.2 step 8, §8.5: h ← h/failfactor; at fixed dt the
+            # leaf ends with ConvergenceFailure (§12).
+            if !adaptive
+                rec.retcode = "ConvergenceFailure"
+                break
+            end
+            hctrl = h / cc.failfactor
+            rec.rejected += 1
+            prev_accepted = false
+            continue
+        end
         if adaptive
             E = res.E
             if !isfinite(E) || violation
@@ -227,6 +247,7 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         # stop, as OrdinaryDiffEq does; replay reproduces this (leaf_replay).
         fsal = (res.fsal !== nothing && !clipped) ? res.fsal : nothing
         fsal_h = h
+        hist = clipped ? nothing : (u, t)
         res.dq === nothing || (qint = qint + res.dq)
         u = unew
         t = tnew
@@ -335,8 +356,20 @@ function leaf_step(leaf::LeafNode, u, p, t, h, mask, tk1 = t; withq::Bool = fals
         ψ === nothing || (dq = rosenbrock_dq(leaf.method, st, ψ, u, h))
         st.u1
     else
-        f! = (out, x, τ) -> eval_rhs!(out, leaf.ops, x, p, τ)
-        r = erk_step(leaf.method, f!, u, t, h, nothing, false, nothing; tk1, ψ)
+        r = if leaf.method isa SDIRKMethod
+            # The Newton iteration's first-iteration test depends on whether the
+            # leaf is adaptive (sdirk.jl), so replay passes the leaf's own flag.
+            st = sdirk_stages(leaf.method, implicit_context(leaf), u, p, t, h, is_adaptive(leaf))
+            st.singular || st.newton_fail ? StepResult(u, NaN, nothing, st.nf, st.singular, false, nothing, st.newton_fail) :
+                StepResult(st.u1, NaN, nothing, st.nf, false, false, ψ === nothing ? nothing : sdirk_dq(leaf.method, st, ψ, h), false)
+        elseif leaf.method isa ImplicitMethod
+            one_stage_step(leaf.method, implicit_context(leaf), u, p, t, h; ψ)
+        else
+            f! = (out, x, τ) -> eval_rhs!(out, leaf.ops, x, p, τ)
+            erk_step(leaf.method, f!, u, t, h, nothing, false, nothing; tk1, ψ)
+        end
+        (r.newton_fail || r.singular) &&
+            throw(ReplayMismatchError("the implicit solve fails on replay of the step at t = $t, h = $h of leaf $(leaf.id)"))
         dq = r.dq
         r.u
     end
@@ -366,6 +399,10 @@ function leaf_step_adjoint(leaf::LeafNode, u, p, t, h, mask, λ, skipped::Bool =
     skipped && return copy(λ), zeros(length(p))
     λn, p̄, _ = if leaf.method isa RosenbrockMethod
         rosenbrock_adjoint_step(leaf.method, rosenbrock_context(leaf), u, p, t, h, λ; tk1, ψ = leaf.ψ)
+    elseif leaf.method isa SDIRKMethod
+        sdirk_adjoint_step(leaf.method, implicit_context(leaf), u, p, t, h, λ; ψ = leaf.ψ, adaptive = is_adaptive(leaf))
+    elseif leaf.method isa ImplicitMethod
+        one_stage_adjoint(leaf.method, implicit_context(leaf), u, p, t, h, λ; ψ = leaf.ψ)
     else
         erk_adjoint_step(leaf.method, leaf.ops, u, p, t, h, λ; tk1, ψ = leaf.ψ)
     end
