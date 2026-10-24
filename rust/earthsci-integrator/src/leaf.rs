@@ -438,7 +438,9 @@ impl<T: Scalar> LeafSpec<T> {
                         u0: u,
                         t0,
                         dtmin,
-                        dtmax,
+                        // Capped at the first stop, as OrdinaryDiffEqCore's
+                        // _determine_initdt does (spec/methods.md §9).
+                        dtmax: dtmax.min(next_stop(t0) - t0),
                         tol: &self.tol,
                         dofs: &self.dofs,
                         order: self.method.order(),

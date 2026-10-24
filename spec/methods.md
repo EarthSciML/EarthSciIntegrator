@@ -312,7 +312,7 @@ The controller's error history ($E_{\text{old}}$, the PID $\varepsilon$s) change
 
 ## 9. First step
 
-When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped as in §8.6. Otherwise it is OrdinaryDiffEqCore's `_ode_initdt_oop` (`src/initdt.jl:354-468`), at the leaf's first invocation, with $p$ = `order`, and in f64:
+When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped as in §8.6. Otherwise it is OrdinaryDiffEqCore's `_ode_initdt_oop` (`src/initdt.jl:354-468`), at the leaf's first invocation, with $p$ = `order`, and in f64. In it, `dtmax` is capped at the distance from $t_0$ to the invocation's first stop (§10), as `_determine_initdt` passes it (`src/integrators/integrator_interface.jl:679-690`); `dt0` is not capped, since the stop rule shortens it:
 
 1. $\mathrm{sk}_j = \mathrm{abstol}_j + |u_{0,j}|\,\mathrm{reltol}$; $d_0 = \lVert u_0/\mathrm{sk} \rVert$, $f_0 = f(u_0, t_0)$, $d_1 = \lVert f_0/\mathrm{sk} \rVert$ (RMS norms).
 2. $\delta_{\min}$ = the next float above $\max(\texttt{dtmin}, \epsilon(t_0))$; $h_{\text{small}} = \max(\delta_{\min}, 10^{-6})$.

@@ -531,6 +531,44 @@ fn tsit5_step_counts_match_ordinarydiffeq_first_step_on_a_stop() {
     }
 }
 
+/// spec/methods.md §9: without dt0 the automatic first step is capped at the
+/// first stop, as OrdinaryDiffEqCore 4.19.0's `_determine_initdt` caps it.
+/// References are OrdinaryDiffEq's Tsit5 with these tstops; the last case's
+/// first step (about 0.003) is below its stop, so the cap does not bind. A
+/// first stop much closer (1e-4) is not compared: there Tsit5's error estimate
+/// is rounding noise, so the counts depend on the order of summation.
+#[test]
+fn tsit5_automatic_first_step_capped_at_first_stop() {
+    #[allow(clippy::type_complexity)]
+    let cases: [(&[f64], (u64, u64, u64), [f64; 2]); 2] = [
+        (
+            &[0.002, 1.0, 3.0, 6.3],
+            (165, 3, 1011),
+            [1.8321351883562347, 1.1618990751839322],
+        ),
+        (
+            &[0.01, 1.0, 3.0, 6.3],
+            (165, 2, 1005),
+            [1.832135188414688, 1.1618990749463005],
+        ),
+    ];
+    for (saveat, counts, ode) in cases {
+        let r = rc(
+            "toy:van_der_pol/nonstiff",
+            json!({"leaf": "oscillator", "alg": "Tsit5",
+                   "control": {"reltol": 1e-8, "abstol": 1e-10}}),
+            6.3,
+            None,
+        );
+        let s = spec(&r, (0.0, 6.3), Some(saveat));
+        let f = s.forward(&s.u0(), &s.problem.p).unwrap();
+        assert_eq!((f.accepted, f.rejected, f.rhs_calls), counts, "{saveat:?}");
+        for (a, b) in f.final_state().iter().zip(ode) {
+            assert!((a - b).abs() < 1e-12, "{saveat:?}: {a} vs {b}");
+        }
+    }
+}
+
 /// spec/methods.md §12 with SciMLBase `check_error`: a step at or below dtmin
 /// ends the leaf unless the previous attempt was accepted and the step lands
 /// on a stop; the first attempt of the run follows no accepted step. Matches
