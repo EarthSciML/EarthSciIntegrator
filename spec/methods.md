@@ -313,7 +313,7 @@ The controller's error history ($E_{\text{old}}$, the PID $\varepsilon$s) change
 
 ## 9. First step
 
-When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped as in §8.6. Otherwise it is OrdinaryDiffEqCore's `_ode_initdt_oop` (`src/initdt.jl:354-468`), at the leaf's first invocation, with $p$ = `order`, and in f64:
+When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped as in §8.6. Otherwise it is OrdinaryDiffEqCore's `_ode_initdt_oop` (`src/initdt.jl:354-468`), at the leaf's first invocation, with $p$ = `order`, and in f64. In it, `dtmax` is capped at the distance from $t_0$ to the invocation's first stop (§10), as `_determine_initdt` passes it (`src/integrators/integrator_interface.jl:679-690`); `dt0` is not capped, since the stop rule shortens it:
 
 1. $\mathrm{sk}_j = \mathrm{abstol}_j + |u_{0,j}|\,\mathrm{reltol}$; $d_0 = \lVert u_0/\mathrm{sk} \rVert$, $f_0 = f(u_0, t_0)$, $d_1 = \lVert f_0/\mathrm{sk} \rVert$ (RMS norms).
 2. $\delta_{\min}$ = the next float above $\max(\texttt{dtmin}, \epsilon(t_0))$; $h_{\text{small}} = \max(\delta_{\min}, 10^{-6})$.
@@ -322,6 +322,8 @@ When `control.dt0` is given, the leaf's first step of the run is `dt0`, clamped 
 5. $u_1 = u_0 + h_0 f_0$, $f_1 = f(u_1, t_0 + h_0)$. If $f_1 = f_0$ exactly, return $\max(\delta_{\min}, 100 h_0)$.
 6. $d_2 = \lVert (f_1 - f_0)/\mathrm{sk} \rVert / h_0$. If $\max(d_1, d_2) \le 10^{-15}$, $h_1 = \max(h_{\text{small}}, 10^{-3} h_0)$; else $h_1 = 10^{-(2 + \log_{10}\max(d_1, d_2))/p}$.
 7. Return $\max(\delta_{\min}, \min(100 h_0, h_1, \texttt{dtmax}))$.
+
+A `bind_dt: "leaf"` parameter has no step size to take during these evaluations, so an adaptive leaf with one must give `control.dt0` (run-config §8 rule 15).
 
 Under `dt_scope: cell` the first step is computed per cell. *Assumption:* the two extra $f$ evaluations are per cell too; they are pointwise kernels, so this costs two lane-pool evaluations.
 
@@ -354,7 +356,7 @@ A leaf returns one code per invocation (per cell under `dt_scope: cell`, reduced
 |---|---|
 | `Success` | the leaf reached the end of its interval |
 | `MaxIters` | more than `control.maxiters` step attempts (accepted plus rejected) in this invocation; default 1 000 000 for adaptive leaves, unlimited at fixed `dt` (OrdinaryDiffEqCore `src/solve.jl:308`) |
-| `DtLessThanMin` | an adaptive leaf's step size is at or below `dtmin` (when `dtmin` > 0), unless the step is an accepted stop step |
+| `DtLessThanMin` | an adaptive leaf's step size is at or below `dtmin` (when `dtmin` > 0), checked before every step attempt, unless the previous attempt was accepted and this step is a stop step (the leaf's first attempt of the run counts as following a rejection) |
 | `Unstable` | a rejected step's size is at or below $\epsilon(|t|)$; or a fixed-`dt` step produced a non-finite state |
 | `DtNaN` | the step size became NaN |
 | `ConvergenceFailure` | a Newton failure at fixed `dt` (§5.2) |
