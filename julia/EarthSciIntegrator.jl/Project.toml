@@ -3,13 +3,21 @@ uuid = "32373ebd-92e7-4f26-b916-9b5db62dd90f"
 version = "0.0.1"
 authors = ["EarthSciML"]
 
-[compat]
-JSON = "0.21"
-julia = "1.10"
-
-[extras]
+[deps]
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 
-[targets]
-test = ["JSON", "Test"]
+[weakdeps]
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
+
+[extensions]
+EarthSciIntegratorForwardDiffExt = "ForwardDiff"
+EarthSciIntegratorSciMLBaseExt = "SciMLBase"
+
+[compat]
+ForwardDiff = "0.10, 1"
+JSON = "0.21, 1"
+LinearAlgebra = "1"
+SciMLBase = "2, 3"
+julia = "1.10"

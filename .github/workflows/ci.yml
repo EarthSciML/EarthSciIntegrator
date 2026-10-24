@@ -42,8 +42,23 @@ jobs:
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v2
+      # The tests validate the result files they write against
+      # spec/schemas/result.schema.json with Python's jsonschema.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "jsonschema>=4.18"
       - name: Test
+        # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote,
+        # ForwardDiff) live in julia/EarthSciIntegrator.jl/test/Project.toml.
         run: julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.test()'
+      - name: Upload conformance result files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: julia-m1-results-${{ matrix.version }}
+          path: julia/EarthSciIntegrator.jl/test/results/
+          if-no-files-found: ignore
 
   rust:
     name: Rust

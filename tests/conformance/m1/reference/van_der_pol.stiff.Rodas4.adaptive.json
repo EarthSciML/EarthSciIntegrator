@@ -1,0 +1,8 @@
+{
+ "case": "van_der_pol.stiff.Rodas4.adaptive",
+ "producer": "reference",
+ "t": [0.0, 1.0],
+ "u": [[2.0, 0.0],
+  [1.9993333705063034, -0.0006670371231732399]],
+ "stats": {"accepted": 123, "rejected": 3, "rhs_calls": 1010}
+}
