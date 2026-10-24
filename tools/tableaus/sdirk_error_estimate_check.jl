@@ -22,7 +22,7 @@ function spec_solve(name, λ, g, u0, tf, tol)
     γ = Am[s, s]
     k = d["controller"]
     β1, β2, safety, qmin = k["beta1"], k["beta2"], k["gamma"], k["qmin"]
-    t, u, h, Eold, accepted = 0.0, u0, 1e-6, k["qoldinit"], 0
+    t, u, h, Eold, accepted, prev_accepted = 0.0, u0, 1e-6, k["qoldinit"], 0, false
     while t < tf
         hh = min(h, tf - t)
         z = zeros(s)
@@ -41,9 +41,11 @@ function spec_solve(name, λ, g, u0, tf, tol)
             t, u, accepted = t + hh, unew, accepted + 1
             k["qsteady_min"] <= q <= k["qsteady_max"] && (q = 1.0)
             Eold = max(E, k["qoldinit"])
-            h = h / q  # from the unshortened size (§8.6)
+            h = (prev_accepted ? hh : h) / q  # shortened size after an accepted attempt (§8.6, D61)
+            prev_accepted = true
         else
             h = hh / min(1 / qmin, q11 / safety)
+            prev_accepted = false
         end
     end
     return u, accepted

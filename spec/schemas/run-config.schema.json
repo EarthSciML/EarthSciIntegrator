@@ -17,6 +17,7 @@
       "type": "string",
       "minLength": 1
     },
+    "time": {"$ref": "#/$defs/time"},
     "operators": {
       "type": "object",
       "propertyNames": {
@@ -73,19 +74,48 @@
       "enum": ["pointwise", "column", "stencil", "global"]
     },
     "duration": {
-      "description": "Seconds as a positive number, a positive string '<number> <unit>' with unit s, min, h or day (spec/run-config.md §2.2; years and months are not constant durations, D45), or the qualified name of a model parameter holding seconds. The words auto, step and accumulated are reserved and are never parameter names here.",
+      "description": "A literal duration, or the qualified name of a model parameter holding seconds (spec/run-config.md §2.2). The words auto, step and accumulated are reserved and are never parameter names here.",
+      "oneOf": [
+        {"$ref": "#/$defs/literalDuration"},
+        {"allOf": [{"$ref": "#/$defs/qualifiedName"}, {"not": {"enum": ["auto", "step", "accumulated"]}}]}
+      ]
+    },
+    "literalDuration": {
+      "description": "Seconds as a positive number, or a positive string '<number> <unit>' with unit s, min, h or day (spec/run-config.md §2.2; years and months are not constant durations, D45).",
       "oneOf": [
         {"type": "number", "exclusiveMinimum": 0},
         {
           "description": "The mantissa has a nonzero digit, so '0 s' and '0.0 day' are refused.",
           "type": "string",
           "pattern": "^([0-9]*[1-9][0-9]*(\\.[0-9]+)?|[0-9]+\\.[0-9]*[1-9][0-9]*)([eE][-+]?[0-9]+)? ?(s|min|h|day)$"
-        },
-        {"allOf": [{"$ref": "#/$defs/qualifiedName"}, {"not": {"enum": ["auto", "step", "accumulated"]}}]}
+        }
       ]
     },
     "positiveNumber": {"type": "number", "exclusiveMinimum": 0},
     "auto": {"const": "auto"},
+    "time": {
+      "description": "The run interval (spec/run-config.md §1.1). An interval the caller gives overrides it, and it overrides the model's solver.time_span (D60). start and end are both seconds or both timestamps. The duration is literal, never a parameter name. The planner checks that the end is after the start and that each timestamp's day exists.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start"],
+      "properties": {
+        "start": {"$ref": "#/$defs/timePoint"},
+        "end": {"$ref": "#/$defs/timePoint"},
+        "duration": {"$ref": "#/$defs/literalDuration"}
+      },
+      "oneOf": [{"required": ["end"]}, {"required": ["duration"]}],
+      "anyOf": [
+        {"properties": {"start": {"type": "number"}, "end": {"type": "number"}}},
+        {"properties": {"start": {"type": "string"}, "end": {"type": "string"}}}
+      ]
+    },
+    "timePoint": {
+      "description": "Seconds of model time, or an RFC 3339 UTC timestamp meaning POSIX seconds since 1970-01-01T00:00:00Z, with no second 60 (spec/run-config.md §1.1).",
+      "oneOf": [
+        {"type": "number"},
+        {"type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?Z$"}
+      ]
+    },
 
     "operator": {
       "description": "A named group of additive right-hand-side terms (select), or a step map (map). spec/run-config.md §3.",

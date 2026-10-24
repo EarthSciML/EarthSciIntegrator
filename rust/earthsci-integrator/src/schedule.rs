@@ -378,7 +378,7 @@ fn build_leaf<T: Scalar>(
         return Err(Error::Config(format!(
             "leaf {id}: an adaptive leaf with a bind_dt \"leaf\" parameter needs control.dt0, \
              because the first-step algorithm evaluates f before any step size exists \
-             (spec/methods.md §9, run-config §8 rule 14)"
+             (spec/methods.md §9, run-config §8 rule 15)"
         )));
     }
 

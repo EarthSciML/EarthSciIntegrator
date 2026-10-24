@@ -169,6 +169,10 @@
    "output"
   ]
  },
+ "time": {
+  "end": 1562112000,
+  "start": 1561939200
+ },
  "validation": [
   {
    "check": "band_model",

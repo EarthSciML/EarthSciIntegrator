@@ -4,7 +4,7 @@
   "title": "EarthSciIntegrator plan",
   "description": "The planner's output (spec/plan.md). Skeleton at spec 0.1.0: the field set is fixed here so that tier-1 goldens have a target; the contents of operator structure and the checkpoint actions are filled in at M2 and M4. A plan is serialized as RFC 8785 canonical JSON and must be byte-identical between the Julia and Rust planners, so it records nothing implementation-specific.",
   "type": "object",
-  "required": ["esm_integrator", "inputs", "operators", "schedule", "step", "derived"],
+  "required": ["esm_integrator", "inputs", "time", "operators", "schedule", "step", "derived"],
   "additionalProperties": false,
   "properties": {
     "esm_integrator": {"$ref": "run-config.schema.json#/$defs/semver"},
@@ -26,6 +26,16 @@
     "schedule": {
       "description": "The resolved schedule: the run-config grammar with every 'auto' replaced and every leaf's options made explicit (spec/plan.md §3). Every node has an id.",
       "allOf": [{"$ref": "#/$defs/resolvedNode"}, {"$ref": "#/$defs/noAuto"}]
+    },
+    "time": {
+      "description": "The resolved run interval in seconds (spec/run-config.md §1.1, D60). Which source gave it is not recorded, so the same interval always gives the same plan.",
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": {"type": "number"},
+        "end": {"type": "number"}
+      }
     },
     "step": {
       "allOf": [{"$ref": "run-config.schema.json#/$defs/step"}, {"$ref": "#/$defs/noAuto"}]
