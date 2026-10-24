@@ -1,19 +1,22 @@
 //! A leaf: advances the sum of its operators over one interval with one
 //! method (spec/run-config.md §4.2, spec/methods.md).
 //!
-//! The method is a [`LeafMethod`]. M1's first stage implements the explicit
-//! Runge–Kutta family; Rosenbrock, SDIRK, IMEX Euler and θ-method leaves are
+//! The method is a [`LeafMethod`]. M1 implements the explicit Runge–Kutta
+//! and Rosenbrock families; SDIRK, IMEX Euler and θ-method leaves are
 //! refused when the schedule is built and join as further variants, sharing
 //! the step loop below (landing on stops, control, domain, return codes).
 
-use crate::operator::{Call, Operator, Structure};
+use crate::operator::{Call, MatrixStorage, MuPair, Operator, Structure};
 use crate::tape::{LeafPersist, Retcode};
 use crate::{Error, Scalar};
 use earthsci_integrator_solvers::controller::{Controller, Decision};
-use earthsci_integrator_solvers::erk::{ErkWork, ExplicitRk};
+use earthsci_integrator_solvers::erk::{ErkForm, ErkWork, ExplicitRk};
 use earthsci_integrator_solvers::initdt::{initial_dt, InitDtInput};
+use earthsci_integrator_solvers::linalg::LinsolveKind;
 use earthsci_integrator_solvers::norm::{error_norm, Tolerances};
+use earthsci_integrator_solvers::rosenbrock::{RosForm, RosOutcome, RosWork, Rosenbrock};
 use earthsci_integrator_solvers::scalar::eps_f64;
+use earthsci_integrator_solvers::{NormFn, RhsFn};
 use std::sync::{Arc, Mutex};
 
 /// The leaf's method.
@@ -21,37 +24,63 @@ use std::sync::{Arc, Mutex};
 pub enum LeafMethod {
     /// Explicit Runge–Kutta (spec/methods.md §3).
     Erk(ExplicitRk),
+    /// Rosenbrock (spec/methods.md §4), with the leaf's linear solver.
+    Ros(Rosenbrock, LinsolveKind),
 }
 
 impl LeafMethod {
-    /// Operator calls the method's forward step needs.
-    pub fn forward_calls(&self) -> &'static [Call] {
+    /// Operator calls the method's forward step needs from an operator
+    /// (operator-interface.md §3): `ft` only from operators that depend on
+    /// `t`, and only when the method reads `f_t`.
+    pub fn forward_calls(&self, op_depends_on_t: bool) -> Vec<Call> {
         match self {
-            LeafMethod::Erk(_) => &[Call::Rhs],
-        }
-    }
-    /// Operator calls the method's adjoint step needs (spec/adjoint.md §3).
-    pub fn adjoint_calls(&self, wrt_p: bool) -> Vec<Call> {
-        match self {
-            LeafMethod::Erk(_) => {
-                let mut v = vec![Call::VjpU];
-                if wrt_p {
-                    v.push(Call::VjpP);
+            LeafMethod::Erk(_) => vec![Call::Rhs],
+            LeafMethod::Ros(m, _) => {
+                let mut v = vec![Call::Rhs, Call::Jac];
+                if m.uses_ft() && op_depends_on_t {
+                    v.push(Call::Ft);
                 }
                 v
             }
         }
     }
+    /// Operator calls the method's adjoint step needs from an operator
+    /// (spec/adjoint.md §3): Rosenbrock adds `hess_u` (unless the operator
+    /// is linear in `u`, where it is zero), `hess_p`, and the `ft_vjp_*`
+    /// of operators that depend on `t`.
+    pub fn adjoint_calls(&self, wrt_p: bool, op_depends_on_t: bool, op_linear: bool) -> Vec<Call> {
+        let mut v = vec![Call::VjpU];
+        if wrt_p {
+            v.push(Call::VjpP);
+        }
+        if let LeafMethod::Ros(m, _) = self {
+            if !op_linear {
+                v.push(Call::HessU);
+            }
+            if wrt_p {
+                v.push(Call::HessP);
+            }
+            if m.uses_ft() && op_depends_on_t {
+                v.push(Call::FtVjpU);
+                if wrt_p {
+                    v.push(Call::FtVjpP);
+                }
+            }
+        }
+        v
+    }
     /// Whether the method has an error estimate.
     pub fn adaptive(&self) -> bool {
         match self {
             LeafMethod::Erk(m) => m.adaptive(),
+            LeafMethod::Ros(m, _) => m.adaptive(),
         }
     }
     /// The method's order (for the first step).
     pub fn order(&self) -> u32 {
         match self {
             LeafMethod::Erk(m) => m.order,
+            LeafMethod::Ros(m, _) => m.order,
         }
     }
 }
@@ -84,6 +113,8 @@ pub struct DomainSpec {
     pub dofs: Vec<usize>,
     /// `on_violation: "clip"`; otherwise `reject`.
     pub clip: bool,
+    /// `check_stages` (Rosenbrock only): stage states are checked too.
+    pub check_stages: bool,
 }
 
 /// A built leaf.
@@ -106,6 +137,10 @@ pub struct LeafSpec<T: Scalar> {
     pub domain: Option<DomainSpec>,
     /// `(parameter index, binding)`.
     pub binds: Vec<(usize, BindKind)>,
+    /// The integrand `ψ(u) = Σ_{j ∈ dofs} w·u_j` of a functional over
+    /// `time`, as `(dofs, w)`, when this leaf integrates its auxiliary state
+    /// (spec/adjoint.md §2.1, D26).
+    pub integrand: Option<(Vec<usize>, f64)>,
     /// Workspaces kept across invocations, one per invocation in flight.
     pub work: Mutex<Vec<LeafWork<T>>>,
 }
@@ -113,8 +148,87 @@ pub struct LeafSpec<T: Scalar> {
 /// A leaf's step workspace: the method's, and the stored
 /// first-same-as-last value (spec/methods.md §3.3).
 pub struct LeafWork<T> {
-    erk: ErkWork<T>,
+    m: MethodWork<T>,
     fsal: Vec<T>,
+}
+
+impl<T> LeafWork<T> {
+    /// The Rosenbrock workspace, for a Rosenbrock leaf.
+    pub fn ros(&mut self) -> Option<&mut RosWork<T>> {
+        match &mut self.m {
+            MethodWork::Ros(w) => Some(w),
+            MethodWork::Erk(_) => None,
+        }
+    }
+}
+
+/// The method's workspace.
+pub enum MethodWork<T> {
+    Erk(ErkWork<T>),
+    Ros(Box<RosWork<T>>),
+}
+
+impl<T: Scalar> MethodWork<T> {
+    fn unew(&self) -> &[T] {
+        match self {
+            MethodWork::Erk(w) => &w.unew,
+            MethodWork::Ros(w) => &w.unew,
+        }
+    }
+    fn unew_mut(&mut self) -> &mut Vec<T> {
+        match self {
+            MethodWork::Erk(w) => &mut w.unew,
+            MethodWork::Ros(w) => &mut w.unew,
+        }
+    }
+    fn has_fend(&self) -> bool {
+        match self {
+            MethodWork::Erk(w) => w.has_fend,
+            MethodWork::Ros(w) => w.has_fend,
+        }
+    }
+    fn fend_mut(&mut self) -> &mut Vec<T> {
+        match self {
+            MethodWork::Erk(w) => &mut w.fend,
+            MethodWork::Ros(w) => &mut w.fend,
+        }
+    }
+    /// Stage states.
+    fn y(&self) -> &[Vec<T>] {
+        match self {
+            MethodWork::Erk(w) => &w.y,
+            MethodWork::Ros(w) => &w.y,
+        }
+    }
+    /// Rosenbrock stage increments (none for explicit methods).
+    fn k(&self) -> &[Vec<T>] {
+        match self {
+            MethodWork::Erk(_) => &[],
+            MethodWork::Ros(w) => &w.k,
+        }
+    }
+    fn nf(&self) -> usize {
+        match self {
+            MethodWork::Erk(w) => w.nf,
+            MethodWork::Ros(w) => w.nf,
+        }
+    }
+    fn reset_nf(&mut self) {
+        match self {
+            MethodWork::Erk(w) => w.nf = 0,
+            MethodWork::Ros(w) => w.nf = 0,
+        }
+    }
+}
+
+/// What one step attempt produced, for the step loop.
+struct Attempt {
+    /// The scaled error, when wanted.
+    e: Option<f64>,
+    /// The time the first stage's `f` was evaluated at.
+    tk1: f64,
+    /// `W` was singular (spec/methods.md §4.2); nothing else was computed.
+    singular: bool,
 }
 
 /// One accepted step as the adjoint needs it.
@@ -124,8 +238,11 @@ pub struct StepData<T> {
     pub h: f64,
     /// Parameters the step's evaluations saw (bound parameters set).
     pub p: Vec<f64>,
-    /// Stage states: Butcher `U_i`; Shu–Osher `u^(j)`, `j = 0..s`.
+    /// Stage states: Butcher `U_i`; Shu–Osher `u^(j)`, `j = 0..s`;
+    /// Rosenbrock `U_i` (`U_1 = u_n`).
     pub y: Vec<Vec<T>>,
+    /// Rosenbrock stage increments `k_i` (empty for explicit methods).
+    pub k: Vec<Vec<T>>,
     /// The DOFs the clip after the step zeroed, if it clipped.
     pub clip: Option<Vec<usize>>,
     /// The time the first stage was evaluated at: `t_n`, or `t_{n−1} + h_{n−1}`
@@ -165,6 +282,9 @@ pub struct LeafOutcome<T> {
     pub retcode: Retcode,
     pub clips: Vec<(usize, Vec<usize>)>,
     pub rhs_calls: u64,
+    /// The increment of the integrated auxiliary state `q` over the
+    /// invocation (zero unless the leaf has an integrand).
+    pub integral: f64,
     pub stage_data: Vec<StepData<T>>,
     /// The state on landing at each interior stop.
     pub stop_states: Vec<(f64, Vec<T>)>,
@@ -221,11 +341,180 @@ impl<T: Scalar> LeafSpec<T> {
         }
     }
 
+    /// Whether every operator provides `vjp_p`, so parameter cotangents are formed.
+    pub fn has_vjp_p(&self) -> bool {
+        self.ops.iter().all(|o| o.provides(Call::VjpP))
+    }
+
+    /// `out = Σ_k J_k(u)` in the leaf's matrix storage.
+    pub fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
+        out.clear();
+        for op in &self.ops {
+            op.jac(out, u, p, t);
+        }
+    }
+
+    /// Whether the leaf forms `f_t` for its Rosenbrock method: some `d_i ≠ 0`
+    /// and some operator depends on `t` (spec/methods.md §4.2). At M1 there
+    /// is no forcing, so explicit dependence is the only kind.
+    pub fn forms_ft(&self) -> bool {
+        match &self.method {
+            LeafMethod::Ros(m, _) => m.uses_ft() && self.ops.iter().any(|o| o.depends_on_t()),
+            LeafMethod::Erk(_) => false,
+        }
+    }
+
+    /// `out = Σ_k ∂f_k/∂t` over the operators that depend on `t`.
+    pub fn ft(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
+        out.iter_mut().for_each(|x| *x = T::zero());
+        for op in self.ops.iter().filter(|o| o.depends_on_t()) {
+            op.ft(out, u, p, t);
+        }
+    }
+
+    /// `out += Σ_k ∇_u Σ_i μ_iᵀ J_k(u) w_i` (zero for operators linear in `u`).
+    pub fn hess_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, mu: &[MuPair<'_, T>]) {
+        for op in self.ops.iter().filter(|o| !o.linear_in_u()) {
+            op.hess_u(out, u, p, t, mu);
+        }
+    }
+
+    /// `out += Σ_k ∇_p Σ_i μ_iᵀ J_k(u) w_i`.
+    pub fn hess_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, mu: &[MuPair<'_, T>]) {
+        for op in &self.ops {
+            op.hess_p(out, u, p, t, mu);
+        }
+    }
+
+    /// `out += Σ_k ∇_u (νᵀ ∂f_k/∂t)` over the operators that depend on `t`.
+    pub fn ft_vjp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, nu: &[T]) {
+        for op in self.ops.iter().filter(|o| o.depends_on_t()) {
+            op.ft_vjp_u(out, u, p, t, nu);
+        }
+    }
+
+    /// `out += Σ_k ∇_p (νᵀ ∂f_k/∂t)` over the operators that depend on `t`.
+    pub fn ft_vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, nu: &[T]) {
+        for op in self.ops.iter().filter(|o| o.depends_on_t()) {
+            op.ft_vjp_p(out, u, p, t, nu);
+        }
+    }
+
+    /// `ψ(v) = Σ_j w·v_j` over the integrand's DOFs, ascending, in f64.
+    pub fn psi(&self, v: &[T]) -> f64 {
+        let Some((dofs, w)) = &self.integrand else {
+            return 0.0;
+        };
+        let mut s = 0.0;
+        for &j in dofs {
+            s += w * v[j].to_f64();
+        }
+        s
+    }
+
+    /// The increment `q_{n+1} − q_n` of the auxiliary state `q' = ψ(u)` over
+    /// the step just computed in `w`: the leaf's method applied to the
+    /// augmented state `(u, q)` (spec/adjoint.md §2.1, D26). `q` is not part
+    /// of the error norm, so the step sequence does not depend on whether a
+    /// functional is requested. `ψ` is linear in `u` and does not depend on
+    /// `t` or `p`, so its Jacobian row is the constant `g = ∇ψ`, and for a
+    /// Rosenbrock step the augmented `W` is block lower triangular:
+    /// - transformed form, `Ŵ = σI − J`: `σ k_{q,i} − g·k_i = r_{q,i}`, so
+    ///   `k_{q,i} = (ψ(U_i) + Σ_j (C_ij/h) k_{q,j} + ψ(k_i)) / σ`, and
+    ///   `Δq = Σ_i b_i k_{q,i}`;
+    /// - Rosenbrock23, `Ŵ = I − γJ`: `k_{q,1} = ψ(u_n) + γ ψ(k_1)`,
+    ///   `k_{q,2} = ((ψ(U_2) − k_{q,1}) + γ ψ(k_2 − k_1)) + k_{q,1}`, and
+    ///   `Δq = h k_{q,2}`;
+    /// - explicit Butcher form: `Δq = Σ_i (h b_i) ψ(U_i)`; Shu–Osher form:
+    ///   the stage recurrence on `q` from `q^(0) = 0`.
+    fn q_increment(&self, w: &MethodWork<T>, h: f64) -> f64 {
+        if self.integrand.is_none() {
+            return 0.0;
+        }
+        match (&self.method, w) {
+            (LeafMethod::Erk(m), MethodWork::Erk(w)) => match &m.form {
+                ErkForm::Butcher { b, .. } => {
+                    let mut dq = 0.0;
+                    for (i, &bi) in b.iter().enumerate() {
+                        if bi != 0.0 {
+                            dq += (h * bi) * self.psi(&w.y[i]);
+                        }
+                    }
+                    dq
+                }
+                ErkForm::ShuOsher { alpha, beta, .. } => {
+                    let s = m.stages;
+                    let mut q = vec![0.0; s + 1];
+                    for i in 1..=s {
+                        let mut qi = 0.0;
+                        for j in 0..i {
+                            let (a, bb) = (alpha[i - 1][j], beta[i - 1][j]);
+                            if a != 0.0 {
+                                qi += a * q[j];
+                            }
+                            if bb != 0.0 {
+                                qi += (h * bb) * self.psi(&w.y[j]);
+                            }
+                        }
+                        q[i] = qi;
+                    }
+                    q[s]
+                }
+            },
+            (LeafMethod::Ros(m, _), MethodWork::Ros(w)) => match &m.form {
+                RosForm::Transformed { cmat, gamma, b, .. } => {
+                    let sigma = 1.0 / (h * gamma);
+                    let s = m.stages;
+                    let mut kq = vec![0.0; s];
+                    for i in 0..s {
+                        let mut r = self.psi(&w.y[i]);
+                        for j in 0..i {
+                            if cmat[i][j] != 0.0 {
+                                r += (cmat[i][j] / h) * kq[j];
+                            }
+                        }
+                        kq[i] = (r + self.psi(&w.k[i])) / sigma;
+                    }
+                    let mut dq = 0.0;
+                    for (i, &bi) in b.iter().enumerate() {
+                        if bi != 0.0 {
+                            dq += bi * kq[i];
+                        }
+                    }
+                    dq
+                }
+                RosForm::Ode23s { d, .. } => {
+                    let gam = h * d;
+                    let kq1 = self.psi(&w.y[0]) + gam * self.psi(&w.k[0]);
+                    let dk = self.psi(&w.k[1]) - self.psi(&w.k[0]);
+                    let kq2 = ((self.psi(&w.y[1]) - kq1) + gam * dk) + kq1;
+                    h * kq2
+                }
+            },
+            _ => unreachable!("the leaf's workspace matches its method"),
+        }
+    }
+
     /// The domain check of spec/methods.md §11: whether a listed DOF is negative.
     fn violates(&self, u: &[T]) -> bool {
         match &self.domain {
             Some(d) => d.dofs.iter().any(|&j| u[j] < T::zero()),
             None => false,
+        }
+    }
+
+    /// `check_stages` (spec/methods.md §11): whether a listed DOF of a
+    /// Rosenbrock stage state `U_i`, `i ≥ 2`, is negative. `U_1 = u_n` was
+    /// checked when it was accepted. A stage cannot be clipped, so this is a
+    /// violation under `clip` too.
+    fn stage_violates(&self, w: &MethodWork<T>) -> bool {
+        match (&self.domain, w) {
+            (Some(d), MethodWork::Ros(rw)) if d.check_stages => {
+                rw.y.iter()
+                    .skip(1)
+                    .any(|y| d.dofs.iter().any(|&j| y[j] < T::zero()))
+            }
+            _ => false,
         }
     }
 
@@ -283,7 +572,7 @@ impl<T: Scalar> LeafSpec<T> {
         &self,
         call: &LeafCall<'_>,
         out: &mut LeafOutcome<T>,
-        lw: (&mut ErkWork<T>, &mut Vec<T>),
+        lw: (&mut MethodWork<T>, &mut Vec<T>),
         pbuf: &mut [f64],
         cache: &mut Option<(f64, f64)>,
         u: &mut [T],
@@ -303,7 +592,8 @@ impl<T: Scalar> LeafSpec<T> {
                 t,
                 h,
                 p: self.params(call.p, pbuf, h, call).to_vec(),
-                y: if skipped { Vec::new() } else { w.y.clone() },
+                y: if skipped { Vec::new() } else { w.y().to_vec() },
+                k: if skipped { Vec::new() } else { w.k().to_vec() },
                 clip: clip.clone(),
                 tk1: tk1.unwrap_or(t),
                 skipped,
@@ -314,13 +604,14 @@ impl<T: Scalar> LeafSpec<T> {
             *cache = None;
         } else {
             // Keep f(u_{n+1}, t_n + h) unless clipped.
-            *cache = if clip.is_none() && w.has_fend {
-                std::mem::swap(fsal, &mut w.fend);
+            *cache = if clip.is_none() && w.has_fend() {
+                std::mem::swap(fsal, w.fend_mut());
                 Some((t + h, h))
             } else {
                 None
             };
-            u.copy_from_slice(&w.unew);
+            out.integral += self.q_increment(w, h);
+            u.copy_from_slice(w.unew());
         }
         if let Some(mk) = clip {
             out.clips.push((out.steps.len(), mk));
@@ -339,33 +630,46 @@ impl<T: Scalar> LeafSpec<T> {
         persist: &mut LeafPersist,
         call: &LeafCall<'_>,
     ) -> Result<LeafOutcome<T>, Error> {
-        let LeafMethod::Erk(m) = &self.method;
-        let n = u.len();
+        let mut w = self.take_work(u.len())?;
+        w.m.reset_nf();
+        let out = self.invoke_with(&mut w, u, persist, call);
+        self.put_work(w);
+        out
+    }
+
+    /// A workspace for a state of length `n`: a pooled one, or a new one.
+    pub fn take_work(&self, n: usize) -> Result<LeafWork<T>, Error> {
         let pooled = self.work.lock().ok().and_then(|mut v| v.pop());
-        let mut w = match pooled {
+        Ok(match pooled {
             Some(w) if w.fsal.len() == n => w,
             _ => LeafWork {
-                erk: m.workspace(n),
+                m: match &self.method {
+                    LeafMethod::Erk(m) => MethodWork::Erk(m.workspace(n)),
+                    LeafMethod::Ros(m, ls) => MethodWork::Ros(Box::new(
+                        m.workspace(n, self.structure, *ls)
+                            .map_err(|e| Error::Config(format!("leaf {}: {e}", self.id)))?,
+                    )),
+                },
                 fsal: vec![T::zero(); n],
             },
-        };
-        w.erk.nf = 0;
-        let out = self.invoke_with(m, &mut w, u, persist, call);
+        })
+    }
+
+    /// Returns a workspace from [`take_work`](Self::take_work) to the pool.
+    pub fn put_work(&self, w: LeafWork<T>) {
         if let Ok(mut v) = self.work.lock() {
             v.push(w);
         }
-        out
     }
 
     fn invoke_with(
         &self,
-        m: &ExplicitRk,
         lw: &mut LeafWork<T>,
         u: &mut [T],
         persist: &mut LeafPersist,
         call: &LeafCall<'_>,
     ) -> Result<LeafOutcome<T>, Error> {
-        let LeafWork { erk: w, fsal } = lw;
+        let LeafWork { m: w, fsal } = lw;
         let mut out = LeafOutcome {
             steps: Vec::new(),
             accepted: 0,
@@ -373,6 +677,7 @@ impl<T: Scalar> LeafSpec<T> {
             retcode: Retcode::Success,
             clips: Vec::new(),
             rhs_calls: 0,
+            integral: 0.0,
             stage_data: Vec::new(),
             stop_states: Vec::new(),
         };
@@ -397,9 +702,10 @@ impl<T: Scalar> LeafSpec<T> {
         let mut cache: Option<(f64, f64)> = None;
         let leaf_bound = self.binds.iter().any(|b| b.1 == BindKind::Leaf);
 
-        // One step of size h from (u, t) into `w`; returns E when wanted and
-        // the time of its first stage.
-        let take = |w: &mut ErkWork<T>,
+        let forms_ft = self.forms_ft();
+        // One step of size h from (u, t) into `w`: E when wanted, the time of
+        // its first stage, and whether W was singular.
+        let take = |w: &mut MethodWork<T>,
                     pbuf: &mut [f64],
                     fsal: &[T],
                     cache: Option<(f64, f64)>,
@@ -407,24 +713,48 @@ impl<T: Scalar> LeafSpec<T> {
                     t: f64,
                     h: f64,
                     want_err: bool|
-         -> (Option<f64>, f64) {
+         -> Attempt {
             let pb = self.params(call.p, pbuf, h, call);
             let reuse = cache.filter(|&(_, hb)| !leaf_bound || hb == h);
             let mut f = |o: &mut [T], uu: &[T], tt: f64| self.rhs(o, uu, pb, tt);
             let tol = &self.tol;
             let dofs = &self.dofs;
             let mut norm = |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol, dofs);
-            let e = m.step(
-                w,
-                &mut f,
-                u,
-                t,
-                h,
-                reuse.map(|_| fsal),
-                if want_err { Some(&mut norm) } else { None },
-            );
-            let tk1 = reuse.map_or(m.stage_time(0, t, h), |c| c.0);
-            (e, tk1)
+            let norm: Option<&mut NormFn<'_, T>> = if want_err { Some(&mut norm) } else { None };
+            match (&self.method, w) {
+                (LeafMethod::Erk(m), MethodWork::Erk(w)) => {
+                    let e = m.step(w, &mut f, u, t, h, reuse.map(|_| fsal), norm);
+                    let tk1 = reuse.map_or(m.stage_time(0, t, h), |c| c.0);
+                    Attempt {
+                        e,
+                        tk1,
+                        singular: false,
+                    }
+                }
+                (LeafMethod::Ros(m, _), MethodWork::Ros(w)) => {
+                    let mut jac =
+                        |o: &mut MatrixStorage<T>, uu: &[T], tt: f64| self.jac(o, uu, pb, tt);
+                    let mut ftf = |o: &mut [T], uu: &[T], tt: f64| self.ft(o, uu, pb, tt);
+                    let ft: Option<&mut RhsFn<'_, T>> =
+                        if forms_ft { Some(&mut ftf) } else { None };
+                    let reuse = if m.fsal { reuse } else { None };
+                    let o = m.step(w, &mut f, &mut jac, ft, u, t, h, reuse.map(|_| fsal), norm);
+                    let tk1 = reuse.map_or(t, |c| c.0);
+                    match o {
+                        RosOutcome::Singular => Attempt {
+                            e: None,
+                            tk1,
+                            singular: true,
+                        },
+                        RosOutcome::Done(e) => Attempt {
+                            e,
+                            tk1,
+                            singular: false,
+                        },
+                    }
+                }
+                _ => unreachable!("the leaf's workspace matches its method"),
+            }
         };
         // Replay: the recorded steps, controller off (spec/tape.md §3).
         if let Some((steps, clips)) = call.replay {
@@ -452,11 +782,17 @@ impl<T: Scalar> LeafSpec<T> {
                     }
                     None
                 } else {
-                    let (_, tk1) = take(w, &mut pbuf, fsal, cache, u, t, h, false);
-                    if let Some(mk) = &mask {
-                        self.clip_frozen(&mut w.unew, mk)?;
+                    let a = take(w, &mut pbuf, fsal, cache, u, t, h, false);
+                    if a.singular {
+                        return Err(Error::Run(format!(
+                            "replay: leaf {}: W is singular on recorded step {i}",
+                            self.id
+                        )));
                     }
-                    Some(tk1)
+                    if let Some(mk) = &mask {
+                        self.clip_frozen(w.unew_mut(), mk)?;
+                    }
+                    Some(a.tk1)
                 };
                 let step = Accepted {
                     t,
@@ -474,7 +810,7 @@ impl<T: Scalar> LeafSpec<T> {
                     steps.len()
                 )));
             }
-            out.rhs_calls = w.nf as u64;
+            out.rhs_calls = w.nf() as u64;
             return Ok(out);
         }
 
@@ -576,15 +912,24 @@ impl<T: Scalar> LeafSpec<T> {
                 t = tnew;
                 continue;
             }
-            let (e, tk1) = take(w, &mut pbuf, fsal, cache, u, t, h, adaptive);
-            let violation = self.violates(&w.unew) && !self.domain.as_ref().is_some_and(|d| d.clip);
+            let Attempt { e, tk1, singular } = take(w, &mut pbuf, fsal, cache, u, t, h, adaptive);
+            let violation = !singular
+                && ((self.violates(w.unew()) && !self.domain.as_ref().is_some_and(|d| d.clip))
+                    || self.stage_violates(w));
             if let Some(ctrl) = ctrl {
                 let cs = persist
                     .ctrl
                     .as_mut()
                     .expect("adaptive leaf has controller state");
-                let e = e.expect("adaptive step returns an error estimate");
-                let reject_to = if !e.is_finite() || violation {
+                let e = e.unwrap_or(2.0);
+                let reject_to = if singular {
+                    // spec/methods.md §4.2, §8.5: rejected as if E were 2,
+                    // OrdinaryDiffEq's set_EEst!(integrator, 2). The step is
+                    // rejected whatever the controller decides (under PID,
+                    // E = 2 can pass accept_safety); the new size is the
+                    // controller's rejection size for E = 2.
+                    Some(ctrl.reject(&ctrl.evaluate(cs, e), h))
+                } else if !e.is_finite() || violation {
                     // spec/methods.md §7 (non-finite E) and §8.5 (domain).
                     Some(h * ctrl.qmin)
                 } else {
@@ -621,7 +966,8 @@ impl<T: Scalar> LeafSpec<T> {
                     continue;
                 }
             } else {
-                if w.unew.iter().any(|x| !x.is_finite()) {
+                // A singular W at fixed dt cannot shrink the step: Unstable.
+                if singular || w.unew().iter().any(|x| !x.is_finite()) {
                     out.retcode = Retcode::Unstable;
                     break;
                 }
@@ -631,7 +977,7 @@ impl<T: Scalar> LeafSpec<T> {
                 }
             }
             // Accepted.
-            let clip = self.clip(&mut w.unew);
+            let clip = self.clip(w.unew_mut());
             let step = Accepted {
                 t,
                 h,
@@ -646,7 +992,7 @@ impl<T: Scalar> LeafSpec<T> {
         if adaptive {
             persist.proposal = Some(hctrl);
         }
-        out.rhs_calls += w.nf as u64;
+        out.rhs_calls += w.nf() as u64;
         Ok(out)
     }
 }

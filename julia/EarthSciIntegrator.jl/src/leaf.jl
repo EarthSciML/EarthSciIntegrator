@@ -52,6 +52,7 @@ struct LeafOutcome
     record::LeafRecord
     nf::Int
     interior::Vector{Tuple{Float64, Vector{Float64}}}
+    q::Float64          # the increment of the integrated functional over the invocation (0 without one)
 end
 
 _domain_violation(leaf::LeafNode, u) = any(j -> u[j] < 0, leaf.nonnegative)
@@ -66,6 +67,20 @@ function _clip!(leaf::LeafNode, u)
         end
     end
     return sort!(clipped)
+end
+
+"""
+    method_step(leaf, f!, p, u, t, h, k1, adaptive) -> StepResult
+
+One forward step attempt with the leaf's method: [`erk_step`](@ref) or
+[`rosenbrock_step`](@ref). `f!(out, u, t)` is the right-hand side with the
+step's parameters `p`.
+"""
+function method_step(leaf::LeafNode, f!, p, u, t, h, k1, adaptive::Bool)
+    m = leaf.method
+    m isa RosenbrockMethod &&
+        return rosenbrock_step(m, rosenbrock_context(leaf), u, p, t, h, k1, adaptive, leaf.tol; ψ = leaf.ψ)
+    return erk_step(m, f!, u, t, h, k1, adaptive, leaf.tol; ψ = leaf.ψ)
 end
 
 """
@@ -89,6 +104,7 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
     u = copy(u0)
     t = ta
     nf = 0
+    qint = 0.0          # the integrated functional's increment (`q` is the controller's factor below)
     # spec/methods.md §3.3: the stored first-same-as-last value f(u_{n+1}) is
     # invalid at entry to every invocation. It was evaluated with the "leaf"
     # bindings of the step that produced it (size `fsal_h`), so with any such
@@ -155,10 +171,12 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         end
         pp = pstep(h)
         k1 = (fsal !== nothing && (!leaf_bound || fsal_h == h)) ? fsal : nothing
-        res = erk_step(leaf.method, fp(pp), u, t, h, k1, adaptive, leaf.tol)
+        res = method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive)
         nf += res.nf
         unew = res.u
-        violation = leaf.on_violation === :reject && _domain_violation(leaf, unew)
+        # A negative stage state under domain.check_stages is a violation whatever
+        # on_violation says, since a stage cannot be clipped (spec/methods.md §11).
+        violation = (leaf.on_violation === :reject && _domain_violation(leaf, unew)) || res.stage_violation
         if adaptive
             E = res.E
             if !isfinite(E) || violation
@@ -169,7 +187,9 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
                 continue
             end
             q = controller_factor!(cs, leaf.controller, cc, E, tab)
-            if accepts(leaf.controller, cc, E, q)
+            # A singular W rejects as if E were 2 (spec/methods.md §4.2, §8.5),
+            # whatever the PID factor for E = 2 would say.
+            if !res.singular && accepts(leaf.controller, cc, E, q)
                 tnew = isstop ? ts : t + h
                 hhat = controller_accept!(cs, leaf.controller, cc, E, q, proposal_base(hc, h, isstop, prev_accepted, t, dtmin, dtmax))
                 cs.accepted_any = true
@@ -181,7 +201,9 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
                 continue
             end
         else
-            if !all(x -> isfinite(x), unew)
+            # A singular W at fixed dt: the step's solve would divide by a zero
+            # pivot, so it ends the leaf like a non-finite state (spec/methods.md §12).
+            if res.singular || !all(x -> isfinite(x), unew)
                 rec.retcode = "Unstable"
                 break
             end
@@ -205,12 +227,13 @@ function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, 
         # stop, as OrdinaryDiffEq does; replay reproduces this (leaf_replay).
         fsal = (res.fsal !== nothing && !clipped) ? res.fsal : nothing
         fsal_h = h
+        res.dq === nothing || (qint = qint + res.dq)
         u = unew
         t = tnew
         prev_accepted = true
     end
     adaptive && (cs.h = hctrl)
-    return LeafOutcome(u, rec, nf, interior)
+    return LeafOutcome(u, rec, nf, interior, qint)
 end
 
 """
@@ -226,7 +249,8 @@ with a `bind_dt: "leaf"` parameter only when `hₙ = hₙ₋₁`, as in
 [`leaf_forward`](@ref)); `visit(tₙ₊₁, uₙ₊₁)` is called
 after every step. The record's clips are checked first ([`check_clips`](@ref)).
 """
-function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float64}; states = nothing, visit = nothing)
+function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float64}; states = nothing, visit = nothing,
+        qacc = nothing)
     check_clips(leaf, rec)
     u = copy(u0)
     clipmap = Dict(rec.clips)
@@ -234,6 +258,9 @@ function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float
     fsal_method = leaf.tab.first_same_as_last
     leaf_bound = !isempty(lb)
     tk1_next = nothing      # time of a reused first stage, as in leaf_forward
+    # The integrated functional: summed per invocation, then added to `qacc`,
+    # the grouping leaf_forward and forward! use, so replay reproduces q bitwise.
+    qinv = qacc === nothing ? nothing : zero(qacc[])
     hprev = NaN             # size of the step that stored it
     for (n, (t, h)) in enumerate(rec.steps)
         ts = next_stop(stops, t)
@@ -246,12 +273,18 @@ function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float
         if isstop && h < eps(abs(t))
             tk1_next = nothing
         else
-            u = leaf_step(leaf, u, pp, t, h, mask, tk1)
+            if qacc !== nothing && leaf.ψ !== nothing
+                u, dq = leaf_step(leaf, u, pp, t, h, mask, tk1; withq = true)
+                qinv = qinv + dq
+            else
+                u = leaf_step(leaf, u, pp, t, h, mask, tk1)
+            end
             tk1_next = fsal_method && mask === nothing ? t + h : nothing
             hprev = h
         end
         visit === nothing || visit(tnew, u)
     end
+    qacc === nothing || leaf.ψ === nothing || (qacc[] = qacc[] + qinv)
     return u
 end
 
@@ -293,15 +326,27 @@ One replayed step (stages from `u`; `mask` is `nothing` or the 0-based
 indices of the DOFs the step clipped, as recorded on the tape),
 generic over element types; the frozen-tape step map `Φₙ` of spec/adjoint.md §1.
 """
-function leaf_step(leaf::LeafNode, u, p, t, h, mask, tk1 = t)
-    f! = (out, x, τ) -> eval_rhs!(out, leaf.ops, x, p, τ)
-    u1 = erk_step(leaf.method, f!, u, t, h, nothing, false, nothing; tk1).u
+function leaf_step(leaf::LeafNode, u, p, t, h, mask, tk1 = t; withq::Bool = false)
+    ψ = withq ? leaf.ψ : nothing
+    dq = nothing
+    u1 = if leaf.method isa RosenbrockMethod
+        st = rosenbrock_stages(leaf.method, rosenbrock_context(leaf), u, p, t, h, nothing; tk1)
+        st.singular && throw(ReplayMismatchError("W is singular on replay of the step at t = $t, h = $h of leaf $(leaf.id)"))
+        ψ === nothing || (dq = rosenbrock_dq(leaf.method, st, ψ, u, h))
+        st.u1
+    else
+        f! = (out, x, τ) -> eval_rhs!(out, leaf.ops, x, p, τ)
+        r = erk_step(leaf.method, f!, u, t, h, nothing, false, nothing; tk1, ψ)
+        dq = r.dq
+        r.u
+    end
     if mask !== nothing
         u1 = copy(u1)
         for i in mask
             u1[i + 1] = zero(eltype(u1))
         end
     end
+    withq && return u1, (dq === nothing ? zero(eltype(u1)) : dq)
     return u1
 end
 
@@ -319,6 +364,10 @@ function leaf_step_adjoint(leaf::LeafNode, u, p, t, h, mask, λ, skipped::Bool =
         end
     end
     skipped && return copy(λ), zeros(length(p))
-    λn, p̄, _ = erk_adjoint_step(leaf.method, leaf.ops, u, p, t, h, λ; tk1)
+    λn, p̄, _ = if leaf.method isa RosenbrockMethod
+        rosenbrock_adjoint_step(leaf.method, rosenbrock_context(leaf), u, p, t, h, λ; tk1, ψ = leaf.ψ)
+    else
+        erk_adjoint_step(leaf.method, leaf.ops, u, p, t, h, λ; tk1, ψ = leaf.ψ)
+    end
     return λn, p̄
 end

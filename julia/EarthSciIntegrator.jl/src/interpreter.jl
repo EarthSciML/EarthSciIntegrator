@@ -67,6 +67,7 @@ mutable struct Run
     nf::Int
     retcode::String
     failure::String
+    q::Float64                        # the integrated functional q(t_f) of a functional over time
 end
 
 const _TOP_KEYS = Set(["esm_integrator", "model", "operators", "schedule", "step", "partition", "precision",
@@ -138,6 +139,20 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
         adj = config["adjoint"]
         haskey(adj, "checkpoint") && throw(UnsupportedError("adjoint.checkpoint: M1 checkpoints every macro step in memory"))
         functional = build_functional(adj["functional"], prob)
+        if functional.over === :time
+            # spec/adjoint.md §2.1: the auxiliary state q' = ψ(u) is integrated by
+            # the last leaf of the schedule (D39). This stage implements the
+            # single-leaf schedule, with Butcher-form explicit and Rosenbrock methods.
+            haskey(adj["functional"], "integrate_in") && adj["functional"]["integrate_in"] != root.id &&
+                throw(UnsupportedError("functional.integrate_in naming a leaf other than the root is not implemented in this stage"))
+            root isa LeafNode ||
+                throw(UnsupportedError("a functional over \"time\" is implemented for single-leaf schedules only in this stage"))
+            root.method isa ShuOsherERK &&
+                throw(UnsupportedError("a functional over \"time\" on a Shu–Osher leaf ($(root.tab.name)) is not implemented in this stage"))
+            w = functional.reduction === :sum ? 1.0 : 1.0 / length(functional.dofs)
+            root = with_integrand(root, Integrand(functional.dofs, w, prob.N))
+            leaves = Dict{String, LeafNode}(root.id => root)
+        end
         for w in adj["wrt"]
             if w == "u0"
                 wrt_u0 = true
@@ -159,17 +174,29 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
             end
         end
         sort!(unique!(wrt_p))
-        # operator-interface.md §3: vjp_p is required when an adjoint is taken with respect to p.
-        if !isempty(wrt_p)
-            for leaf in values(leaves), op in leaf.ops.ops
-                provides(op, :vjp_p) ||
-                    throw(ConfigError("operator '$(opname(op))' of leaf $(leaf.id) does not provide vjp_p, which the adjoint with respect to p needs"))
+        # operator-interface.md §3: vjp_p is required when an adjoint is taken
+        # with respect to p; a Rosenbrock adjoint needs hess_u, and hess_p with
+        # respect to p, and ft_vjp_u, ft_vjp_p for operators that depend on t
+        # when the method forms f_t (spec/adjoint.md §3).
+        for leaf in values(leaves), op in leaf.ops.ops
+            need = isempty(wrt_p) ? Symbol[] : [:vjp_p]
+            if leaf.method isa RosenbrockMethod
+                push!(need, :hess_u)
+                isempty(wrt_p) || push!(need, :hess_p)
+                if leaf.method.uses_ft && depends_on_t(op)
+                    push!(need, :ft_vjp_u)
+                    isempty(wrt_p) || push!(need, :ft_vjp_p)
+                end
+            end
+            for call in need
+                provides(op, call) ||
+                    throw(ConfigError("operator '$(opname(op))' of leaf $(leaf.id) does not provide $call, which the adjoint needs"))
             end
         end
     end
     return Run(prob, collect(Float64, p), collect(Float64, u0), root, leaves, (t0, tf), dt, bounds, reasons, outs,
         functional, wrt_u0, wrt_p, bound, Dict{String, ControllerState}(), Tape(), Checkpoint[],
-        Tuple{Float64, Vector{Float64}}[], Float64[], 0, 0, 0, "Default", "")
+        Tuple{Float64, Vector{Float64}}[], Float64[], 0, 0, 0, "Default", "", 0.0)
 end
 
 _glob(pat) = Regex("^" * replace(pat, "." => "\\.", "*" => ".*") * "\$")
@@ -178,7 +205,6 @@ function build_functional(f::AbstractDict, prob::ToyProblem)
     red = haskey(f, "sum") ? :sum : :mean
     var = String(f[String(red)])
     over = Symbol(f["over"])
-    over === :time && throw(UnsupportedError("functional over \"time\" (the integrated auxiliary state of spec/adjoint.md §2.1) is not implemented in this stage"))
     dofs = copy(variable_dofs(prob, var))
     if haskey(f, "where")
         for (set, sel) in f["where"]
@@ -251,7 +277,9 @@ struct ReplayMode{P, V}
     p::P
     trace::Union{Nothing, Vector{Any}}
     visit::V
+    qacc::Any        # a Ref accumulating the integrated functional q, or nothing
 end
+ReplayMode(tape, p, trace, visit) = ReplayMode(tape, p, trace, visit, nothing)
 
 function next_path!(ctx::ExecCtx, id::String)
     occ = get(ctx.occ, id, 0)
@@ -309,6 +337,7 @@ function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Fl
             run.accepted += out.record.accepted
             run.rejected += out.record.rejected
             run.nf += out.nf
+            run.q += out.q
             append!(run.outputs, out.interior)
         end
         out.record.retcode == "Success" ||
@@ -316,11 +345,11 @@ function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Fl
         return out.u
     else
         rec = tape_record(mode.tape, path, LeafRecord, ta, tb)
-        mode.trace === nothing && return leaf_replay(node, u, pinv, rec, stops; visit = mode.visit)
+        mode.trace === nothing && return leaf_replay(node, u, pinv, rec, stops; visit = mode.visit, qacc = mode.qacc)
         # The per-step states the reverse pass needs are recorded on this replay.
         states = []
         push!(mode.trace, (:leaf, node, rec, copy(u), pinv, stops, states))
-        return leaf_replay(node, u, pinv, rec, stops; states, visit = mode.visit)
+        return leaf_replay(node, u, pinv, rec, stops; states, visit = mode.visit, qacc = mode.qacc)
     end
 end
 
@@ -410,6 +439,7 @@ function forward!(run::Run)
     run.checkpoints = Checkpoint[]
     run.outputs = [(run.tspan[1], copy(run.u0))]
     run.accepted = run.rejected = run.nf = 0
+    run.q = 0.0
     u = copy(run.u0)
     mode = ForwardMode(run.tape, run.controllers)
     try
@@ -459,19 +489,20 @@ Replay macro step `k` from state `u` with parameters `p` (any element types)
 using the tape's step sequences and masks (spec/tape.md §3). The tape's macro
 record `k` must have the run's boundaries, `t` and `dt` bitwise.
 """
-function replay_macro(run::Run, k::Integer, u, p; tape::Tape = run.tape, trace = nothing, visit = nothing)
+function replay_macro(run::Run, k::Integer, u, p; tape::Tape = run.tape, trace = nothing, visit = nothing, qacc = nothing)
     ta, tb = run.bounds[k + 1], run.bounds[k + 2]
     tape_record(tape, "macro:$k", MacroRecord, ta, tb)
-    ctx = ExecCtx(k, tb - ta, Dict{String, Int}(), ReplayMode(tape, p, trace, visit))
+    ctx = ExecCtx(k, tb - ta, Dict{String, Int}(), ReplayMode(tape, p, trace, visit, qacc))
     return advance!(run, ctx, run.root, u, ta, tb)
 end
 
 """
-    replay(run, u0=run.u0, p=run.p; tape=run.tape) -> (u_final, outputs)
+    replay(run, u0=run.u0, p=run.p; tape=run.tape) -> (u_final, outputs, q)
 
 Replay the whole run on the frozen tape (spec/adjoint.md §2.2), generic over
 the element types of `u0` and `p`. `outputs` holds the state at every output
-time, in order.
+time, in order; `q` is the integrated functional of a functional over time
+(`nothing` otherwise).
 """
 function replay(run::Run, u0 = run.u0, p = run.p; tape::Tape = run.tape)
     T = promote_type(eltype(u0), eltype(p))
@@ -481,25 +512,30 @@ function replay(run::Run, u0 = run.u0, p = run.p; tape::Tape = run.tape)
     visit = (t, x) -> (t in run.output_times && !(t in run.bounds) && push!(outputs, (t, copy(x))))
     K = length(run.bounds) - 1
     haskey(tape, "macro:$K") && throw(ReplayMismatchError("the tape has more than the run's $K macro steps"))
+    timefun = run.functional !== nothing && run.functional.over === :time
+    qacc = timefun ? Ref{Any}(zero(T)) : nothing
     for k in 0:(K - 1)
-        u = replay_macro(run, k, u, pp; tape, visit)
+        u = replay_macro(run, k, u, pp; tape, visit, qacc)
         tb = run.bounds[k + 2]
         tb in run.output_times && push!(outputs, (tb, copy(u)))
     end
     sort!(outputs; by = first)
-    return u, outputs
+    return u, outputs, (timefun ? qacc[] : nothing)
 end
 
 """
-    functional_value(run, u, outputs) -> J
+    functional_value(run, u, outputs, q=run.q) -> J
 
-The functional `J` of a run (spec/adjoint.md §2.1) from its end state `u` and
-its `outputs` (`(t, u)` pairs; a pair at `t₀` adds nothing).
+The functional `J` of a run (spec/adjoint.md §2.1) from its end state `u`,
+its `outputs` (`(t, u)` pairs; a pair at `t₀` adds nothing), and for a
+functional over time the integrated auxiliary state `q`.
 """
-function functional_value(run::Run, u, outputs)
+function functional_value(run::Run, u, outputs, q = run.q)
     F = run.functional
     F === nothing && error("the run config has no adjoint.functional")
-    if F.over === :final
+    if F.over === :time
+        return q
+    elseif F.over === :final
         return phi(F, u)
     else
         return sum(phi(F, u) for (t, u) in outputs if t > run.tspan[1])

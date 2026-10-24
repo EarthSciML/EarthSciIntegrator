@@ -74,3 +74,45 @@ jobs:
       - run: cargo fmt --manifest-path rust/Cargo.toml --all --check
       - run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
       - run: cargo test --manifest-path rust/Cargo.toml --workspace
+        env:
+          EARTHSCI_RESULTS_DIR: ${{ github.workspace }}/rust-results
+      - name: Upload conformance result files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-m1-results
+          path: rust-results/
+          if-no-files-found: ignore
+
+  cross-language:
+    name: Julia ${{ matrix.version }} against Rust (conformance tier 3)
+    needs: [julia, rust]
+    # Runs when either suite failed too: a failing case still writes its result.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["1.10", "1"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        # A suite that wrote no result files uploaded none; the comparison
+        # below then names the missing directory.
+        continue-on-error: true
+        with:
+          name: julia-m1-results-${{ matrix.version }}
+          path: julia-results
+      - uses: actions/download-artifact@v4
+        # A suite that wrote no result files uploaded none; the comparison
+        # below then names the missing directory.
+        continue-on-error: true
+        with:
+          name: rust-m1-results
+          path: rust-results
+      # A case only one implementation runs yet (a method family landing in
+      # one language before the other) is listed but does not fail the job.
+      - run: python tests/conformance/m1/compare_results.py julia-results rust-results

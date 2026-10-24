@@ -59,7 +59,8 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         @test TABLEAUS["SSPRK43"].embedded_scale == 0.5
         @test TABLEAUS["ForwardEuler"].controller === nothing
         @test TABLEAUS["Rodas4"].family === :rosenbrock
-        @test_throws UnsupportedError EarthSciIntegrator.method_for(TABLEAUS["Rodas4"])
+        @test EarthSciIntegrator.method_for(TABLEAUS["Rodas4"]) isa EarthSciIntegrator.RosenbrockMethod
+        @test EarthSciIntegrator.method_for(TABLEAUS["Rosenbrock23"]).form === :rosenbrock23
         @test_throws UnsupportedError EarthSciIntegrator.method_for(TABLEAUS["TRBDF2"])
     end
 
@@ -119,9 +120,9 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         @test build_run(base; tspan = (0, 2)) isa EarthSciIntegrator.Run
         bad = deepcopy(base); bad["esm_integrator"] = "0.2.0"
         @test_throws ConfigError build_run(bad; tspan = (0, 2))
-        bad = deepcopy(base); bad["schedule"]["alg"] = "Rodas4"
+        bad = deepcopy(base); bad["schedule"]["alg"] = "TRBDF2"
         err = try build_run(bad; tspan = (0, 2)); nothing; catch e; e; end
-        @test err isa UnsupportedError && occursin("Rodas4", err.msg)
+        @test err isa UnsupportedError && occursin("TRBDF2", err.msg)
         bad = deepcopy(base); bad["schedule"]["alg"] = "SSPRK33"; delete!(bad["schedule"], "dt")
         @test_throws ConfigError build_run(bad; tspan = (0, 2))      # no error estimate: dt required (D52)
         bad = deepcopy(base); bad["schedule"]["leaf"] = "nonexistent"
@@ -355,5 +356,6 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     include("test_operators.jl")
     include("oracle.jl")
     include("conformance.jl")
+    include("rosenbrock.jl")
     include("extra.jl")
 end

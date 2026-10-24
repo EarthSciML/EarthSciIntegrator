@@ -384,8 +384,9 @@ impl<T: Scalar> Operator<T> for Kinetics {
         let (y1, y2, y3) = (f(u[0]), f(u[1]), f(u[2]));
         let (k1, k2, k3) = (p[0], p[1], p[2]);
         acc(&mut out[0], -k1 * y1 + k3 * y2 * y3);
-        acc(&mut out[1], k1 * y1 - k3 * y2 * y3 - k2 * y2 * y2);
-        acc(&mut out[2], k2 * y2 * y2);
+        // k2·(y2²), as Julia's `k2 * y2^2` rounds it.
+        acc(&mut out[1], k1 * y1 - k3 * y2 * y3 - k2 * (y2 * y2));
+        acc(&mut out[2], k2 * (y2 * y2));
     }
     fn jvp_u(&self, out: &mut [T], u: &[T], p: &[f64], _t: f64, v: &[T]) {
         let (_, y2, y3) = (f(u[0]), f(u[1]), f(u[2]));
@@ -432,15 +433,16 @@ impl<T: Scalar> Operator<T> for Kinetics {
     fn hess_u(&self, out: &mut [T], u: &[T], p: &[f64], _t: f64, mu: &[MuPair<'_, T>]) {
         let _ = u;
         let (k2, k3) = (p[1], p[2]);
-        let (mut g2, mut g3) = (0.0, 0.0);
+        // Accumulated pair by pair, in Julia's order.
         for (mi, wi) in mu {
             let (m1, m2, m3) = (f(mi[0]), f(mi[1]), f(mi[2]));
             let (a2, a3) = (f(wi[1]), f(wi[2]));
-            g2 += m1 * k3 * a3 + m2 * (-2.0 * k2 * a2 - k3 * a3) + m3 * 2.0 * k2 * a2;
-            g3 += m1 * k3 * a2 - m2 * k3 * a2;
+            acc(
+                &mut out[1],
+                m1 * k3 * a3 + m2 * (-2.0 * k2 * a2 - k3 * a3) + m3 * 2.0 * k2 * a2,
+            );
+            acc(&mut out[2], m1 * k3 * a2 - m2 * k3 * a2);
         }
-        acc(&mut out[1], g2);
-        acc(&mut out[2], g3);
     }
     fn hess_p(&self, out: &mut [f64], u: &[T], _p: &[f64], _t: f64, mu: &[MuPair<'_, T>]) {
         let (y2, y3) = (f(u[1]), f(u[2]));
@@ -569,7 +571,10 @@ impl<T: Scalar> Operator<T> for Photochemistry {
         let nc = PHOTO_NCELLS;
         for c in 0..nc {
             let (no2, _, _) = Self::cell(u, c);
-            let drdt = 0.5 * p[0] * p[2] * (p[2] * t + Self::phase(c)).cos() * no2;
+            // In Julia's order, so the two round alike wherever their `cos`
+            // agree: Rosenbrock23's error estimate cancels to O(h³) and
+            // magnifies any rounding in f_t.
+            let drdt = 0.5 * p[0] * (p[2] * t + Self::phase(c)).cos() * p[2] * no2;
             for (s, sg) in PHOTO_SGN.iter().enumerate() {
                 acc(&mut out[s * nc + c], sg * drdt);
             }

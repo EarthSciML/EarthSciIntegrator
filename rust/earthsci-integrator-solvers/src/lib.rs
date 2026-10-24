@@ -1,10 +1,12 @@
-//! EarthSciIntegrator methods, step-size control and (from the next M1
-//! stages) linear algebra: everything of spec/methods.md that does not need
-//! to know what an operator is.
+//! EarthSciIntegrator methods, step-size control and linear algebra:
+//! everything of spec/methods.md that does not need to know what an
+//! operator is.
 //!
 //! - [`tableau`]: the coefficient tables of `spec/tableaus/`, embedded at
 //!   compile time (D54).
 //! - [`erk`]: explicit Runge–Kutta steps, Butcher and Shu–Osher forms (§3).
+//! - [`rosenbrock`]: Rosenbrock steps, transformed and ode23s forms (§4).
+//! - [`linalg`]: matrix storage and the `dense_lu` and `block_lu` solvers.
 //! - [`norm`]: the error norm (§7).
 //! - [`controller`]: PI, I and PID step-size control (§8).
 //! - [`initdt`]: the first step (§9).
@@ -15,7 +17,9 @@
 pub mod controller;
 pub mod erk;
 pub mod initdt;
+pub mod linalg;
 pub mod norm;
+pub mod rosenbrock;
 pub mod scalar;
 pub mod tableau;
 

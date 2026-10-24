@@ -70,7 +70,9 @@ function gradient(run::Run)
     F === nothing && error("the run config has no adjoint.functional")
     N, P = length(run.u0), length(run.p)
     g = phi_gradient(F, N)
-    seedtimes = F.over === :final ? [run.tspan[2]] : run.output_times
+    # Over time, J = q(t_f) and q̄ ≡ 1 is carried by the integrating leaf's
+    # adjoint steps (spec/adjoint.md §2.1); there are no point terms.
+    seedtimes = F.over === :final ? [run.tspan[2]] : F.over === :time ? Float64[] : run.output_times
     seeds = Dict{Float64, Vector{Float64}}(τ => g for τ in seedtimes)
     λ = zeros(N)
     p̄ = zeros(P)
