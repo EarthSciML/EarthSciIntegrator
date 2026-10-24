@@ -1,13 +1,14 @@
 //! Rust implementation of the EarthSciIntegrator spec (`spec/` at the
 //! repository root).
 //!
-//! Crate layout (M1, first stage):
+//! Crate layout (M1: explicit Runge–Kutta and Rosenbrock methods):
 //! - this crate: the operator interface ([`operator`]), the toy problems
 //!   ([`toy`]), run-config parsing ([`config`]), the leaf ([`leaf`]), the
 //!   schedule interpreter ([`schedule`]), the tape and checkpoints
 //!   ([`tape`]) and the discrete adjoint ([`adjoint`]);
 //! - `earthsci-integrator-solvers`: coefficient tables, method steps, error
-//!   norm, controllers and first step, independent of the operator interface.
+//!   norm, controllers, first step and the direct linear solvers,
+//!   independent of the operator interface.
 
 pub mod adjoint;
 pub mod config;

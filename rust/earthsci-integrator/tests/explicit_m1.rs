@@ -356,7 +356,7 @@ fn refusals() {
         Error::Config(_)
     ));
     assert!(
-        matches!(err(json!({"leaf": "decay", "alg": "Rodas4", "dt": 0.1})), Error::Unimplemented(m) if m.contains("Rodas4"))
+        matches!(err(json!({"leaf": "decay", "alg": "TRBDF2", "dt": 0.1})), Error::Unimplemented(m) if m.contains("TRBDF2"))
     );
     assert!(matches!(
         err(json!({"leaf": "decay", "alg": "Tsit5", "control": {"dt_scope": "cell"}})),
@@ -374,8 +374,10 @@ fn refusals() {
     assert!(RunConfig::from_value(&v).is_err());
     // An operator that lacks a call the adjoint needs is refused at build;
     // every toy operator provides all of them, so a functional over "time"
-    // is the remaining refusal here.
-    let v = json!({"esm_integrator": "0.1.0", "model": "toy:forced_decay", "schedule": {"leaf": "decay", "alg": "Heun", "dt": 0.1},
+    // on a schedule of several nodes (which invocations integrate q is not
+    // settled, D39) is the remaining refusal here.
+    let v = json!({"esm_integrator": "0.1.0", "model": "toy:forced_decay",
+                   "schedule": {"sequence": [{"leaf": "decay", "alg": "Heun", "dt": 0.1}]},
                    "step": {"dt": 1}, "adjoint": {"functional": {"sum": "u", "over": "time"}, "wrt": ["u0"]}});
     let r = RunConfig::from_value(&v).unwrap();
     assert!(matches!(

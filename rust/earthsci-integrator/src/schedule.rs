@@ -16,7 +16,9 @@ use crate::toy::ToyProblem;
 use crate::{Error, Scalar};
 use earthsci_integrator_solvers::controller::{Controller, ControllerKind};
 use earthsci_integrator_solvers::erk::ExplicitRk;
+use earthsci_integrator_solvers::linalg::LinsolveKind;
 use earthsci_integrator_solvers::norm::Tolerances;
+use earthsci_integrator_solvers::rosenbrock::Rosenbrock;
 use earthsci_integrator_solvers::tableau::{tableau, Family};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -240,9 +242,29 @@ fn build_leaf<T: Scalar>(
     }
     let tab =
         tableau(&alg).ok_or_else(|| Error::Config(format!("leaf {id}: unknown alg {alg:?}")))?;
+    let structure = Structure::common(ops.iter().map(|o| o.structure()));
     let method = match tab.family {
         Family::ExplicitRk => {
             LeafMethod::Erk(ExplicitRk::from_tableau(tab).map_err(Error::Config)?)
+        }
+        Family::Rosenbrock => {
+            let m = Rosenbrock::from_tableau(tab).map_err(Error::Config)?;
+            match l.jacobian.as_deref() {
+                None | Some("auto") | Some("symbolic") => {}
+                Some("ad") => {
+                    return Err(Error::Config(format!(
+                        "leaf {id}: jacobian \"ad\" is Julia only (D38)"
+                    )))
+                }
+                Some(o) => {
+                    return Err(Error::Unimplemented(format!(
+                        "leaf {id}: jacobian {o:?} is not implemented in the Rust implementation; \
+                         use \"symbolic\" (the operators' jac)"
+                    )))
+                }
+            }
+            let ls = linsolve(l.linsolve.as_ref(), structure, id)?;
+            LeafMethod::Ros(m, ls)
         }
         f => {
             return Err(Error::Unimplemented(format!(
@@ -253,14 +275,13 @@ fn build_leaf<T: Scalar>(
     let mut dofs: Vec<usize> = ops.iter().flat_map(|o| o.writes()).collect();
     dofs.sort_unstable();
     dofs.dedup();
-    let structure = Structure::common(ops.iter().map(|o| o.structure()));
 
     // Calls the method and its adjoint need (operator-interface.md §3).
-    let mut calls = method.forward_calls().to_vec();
-    if needs.adjoint {
-        calls.extend(method.adjoint_calls(needs.wrt_p));
-    }
     for op in &ops {
+        let mut calls = method.forward_calls(op.depends_on_t());
+        if needs.adjoint {
+            calls.extend(method.adjoint_calls(needs.wrt_p, op.depends_on_t(), op.linear_in_u()));
+        }
         for c in &calls {
             if !op.provides(*c) {
                 return Err(Error::Config(format!(
@@ -294,6 +315,7 @@ fn build_leaf<T: Scalar>(
         )));
     }
     // jacobian and linsolve are accepted and unused by explicit methods.
+    let rosenbrock = matches!(method, LeafMethod::Ros(..));
 
     let dt_mode = match &l.dt {
         None => DtMode::Adaptive,
@@ -318,7 +340,7 @@ fn build_leaf<T: Scalar>(
     let domain = match &l.domain {
         None => None,
         Some(d) => {
-            if d.check_stages == Some(true) {
+            if d.check_stages == Some(true) && !rosenbrock {
                 return Err(Error::Config(format!(
                     "leaf {id}: check_stages applies to Rosenbrock leaves only"
                 )));
@@ -349,7 +371,11 @@ fn build_leaf<T: Scalar>(
                 Some("clip") => true,
                 Some(o) => return Err(Error::Config(format!("leaf {id}: on_violation {o}"))),
             };
-            Some(DomainSpec { dofs: listed, clip })
+            Some(DomainSpec {
+                dofs: listed,
+                clip,
+                check_stages: d.check_stages == Some(true),
+            })
         }
     };
 
@@ -398,8 +424,72 @@ fn build_leaf<T: Scalar>(
         maxiters: ctl.maxiters,
         domain,
         binds,
+        integrand: None,
         work: Default::default(),
     })
+}
+
+/// The leaf's `linsolve` (spec/run-config.md §4.2). Omitted or `"auto"`, it
+/// is `block_lu` with pivoting for a `block_diagonal` leaf and `dense_lu`
+/// otherwise; `block_lu` pivots unless `pivot` is false. Without a planner
+/// (M2) the Rust implementation offers only these two direct solvers.
+fn linsolve(
+    v: Option<&serde_json::Value>,
+    structure: Structure,
+    id: &str,
+) -> Result<LinsolveKind, Error> {
+    use serde_json::Value;
+    let block = matches!(structure, Structure::BlockDiagonal { .. });
+    let kind = match v {
+        None => None,
+        Some(Value::String(s)) => match s.as_str() {
+            "auto" => None,
+            "dense_lu" => Some(LinsolveKind::DenseLu),
+            "block_lu" => Some(LinsolveKind::BlockLu { pivot: true }),
+            o => {
+                return Err(Error::Unimplemented(format!(
+                    "leaf {id}: linsolve {o:?} is not implemented at M1 (dense_lu, block_lu)"
+                )))
+            }
+        },
+        Some(Value::Object(m)) if m.len() == 1 => {
+            let (k, opts) = m.iter().next().expect("one key");
+            match k.as_str() {
+                "dense_lu" => Some(LinsolveKind::DenseLu),
+                "block_lu" => {
+                    if opts.get("refine").is_some_and(|r| r.as_u64() != Some(0)) {
+                        return Err(Error::Unimplemented(format!(
+                            "leaf {id}: block_lu.refine needs low-precision factors (M5)"
+                        )));
+                    }
+                    Some(LinsolveKind::BlockLu {
+                        pivot: opts.get("pivot").and_then(|p| p.as_bool()).unwrap_or(true),
+                    })
+                }
+                o => {
+                    return Err(Error::Unimplemented(format!(
+                        "leaf {id}: linsolve {o:?} is not implemented at M1 (dense_lu, block_lu)"
+                    )))
+                }
+            }
+        }
+        Some(o) => return Err(Error::Config(format!("leaf {id}: linsolve {o}"))),
+    };
+    let kind = kind.unwrap_or(if block {
+        LinsolveKind::BlockLu { pivot: true }
+    } else {
+        LinsolveKind::DenseLu
+    });
+    match (kind, block) {
+        (LinsolveKind::BlockLu { .. }, false) => Err(Error::Config(format!(
+            "leaf {id}: block_lu needs a block_diagonal leaf (operator-interface.md §2)"
+        ))),
+        (LinsolveKind::DenseLu, true) => Err(Error::Unimplemented(format!(
+            "leaf {id}: dense_lu on a block_diagonal leaf: the Rust implementation stores \
+             block_diagonal Jacobians per block; use block_lu"
+        ))),
+        _ => Ok(kind),
+    }
 }
 
 type ControlParts = (Tolerances, ControllerKind, Option<f64>, f64, Option<f64>);
@@ -478,7 +568,21 @@ struct Exec<'a, T: Scalar> {
     stops: Vec<f64>,
     stop_states: Vec<(f64, Vec<T>)>,
     rhs_calls: u64,
+    /// The integral term's increment over this macro step (D26).
+    integral: f64,
     occ: HashMap<String, usize>,
+}
+
+/// What one macro step produced.
+#[derive(Debug, Clone)]
+pub struct MacroOut<T> {
+    /// The tape records of its invocations, in execution order.
+    pub records: Vec<TapeRecord>,
+    /// The states at interior output times.
+    pub stop_states: Vec<(f64, Vec<T>)>,
+    pub rhs_calls: u64,
+    /// The increment of the integrated auxiliary state `q` (spec/adjoint.md §2.1).
+    pub integral: f64,
 }
 
 impl<'a, T: Scalar> Exec<'a, T> {
@@ -566,6 +670,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                 };
                 let out = leaf.invoke(u, &mut self.persist[*idx], &call)?;
                 self.rhs_calls += out.rhs_calls;
+                self.integral += out.integral;
                 self.stop_states.extend(out.stop_states.iter().cloned());
                 self.tape_out.push(TapeRecord::Leaf {
                     path: path.clone(),
@@ -677,8 +782,12 @@ pub struct FunctionalSpec {
     pub dofs: Vec<usize>,
     /// Weight of each DOF: 1 for `sum`, `1/|dofs|` for `mean`.
     pub weight: f64,
-    /// Observation times (macro-step boundaries).
+    /// Observation times (macro-step boundaries) of the point terms.
     pub times: Vec<f64>,
+    /// `over: "time"`: the functional is the integral term `∫ ψ dt` with
+    /// `ψ(u) = φ(u)`, integrated as an auxiliary state by the root leaf
+    /// (spec/adjoint.md §2.1, D26, D39).
+    pub integral: bool,
 }
 
 impl FunctionalSpec {
@@ -722,6 +831,9 @@ pub struct ForwardRun<T> {
     pub accepted: u64,
     pub rejected: u64,
     pub rhs_calls: u64,
+    /// `q(t_f)`, the integrated auxiliary state of a functional over `time`
+    /// (zero otherwise).
+    pub integral: f64,
 }
 
 impl<T: Scalar> ForwardRun<T> {
@@ -777,7 +889,7 @@ impl<T: Scalar> RunSpec<T> {
                 .is_some_and(|a| a.wrt.iter().any(|w| w.starts_with("params:"))),
         };
         let node = rc.schedule_node()?;
-        let schedule = Schedule::build(&node, &problem, needs)?;
+        let mut schedule = Schedule::build(&node, &problem, needs)?;
 
         // Adjoint settings.
         let mut wrt_u0 = false;
@@ -884,22 +996,46 @@ impl<T: Scalar> RunSpec<T> {
                     dofs.retain(|&j| cells[j] + 1 >= lo && cells[j] < hi);
                 }
             }
+            let weight = if mean { 1.0 / dofs.len() as f64 } else { 1.0 };
             let times = match f.over.as_str() {
                 "final" => vec![tspan.1],
                 // A point term at each output time after t0 (run-config §7.2).
                 "saveat" => out_times.clone(),
+                // The integral term: an auxiliary state q' = ψ(u), q(t0) = 0,
+                // integrated by the last leaf of the macro-step schedule or
+                // by `integrate_in` (spec/adjoint.md §2.1, D26, D39). At M1
+                // only a schedule that is a single leaf is accepted, where
+                // the two agree.
                 "time" => {
-                    return Err(Error::Unimplemented(
-                        "functional over \"time\" (integrated auxiliary state, D26) is not implemented yet".into(),
-                    ))
+                    let SNode::Leaf { id, idx } = &schedule.root else {
+                        return Err(Error::Unimplemented(
+                            "a functional over \"time\" with a schedule of several nodes: which \
+                             invocations integrate q under splitting is not settled at M1 (D39)"
+                                .into(),
+                        ));
+                    };
+                    if let Some(name) = &f.integrate_in {
+                        if name != id {
+                            return Err(Error::Config(format!(
+                                "integrate_in {name:?} is not a leaf of the schedule"
+                            )));
+                        }
+                    }
+                    schedule.leaves[*idx].integrand = Some((dofs.clone(), weight));
+                    vec![]
                 }
                 o => return Err(Error::Config(format!("functional over {o:?}"))),
             };
-            let weight = if mean { 1.0 / dofs.len() as f64 } else { 1.0 };
+            if f.over != "time" && f.integrate_in.is_some() {
+                return Err(Error::Config(
+                    "integrate_in applies to a functional over \"time\" only".into(),
+                ));
+            }
             functional = Some(FunctionalSpec {
                 dofs,
                 weight,
                 times,
+                integral: f.over == "time",
             });
         }
 
@@ -993,6 +1129,7 @@ impl<T: Scalar> RunSpec<T> {
             accepted: 0,
             rejected: 0,
             rhs_calls: 0,
+            integral: 0.0,
         };
         let index = tape.map(|tp| tp.index());
         for k in 0..self.bounds.len() - 1 {
@@ -1012,7 +1149,7 @@ impl<T: Scalar> RunSpec<T> {
                     _ => return Err(Error::Run(format!("replay: no macro record {k}"))),
                 }
             }
-            let (seg, rhs) = self.macro_step(
+            let mo = self.macro_step(
                 k,
                 &mut u,
                 &mut persist,
@@ -1023,10 +1160,10 @@ impl<T: Scalar> RunSpec<T> {
                 index.as_ref(),
                 None,
             )?;
-            let (seg_tape, stop_states) = seg;
-            out.rhs_calls += rhs;
-            out.outputs.extend(stop_states);
-            out.tape.records.extend(seg_tape);
+            out.rhs_calls += mo.rhs_calls;
+            out.integral += mo.integral;
+            out.outputs.extend(mo.stop_states);
+            out.tape.records.extend(mo.records);
             out.tape.records.push(TapeRecord::Macro {
                 path: k.to_string(),
                 t: ta,
@@ -1063,9 +1200,9 @@ impl<T: Scalar> RunSpec<T> {
 
     /// Runs macro step `k` over `[t0, t1]`, from `u` and `persist`.
     /// Returns the tape records of its invocations, the states at interior
-    /// output times and the right-hand-side count; with `adj`, records what
-    /// the reverse pass needs.
-    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    /// output times, the right-hand-side count and the integral term's
+    /// increment; with `adj`, records what the reverse pass needs.
+    #[allow(clippy::too_many_arguments)]
     pub fn macro_step(
         &self,
         k: usize,
@@ -1077,7 +1214,7 @@ impl<T: Scalar> RunSpec<T> {
         delta: f64,
         replay: Option<&HashMap<&str, &TapeRecord>>,
         adj: Option<&mut Vec<AdjRecord<T>>>,
-    ) -> Result<((Vec<TapeRecord>, Vec<(f64, Vec<T>)>), u64), Error> {
+    ) -> Result<MacroOut<T>, Error> {
         let ot = &self.output_times;
         let stops = ot[ot.partition_point(|&x| x <= t0)..ot.partition_point(|&x| x < t1)].to_vec();
         let mut ex = Exec {
@@ -1092,13 +1229,19 @@ impl<T: Scalar> RunSpec<T> {
             stops,
             stop_states: Vec::new(),
             rhs_calls: 0,
+            integral: 0.0,
             occ: HashMap::new(),
         };
         ex.exec(&self.schedule.root, u, t0, t1, true)?;
         if let (Some(a), Some(rec)) = (adj, ex.adj.take()) {
             *a = rec;
         }
-        Ok(((ex.tape_out, ex.stop_states), ex.rhs_calls))
+        Ok(MacroOut {
+            records: ex.tape_out,
+            stop_states: ex.stop_states,
+            rhs_calls: ex.rhs_calls,
+            integral: ex.integral,
+        })
     }
 }
 

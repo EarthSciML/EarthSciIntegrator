@@ -1,6 +1,6 @@
 //! The discrete adjoint (spec/adjoint.md): explicit Runge–Kutta steps
-//! (§4.1), maps and clips (§5.7), the combinators (§5.1–§5.4, §5.8) and the
-//! accumulation of `ū0` and `p̄` (§6).
+//! (§4.1), Rosenbrock steps (§4.2), maps and clips (§5.7), the combinators
+//! (§5.1–§5.4, §5.8) and the accumulation of `ū0` and `p̄` (§6).
 //!
 //! The reverse pass runs macro steps last first. For each it restores the
 //! checkpoint at the macro step's start (spec/tape.md §4: M1 checkpoints
@@ -11,10 +11,11 @@
 //! parameters are tape constants and get no cotangent (§5.8).
 
 use crate::leaf::{LeafMethod, LeafSpec, StepData};
-use crate::operator::MapOperator;
+use crate::operator::{Call, MapOperator, MatrixStorage, MuPair};
 use crate::schedule::{AdjRecord, ForwardRun, RunSpec};
 use crate::{Error, Scalar};
 use earthsci_integrator_solvers::erk::{ErkForm, ExplicitRk};
+use earthsci_integrator_solvers::rosenbrock::{RosForm, RosWork, Rosenbrock};
 
 /// The functional and its gradient.
 #[derive(Debug, Clone)]
@@ -43,6 +44,9 @@ impl<T: Scalar> RunSpec<T> {
                 .map(|c| &c.u)
                 .ok_or_else(|| Error::Run(format!("no state at observation time {tau}")))?;
             j += f.phi(u);
+        }
+        if f.integral {
+            j += run.integral;
         }
         Ok(j)
     }
@@ -86,7 +90,7 @@ impl<T: Scalar> RunSpec<T> {
             let mut u = cp.u.clone();
             let mut persist = cp.leaves.clone();
             let mut recs = Vec::new();
-            let ((_, _), _) = self.macro_step(
+            self.macro_step(
                 k,
                 &mut u,
                 &mut persist,
@@ -101,7 +105,7 @@ impl<T: Scalar> RunSpec<T> {
                 match rec {
                     AdjRecord::Leaf { leaf, steps } => {
                         let l = &self.schedule.leaves[*leaf];
-                        leaf_adjoint(l, steps, &mut lam, &mut pbar, &bound);
+                        leaf_adjoint(l, steps, &mut lam, &mut pbar, &bound)?;
                     }
                     AdjRecord::Map {
                         map,
@@ -186,8 +190,17 @@ fn leaf_adjoint<T: Scalar>(
     lam: &mut [f64],
     pbar: &mut [f64],
     bound: &[bool],
-) {
+) -> Result<(), Error> {
     let mut l: Vec<T> = lam.iter().map(|&x| T::from_f64(x)).collect();
+    // A Rosenbrock leaf refactors W at each step's u_n, which reproduces the
+    // forward factorization bit for bit (spec/adjoint.md §3, `solve_Wt`).
+    let mut rw = match &leaf.method {
+        LeafMethod::Ros(m, ls) => Some(
+            m.workspace::<T>(l.len(), leaf.structure, *ls)
+                .map_err(|e| Error::Config(format!("leaf {}: {e}", leaf.id)))?,
+        ),
+        LeafMethod::Erk(_) => None,
+    };
     for st in steps.iter().rev() {
         // The clip after the step: λ ← m ⊙ λ, zero on the clipped DOFs (§5.7).
         if let Some(clipped) = &st.clip {
@@ -199,12 +212,30 @@ fn leaf_adjoint<T: Scalar>(
             // A tiny stop step taken without computing it: the identity.
             continue;
         }
-        let LeafMethod::Erk(m) = &leaf.method;
-        let pc = erk_adjoint_step(leaf, m, st, &mut l);
+        let pc = match (&leaf.method, rw.as_mut()) {
+            (LeafMethod::Erk(m), _) => erk_adjoint_step(leaf, m, st, &mut l),
+            (LeafMethod::Ros(m, _), Some(w)) => ros_adjoint_step(leaf, m, w, st, &mut l)?,
+            (LeafMethod::Ros(..), None) => unreachable!("workspace made above"),
+        };
         accumulate(pbar, &pc, bound);
     }
     for (a, x) in lam.iter_mut().zip(&l) {
         *a = x.to_f64();
+    }
+    Ok(())
+}
+
+/// `y += c·g` with `g = ∇ψ` the integrand's gradient (`w` on its DOFs):
+/// the cotangent the integrated auxiliary state `q` sends into a stage
+/// state, `c` being the stage cotangent of `q` (spec/adjoint.md §2.1).
+fn add_psi_grad<T: Scalar>(y: &mut [T], leaf: &LeafSpec<T>, c: f64) {
+    if let Some((dofs, w)) = &leaf.integrand {
+        if c != 0.0 {
+            let v = T::from_f64(c * w);
+            for &j in dofs {
+                y[j] += v;
+            }
+        }
     }
 }
 
@@ -254,12 +285,10 @@ pub fn erk_adjoint_step<T: Scalar>(
                 let ti = if i == 0 { st.tk1 } else { t + c[i] * h };
                 let mut si = vec![T::zero(); n];
                 leaf.vjp_u(&mut si, &st.y[i], p, ti, &kappa);
+                // The integral term: q_{n+1} = q_n + Σ_i (h b_i) ψ(U_i), q̄ = 1.
+                add_psi_grad(&mut si, leaf, h * b[i]);
                 let mut pc = vec![0.0; np];
-                if leaf
-                    .ops
-                    .iter()
-                    .all(|o| o.provides(crate::operator::Call::VjpP))
-                {
+                if leaf.has_vjp_p() {
                     leaf.vjp_p(&mut pc, &st.y[i], p, ti, &kappa);
                 }
                 sigma[i] = Some(si);
@@ -278,21 +307,29 @@ pub fn erk_adjoint_step<T: Scalar>(
             // ū^(j) = Σ_i α_ij ū^(i) + J(u^(j))ᵀ v_j with v_j = Σ_i (h β_ij) ū^(i).
             let mut ubar: Vec<Vec<T>> = vec![vec![T::zero(); n]; s + 1];
             ubar[s].copy_from_slice(lam);
+            // The integral term's cotangents q̄^(j): q̄^(s) = 1, and
+            // q̄^(j) = Σ_i α_ij q̄^(i); ū^(j) gains (Σ_i h β_ij q̄^(i)) ∇ψ.
+            let mut qbar = vec![0.0f64; s + 1];
+            qbar[s] = 1.0;
             let mut pcs: Vec<Option<Vec<f64>>> = vec![None; s];
             for j in (0..s).rev() {
                 let mut aj = vec![T::zero(); n];
                 let mut vj = vec![T::zero(); n];
                 let mut any_v = false;
+                let mut qv = 0.0;
                 for i in j + 1..=s {
                     let (al, be) = (alpha[i - 1][j], beta[i - 1][j]);
                     if al != 0.0 {
                         axpy(&mut aj, al, &ubar[i]);
+                        qbar[j] += al * qbar[i];
                     }
                     if be != 0.0 {
                         axpy(&mut vj, h * be, &ubar[i]);
+                        qv += (h * be) * qbar[i];
                         any_v = true;
                     }
                 }
+                add_psi_grad(&mut aj, leaf, qv);
                 if any_v {
                     let tj = t + c[j] * h;
                     let mut sj = vec![T::zero(); n];
@@ -301,11 +338,7 @@ pub fn erk_adjoint_step<T: Scalar>(
                         *a += x;
                     }
                     let mut pc = vec![0.0; np];
-                    if leaf
-                        .ops
-                        .iter()
-                        .all(|o| o.provides(crate::operator::Call::VjpP))
-                    {
+                    if leaf.has_vjp_p() {
                         leaf.vjp_p(&mut pc, &st.y[j], p, tj, &vj);
                     }
                     pcs[j] = Some(pc);
@@ -316,6 +349,193 @@ pub fn erk_adjoint_step<T: Scalar>(
             sum_ascending(pcs, np)
         }
     }
+}
+
+/// Whether a Rosenbrock leaf forms parameter cotangents: every operator
+/// provides `vjp_p` and `hess_p`, and `ft_vjp_p` where `f_t` is formed.
+fn ros_has_p_adjoint<T: Scalar>(leaf: &LeafSpec<T>, forms_ft: bool) -> bool {
+    leaf.ops.iter().all(|o| {
+        o.provides(Call::VjpP)
+            && o.provides(Call::HessP)
+            && (!forms_ft || !o.depends_on_t() || o.provides(Call::FtVjpP))
+    })
+}
+
+/// `x ← c·x` with the coefficient rounded to `T`.
+fn scale<T: Scalar>(x: &mut [T], c: f64) {
+    let c = T::from_f64(c);
+    for a in x.iter_mut() {
+        *a *= c;
+    }
+}
+
+/// One Rosenbrock adjoint step (spec/adjoint.md §4.2): maps `λ_{n+1}` (in
+/// `lam`) to `λ_n` and returns the step's `p̄` contribution.
+///
+/// `W` is refactored at the step's `u_n` exactly as the forward step formed
+/// it, so `solve_Wt` uses the forward factorization (spec/adjoint.md §3).
+/// Stage terms accumulate in ascending stage order (§6.4): `λ_n = λ_{n+1} +
+/// Σ_i σ_i`, then `hess_u`, then `ft_vjp_u`; `p̄` likewise.
+///
+/// - Transformed form: seed `k̄_i = b_i λ_{n+1}`; for `i = s … 1`,
+///   `μ_i = Ŵ⁻ᵀ k̄_i`, `σ_i = J(U_i)ᵀ μ_i` at `t_n + c_i h`, and for `j < i`,
+///   `k̄_j += A_ij σ_i + (C_ij/h) μ_i` (the `A` term first). `hess_u` takes
+///   the pairs `(μ_i, k_i)` and `ft_vjp_u` takes `ν = Σ_i (h d_i) μ_i`, both
+///   at `(u_n, t_n)`.
+/// - Rosenbrock23, with `Ŵ = I − γJ = γ M` (`γ = h d`, `M = σI − J`) so
+///   `Ŵ⁻ᵀ v = (M⁻ᵀ v)·σ`: `k̄_2 = h λ_{n+1}`, `μ_2 = Ŵ⁻ᵀ k̄_2`,
+///   `σ_2 = J(U_2)ᵀ μ_2` at `t_n + h/2`; `k̄_1 = (k̄_2 − μ_2) + (h/2) σ_2`,
+///   `μ_1 = Ŵ⁻ᵀ k̄_1`, `σ_1 = J(u_n)ᵀ μ_1` at the time `f_0` was evaluated
+///   (`t_n`, or the previous step's end when it was the stored value, §3.3);
+///   `hess_u` takes `(μ_1, γ k_1)` and `(μ_2, γ (k_2 − k_1))`, and
+///   `ft_vjp_u` takes `ν = γ μ_1`.
+pub fn ros_adjoint_step<T: Scalar>(
+    leaf: &LeafSpec<T>,
+    m: &Rosenbrock,
+    w: &mut RosWork<T>,
+    st: &StepData<T>,
+    lam: &mut [T],
+) -> Result<Vec<f64>, Error> {
+    let n = lam.len();
+    let np = st.p.len();
+    let (t, h, p) = (st.t, st.h, st.p.as_slice());
+    let un = &st.y[0];
+    let mut jac = |o: &mut MatrixStorage<T>, uu: &[T], tt: f64| leaf.jac(o, uu, p, tt);
+    let sigma = m.factor_w(w, &mut jac, un, t, h).ok_or_else(|| {
+        Error::Run(format!(
+            "adjoint: leaf {}: W is singular at the step from t = {t}",
+            leaf.id
+        ))
+    })?;
+    let forms_ft = leaf.forms_ft();
+    let with_p = ros_has_p_adjoint(leaf, forms_ft);
+    let mut pc = vec![0.0; np];
+    match &m.form {
+        RosForm::Transformed {
+            a, cmat, c, d, b, ..
+        } => {
+            let s = m.stages;
+            let mut kbar = vec![vec![T::zero(); n]; s];
+            for (kb, &bi) in kbar.iter_mut().zip(b) {
+                if bi != 0.0 {
+                    axpy(kb, bi, lam);
+                }
+            }
+            // The integral term (spec/adjoint.md §2.1): with q̄ = 1, k̄_q,i is
+            // seeded b_i; Ŵ_augᵀ = [[Ŵᵀ, −g], [0, σ]] gives μ_q,i = k̄_q,i/σ
+            // and μ_i = Ŵ⁻ᵀ(k̄_i + μ_q,i g); σ_i gains μ_q,i g, and k̄_q,j
+            // gains (C_ij/h) μ_q,i. ψ is linear and t- and p-independent, so
+            // it adds nothing to the second-order and f_t terms.
+            let integ = leaf.integrand.is_some();
+            let mut kq: Vec<f64> = b.to_vec();
+            let mut mu = vec![Vec::new(); s];
+            let mut sig = vec![Vec::new(); s];
+            let mut pcs: Vec<Option<Vec<f64>>> = vec![None; s];
+            for i in (0..s).rev() {
+                let mut mui = std::mem::take(&mut kbar[i]);
+                let muq = if integ { kq[i] / sigma } else { 0.0 };
+                add_psi_grad(&mut mui, leaf, muq);
+                w.lu.solve_t(&mut mui);
+                let ti = t + c[i] * h;
+                let mut si = vec![T::zero(); n];
+                leaf.vjp_u(&mut si, &st.y[i], p, ti, &mui);
+                add_psi_grad(&mut si, leaf, muq);
+                for j in 0..i {
+                    if a[i][j] != 0.0 {
+                        axpy(&mut kbar[j], a[i][j], &si);
+                    }
+                    if cmat[i][j] != 0.0 {
+                        axpy(&mut kbar[j], cmat[i][j] / h, &mui);
+                        kq[j] += (cmat[i][j] / h) * muq;
+                    }
+                }
+                if with_p {
+                    let mut pi = vec![0.0; np];
+                    leaf.vjp_p(&mut pi, &st.y[i], p, ti, &mui);
+                    pcs[i] = Some(pi);
+                }
+                mu[i] = mui;
+                sig[i] = si;
+            }
+            for si in &sig {
+                for (l, &x) in lam.iter_mut().zip(si) {
+                    *l += x;
+                }
+            }
+            let pairs: Vec<MuPair<'_, T>> = (0..s).map(|i| (&mu[i][..], &st.k[i][..])).collect();
+            leaf.hess_u(lam, un, p, t, &pairs);
+            let mut nu = None;
+            if forms_ft {
+                let mut v = vec![T::zero(); n];
+                for (i, &di) in d.iter().enumerate() {
+                    if di != 0.0 {
+                        axpy(&mut v, h * di, &mu[i]);
+                    }
+                }
+                leaf.ft_vjp_u(lam, un, p, t, &v);
+                nu = Some(v);
+            }
+            if with_p {
+                pc = sum_ascending(pcs, np);
+                leaf.hess_p(&mut pc, un, p, t, &pairs);
+                if let Some(v) = &nu {
+                    leaf.ft_vjp_p(&mut pc, un, p, t, v);
+                }
+            }
+        }
+        RosForm::Ode23s { d, .. } => {
+            let gam = h * d;
+            let t2 = t + h / 2.0;
+            // μ_2 = Ŵ⁻ᵀ (h λ_{n+1}).
+            let mut kbar2 = vec![T::zero(); n];
+            axpy(&mut kbar2, h, lam);
+            // The integral term (spec/adjoint.md §2.1), with Ŵ_augᵀ =
+            // [[Ŵᵀ, −γg], [0, 1]]: μ_q,2 = k̄_q,2 = h, μ_2 = Ŵ⁻ᵀ(k̄_2 + γ h g),
+            // σ_2 gains h g; then k̄_q,1 = k̄_q,2 − μ_q,2 = 0, so stage 1
+            // gains nothing.
+            let muq2 = if leaf.integrand.is_some() { h } else { 0.0 };
+            let mut mu2 = kbar2.clone();
+            add_psi_grad(&mut mu2, leaf, gam * muq2);
+            w.lu.solve_t(&mut mu2);
+            scale(&mut mu2, sigma);
+            let mut s2 = vec![T::zero(); n];
+            leaf.vjp_u(&mut s2, &st.y[1], p, t2, &mu2);
+            add_psi_grad(&mut s2, leaf, muq2);
+            // k̄_1 = (k̄_2 − μ_2) + (h/2) σ_2; μ_1 = Ŵ⁻ᵀ k̄_1.
+            let half = T::from_f64(h / 2.0);
+            let mut mu1: Vec<T> = (0..n).map(|j| (kbar2[j] - mu2[j]) + half * s2[j]).collect();
+            w.lu.solve_t(&mut mu1);
+            scale(&mut mu1, sigma);
+            let mut s1 = vec![T::zero(); n];
+            leaf.vjp_u(&mut s1, un, p, st.tk1, &mu1);
+            for (l, (&x1, &x2)) in lam.iter_mut().zip(s1.iter().zip(&s2)) {
+                *l += x1;
+                *l += x2;
+            }
+            let g = T::from_f64(gam);
+            let w1: Vec<T> = st.k[0].iter().map(|&k1| g * k1).collect();
+            let w2: Vec<T> = st.k[1]
+                .iter()
+                .zip(&st.k[0])
+                .map(|(&k2, &k1)| g * (k2 - k1))
+                .collect();
+            let pairs: [MuPair<'_, T>; 2] = [(&mu1, &w1), (&mu2, &w2)];
+            leaf.hess_u(lam, un, p, t, &pairs);
+            let nu: Option<Vec<T>> = forms_ft.then(|| mu1.iter().map(|&x| g * x).collect());
+            if let Some(v) = &nu {
+                leaf.ft_vjp_u(lam, un, p, t, v);
+            }
+            if with_p {
+                leaf.vjp_p(&mut pc, un, p, st.tk1, &mu1);
+                leaf.vjp_p(&mut pc, &st.y[1], p, t2, &mu2);
+                leaf.hess_p(&mut pc, un, p, t, &pairs);
+                if let Some(v) = &nu {
+                    leaf.ft_vjp_p(&mut pc, un, p, t, v);
+                }
+            }
+        }
+    }
+    Ok(pc)
 }
 
 fn sum_ascending(pcs: Vec<Option<Vec<f64>>>, np: usize) -> Vec<f64> {
