@@ -10,7 +10,30 @@ A run configuration says how to integrate one `.esm` model: how its right-hand s
 - `esm_integrator` is the version of this spec, independent of the esm format version. An implementation refuses a version it does not implement.
 - `model` is the path of the `.esm` document, resolved relative to the run config's own location. In conformance cases only, `toy:<problem>` names a hand-written toy problem instead (spec/toy-problems.md §2).
 - **Precedence** (architecture §3.1). The run config's `model` is authoritative for a run. If the `.esm` also carries `solver.external` (U1), the two must name each other, or the planner refuses. The planner never writes `solver.external` into derived documents. Solver hints on mounted component files are dropped at assembly (U1), so per-component tolerances are restated here.
+- `time` is the run interval (§1.1).
 - Unknown keys are errors at every level. There is no extension mechanism in 0.1.0.
+
+### 1.1 The run interval: `time`
+
+A run integrates over an interval $[t_0, t_f]$. Three sources may give it. In order of preference (D60):
+
+1. **The caller**: an argument of the API call that plans or runs the model, or a command-line option of a tool that does.
+2. **The run config**: `time`.
+3. **The model**: the `.esm` document's `solver.time_span` (U16, pending upstream).
+
+The most preferred source that gives an interval gives all of it; start and end are never taken from different sources. If none gives one, the planner refuses (§8 rule 14).
+
+`time` is `{"start": T, "end": T}` or `{"start": T, "duration": D}`. `D` is a number of seconds or a `"<number> <unit>"` string (§2.2), but not a parameter name: the interval is fixed when the plan is made, and a parameter can be overridden or differentiated later. `T` is a **time**, either:
+- a number of seconds of model time; or
+- an RFC 3339 timestamp in UTC (`"2019-07-01T00:00:00Z"`), meaning the seconds since `1970-01-01T00:00:00Z` with no leap seconds (POSIX time).
+
+A timestamp fixes model time zero at `1970-01-01T00:00:00Z`, so timestamps suit only models whose time is POSIX time, as EarthSciMLBase's `DateTime` intervals are; a model whose $t = 0$ is its own start takes numbers. `start` and `end` are both numbers or both timestamps; the schema refuses a mix. A timestamp names a real instant: the schema bounds each field and has no second 60 (no leap seconds), and the planner refuses a day the month does not have (§8 rule 14).
+
+The end must be after the start (§8 rule 14). The caller gives a time the same way. `solver.time_span` is in the document's time units, which the planner converts to seconds; if the document's independent variable has no units, its numbers are taken as seconds and a timestamp there is refused (§8 rule 14).
+
+Times derived from the interval count from model time zero, not from $t_0$: `hit_multiples` (§5) and `every` firing times (§4.9). With timestamps they are therefore aligned to UTC, so a `hit_multiples` of `"1 h"` falls on the hour. The one exception is a fixed `step.dt`, whose macro steps start at $t_0$ (§5).
+
+The planner resolves the interval afresh for every run, from the sources that run has, and records it in seconds in the plan (spec/plan.md §3). The plan does not record which source gave it, so the same interval always gives the same plan. A plan is stale when the interval resolved for a run differs from the one it records.
 
 ## 2. Conventions
 
@@ -148,7 +171,7 @@ WRF's RK3 (Wicker–Skamarock: Δ/3, Δ/2, Δ) on `slow`, with `fast` advanced b
 ## 5. The macro step: `step`
 
 At most one of:
-- **`dt`**: a fixed macro step. Every tstop must fall on a multiple of it.
+- **`dt`**: a fixed macro step. The macro steps start at $t_0, t_0 + \texttt{dt}, \ldots$, and every tstop must fall on one of them.
 - **`limits`**: Δ is the minimum of the limits evaluated at the macro step's start state, and the distance to the next tstop.
 - **Neither**: allowed only when the schedule's root is a single adaptive `leaf` or `coupled` node (D49). That node's accepted steps are the macro steps; it steps adaptively under its own `control` and lands exactly on every tstop. Omitting `step` entirely is the same as `{}`.
 
@@ -158,7 +181,7 @@ Then, for both:
   - `output`, `restart`: the output and restart times;
   - `events`: preset and periodic event times of the model.
 
-  The observation times of the adjoint functional (spec/adjoint.md §2.1) are always tstops, whether or not `hit` names their source. Under `limits` or with neither key, `every` firing times (§4.9) are tstops too. The interval is `(t₀, t_f]`, so a boundary at `t_f` is hit (architecture §7.5).
+  The observation times of the adjoint functional (spec/adjoint.md §2.1) are always tstops, whether or not `hit` names their source. Under `limits` or with neither key, `every` firing times (§4.9) are tstops too. The interval is `(t₀, t_f]`, from §1.1, so a boundary at `t_f` is hit (architecture §7.5).
 - `hit_multiples` additionally makes every multiple of a duration a tstop.
 - `resolution` floors Δ to a multiple of it, and Δ is never less than one `resolution` unless a tstop is closer.
 - **Ties.** Each macro step records the reason for its size: the first source achieving the minimum, taking the entries of `limits` in the order listed (a `{"max": ...}` entry counts at its own position in the list), then the next tstop. The reason is deterministic, so two implementations agree on it (PISM bugs.md #11). Adaptive `subcycle` substeps (§4.8) record their reason by the same rule over the subcycle's `limits`, then the time remaining.
@@ -211,11 +234,12 @@ The schema checks structure. The planner additionally refuses, naming the offend
 6. an `imex` partition that leaves a term in neither part or in both;
 7. duplicate node ids;
 8. a `hold: "tendency"` `every` whose child is not a single leaf;
-9. a tstop that is not a multiple of a fixed `step.dt` (`every` firing times are not tstops then, §4.9);
+9. a tstop that is not $t_0$ plus a multiple of a fixed `step.dt` (`every` firing times are not tstops then, §4.9);
 10. a precision role that contradicts a declared `element_type`, or `rhs` below `state`;
 11. a `wrt` entry that matches nothing, or names a parameter bound by `bind_dt`;
 12. a `step` with neither `dt` nor `limits` whose schedule root is not a single adaptive `leaf` or `coupled` node (§5);
 13. a leaf with `dt` omitted whose method has no error estimate (§4.2);
-14. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
+14. no run interval from any source; one whose end is not after its start; a timestamp naming a day its month does not have; or a timestamp in a model's `solver.time_span` when the model's independent variable has no units (§1.1);
+15. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
 
 Error codes for these refusals are assigned with the planner (M2).
