@@ -2,7 +2,7 @@
   "failed-validation-emitted.json": {
     "keyword": "const",
     "at": [
-      "$.validation[0].passed"
+      "$.validation[1].passed"
     ]
   },
   "implementation-specific-field.json": {

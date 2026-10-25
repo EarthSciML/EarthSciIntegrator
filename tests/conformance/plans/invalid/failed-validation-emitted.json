@@ -47,8 +47,284 @@
     "class": "stiff",
     "source": "reaction_systems"
    },
+   "structure": {
+    "bands": [
+     {
+      "col": "chem.NO",
+      "col_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "row": "chem.NO",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "row": "chem.NO",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.NO2",
+      "col_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "row": "chem.NO2",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "row": "chem.NO2",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "row": "chem.O3",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     }
+    ],
+    "block": {
+     "lu_pattern": [
+      [
+       1,
+       1
+      ],
+      [
+       1,
+       2
+      ],
+      [
+       1,
+       3
+      ],
+      [
+       2,
+       1
+      ],
+      [
+       2,
+       2
+      ],
+      [
+       2,
+       3
+      ],
+      [
+       3,
+       1
+      ],
+      [
+       3,
+       2
+      ],
+      [
+       3,
+       3
+      ]
+     ],
+     "ordering": [
+      1,
+      2,
+      3
+     ],
+     "pattern": [
+      [
+       1,
+       1
+      ],
+      [
+       1,
+       2
+      ],
+      [
+       1,
+       3
+      ],
+      [
+       2,
+       1
+      ],
+      [
+       2,
+       2
+      ],
+      [
+       2,
+       3
+      ],
+      [
+       3,
+       1
+      ],
+      [
+       3,
+       2
+      ],
+      [
+       3,
+       3
+      ]
+     ],
+     "vars": [
+      "chem.NO",
+      "chem.NO2",
+      "chem.O3"
+     ]
+    },
+    "class": "block_diagonal",
+    "depends_on_t": false,
+    "linear_in_u": false
+   },
    "terms": [
-    "chem.reactions"
+    {
+     "contribution": 0,
+     "locality": "pointwise",
+     "provenance": "chem",
+     "summand": 0,
+     "variable": "chem.NO"
+    },
+    {
+     "contribution": 0,
+     "locality": "pointwise",
+     "provenance": "chem",
+     "summand": 1,
+     "variable": "chem.NO"
+    },
+    {
+     "contribution": 0,
+     "locality": "pointwise",
+     "provenance": "chem",
+     "summand": 0,
+     "variable": "chem.NO2"
+    },
+    {
+     "contribution": 0,
+     "locality": "pointwise",
+     "provenance": "chem",
+     "summand": 1,
+     "variable": "chem.NO2"
+    },
+    {
+     "contribution": 0,
+     "locality": "pointwise",
+     "provenance": "chem",
+     "summand": 0,
+     "variable": "chem.O3"
+    },
+    {
+     "contribution": 0,
+     "locality": "pointwise",
+     "provenance": "chem",
+     "summand": 1,
+     "variable": "chem.O3"
+    }
    ],
    "writes": [
     "chem.NO",
@@ -82,9 +358,282 @@
     "class": "nonstiff",
     "source": "gershgorin"
    },
+   "structure": {
+    "bands": [
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       {
+        "args": [
+         "i",
+         3
+        ],
+        "op": "-"
+       },
+       "j",
+       "k"
+      ],
+      "row": "chem.O3",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       {
+        "args": [
+         "i",
+         2
+        ],
+        "op": "-"
+       },
+       "j",
+       "k"
+      ],
+      "row": "chem.O3",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       {
+        "args": [
+         "i",
+         1
+        ],
+        "op": "-"
+       },
+       "j",
+       "k"
+      ],
+      "row": "chem.O3",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "row": "chem.O3",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       {
+        "args": [
+         "i",
+         1
+        ],
+        "op": "+"
+       },
+       "j",
+       "k"
+      ],
+      "row": "chem.O3",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     },
+     {
+      "col": "chem.O3",
+      "col_idx": [
+       {
+        "args": [
+         "i",
+         2
+        ],
+        "op": "+"
+       },
+       "j",
+       "k"
+      ],
+      "row": "chem.O3",
+      "row_idx": [
+       "i",
+       "j",
+       "k"
+      ],
+      "rows": [
+       [
+        1,
+        72
+       ],
+       [
+        1,
+        46
+       ],
+       [
+        1,
+        72
+       ]
+      ]
+     }
+    ],
+    "class": "general",
+    "depends_on_t": true,
+    "linear_in_u": false,
+    "stencil": {
+     "footprint": [
+      [
+       -3,
+       0
+      ],
+      [
+       -2,
+       0
+      ],
+      [
+       -1,
+       0
+      ],
+      [
+       0,
+       0
+      ],
+      [
+       1,
+       0
+      ],
+      [
+       2,
+       0
+      ]
+     ]
+    }
+   },
    "terms": [
-    "advection.lat",
-    "advection.lon"
+    {
+     "contribution": 1,
+     "locality": "stencil",
+     "provenance": "advection",
+     "summand": 0,
+     "variable": "chem.NO"
+    },
+    {
+     "contribution": 1,
+     "locality": "stencil",
+     "provenance": "advection",
+     "summand": 1,
+     "variable": "chem.NO"
+    },
+    {
+     "contribution": 1,
+     "locality": "stencil",
+     "provenance": "advection",
+     "summand": 0,
+     "variable": "chem.NO2"
+    },
+    {
+     "contribution": 1,
+     "locality": "stencil",
+     "provenance": "advection",
+     "summand": 1,
+     "variable": "chem.NO2"
+    },
+    {
+     "contribution": 1,
+     "locality": "stencil",
+     "provenance": "advection",
+     "summand": 0,
+     "variable": "chem.O3"
+    },
+    {
+     "contribution": 1,
+     "locality": "stencil",
+     "provenance": "advection",
+     "summand": 1,
+     "variable": "chem.O3"
+    }
    ],
    "writes": [
     "chem.NO",
@@ -139,7 +688,9 @@
      "reltol": 0.0001
     },
     "id": "transport",
-    "leaf": "transport"
+    "leaf": [
+     "transport"
+    ]
    },
    {
     "alg": "Rosenbrock23",
@@ -157,7 +708,9 @@
     },
     "id": "chemistry",
     "jacobian": "symbolic",
-    "leaf": "chemistry",
+    "leaf": [
+     "chemistry"
+    ],
     "linsolve": {
      "block_lu": {
       "pivot": false
@@ -179,17 +732,16 @@
  },
  "validation": [
   {
+   "check": "rhs_sum",
+   "passed": true
+  },
+  {
    "check": "band_model",
    "operator": "chemistry",
    "passed": false
   },
   {
    "check": "non_empty",
-   "operator": "chemistry",
-   "passed": true
-  },
-  {
-   "check": "rhs_sum",
    "operator": "chemistry",
    "passed": true
   }
