@@ -141,7 +141,7 @@ The documents are in [`../tests/conformance/toys/`](../tests/conformance/toys/),
 - `adjoint` is removed and the only check is `toy_equivalence` (§4.3): planned operators do not yet provide `vjp_p` or second-order calls (spec/operator-interface.md §8.3);
 - `layout` lists the variables of §4.1's last column.
 
-Left out: `source_decay_map` (maps), and every case with a Rosenbrock leaf on a time-dependent problem (`forced_decay`, `photostationary_cells`), since planned operators have no `ft` at M2 (spec/plan.md §10 item 4). That leaves 41 of the 51 M1 cases.
+Left out: `source_decay_map` (maps), and every case with a Rosenbrock leaf on a time-dependent problem (`forced_decay`, `photostationary_cells`), since planned operators have no `ft` at M2 (spec/plan.md §10 item 4; U17 restores them). That leaves 41 of the 51 M1 cases.
 
 ### 4.3 The `toy_equivalence` check
 

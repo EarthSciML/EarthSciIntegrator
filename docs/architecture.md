@@ -604,6 +604,8 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U13 | EarthSciAST (Julia) | Traceable per-operator StableHLO fragments (`operator_ir`, `emit_fragment`), f32 emission, fixed-order folds | M5g |
 | U14 | EarthSciAST | Numerical vs semantic precision: an omitted `element_type` is unspecified, so the run config may choose (D29) | M5g, M7 |
 | U15 | EarthSciAST (Julia) | Execute recurrences in the native compiler and the StableHLO emitter | M7 |
+| U16 | EarthSciAST | `solver.time_span`, the run interval a document asks for (D60); released in v0.4.0 | M2 |
+| U17 | EarthSciASTDiff | Time-derivative bands (∂f/∂t) specified and golden-gated, for Rosenbrock's `f_t` on time-dependent operators; the code exists on `main` | M3 |
 
 **Prerequisites the drafts uncovered:**
 - **esm 1.3.0.** U01 and U14 ship in esm 1.3.0. reseact (esm 1.0.0), eqice and EqWeFiC (1.0.0/1.1.0) must move to 1.3.0 before they can use `solver.external` or an f32 choice.
