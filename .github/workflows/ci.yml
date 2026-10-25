@@ -22,12 +22,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install "jsonschema>=4.18"
-      - run: python tests/conformance/validate_schemas.py
-      - name: M1 cases are up to date with their generator
+      # earthsci-ast is EarthSciAST's Python binding, pinned to the release the
+      # M2 fixtures are written against (spec/plan.md §0.2): tier 0 loads,
+      # validates and flattens every .esm under tests/conformance with it.
+      - run: pip install "jsonschema>=4.18" "earthsci-ast==0.4.0"
+      - run: python tests/conformance/validate_schemas.py --require-esm
+      - name: M1 and M2 cases are up to date with their generators
         run: |
           python tests/conformance/m1/make_cases.py
-          git diff --exit-code tests/conformance/m1/cases.json
+          python tests/conformance/m2/make_cases.py
+          git diff --exit-code tests/conformance/m1/cases.json tests/conformance/m2/cases.json
 
   julia:
     name: Julia ${{ matrix.version }}

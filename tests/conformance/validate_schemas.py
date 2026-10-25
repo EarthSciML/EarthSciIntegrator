@@ -11,11 +11,20 @@ anyOf, which may also lie on the path to one of them, because a branch for
 another node kind fails at the node itself. An error anywhere else means the
 fixture has a second defect.
 
-Usage: python tests/conformance/validate_schemas.py
+It also checks the M2 planner fixtures' structure (spec/plan.md §9,
+tests/conformance/README.md): every case run config validates and names a
+model that exists, every case has a section in its fixture's expected.md,
+every refusal fixture's code is listed in spec/planner-errors.json, hand-written
+expected plans are canonical JSON, and every .esm document under
+tests/conformance loads, validates and flattens with EarthSciAST 0.4.0
+(the earthsci-ast Python package; with --require-esm a missing package fails).
+
+Usage: python tests/conformance/validate_schemas.py [--require-esm]
 Needs jsonschema >= 4.18 (for the `referencing` registry).
 """
 
 import json
+from decimal import Decimal
 import sys
 from pathlib import Path
 
@@ -38,9 +47,18 @@ SUITES = {
 # marked required.
 DOCUMENTS = [
     ("tests/conformance/m1/cases.json", "cases.schema.json", True),
+    ("tests/conformance/m2/cases.json", "cases.schema.json", True),
     ("spec/tableaus/*.json", "tableau.schema.json", False),
     ("tests/conformance/m1/reference/*.json", "result.schema.json", False),
+    ("spec/planner-errors.json", "planner-errors.schema.json", True),
+    ("tests/conformance/plans/fixtures/*/*.run.json", "run-config.schema.json", True),
+    ("tests/conformance/plans/refusals/*/run.json", "run-config.schema.json", True),
+    ("tests/conformance/plans/fixtures/*/*.expected-plan.json", "plan.schema.json", False),
+    ("tests/conformance/plans/fixtures/*/*.golden/plan.json", "plan.schema.json", False),
 ]
+PLAN_FIXTURES = FIXTURES / "plans" / "fixtures"
+REFUSALS = FIXTURES / "plans" / "refusals"
+ESM_VERSION = "0.4.0"  # EarthSciAST, esm 1.3.0 (spec/plan.md §0.2)
 
 
 def load(path):
@@ -82,8 +100,143 @@ def check_invalid(errors, expected):
     return None
 
 
+def jcs(value):
+    """RFC 8785 canonical JSON (spec/plan.md §2.1)."""
+    if isinstance(value, dict):
+        keys = sorted(value, key=lambda k: k.encode("utf-16-be"))
+        return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + jcs(value[k]) for k in keys) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(jcs(v) for v in value) + "]"
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, int):
+        return str(value)
+    return jcs_number(value)
+
+
+def jcs_number(x):
+    """ECMAScript Number.prototype.toString for a finite float."""
+    if x == 0:
+        return "0"
+    if x == int(x) and abs(x) < 1e21:
+        return str(int(x))
+    d = Decimal(repr(x))
+    digits = "".join(map(str, d.as_tuple().digits)).rstrip("0") or "0"
+    k, n = len(digits), d.adjusted() + 1
+    sign = "-" if x < 0 else ""
+    if k <= n <= 21:
+        return sign + digits + "0" * (n - k)
+    if 0 < n <= 21:
+        return sign + digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return sign + "0." + "0" * (-n) + digits
+    e = n - 1
+    exp = ("+" if e > 0 else "-") + str(abs(e))
+    return sign + digits[0] + ("." + digits[1:] if k > 1 else "") + "e" + exp
+
+
+def pointer_parent_resolves(doc, pointer):
+    """True when every token of the JSON pointer but the last resolves in doc."""
+    if pointer == "":
+        return True
+    if not pointer.startswith("/"):
+        return False
+    node = doc
+    for token in pointer[1:].split("/")[:-1]:
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(node, list) and token.isdigit() and int(token) < len(node):
+            node = node[int(token)]
+        elif isinstance(node, dict) and token in node:
+            node = node[token]
+        else:
+            return False
+    return True
+
+
+def check_planner_fixtures(failures):
+    """Structure of the M2 planner fixtures (spec/plan.md §9). Returns files checked."""
+    checked = 0
+    codes = [c["code"] for c in load(ROOT / "spec" / "planner-errors.json")["codes"]]
+    if len(codes) != len(set(codes)):
+        failures.append("spec/planner-errors.json: duplicate codes")
+    for folder in sorted(p for p in PLAN_FIXTURES.iterdir() if p.is_dir()):
+        rel = folder.relative_to(ROOT)
+        expected = folder / "expected.md"
+        text = expected.read_text(encoding="utf-8") if expected.exists() else None
+        if text is None:
+            failures.append(f"{rel}: no expected.md")
+        cases = sorted(folder.glob("*.run.json"))
+        if not cases:
+            failures.append(f"{rel}: no <case>.run.json")
+        for case in cases:
+            checked += 1
+            name = case.name[: -len(".run.json")]
+            if text is not None and f"\n## {name}\n" not in text:
+                failures.append(f"{rel}/expected.md: no section '## {name}'")
+            model = load(case)["model"]
+            if not (case.parent / model).is_file():
+                failures.append(f"{case.relative_to(ROOT)}: model '{model}' does not exist")
+        for plan in sorted(folder.glob("*.expected-plan.json")):
+            checked += 1
+            raw = plan.read_text(encoding="utf-8")
+            if jcs(json.loads(raw)) != raw:
+                failures.append(f"{plan.relative_to(ROOT)}: not RFC 8785 canonical JSON")
+    expected_codes = load(REFUSALS / "expected-codes.json")
+    dirs = {p.name for p in REFUSALS.iterdir() if p.is_dir()}
+    for name in sorted(dirs - set(expected_codes)):
+        failures.append(f"{(REFUSALS / name).relative_to(ROOT)}: no entry in expected-codes.json")
+    for name, entry in sorted(expected_codes.items()):
+        checked += 1
+        run = REFUSALS / name / "run.json"
+        if name not in dirs or not run.is_file():
+            failures.append(f"tests/conformance/plans/refusals/expected-codes.json: '{name}' has no run.json")
+            continue
+        if entry["code"] not in codes:
+            failures.append(f"{run.relative_to(ROOT)}: code '{entry['code']}' is not in spec/planner-errors.json")
+        if not pointer_parent_resolves(load(run), entry["at"]):
+            failures.append(f"{run.relative_to(ROOT)}: pointer '{entry['at']}' does not lead into the run config")
+        model = load(run)["model"]
+        if not model.startswith("toy:") and not (run.parent / model).is_file():
+            failures.append(f"{run.relative_to(ROOT)}: model '{model}' does not exist")
+    return checked
+
+
+def check_esm_documents(failures, require):
+    """Every .esm under tests/conformance loads, validates and flattens with EarthSciAST."""
+    paths = sorted(FIXTURES.rglob("*.esm"))
+    try:
+        import earthsci_ast
+    except ImportError:
+        if require:
+            failures.append(f"earthsci_ast is not installed (pip install earthsci-ast=={ESM_VERSION})")
+        else:
+            print(f"SKIP {len(paths)} .esm documents: earthsci_ast is not installed")
+        return 0
+    version = getattr(earthsci_ast, "__version__", "?")
+    if version != ESM_VERSION:
+        message = f"earthsci_ast {version} is installed; the fixtures are pinned to {ESM_VERSION}"
+        if require:
+            failures.append(message)
+        else:
+            print(f"SKIP {len(paths)} .esm documents: {message}")
+        return 0
+    for path in paths:
+        rel = path.relative_to(ROOT)
+        try:
+            result = earthsci_ast.validate_path(str(path))
+            if not result.is_valid:
+                failures.append(f"{rel}: invalid: {result.schema_errors or result.structural_errors}")
+                continue
+            earthsci_ast.flatten(earthsci_ast.load_path(str(path)))
+        except Exception as e:  # noqa: BLE001 - report every load failure
+            failures.append(f"{rel}: {type(e).__name__}: {str(e)[:300]}")
+    return len(paths)
+
+
 def main():
+    require_esm = "--require-esm" in sys.argv[1:]
     schemas = {p.name: load(p) for p in sorted(SCHEMAS.glob("*.schema.json"))}
+
     registry = Registry().with_resources(
         (s["$id"], Resource.from_contents(s)) for s in schemas.values()
     )
@@ -144,6 +297,9 @@ def main():
             if errors:
                 best = min(errors, key=lambda e: len(list(e.absolute_path)))
                 failures.append(f"{path.relative_to(ROOT)}: should validate, but {best.json_path}: {best.message}")
+
+    checked += check_planner_fixtures(failures)
+    checked += check_esm_documents(failures, require_esm)
 
     for f in failures:
         print("FAIL", f)
