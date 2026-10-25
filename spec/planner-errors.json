@@ -57,7 +57,6 @@
     {"code": "partition_conflict", "rule": null, "where": "spec/plan.md §7.4", "meaning": "partition.shards entries for two operators of one leaf disagree."},
     {"code": "validation_rhs_sum_failed", "rule": null, "where": "spec/plan.md §8.1", "meaning": "The operators' right-hand sides do not sum to the model's."},
     {"code": "validation_band_model_failed", "rule": null, "where": "spec/plan.md §8.1", "meaning": "An operator's band Jacobian disagrees with the independent Jacobian."},
-    {"code": "validation_empty_operator", "rule": null, "where": "spec/plan.md §8.1", "meaning": "An operator has no term, or no band although a term reads a state."},
-    {"code": "band_values_missing", "rule": null, "where": "spec/plan.md §8.2, D76", "meaning": "Rust: no Julia-written band-value file for the band_model check."}
+    {"code": "validation_empty_operator", "rule": null, "where": "spec/plan.md §8.1", "meaning": "An operator has no term, or no band although a term reads a state."}
   ]
 }

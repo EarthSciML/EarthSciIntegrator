@@ -31,7 +31,7 @@ plans/fixtures/<fixture>/
   <case>.golden/                 the golden, once the Julia planner writes it (stage 2):
     plan.json
     derived/*.esm
-    validation/<operator>.bandvalues.json    Julia's band values, the Rust planner's input (spec/plan.md §8.2)
+    validation/<operator>.bandvalues.json    Julia's ForwardDiff band values; the harness compares Rust's against them (spec/plan.md §8.2)
 ```
 
 **Goldens.** The Julia planner writes `<case>.golden/`; a reviewer checks it against `expected.md` (and `<case>.expected-plan.json` where there is one) before it is checked in; the Rust planner must then write the same `plan.json` and `derived/*.esm` byte for byte (spec/plan.md §9). `expected.md` describes contents, not bytes: the terms and their provenance and locality, each operator's locality, radius, `writes`, `reads`, structure and stiffness, the resolved schedule, step, partition, precision, derived documents and validation entries.
