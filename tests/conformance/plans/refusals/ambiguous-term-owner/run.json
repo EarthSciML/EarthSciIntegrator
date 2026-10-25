@@ -1,0 +1,31 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../fixtures/cross_component_term/model.esm",
+  "operators": {
+    "chemistry": {
+      "select": {
+        "components": "Chem"
+      }
+    },
+    "deposition": {
+      "select": {
+        "components": "Dep"
+      }
+    }
+  },
+  "step": {
+    "dt": 60
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "chemistry",
+        "alg": "Rodas4"
+      },
+      {
+        "leaf": "deposition",
+        "alg": "Rodas4"
+      }
+    ]
+  }
+}

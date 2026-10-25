@@ -1,0 +1,25 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "The M2 version of M1 case photostationary_cells.Kvaerno4.adaptive with linsolve left to the planner (block_lu).",
+  "model": "../../../toys/photostationary_cells.esm",
+  "operators": {
+    "photochemistry": {
+      "select": {
+        "components": "Photo"
+      }
+    }
+  },
+  "step": {
+    "dt": 600
+  },
+  "schedule": {
+    "leaf": "photochemistry",
+    "alg": "Kvaerno4",
+    "jacobian": "symbolic",
+    "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-06,
+      "dt_scope": "global"
+    }
+  }
+}

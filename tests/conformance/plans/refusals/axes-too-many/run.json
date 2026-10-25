@@ -1,0 +1,6 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Default axes: lon, lat and lev all shape the state, three horizontal axes.",
+  "model": "../../fixtures/periodic_stencil/model.esm",
+  "schedule": "auto"
+}

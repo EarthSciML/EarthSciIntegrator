@@ -1,0 +1,16 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "reseact's shape, everything automatic: three default operators by locality in a Lie sequence (the model asks for lie).",
+  "model": "model.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 300
+  },
+  "schedule": "auto"
+}

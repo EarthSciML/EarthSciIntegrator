@@ -1,0 +1,16 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../fixtures/reseact_shaped/model.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 300,
+    "hit_multiples": "7 s"
+  },
+  "schedule": "auto"
+}

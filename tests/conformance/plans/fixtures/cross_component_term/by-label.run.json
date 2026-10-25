@@ -1,0 +1,35 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "The coupling's terms selected by their provenance label: both deposition terms in one operator.",
+  "model": "model.esm",
+  "operators": {
+    "chemistry": {
+      "select": {
+        "components": "Chem"
+      }
+    },
+    "deposition": {
+      "select": {
+        "terms": [
+          "coupling:0"
+        ]
+      }
+    }
+  },
+  "step": {
+    "dt": 60
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "chemistry",
+        "alg": "Rodas4"
+      },
+      {
+        "leaf": "deposition",
+        "alg": "ForwardEuler",
+        "dt": "step"
+      }
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "event"
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "u": {
+          "type": "unknown",
+          "default": 1.5
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.5
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
+          "rhs": {"op": "*", "args": [-1, "k", "u"]}
+        }
+      ],
+      "discrete_events": [
+        {
+          "name": "halve",
+          "trigger": {"type": "preset_times", "times": [0.5]},
+          "affects": [{"lhs": "u", "rhs": {"op": "*", "args": [{"op": "Pre", "args": ["u"]}, 0.5]}}]
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

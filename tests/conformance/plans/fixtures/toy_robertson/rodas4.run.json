@@ -1,0 +1,26 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "The M2 version of M1 case robertson.Rodas4.adaptive, planned.",
+  "model": "../../../toys/robertson.esm",
+  "operators": {
+    "kinetics": {
+      "select": {
+        "components": "Kinetics"
+      }
+    }
+  },
+  "step": {
+    "dt": 40
+  },
+  "schedule": {
+    "leaf": "kinetics",
+    "alg": "Rodas4",
+    "jacobian": "symbolic",
+    "linsolve": "dense_lu",
+    "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10,
+      "dt_scope": "global"
+    }
+  }
+}

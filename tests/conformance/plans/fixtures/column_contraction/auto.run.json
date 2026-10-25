@@ -1,0 +1,16 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "A column operator, stiff by its Gershgorin bound at the 600 s macro step (TRBDF2 with a banded solve).",
+  "model": "model.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 600
+  },
+  "schedule": "auto"
+}

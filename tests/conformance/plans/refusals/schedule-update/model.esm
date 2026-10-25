@@ -1,0 +1,34 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "schedule_update"
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "u": {
+          "type": "unknown",
+          "default": 1.5
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.5,
+          "shape": [],
+          "update": {"kind": "schedule", "times": [0.5], "expression": 0.25}
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
+          "rhs": {"op": "*", "args": [-1, "k", "u"]}
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

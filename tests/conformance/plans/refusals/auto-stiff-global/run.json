@@ -1,0 +1,15 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "With lev horizontal, the column mean is a global contraction, stiff at 600 s: no M2 method.",
+  "model": "../../fixtures/column_contraction/model.esm",
+  "step": {
+    "dt": 600
+  },
+  "axes": {
+    "horizontal": [
+      "lev",
+      "lon"
+    ]
+  },
+  "schedule": "auto"
+}

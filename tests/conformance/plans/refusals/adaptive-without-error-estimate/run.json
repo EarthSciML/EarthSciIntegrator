@@ -1,0 +1,8 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/robertson.esm",
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "ForwardEuler"
+  }
+}

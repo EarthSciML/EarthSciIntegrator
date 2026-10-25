@@ -1,0 +1,80 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "lift_without_shape",
+    "description": "The pointwise chemistry fixture without its arrayed parameter: no declared shape names the lift's index set."
+  },
+  "index_sets": {
+    "cell": {
+      "kind": "interval",
+      "size": 4
+    }
+  },
+  "reaction_systems": {
+    "Chem": {
+      "species": {
+        "NO2": {
+          "default": 10.5
+        },
+        "NO": {
+          "default": 5.5
+        },
+        "O3": {
+          "default": 40.5
+        }
+      },
+      "parameters": {
+        "j": {
+          "default": 0.0125
+        },
+        "k": {
+          "default": 0.00044
+        }
+      },
+      "reactions": [
+        {
+          "id": "R1",
+          "substrates": [{"species": "NO2", "stoichiometry": 1}],
+          "products": [{"species": "NO", "stoichiometry": 1}, {"species": "O3", "stoichiometry": 1}],
+          "rate": "j"
+        },
+        {
+          "id": "R2",
+          "substrates": [{"species": "NO", "stoichiometry": 1}, {"species": "O3", "stoichiometry": 1}],
+          "products": [{"species": "NO2", "stoichiometry": 1}],
+          "rate": "k"
+        }
+      ]
+    }
+  },
+  "models": {
+    "Dep": {
+      "variables": {
+        "kd": {
+          "type": "parameter",
+          "default": 0.0002
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["_var"], "wrt": "t"},
+          "rhs": {"op": "makearray", "args": [], "regions": [[[1, 4]]], "values": [{"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": [1, 4]}, "expr": {"op": "*", "args": [-1, "Dep.kd", {"op": "index", "args": ["_var", "i"]}]}}]}
+        }
+      ]
+    }
+  },
+  "coupling": [
+    {
+      "type": "operator_compose",
+      "systems": ["Chem", "Dep"],
+      "lifting": "pointwise"
+    }
+  ],
+  "solver": {
+    "stiffness": "high",
+    "time_span": {
+      "start": 0,
+      "end": 3600
+    }
+  }
+}

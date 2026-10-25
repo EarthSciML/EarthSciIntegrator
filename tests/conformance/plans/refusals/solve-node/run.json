@@ -1,0 +1,21 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/robertson.esm",
+  "schedule": {
+    "sequence": [
+      {
+        "solve": "default_pointwise",
+        "unknowns": [
+          "Kinetics.y2"
+        ],
+        "method": {
+          "newton": {}
+        }
+      },
+      {
+        "leaf": "default_pointwise",
+        "alg": "Rodas4"
+      }
+    ]
+  }
+}

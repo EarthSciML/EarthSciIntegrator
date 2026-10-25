@@ -1,0 +1,139 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "reseact_shaped",
+    "description": "M2 planner fixture in reseact's shape: pointwise chemistry (a reaction system), PPM-like periodic advection along lon plus upwind advection along lat, and a column mean along lev, joined by three operator_compose entries (deposition, transport, mixing)."
+  },
+  "index_sets": {
+    "lon": {
+      "kind": "interval",
+      "size": 8
+    },
+    "lat": {
+      "kind": "interval",
+      "size": 3
+    },
+    "lev": {
+      "kind": "interval",
+      "size": 4
+    }
+  },
+  "reaction_systems": {
+    "Chem": {
+      "species": {
+        "NO2": {
+          "default": 10.5
+        },
+        "NO": {
+          "default": 5.5
+        },
+        "O3": {
+          "default": 40.5
+        }
+      },
+      "parameters": {
+        "j": {
+          "default": 0.0125
+        },
+        "k": {
+          "default": 0.00044
+        }
+      },
+      "reactions": [
+        {
+          "id": "R1",
+          "substrates": [{"species": "NO2", "stoichiometry": 1}],
+          "products": [{"species": "NO", "stoichiometry": 1}, {"species": "O3", "stoichiometry": 1}],
+          "rate": "j"
+        },
+        {
+          "id": "R2",
+          "substrates": [{"species": "NO", "stoichiometry": 1}, {"species": "O3", "stoichiometry": 1}],
+          "products": [{"species": "NO2", "stoichiometry": 1}],
+          "rate": "k"
+        }
+      ]
+    }
+  },
+  "models": {
+    "Dep": {
+      "variables": {
+        "vd": {
+          "type": "parameter",
+          "default": 0.0001
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["_var"], "wrt": "t"},
+          "rhs": {"op": "*", "args": [-1, "vd", "_var"]}
+        }
+      ]
+    },
+    "Transport": {
+      "variables": {
+        "c": {
+          "type": "parameter",
+          "shape": ["lon", "lat", "lev"],
+          "default": 0.5
+        },
+        "dx": {
+          "type": "parameter",
+          "default": 500.5
+        },
+        "v": {
+          "type": "parameter",
+          "default": 2.5
+        },
+        "dy": {
+          "type": "parameter",
+          "default": 600.5
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["_var"], "wrt": "t"},
+          "rhs": {"op": "+", "args": [{"op": "makearray", "args": [], "regions": [[[4, 6], [1, 3], [1, 4]], [[1, 1], [1, 3], [1, 4]], [[2, 2], [1, 3], [1, 4]], [[3, 3], [1, 3], [1, 4]], [[7, 7], [1, 3], [1, 4]], [[8, 8], [1, 3], [1, 4]]], "values": [{"op": "faq", "args": [], "output_idx": ["i", "j", "k"], "ranges": {"i": [4, 6], "j": [1, 3], "k": [1, 4]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", "i", "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["_var", {"op": "-", "args": ["i", 3]}, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["_var", {"op": "-", "args": ["i", 2]}, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["_var", {"op": "-", "args": ["i", 1]}, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["_var", "i", "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["_var", {"op": "+", "args": ["i", 1]}, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["_var", {"op": "+", "args": ["i", 2]}, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 3], "k": [1, 4]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 1, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["_var", 6, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["_var", 7, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["_var", 8, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["_var", 1, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["_var", 2, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["_var", 3, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 3], "k": [1, 4]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 2, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["_var", 7, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["_var", 8, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["_var", 1, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["_var", 2, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["_var", 3, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["_var", 4, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 3], "k": [1, 4]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 3, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["_var", 8, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["_var", 1, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["_var", 2, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["_var", 3, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["_var", 4, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["_var", 5, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 3], "k": [1, 4]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 7, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["_var", 4, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["_var", 5, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["_var", 6, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["_var", 7, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["_var", 8, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["_var", 1, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 3], "k": [1, 4]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 8, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["_var", 5, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["_var", 6, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["_var", 7, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["_var", 8, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["_var", 1, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["_var", 2, "j", "k"]}]}]}]}}]}, {"op": "makearray", "args": [], "regions": [[[1, 8], [2, 3], [1, 4]], [[1, 8], [1, 1], [1, 4]]], "values": [{"op": "faq", "args": [], "output_idx": ["i", "j", "k"], "ranges": {"i": [1, 8], "j": [2, 3], "k": [1, 4]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": ["Transport.v", "Transport.dy"]}, {"op": "-", "args": [{"op": "index", "args": ["_var", "i", "j", "k"]}, {"op": "index", "args": ["_var", "i", {"op": "-", "args": ["j", 1]}, "k"]}]}]}}, 0.0]}]}
+        }
+      ]
+    },
+    "Mix": {
+      "variables": {
+        "kmix": {
+          "type": "parameter",
+          "default": 0.002
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["_var"], "wrt": "t"},
+          "rhs": {"op": "makearray", "args": [], "regions": [[[1, 8], [1, 3], [1, 4]]], "values": [{"op": "faq", "args": [], "output_idx": ["i", "j", "k"], "ranges": {"i": [1, 8], "j": [1, 3], "k": [1, 4]}, "expr": {"op": "*", "args": ["Mix.kmix", {"op": "-", "args": [{"op": "/", "args": [{"op": "faq", "args": [], "output_idx": [], "ranges": {"kk": [1, 4]}, "expr": {"op": "index", "args": ["_var", "i", "j", "kk"]}}, 4]}, {"op": "index", "args": ["_var", "i", "j", "k"]}]}]}}]}
+        }
+      ]
+    }
+  },
+  "coupling": [
+    {
+      "type": "operator_compose",
+      "systems": ["Chem", "Dep"]
+    },
+    {
+      "type": "operator_compose",
+      "systems": ["Chem", "Transport"],
+      "lifting": "pointwise"
+    },
+    {
+      "type": "operator_compose",
+      "systems": ["Chem", "Mix"],
+      "lifting": "pointwise"
+    }
+  ],
+  "solver": {
+    "stiffness": "high",
+    "splitting": "lie",
+    "time_span": {
+      "start": 0,
+      "end": 3600
+    }
+  }
+}

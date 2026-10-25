@@ -1,0 +1,97 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "reseact's shape with operators named by provenance (the three operator_compose contributions), the prototype's methods for transport and chemistry, the mixing method left to the planner.",
+  "model": "model.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "operators": {
+    "transport": {
+      "select": {
+        "components": "Transport"
+      }
+    },
+    "mixing": {
+      "select": {
+        "components": "Mix"
+      }
+    },
+    "chemistry": {
+      "select": {
+        "components": [
+          "Chem",
+          "Dep"
+        ]
+      }
+    }
+  },
+  "step": {
+    "dt": 300,
+    "hit": [
+      "output"
+    ]
+  },
+  "partition": {
+    "ranks": [
+      2,
+      1
+    ],
+    "tiles": [
+      1,
+      3
+    ],
+    "shards": {
+      "chemistry": 4
+    }
+  },
+  "precision": {
+    "default": {
+      "state": "f64"
+    },
+    "chem": {
+      "factors": "f32"
+    }
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "transport",
+        "alg": "SSPRK43",
+        "control": {
+          "reltol": 0.0001,
+          "abstol": 1e-06,
+          "dt0": 15
+        }
+      },
+      {
+        "leaf": "mixing",
+        "alg": "auto"
+      },
+      {
+        "id": "chem",
+        "leaf": "chemistry",
+        "alg": "Rosenbrock23",
+        "jacobian": "symbolic",
+        "linsolve": {
+          "block_lu": {
+            "pivot": false
+          }
+        },
+        "control": {
+          "reltol": 0.0001,
+          "abstol": 1e-09,
+          "dt0": 0.5,
+          "dt_scope": "global"
+        },
+        "domain": {
+          "nonnegative": "all",
+          "on_violation": "reject"
+        }
+      }
+    ]
+  }
+}

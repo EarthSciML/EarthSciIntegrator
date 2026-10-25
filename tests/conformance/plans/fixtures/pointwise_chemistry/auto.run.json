@@ -1,0 +1,6 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Everything automatic: one default_pointwise operator, stiff from its reaction system, planned as the root adaptive leaf.",
+  "model": "model.esm",
+  "schedule": "auto"
+}

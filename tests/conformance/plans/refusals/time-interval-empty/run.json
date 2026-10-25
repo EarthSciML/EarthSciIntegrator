@@ -1,0 +1,12 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/robertson.esm",
+  "time": {
+    "start": 10,
+    "end": 5
+  },
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "Rodas4"
+  }
+}

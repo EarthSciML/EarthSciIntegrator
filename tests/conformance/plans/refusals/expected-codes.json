@@ -1,0 +1,130 @@
+{
+  "adaptive-without-error-estimate": {
+    "code": "adaptive_without_error_estimate",
+    "at": "/schedule/alg"
+  },
+  "algebraic-equation": {
+    "code": "unsupported_algebraic_equation",
+    "at": "/model"
+  },
+  "ambiguous-term-owner": {
+    "code": "ambiguous_term_owner",
+    "at": "/operators"
+  },
+  "auto-stiff-global": {
+    "code": "auto_strategy_unavailable",
+    "at": "/schedule"
+  },
+  "axes-too-many": {
+    "code": "axes_unresolved",
+    "at": "/axes"
+  },
+  "axes-unresolved": {
+    "code": "axes_unresolved",
+    "at": "/axes"
+  },
+  "bind-dt-without-dt0": {
+    "code": "bind_dt_leaf_without_dt0",
+    "at": "/schedule/bind_dt"
+  },
+  "discrete-event": {
+    "code": "unsupported_event",
+    "at": "/model"
+  },
+  "duplicate-node-id": {
+    "code": "duplicate_node_id",
+    "at": "/schedule/sequence/1/id"
+  },
+  "lift-shape-unresolved": {
+    "code": "lift_shape_unresolved",
+    "at": "/model"
+  },
+  "map-operator": {
+    "code": "unsupported_map_operator",
+    "at": "/operators/decay"
+  },
+  "node-id-reserved": {
+    "code": "node_id_reserved",
+    "at": "/schedule/sequence/0/id"
+  },
+  "observed-step-limit": {
+    "code": "unsupported_step_limit",
+    "at": "/step/limits/0"
+  },
+  "operator-not-advanced": {
+    "code": "operator_not_advanced",
+    "at": "/operators/dep"
+  },
+  "operator-undefined": {
+    "code": "operator_undefined",
+    "at": "/schedule/leaf"
+  },
+  "partition-too-fine": {
+    "code": "partition_too_fine",
+    "at": "/partition"
+  },
+  "precision-low-with-classical-rosenbrock": {
+    "code": "precision_low_with_classical_rosenbrock",
+    "at": "/precision/default"
+  },
+  "precision-rhs-below-state": {
+    "code": "precision_rhs_below_state",
+    "at": "/precision/default"
+  },
+  "reserved-component-name": {
+    "code": "reserved_component_name",
+    "at": "/model"
+  },
+  "schedule-update": {
+    "code": "unsupported_parameter_update",
+    "at": "/model"
+  },
+  "selector-matches-nothing": {
+    "code": "selector_matches_nothing",
+    "at": "/operators/ghost/select"
+  },
+  "solve-node": {
+    "code": "unsupported_solve_node",
+    "at": "/schedule/sequence/0"
+  },
+  "solver-external-mismatch": {
+    "code": "solver_external_mismatch",
+    "at": "/model"
+  },
+  "split-explicit": {
+    "code": "unsupported_split_explicit",
+    "at": "/schedule/sequence/0"
+  },
+  "step-control-missing": {
+    "code": "step_control_missing",
+    "at": "/step"
+  },
+  "term-selected-twice": {
+    "code": "term_selected_twice",
+    "at": "/operators/chemistry"
+  },
+  "time-interval-empty": {
+    "code": "time_interval_empty",
+    "at": "/time"
+  },
+  "time-interval-missing": {
+    "code": "time_interval_missing",
+    "at": "/time"
+  },
+  "time-invalid-date": {
+    "code": "time_invalid_date",
+    "at": "/time/start"
+  },
+  "toy-model": {
+    "code": "toy_model_not_plannable",
+    "at": "/model"
+  },
+  "tstop-off-fixed-step": {
+    "code": "tstop_off_fixed_step",
+    "at": "/step/hit_multiples"
+  },
+  "wrt-matches-nothing": {
+    "code": "wrt_matches_nothing",
+    "at": "/adjoint/wrt/0"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/robertson.esm",
+  "adjoint": {
+    "functional": {
+      "sum": "Kinetics.y3",
+      "over": "final"
+    },
+    "wrt": [
+      "params:Nope.*"
+    ]
+  },
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "Rodas4"
+  }
+}
