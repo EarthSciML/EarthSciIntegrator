@@ -96,6 +96,8 @@ The planner runs these steps in order and stops at the first refusal. A refusal 
 6. **M2 scope.** Refuse, in this order, a flattened model with algebraic variables, events, parameter `update` rules, loader fields, or an index set that is not an `interval` with an integer size (`unsupported_index_set`), with the codes of §0.1.
 7. **Axes** (§5.2.1) and **time** (§7.2) are resolved next, since passes 2 and 5 use them.
 
+**Order of refusals.** After these steps the planner runs passes 1–4 (§5.1–§5.4), then checks the schedule (§7.1), step, partition, precision and adjoint (§7.3–§7.6), then resolves strategies (§5.5), builds the derived documents (§6) and validates (§8). The first refusal ends planning. Within §7.1, unsupported constructs are refused first, in tree order, then spec/run-config.md §8's rules in rule order.
+
 The **flattened model** below means the result of step 5. Its state variables are the keys of `state_variables` that some equation's left-hand side differentiates; its **canonical state order** is those names sorted by code point, each array's cells in column-major order (EarthSciASTDiff's canonical order, esm-jacobian-spec §8). DOF $n$ (0-based) is position $n$ in that order. The initial state $u_0$ is EarthSciAST's, from building the flattened model (defaults and `field_ics`), permuted into canonical order.
 
 ## 5. Passes
@@ -138,7 +140,7 @@ Then, for each term in term order:
 - matched by none, with no owner, while any operator's selector has a `components` key: `ambiguous_term_owner`, naming the term and the components it reads;
 - matched by none otherwise: it belongs to the **default operator** of its locality, `default_pointwise`, `default_column`, `default_stencil` or `default_global` (spec/run-config.md §3.3).
 
-An operator of the run config that no term matches is `selector_matches_nothing`. A `map` operator is `unsupported_map_operator`. Architecture §3.2's inlining of an assembly component's observeds, for EqWeFiC's summed tendencies, is not done at M2: such a term belongs to the assembly component by rule 1 (D65).
+An operator of the run config that no term matches is `selector_matches_nothing`; component paths in a selector are not otherwise checked against the model, while `variables` entries must name states (`name_unresolved`, `name_wrong_kind`). A `map` operator is `unsupported_map_operator`. Architecture §3.2's inlining of an assembly component's observeds, for EqWeFiC's summed tendencies, is not done at M2: such a term belongs to the assembly component by rule 1 (D65).
 
 #### 5.1.4 Operators
 
@@ -331,7 +333,7 @@ Evaluating the document's right-hand side at $(u, p, t)$ gives every band coeffi
 
 ### 7.1 Schedule
 
-The planner checks the run config's schedule against spec/run-config.md §8 rules 3, 5–9, 12, 13 and 15 with the codes of spec/planner-errors.json, then writes the resolved tree. For every node:
+The planner refuses the unsupported nodes of §0.1 (`map`, `solve`, `split_explicit`, `coupled` with algebraic operators) in tree order, then checks the schedule against spec/run-config.md §8 rules 3, 5–9, 12, 13 and 15 in rule order, with the codes of spec/planner-errors.json, and then writes the resolved tree. For every node:
 
 - **`id`**: the given id, else the node's path: `root` for the root; a child of a `sequence` or `strang` at position $i$ (0-based) is `<parent path>.<i>`; the child of a `subcycle` is `<parent path>.subcycle`, of an `every` `<parent path>.every`. Paths are built from positions alone, whatever ids the ancestors have, so the unnamed first child of a node `transport` at `root.0` is `root.0.0`. A run config may write a path-form id only on the node whose path it is (`node_id_reserved` otherwise), so given and assigned ids never collide; the schema accepts both forms.
 - **`leaf`, `coupled`**: always a list of operator names, in the order given (accumulation order, spec/operator-interface.md §3).
@@ -351,7 +353,7 @@ A leaf or `coupled` node is written with exactly these keys:
 | `theta` | `Theta` | as given |
 | `frozen`, `bind_dt` | when given | as given, durations in seconds |
 
-`control` holds `reltol` (default 1e-3) and `abstol` (default 1e-6; a per-variable object as given) always; `dt_scope` always (§5.5.3; an explicit method's leaf takes the table's `dt_scope` for its class); and, for adaptive leaves only (no `dt`), `controller` (default `PI`), `maxiters` (default 1000000) and `dtmin` (default 0), plus `dt0` and `dtmax` when given. A fixed-`dt` leaf's `maxiters` is written only when given (spec/methods.md §12: unlimited otherwise). A leaf's `partition` key does not appear in the resolved leaf; it lands in `partition.shards` (§7.4).
+`control` holds `reltol` (default 1e-3) and `abstol` (default 1e-6; a per-variable object as given) always; `dt_scope` always (§5.5.3; an explicit method's leaf takes the table's `dt_scope` for its class); and, for adaptive leaves only (no `dt`), `controller` (default `PI`) and `maxiters` (default 1000000), plus `dt0`, `dtmin` and `dtmax` when given (`dtmin`'s default, 0, is not a duration the schema admits, and means no minimum). A fixed-`dt` leaf's `maxiters` is written only when given (spec/methods.md §12: unlimited otherwise). A leaf's `partition` key does not appear in the resolved leaf; it lands in `partition.shards` (§7.4).
 
 Other nodes keep their keys, resolved recursively: `sequence`, `strang` (children), `subcycle` (`n` or `limits` with `{"max"}` in seconds), `every` (`period`, `phase` (default 0), `hold` (default `none`)).
 
