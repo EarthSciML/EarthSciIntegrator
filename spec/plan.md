@@ -370,7 +370,7 @@ The interval comes from the caller, the run config's `time`, or the model's `sol
 `partition` (D77):
 - `ranks`, `tiles`: as given, default `[1, 1]`. Entry 0 divides `axes.horizontal[0]`, entry 1 `axes.horizontal[1]`. With fewer horizontal axes, the entries for missing axes must be 1 (`partition_axis_missing`); `ranks[a] · tiles[a]` above the axis size is `partition_too_fine`.
 - `halo`: for each horizontal axis, the largest `lower` or `upper` radius over all stencil operators, 0 when none; absent when there is no horizontal axis.
-- `shards`: for every pointwise or column leaf, by node id: the leaf's own `partition.shards`, else its `shard_size` turned into $\lceil \text{cells} / \text{shard\_size} \rceil$ (cells: the leaf's array cells for pointwise, columns for column), else the run config's `partition.shards` entry for the leaf's node id, else for one of its operators (all of a leaf's operator entries must agree, `partition_conflict`), else 1. `"auto"` is 1 at M2.
+- `shards`: for every pointwise or column leaf, by node id: the leaf's own `partition.shards`, else its `shard_size` turned into $\lceil \text{cells} / \text{shard\_size} \rceil$ (cells: the leaf's array cells for pointwise, columns for column), else the run config's `partition.shards` entry for the leaf's node id, else for one of its operators (all of a leaf's operator entries must agree, `partition_conflict`), else 1. `"auto"` is 1 at M2. With no pointwise or column leaf, `shards` is `{}`.
 - `output_shard`: absent at M2.
 
 ### 7.5 Precision
