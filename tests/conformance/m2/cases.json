@@ -1,0 +1,1874 @@
+{
+ "esm_integrator": "0.1.0",
+ "generated_by": "tests/conformance/m2/make_cases.py",
+ "cases": [
+  {
+   "id": "forced_decay.ForwardEuler.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "ForwardEuler",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.ForwardEuler.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.Heun.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Heun",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.Heun.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.SSPRK33.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "SSPRK33",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.SSPRK33.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.SSPRK43.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "SSPRK43",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.SSPRK43.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.RK4.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "RK4",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.RK4.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.Tsit5.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Tsit5",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.Tsit5.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.BS3.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "BS3",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.BS3.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.SSPRK104.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "SSPRK104",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.SSPRK104.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.WRF_RK3.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "WRF_RK3",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.WRF_RK3.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.BackwardEuler.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "BackwardEuler",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.BackwardEuler.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.TRBDF2.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "TRBDF2",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.TRBDF2.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.SDIRK2.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "SDIRK2",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.SDIRK2.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.Kvaerno3.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Kvaerno3",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.Kvaerno3.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.Kvaerno4.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Kvaerno4",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.Kvaerno4.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.IMEXEuler.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "IMEXEuler",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "imex": {
+      "implicit": "decay"
+     },
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.IMEXEuler.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.Theta.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Theta",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "theta": 0.5,
+     "dt": 0.1,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.Theta.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.Tsit5.gradient",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Tsit5",
+     "dt": 0.05,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.Tsit5.gradient",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.Kvaerno3.gradient",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Kvaerno3",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "dt": 0.05,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.Kvaerno3.gradient",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.IMEXEuler.gradient",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "IMEXEuler",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "imex": {
+      "implicit": "decay"
+     },
+     "dt": 0.05,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.IMEXEuler.gradient",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "forced_decay.Theta.gradient",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/forced_decay.esm",
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Theta",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "theta": 0.5,
+     "dt": 0.05,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 2
+    },
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    2
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "forced_decay.Theta.gradient",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.nonstiff.SSPRK43.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_nonstiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "SSPRK43",
+     "dt": 0.01,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 6.3
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    6.3
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.nonstiff.SSPRK43.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.nonstiff.Tsit5.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_nonstiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "Tsit5",
+     "dt": 0.01,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 6.3
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    6.3
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.nonstiff.Tsit5.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.nonstiff.BS3.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_nonstiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "BS3",
+     "dt": 0.01,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 6.3
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    6.3
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.nonstiff.BS3.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.nonstiff.RK4.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_nonstiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "RK4",
+     "dt": 0.01,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 6.3
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    6.3
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.nonstiff.RK4.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.nonstiff.Tsit5.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_nonstiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "Tsit5",
+     "control": {
+      "reltol": 1e-08,
+      "abstol": 1e-10,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 6.3
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    6.3
+   ],
+   "saveat": [
+    1.0,
+    3.0,
+    6.3
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.nonstiff.Tsit5.adaptive",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-06
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.stiff.Rosenbrock23.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_stiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "Rosenbrock23",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-08,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 1
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    1
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.stiff.Rosenbrock23.adaptive",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.stiff.Rodas4.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_stiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "Rodas4",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-08,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 1
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    1
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.stiff.Rodas4.adaptive",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.stiff.Rodas5P.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_stiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "Rodas5P",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-08,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 1
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    1
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.stiff.Rodas5P.adaptive",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.stiff.TRBDF2.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_stiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "TRBDF2",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-08,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 1
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    1
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.stiff.TRBDF2.adaptive",
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "van_der_pol.stiff.Kvaerno4.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/van_der_pol_stiff.esm",
+    "schedule": {
+     "leaf": "oscillator",
+     "alg": "Kvaerno4",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-08,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 1
+    },
+    "operators": {
+     "oscillator": {
+      "select": {
+       "components": "Oscillator"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    1
+   ],
+   "layout": [
+    "Oscillator.y",
+    "Oscillator.z"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "van_der_pol.stiff.Kvaerno4.adaptive",
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "robertson.Rosenbrock23.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/robertson.esm",
+    "schedule": {
+     "leaf": "kinetics",
+     "alg": "Rosenbrock23",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 40
+    },
+    "operators": {
+     "kinetics": {
+      "select": {
+       "components": "Kinetics"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    40
+   ],
+   "saveat": [
+    0.4,
+    4,
+    40
+   ],
+   "layout": [
+    "Kinetics.y1",
+    "Kinetics.y2",
+    "Kinetics.y3"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "robertson.Rosenbrock23.adaptive",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "robertson.Rodas4.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/robertson.esm",
+    "schedule": {
+     "leaf": "kinetics",
+     "alg": "Rodas4",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 40
+    },
+    "operators": {
+     "kinetics": {
+      "select": {
+       "components": "Kinetics"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    40
+   ],
+   "saveat": [
+    0.4,
+    4,
+    40
+   ],
+   "layout": [
+    "Kinetics.y1",
+    "Kinetics.y2",
+    "Kinetics.y3"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "robertson.Rodas4.adaptive",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "robertson.Rodas5P.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/robertson.esm",
+    "schedule": {
+     "leaf": "kinetics",
+     "alg": "Rodas5P",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 40
+    },
+    "operators": {
+     "kinetics": {
+      "select": {
+       "components": "Kinetics"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    40
+   ],
+   "saveat": [
+    0.4,
+    4,
+    40
+   ],
+   "layout": [
+    "Kinetics.y1",
+    "Kinetics.y2",
+    "Kinetics.y3"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "robertson.Rodas5P.adaptive",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "robertson.TRBDF2.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/robertson.esm",
+    "schedule": {
+     "leaf": "kinetics",
+     "alg": "TRBDF2",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 40
+    },
+    "operators": {
+     "kinetics": {
+      "select": {
+       "components": "Kinetics"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    40
+   ],
+   "saveat": [
+    0.4,
+    4,
+    40
+   ],
+   "layout": [
+    "Kinetics.y1",
+    "Kinetics.y2",
+    "Kinetics.y3"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "robertson.TRBDF2.adaptive",
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "robertson.Kvaerno4.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/robertson.esm",
+    "schedule": {
+     "leaf": "kinetics",
+     "alg": "Kvaerno4",
+     "jacobian": "symbolic",
+     "linsolve": "dense_lu",
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 40
+    },
+    "operators": {
+     "kinetics": {
+      "select": {
+       "components": "Kinetics"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    40
+   ],
+   "saveat": [
+    0.4,
+    4,
+    40
+   ],
+   "layout": [
+    "Kinetics.y1",
+    "Kinetics.y2",
+    "Kinetics.y3"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "robertson.Kvaerno4.adaptive",
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "photostationary_cells.Kvaerno4.adaptive",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/photostationary_cells.esm",
+    "schedule": {
+     "leaf": "photochemistry",
+     "alg": "Kvaerno4",
+     "jacobian": "symbolic",
+     "linsolve": {
+      "block_lu": {
+       "pivot": false
+      }
+     },
+     "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-06,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 600
+    },
+    "operators": {
+     "photochemistry": {
+      "select": {
+       "components": "Photo"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    3600
+   ],
+   "saveat": [
+    1800,
+    3600
+   ],
+   "layout": [
+    "Photo.NO2",
+    "Photo.NO",
+    "Photo.O3"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "photostationary_cells.Kvaerno4.adaptive",
+     "rtol": 1e-05,
+     "rtol_steps_differ": 0.0001
+    }
+   ]
+  },
+  {
+   "id": "advection_reaction.lie.order",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/advection_reaction.esm",
+    "schedule": {
+     "sequence": [
+      {
+       "leaf": "transport",
+       "alg": "SSPRK43",
+       "control": {
+        "reltol": 1e-10,
+        "abstol": 1e-12,
+        "dt_scope": "global"
+       }
+      },
+      {
+       "leaf": "reaction",
+       "alg": "Rodas4",
+       "jacobian": "symbolic",
+       "linsolve": {
+        "block_lu": {
+         "pivot": false
+        }
+       },
+       "control": {
+        "reltol": 1e-10,
+        "abstol": 1e-12,
+        "dt_scope": "global"
+       }
+      }
+     ]
+    },
+    "step": {
+     "dt": 0.05
+    },
+    "operators": {
+     "transport": {
+      "select": {
+       "components": "Transport"
+      }
+     },
+     "reaction": {
+      "select": {
+       "components": "Reaction"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    0.5
+   ],
+   "layout": [
+    "Reaction.A",
+    "Reaction.B"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "advection_reaction.lie.order",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
+    }
+   ]
+  },
+  {
+   "id": "advection_reaction.lie.gradient",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/advection_reaction.esm",
+    "schedule": {
+     "sequence": [
+      {
+       "leaf": "transport",
+       "alg": "SSPRK43",
+       "control": {
+        "reltol": 1e-10,
+        "abstol": 1e-12,
+        "dt_scope": "global"
+       }
+      },
+      {
+       "leaf": "reaction",
+       "alg": "Rodas4",
+       "jacobian": "symbolic",
+       "linsolve": {
+        "block_lu": {
+         "pivot": false
+        }
+       },
+       "control": {
+        "reltol": 1e-10,
+        "abstol": 1e-12,
+        "dt_scope": "global"
+       }
+      }
+     ]
+    },
+    "step": {
+     "dt": 0.025
+    },
+    "operators": {
+     "transport": {
+      "select": {
+       "components": "Transport"
+      }
+     },
+     "reaction": {
+      "select": {
+       "components": "Reaction"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    0.5
+   ],
+   "layout": [
+    "Reaction.A",
+    "Reaction.B"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "advection_reaction.lie.gradient",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
+    }
+   ]
+  },
+  {
+   "id": "advection_reaction.strang.order",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/advection_reaction.esm",
+    "schedule": {
+     "strang": [
+      {
+       "leaf": "transport",
+       "alg": "SSPRK43",
+       "control": {
+        "reltol": 1e-10,
+        "abstol": 1e-12,
+        "dt_scope": "global"
+       }
+      },
+      {
+       "leaf": "reaction",
+       "alg": "Rodas4",
+       "jacobian": "symbolic",
+       "linsolve": {
+        "block_lu": {
+         "pivot": false
+        }
+       },
+       "control": {
+        "reltol": 1e-10,
+        "abstol": 1e-12,
+        "dt_scope": "global"
+       }
+      }
+     ]
+    },
+    "step": {
+     "dt": 0.05
+    },
+    "operators": {
+     "transport": {
+      "select": {
+       "components": "Transport"
+      }
+     },
+     "reaction": {
+      "select": {
+       "components": "Reaction"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    0.5
+   ],
+   "layout": [
+    "Reaction.A",
+    "Reaction.B"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "advection_reaction.strang.order",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
+    }
+   ]
+  },
+  {
+   "id": "advection_reaction.strang.gradient",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/advection_reaction.esm",
+    "schedule": {
+     "strang": [
+      {
+       "leaf": "transport",
+       "alg": "SSPRK43",
+       "control": {
+        "reltol": 1e-10,
+        "abstol": 1e-12,
+        "dt_scope": "global"
+       }
+      },
+      {
+       "leaf": "reaction",
+       "alg": "Rodas4",
+       "jacobian": "symbolic",
+       "linsolve": {
+        "block_lu": {
+         "pivot": false
+        }
+       },
+       "control": {
+        "reltol": 1e-10,
+        "abstol": 1e-12,
+        "dt_scope": "global"
+       }
+      }
+     ]
+    },
+    "step": {
+     "dt": 0.025
+    },
+    "operators": {
+     "transport": {
+      "select": {
+       "components": "Transport"
+      }
+     },
+     "reaction": {
+      "select": {
+       "components": "Reaction"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    0.5
+   ],
+   "layout": [
+    "Reaction.A",
+    "Reaction.B"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "advection_reaction.strang.gradient",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
+    }
+   ]
+  },
+  {
+   "id": "advection_reaction.subcycle.fixed",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/advection_reaction.esm",
+    "schedule": {
+     "sequence": [
+      {
+       "subcycle": {
+        "leaf": "transport",
+        "alg": "SSPRK33",
+        "dt": "step",
+        "control": {
+         "dt_scope": "global"
+        }
+       },
+       "n": 4
+      },
+      {
+       "leaf": "reaction",
+       "alg": "Rodas4",
+       "jacobian": "symbolic",
+       "linsolve": {
+        "block_lu": {
+         "pivot": false
+        }
+       },
+       "dt": "step",
+       "control": {
+        "dt_scope": "global"
+       }
+      }
+     ]
+    },
+    "step": {
+     "dt": 0.01
+    },
+    "operators": {
+     "transport": {
+      "select": {
+       "components": "Transport"
+      }
+     },
+     "reaction": {
+      "select": {
+       "components": "Reaction"
+      }
+     }
+    }
+   },
+   "tspan": [
+    0,
+    0.5
+   ],
+   "layout": [
+    "Reaction.A",
+    "Reaction.B"
+   ],
+   "checks": [
+    {
+     "check": "toy_equivalence",
+     "against": "advection_reaction.subcycle.fixed",
+     "rtol": 1e-10
+    }
+   ]
+  }
+ ]
+}

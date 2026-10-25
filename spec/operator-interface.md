@@ -1,8 +1,8 @@
 # The operator interface
 
-**Status:** M1 draft, 2026-10-23. Normative for both implementations (D1, D8).
+**Status:** M1 draft, 2026-10-23; §8 (operators a plan supplies) added for M2, 2026-10-25. Normative for both implementations (D1, D8).
 
-A leaf (spec/run-config.md §4.2) advances the sum of its operators. This chapter defines what a leaf calls on each operator: the right-hand side, its derivatives, and the structure the linear solvers rely on. From M2 the planner builds operators from the flattened model, with kernels compiled by EarthSciAST and band models from EarthSciASTDiff (architecture §2, §3.2 pass 6). At M1 the toy problems of [`toy-problems.md`](toy-problems.md) implement the interface by hand (D53). Nothing in the methods, controllers, schedule interpreter or adjoint may depend on which of the two supplied an operator.
+A leaf (spec/run-config.md §4.2) advances the sum of its operators. This chapter defines what a leaf calls on each operator: the right-hand side, its derivatives, and the structure the linear solvers rely on. From M2 the planner builds operators from the flattened model, with kernels compiled by EarthSciAST and band models from EarthSciASTDiff (architecture §2, §3.2 pass 6), and the runtime constructs them from the plan's derived documents (§8). At M1 the toy problems of [`toy-problems.md`](toy-problems.md) implement the interface by hand (D53), and they stay as a second supplier. Nothing in the methods, controllers, schedule interpreter or adjoint may depend on which of the two supplied an operator: both satisfy this chapter's calls with the same meaning, and the M2 gate checks that they give the same results (spec/toy-problems.md §4).
 
 ## 1. What an operator is
 
@@ -26,7 +26,7 @@ The leaf's state is one flat vector. Its order is part of the operator set's dec
 - **`dense`**: no structure is promised; DOF order is the operator set's own.
 - **`block_diagonal`** with `ncells` cells of `n` DOFs each: every operator's Jacobian is zero between different cells. DOFs are **species-major**: DOF $i$ of cell $c$ (both 0-based) is at index $i \cdot \text{ncells} + c$. This is the struct-of-arrays layout that batched kernels vectorize across (architecture §6.1, the `LaneBlocks` layout of U10), and reseact's.
 
-The leaf's structure is the coarsest that all its operators share: a leaf whose operators are all `block_diagonal` with the same `ncells` and `n` is `block_diagonal`; any other mix is `dense`. Banded and stencil structures are added with the planner (M2).
+The leaf's structure is the coarsest that all its operators share: a leaf whose operators are all `block_diagonal` with the same `ncells` and `n` is `block_diagonal`; any other mix is `dense`. Operators a plan supplies declare one of these two at M2 (§8.3); banded and stencil storage arrive with their solvers (M3, M4b).
 
 ## 3. Calls
 
@@ -87,3 +87,27 @@ A map operator (spec/run-config.md §3.2) provides:
 - `apply_frozen(out, u, p, t, Δ, mask)`: like `apply`, but with the decisions in `mask` imposed rather than taken, so finite differences on the frozen tape (spec/adjoint.md §7.2) hold them fixed.
 
 $\Delta$ is the value `bind_dt` gives the map (spec/run-config.md §4.4).
+
+## 8. Operators supplied by a plan (M2)
+
+A runtime that executes a plan (spec/plan.md) builds each operator the schedule names from the plan's entry `operators.<name>` and the operator's two derived documents. The result implements §1–§4 exactly as a hand-written operator does.
+
+### 8.1 Building the kernels
+
+- **Right-hand side.** Load `derived/<name>.rhs.esm` with EarthSciAST and build its right-hand side **through `flatten`**: Julia `build_evaluator(flatten(load_path(path)))` (Julia's `build_evaluator` on the unflattened file refuses the documents' fully scoped self-references, spec/plan.md §10 item 3); Rust the public reentrant right-hand side of U4 (EarthSciAST PR #561) built from the flattened document. Julia's `f!` is not reentrant until U4 (architecture §7.3), so a Julia runtime calls it from one thread at a time.
+- **Jacobian.** Load and build `derived/<name>.jacobian.esm` the same way. Its right-hand side at $(u, p, t)$ holds band field `J_k` in the slots of the state `_jacobian.J_k` (spec/plan.md §6.2).
+- A build failure refuses the leaf, naming the operator and the document.
+
+### 8.2 Layout and arguments
+
+- **State.** The operator acts on the whole model state in the plan's **canonical order** (spec/plan.md §4): state names sorted by code point, each array's cells column-major. Every derived document of a plan declares the same states, so one permutation from the binding's own build order (its name map) to canonical order serves all of them; the runtime computes it once per document at build time. The leaf's state vector $u$ (§1) is the union of its operators' `writes`, in canonical order; every other state is a constant of the leaf over its interval (§1).
+- **`writes`.** The operator's `writes` (§3) are the canonical indices of every cell of every variable in the plan's `writes` list. The right-hand side document is zero outside them by construction.
+- **Parameters.** $p$ is the flattened model's scalar parameters in code-point order of their names, at their defaults; array parameters are fixed at their defaults, since array-parameter gradients wait for U7 (§6).
+- **Declarations.** `depends_on_t` and `linear_in_u` are the plan's `structure.depends_on_t` and `structure.linear_in_u`.
+
+### 8.3 Calls
+
+- `rhs(out, u, p, t)`: evaluate the right-hand-side document at the full state (the leaf's $u$ scattered into the model state, the constants elsewhere), and add its values at the operator's `writes` into `out`.
+- `jac(out, u, p, t)`: evaluate the Jacobian document, then for each band $k$ (1-based), with `b = structure.bands[k-1]`, add `J_k` at each point of the band into the entry $(	ext{row}(r), 	ext{col}(	ext{col\_idx}(r, c)))$, exactly as esm-jacobian-spec §4 defines a band's meaning; a column index outside the column variable's extent is a ghost read and contributes nothing. Entries outside the leaf's DOFs are dropped. The storage is `block_diagonal` (§4) when the leaf is: every operator is pointwise with `structure.block`, and their `writes` are arrays of one shape, with `ncells` the number of cells of that shape and `n` the number of the leaf's state variables; otherwise `dense`.
+- `jvp_u` and `vjp_u`: $J v$ and $J^	op w$ from the same assembled entries, restricted to the leaf's DOFs.
+- `ft`, `vjp_p`, `hess_u`, `hess_p`, `ft_vjp_u`, `ft_vjp_p`: **not provided at M2.** They need a time derivative (not yet in EarthSciASTDiff), parameter bands (U7) and second-order bands (U8). A leaf whose method or adjoint needs one of them is refused when it is built (§3), naming the operator and the call; so are Rosenbrock leaves on operators with `depends_on_t` true.

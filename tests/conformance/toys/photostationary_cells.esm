@@ -1,0 +1,67 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "photostationary_cells",
+    "description": "spec/toy-problems.md \u00a71.4: 16 independent cells of NO2/NO/O3 photochemistry with phase-shifted photolysis."
+  },
+  "index_sets": {
+    "cell": {
+      "kind": "interval",
+      "size": 16
+    }
+  },
+  "models": {
+    "Photo": {
+      "variables": {
+        "NO2": {
+          "type": "unknown",
+          "shape": ["cell"],
+          "default": 10
+        },
+        "NO": {
+          "type": "unknown",
+          "shape": ["cell"],
+          "default": 5
+        },
+        "O3": {
+          "type": "unknown",
+          "shape": ["cell"],
+          "default": 40
+        },
+        "j0": {
+          "type": "parameter",
+          "default": 0.01
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.00044
+        },
+        "omega": {
+          "type": "parameter",
+          "default": 0.0017453292519943296
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["NO2"], "wrt": "t"},
+          "rhs": {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": {"from": "cell"}}, "expr": {"op": "-", "args": [{"op": "-", "args": [{"op": "*", "args": [{"op": "*", "args": [0.5, "j0", {"op": "+", "args": [1, {"op": "sin", "args": [{"op": "+", "args": [{"op": "*", "args": ["omega", "t"]}, {"op": "*", "args": [0.39269908169872414, {"op": "-", "args": ["i", 1]}]}]}]}]}]}, {"op": "index", "args": ["NO2", "i"]}]}, {"op": "*", "args": ["k", {"op": "index", "args": ["NO", "i"]}, {"op": "index", "args": ["O3", "i"]}]}]}]}}
+        },
+        {
+          "lhs": {"op": "D", "args": ["NO"], "wrt": "t"},
+          "rhs": {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": {"from": "cell"}}, "expr": {"op": "-", "args": [{"op": "*", "args": [{"op": "*", "args": [0.5, "j0", {"op": "+", "args": [1, {"op": "sin", "args": [{"op": "+", "args": [{"op": "*", "args": ["omega", "t"]}, {"op": "*", "args": [0.39269908169872414, {"op": "-", "args": ["i", 1]}]}]}]}]}]}, {"op": "index", "args": ["NO2", "i"]}]}, {"op": "*", "args": ["k", {"op": "index", "args": ["NO", "i"]}, {"op": "index", "args": ["O3", "i"]}]}]}}
+        },
+        {
+          "lhs": {"op": "D", "args": ["O3"], "wrt": "t"},
+          "rhs": {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": {"from": "cell"}}, "expr": {"op": "-", "args": [{"op": "*", "args": [{"op": "*", "args": [0.5, "j0", {"op": "+", "args": [1, {"op": "sin", "args": [{"op": "+", "args": [{"op": "*", "args": ["omega", "t"]}, {"op": "*", "args": [0.39269908169872414, {"op": "-", "args": ["i", 1]}]}]}]}]}]}, {"op": "index", "args": ["NO2", "i"]}]}, {"op": "*", "args": ["k", {"op": "index", "args": ["NO", "i"]}, {"op": "index", "args": ["O3", "i"]}]}]}}
+        }
+      ]
+    }
+  },
+  "solver": {
+    "stiffness": "high",
+    "time_span": {
+      "start": 0,
+      "end": 3600
+    }
+  }
+}
