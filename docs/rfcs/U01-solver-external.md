@@ -3,7 +3,7 @@ title: "`solver.external`: a document points at its own run configuration"
 description: "One optional string field in the top-level `solver` block that names an external run-configuration document (a schedule, per-operator algorithms, tolerances, adjoint settings). EarthSciAST parses, validates, version-gates, round-trips and resolves the reference, and never opens the file. The `.esm` stays free of algorithm names; the run config has its own schema and version."
 ---
 
-Status: draft (proposed by EarthSciIntegrator, 2026-10-13)
+Status: draft (proposed by EarthSciIntegrator, 2026-10-13); done upstream: released in EarthSciAST v0.4.0 (esm 1.3.0)
 Target: EarthSciAST `esm-spec.md` §2.2 and `esm-schema.json` `$defs.Solver`; format version 1.3.0 (additive; gated with `solver_external_version_too_old`)
 Needed by: EarthSciIntegrator milestone M2
 Integrator refs: architecture.md §2, §4.1, §4.2, §13 (U1); decisions D2, D7, D8, D24

@@ -3,7 +3,7 @@ title: "Per-term provenance through flatten: which component wrote each contribu
 description: "Flatten sums operator_compose and couple contributions into one right-hand side and forgets where each summand came from. This adds an ordered contribution list beside every flattened equation, each entry carrying the component (or coupling entry) that authored it. The list lives outside the expression tree, so canonical form, interning, CSE and equality are untouched. It is a FlattenedSystem field, not a document-format change."
 ---
 
-Status: draft (proposed by EarthSciIntegrator, 2026-10-13)
+Status: draft (proposed by EarthSciIntegrator, 2026-10-13); done upstream: released in EarthSciAST v0.4.0 (esm 1.3.0)
 Target: EarthSciAST esm-libraries-spec §4.7.5 (canonical `FlattenedSystem` field set) and esm-spec §10.7; no `.esm` format version change
 Needed by: EarthSciIntegrator milestone M2
 Integrator refs: architecture.md §2, §3.1, §3.2 (passes 1 and 3), §4.2; decisions D7, D8, D14
