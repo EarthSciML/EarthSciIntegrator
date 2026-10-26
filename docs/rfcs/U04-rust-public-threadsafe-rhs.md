@@ -4,7 +4,7 @@ description: "Make the compiled right-hand side a stable public object that is b
 ---
 
 Status: draft (proposed by EarthSciIntegrator, 2026-10-13); done upstream: released in EarthSciAST v0.5.0 (EarthSciAST#561)
-Target: EarthSciAST API_SPEC §5.8 (a new stable entry beside `esm_problem`), `earthsci-ast-rs` next minor (0.3.0); a parallel reentrant entry in `EarthSciAST.jl`. No schema or format-version change.
+Target: EarthSciAST API_SPEC §5.8 (a new stable entry beside `esm_problem`), `earthsci-ast-rs` v0.5.0 (released); a parallel reentrant entry in `EarthSciAST.jl`. No schema or format-version change.
 Needed by: EarthSciIntegrator milestone M3 (shared-memory shards and tiles). Julia's half is also needed by M3.
 Integrator refs: architecture.md §7.2, §7.3, §7.5, §10 (accumulation), §13 (U4); decisions D1, D5, D6, D7, D10, D11, D13
 

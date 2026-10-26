@@ -4,7 +4,7 @@ description: "Evaluate one operator's right-hand side — a subset of additive t
 ---
 
 Status: draft (proposed by EarthSciIntegrator, 2026-10-13); done upstream: released in EarthSciAST v0.5.0 (EarthSciAST#557)
-Target: EarthSciAST API_SPEC §5.8 (new entries beside `esm_problem`; no schema or format-version change); `EarthSciAST.jl` and `earthsci-ast-rs` next minor (0.3.0); Python later.
+Target: EarthSciAST API_SPEC §5.8 (new entries beside `esm_problem`; no schema or format-version change); `EarthSciAST.jl` and `earthsci-ast-rs` v0.5.0 (released); Python later.
 Needed by: EarthSciIntegrator milestone M3 (tiles in shared memory, and lane pools), then M5 (MPI ranks).
 Integrator refs: architecture.md §3.2 (passes 2, 3, 7, 8), §7.1, §7.2, §7.6, §7.7, §13 (U3); decisions D6, D7, D10, D11, D14, D17, D20, decisions.md §2.2
 

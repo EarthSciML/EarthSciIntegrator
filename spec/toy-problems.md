@@ -115,7 +115,7 @@ Result files under `tests/conformance/m1/reference/` are checked in. They are pr
 
 ## 4. The toy problems as `.esm` documents (M2)
 
-M2's runtimes execute plans end to end (D80). The gate replays the M1 cases on `.esm` versions of the problems: the planner plans each case, the runtime builds its operators from the plan (spec/operator-interface.md §8) and runs it, and the result must match the same implementation's run of the M1 case on the hand-written problem. Julia and Rust both run them from M2; Rust builds its right-hand sides through the public reentrant `RhsProgram` (U4, EarthSciAST 0.5.0).
+M2's runtimes execute plans end to end (D80). The gate replays the M1 cases on `.esm` versions of the problems: the planner plans each case, the runtime builds its operators from the plan (spec/operator-interface.md §8) and runs it, and the result must match the same implementation's run of the M1 case on the hand-written problem. Julia and Rust both run them from M2; both build their right-hand sides through the public reentrant `rhs_program` (U4, EarthSciAST 0.5.0; D53).
 
 ### 4.1 Documents
 

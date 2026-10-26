@@ -369,7 +369,7 @@ Taken from reseact's `shard_exec.jl`:
 
 v1 executors are threads (dynamic assignment of fixed-content shards to threads, which keeps D10 intact) and MPI ranks (Julia MPI.jl, Rust rsmpi).
 
-Threads need a reentrant RHS in **both** languages (U4). Julia's `f!` is not reentrant: it uses a process-global forcing epoch, captures forcing buffers by alias, and threads internally when Polyester is loaded. EarthSciAST 0.5.0 adds the reentrant entry in both languages (`rhs_program`, with per-caller workspaces and immutable forcing sets).
+Threads need a reentrant RHS in **both** languages (U4). Julia's `f!` is not reentrant: it uses a process-global forcing epoch, captures forcing buffers by alias, and threads internally when Polyester is loaded. EarthSciAST 0.5.0 adds the reentrant entry in both languages: `rhs_program(problem)` returns an `RhsProgram`, with per-caller workspaces and immutable forcing sets.
 
 ### 7.4 Deterministic reductions (D10)
 
