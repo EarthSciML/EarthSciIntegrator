@@ -1,8 +1,25 @@
 [package]
 name = "earthsci-integrator-planner"
-description = "EarthSciIntegrator planner: operators, locality, structure, plan emission (M0 scaffold)."
+description = "EarthSciIntegrator planner: operators, locality, structure, plan emission (spec/plan.md)."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# earthsci-ast 0.5 needs Rust 1.89.
+rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
+
+[dependencies]
+# EarthSciAST 0.5.0. Its release commit is merged upstream but is neither
+# tagged nor on crates.io yet, so this pins the merge commit of the release
+# (EarthSciAST PR #567). Switch to
+#     earthsci-ast = { version = "0.5", default-features = false }
+# once 0.5.0 is published. The planner does not use the ODE solver, but at
+# this commit the library does not compile without the `solve` feature (its
+# compiler-agreement adapter module is not gated on it), so `solve` stays on;
+# only the command-line tool (`cli`) is left out.
+earthsci-ast = { git = "https://github.com/EarthSciML/EarthSciAST", rev = "f6f8a4bfde30363cdc3ddd75e7cc18360842df5b", default-features = false, features = ["solve"] }
+earthsci-integrator-solvers = { path = "../earthsci-integrator-solvers" }
+indexmap = "2"
+jsonschema = { version = "0.33", default-features = false }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
