@@ -126,7 +126,7 @@ The documents are in [`../tests/conformance/toys/`](../tests/conformance/toys/),
 | `forced_decay` | `forced_decay.esm` | model `Decay`; operator `decay` = `{"components": "Decay"}` | `Decay.u` |
 | `van_der_pol` | `van_der_pol_nonstiff.esm`, `van_der_pol_stiff.esm` (one document per variant, since a run config cannot override a parameter) | model `Oscillator`; `oscillator` | `Oscillator.y`, `Oscillator.z` |
 | `robertson` | `robertson.esm` | model `Kinetics`; `kinetics` | `Kinetics.y1`, `y2`, `y3` |
-| `photostationary_cells` | `photostationary_cells.esm` | model `Photo`, arrays over index set `cell` (16), $arphi_c$ written as $(\pi/8)(i - 1)$ for 1-based $i$; `photochemistry` | `Photo.NO2`, `Photo.NO`, `Photo.O3`, species-major |
+| `photostationary_cells` | `photostationary_cells.esm` | model `Photo`, arrays over index set `cell` (16), $\varphi_c$ written as $(\pi/8)(i - 1)$ for 1-based $i$; `photochemistry` | `Photo.NO2`, `Photo.NO`, `Photo.O3`, species-major |
 | `advection_reaction` | `advection_reaction.esm` | model `Reaction` owns $A$ and $B$ and the exchange; model `Transport` authors `D(Reaction.A)` (periodic upwind, the seam cell reading cell 64), joined by `operator_compose`; `transport` = `{"components": "Transport"}`, `reaction` = `{"components": "Reaction"}` | `Reaction.A`, `Reaction.B`, species-major |
 | `source_decay_map` | `source_decay_map.esm` | model `Box`; the map is the observed `Box.u_decayed` reading `Box.dt` (eqice's form) | `Box.u` |
 
@@ -134,8 +134,9 @@ The documents are in [`../tests/conformance/toys/`](../tests/conformance/toys/),
 
 ### 4.2 Cases
 
-[`../tests/conformance/m2/cases.json`](../tests/conformance/m2/cases.json) is generated from the M1 cases by [`make_cases.py`](../tests/conformance/m2/make_cases.py) beside it; CI checks the two agree. An M2 case is the M1 case with the same `id`, changed as follows:
+[`../tests/conformance/m2/cases.json`](../tests/conformance/m2/cases.json) is generated from the M1 cases by [`make_cases.py`](../tests/conformance/m2/make_cases.py) beside it; CI checks the two agree. An M2 case is the M1 case, changed as follows:
 
+- `id` is the M1 case's `id` prefixed with `m2.`, so the two suites' result files (§3) never carry the same `case`;
 - `model` is the problem's document, relative to the cases file, and `operators` defines the problem's operators by the selectors of §4.1, so the M1 schedule's operator names resolve;
 - every leaf's `control.dt_scope` is `global`, as at M1, where the planner would resolve pointwise leaves to `cell` (D17);
 - `adjoint` is removed and the only check is `toy_equivalence` (§4.3): planned operators do not yet provide `vjp_p` or second-order calls (spec/operator-interface.md §8.3);
