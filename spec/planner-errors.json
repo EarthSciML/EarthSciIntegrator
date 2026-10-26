@@ -48,7 +48,7 @@
     {"code": "time_origin_invalid", "rule": 14, "where": "spec/plan.md §7.2, D74", "meaning": "A timestamp is given and the model's time-origin field cannot be read."},
     {"code": "bind_dt_leaf_without_dt0", "rule": 15, "where": "spec/run-config.md §4.2", "meaning": "An adaptive leaf binds a parameter to the leaf step but gives no control.dt0."},
     {"code": "output_time_outside_interval", "rule": null, "where": "spec/run-config.md §7.3", "meaning": "An output or saveat time lies outside the run interval."},
-    {"code": "auto_strategy_unavailable", "rule": null, "where": "spec/plan.md §5.5.3, D71", "meaning": "An auto choice has no M2 resolution: a stiff global leaf, a stencil leaf with a stiff column operator and no dt, or an implicit method on a stencil or global leaf with linsolve omitted."},
+    {"code": "auto_strategy_unavailable", "rule": null, "where": "spec/plan.md §5.5.3, D71", "meaning": "An auto choice has no M2 resolution: a stiff global leaf, a stiff pointwise leaf whose Jacobian storage is not block_diagonal, a stencil leaf with a stiff column operator and no dt, or an implicit method on a stencil or global leaf with linsolve omitted."},
     {"code": "band_model_failed", "rule": null, "where": "spec/plan.md §5.2.2, §5.4", "meaning": "EarthSciASTDiff refused to differentiate a term or an operator."},
     {"code": "lift_shape_unresolved", "rule": null, "where": "spec/plan.md §6.1.3, D68", "meaning": "No declared shape has a lifted state's extents."},
     {"code": "reserved_component_name", "rule": null, "where": "spec/plan.md §6.1.4", "meaning": "The model has a top-level component named _jacobian."},

@@ -1,0 +1,6 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "One stiff pointwise operator over a scalar state and an array state: block_lu needs block_diagonal storage (spec/operator-interface.md §8.3), which this leaf does not have, so auto has no M2 linear solver.",
+  "model": "model.esm",
+  "schedule": "auto"
+}

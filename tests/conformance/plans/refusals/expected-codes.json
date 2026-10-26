@@ -15,6 +15,10 @@
     "code": "auto_strategy_unavailable",
     "at": "/schedule"
   },
+  "auto-stiff-not-block-diagonal": {
+    "code": "auto_strategy_unavailable",
+    "at": "/schedule"
+  },
   "axes-too-many": {
     "code": "axes_unresolved",
     "at": "/axes"
