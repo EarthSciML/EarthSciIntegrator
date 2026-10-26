@@ -19,7 +19,11 @@ use std::collections::{BTreeMap, BTreeSet};
 /// An observed limit is `unsupported_step_limit`. Rules 9 and 12 are
 /// checked with the schedule.
 pub fn step(rc: &RunConfig, info: &ModelInfo) -> Result<Value> {
-    let given = rc.at("/step").and_then(Value::as_object).cloned().unwrap_or_default();
+    let given = rc
+        .at("/step")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
     let mut out = Map::new();
     if let Some(dt) = given.get("dt") {
         out.insert("dt".into(), json!(duration(dt, "/step/dt", info)?));
@@ -44,7 +48,12 @@ pub fn step(rc: &RunConfig, info: &ModelInfo) -> Result<Value> {
     let hit: BTreeSet<String> = given
         .get("hit")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     out.insert("hit".into(), json!(hit));
     for k in ["hit_multiples", "resolution"] {
@@ -135,8 +144,15 @@ pub fn partition(
     let run_shards = rc.at("/partition/shards").and_then(Value::as_object);
     let count = |v: &Value| v.as_i64().unwrap_or(1); // "auto" is 1 at M2.
     let mut shards = Map::new();
+    // SPEC FINDING (§7.4): `shards` is written "for every pointwise or
+    // column leaf"; read literally, `coupled` nodes get no entry (§7.5 names
+    // "every leaf and coupled node" explicitly, §7.4 does not).
     for n in root.leaves() {
-        let Kind::Leaf { ops: names, coupled: false } = &n.kind else {
+        let Kind::Leaf {
+            ops: names,
+            coupled: false,
+        } = &n.kind
+        else {
             continue;
         };
         let class = leaf_class(n, ops);
@@ -146,7 +162,10 @@ pub fn partition(
         let own = n.value.get("partition");
         let k = if let Some(s) = own.and_then(|p| p.get("shards")) {
             count(s)
-        } else if let Some(size) = own.and_then(|p| p.get("shard_size")).and_then(Value::as_i64) {
+        } else if let Some(size) = own
+            .and_then(|p| p.get("shard_size"))
+            .and_then(Value::as_i64)
+        {
             let states = leaf_states(n, ops);
             let first = states.iter().find(|s| !info.shapes[*s].is_empty());
             let cells = first.map_or(1, |s| {
@@ -240,7 +259,10 @@ pub fn precision(
             for (r, v) in d {
                 set.insert(
                     ROLES.iter().find(|x| *x == r).copied().unwrap_or("state"),
-                    (v.as_str().unwrap_or_default().to_string(), "/precision/default".into()),
+                    (
+                        v.as_str().unwrap_or_default().to_string(),
+                        "/precision/default".into(),
+                    ),
                 );
             }
         }
@@ -257,7 +279,10 @@ pub fn precision(
                             return Err(refuse(
                                 codes::PRECISION_CONFLICT,
                                 at,
-                                format!("{first} and {o} disagree on the {role} role of leaf {}", n.id()),
+                                format!(
+                                    "{first} and {o} disagree on the {role} role of leaf {}",
+                                    n.id()
+                                ),
                             ))
                         }
                         Some(_) => {}
@@ -291,7 +316,10 @@ pub fn precision(
             return Err(refuse(
                 codes::PRECISION_CONTRADICTS_DECLARATION,
                 "/precision",
-                format!("the states of leaf {} declare different element types", n.id()),
+                format!(
+                    "the states of leaf {} declare different element types",
+                    n.id()
+                ),
             ));
         }
         let decl = decl.into_iter().next();
@@ -401,9 +429,15 @@ pub fn checkpoint(rc: &RunConfig, info: &ModelInfo, root: &Node) -> Result<Optio
                 .map(|(k, _)| k.clone())
                 .collect()
         } else if let Some(p) = w.strip_prefix("params:") {
-            params.filter(|(k, v)| scalar(v) && glob(p, k)).map(|(k, _)| k.clone()).collect()
+            params
+                .filter(|(k, v)| scalar(v) && glob(p, k))
+                .map(|(k, _)| k.clone())
+                .collect()
         } else if let Some(p) = w.strip_prefix("fields:") {
-            params.filter(|(k, v)| !scalar(v) && glob(p, k)).map(|(k, _)| k.clone()).collect()
+            params
+                .filter(|(k, v)| !scalar(v) && glob(p, k))
+                .map(|(k, _)| k.clone())
+                .collect()
         } else {
             // forcing:<pattern>: M2 plans no forcing fields.
             vec![]
@@ -415,7 +449,10 @@ pub fn checkpoint(rc: &RunConfig, info: &ModelInfo, root: &Node) -> Result<Optio
                 format!("adjoint.wrt entry {w} matches nothing"),
             ));
         }
-        let named = w.split_once(':').map(|(_, p)| p).filter(|p| !p.contains('*'));
+        let named = w
+            .split_once(':')
+            .map(|(_, p)| p)
+            .filter(|p| !p.contains('*'));
         if let Some(name) = named.filter(|n| bound.contains(*n)) {
             return Err(refuse(
                 codes::WRT_BOUND_PARAMETER,

@@ -419,7 +419,13 @@ mod tests {
         }
     }
 
-    fn band(row: &str, col: &str, rows: &[(i64, i64)], ri: Vec<RowIdx>, ci: Vec<Expr>) -> BandEntry {
+    fn band(
+        row: &str,
+        col: &str,
+        rows: &[(i64, i64)],
+        ri: Vec<RowIdx>,
+        ci: Vec<Expr>,
+    ) -> BandEntry {
         BandEntry {
             row: row.into(),
             col: col.into(),
@@ -451,7 +457,10 @@ mod tests {
     }
 
     fn offs(r: &Reach, set: &str) -> Vec<i64> {
-        r.offsets.get(set).map(|s| s.iter().copied().collect()).unwrap_or_default()
+        r.offsets
+            .get(set)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     #[test]
@@ -459,7 +468,10 @@ mod tests {
         // Scalar row and scalar column: no reach.
         let r = reach(&band("s", "s2", &[], vec![], vec![]));
         assert_eq!(r, Reach::default());
-        assert_eq!(class(&[band("s", "s2", &[], vec![], vec![])]).class, Class::Pointwise);
+        assert_eq!(
+            class(&[band("s", "s2", &[], vec![], vec![])]).class,
+            Class::Pointwise
+        );
         // One scalar, one array: global, either way round.
         let r = reach(&band("s", "q", &[], vec![], vec![v("i"), v("j"), v("k")]));
         assert!(r.global);
@@ -472,7 +484,14 @@ mod tests {
         ));
         assert!(r.global);
         assert_eq!(
-            class(&[band("q", "s", &[(1, 8), (1, 3), (1, 4)], vec![name("i"), name("j"), name("k")], vec![])]).class,
+            class(&[band(
+                "q",
+                "s",
+                &[(1, 8), (1, 3), (1, 4)],
+                vec![name("i"), name("j"), name("k")],
+                vec![]
+            )])
+            .class,
             Class::Global
         );
         // No bands: pointwise.
@@ -496,7 +515,11 @@ mod tests {
         assert_eq!(offs(&r, "lat"), vec![1]);
         assert_eq!(offs(&r, "lev"), vec![-1]);
         // A negative literal after `+` and a δ of 0 are still literals.
-        let r = reach(&q_band([e(r#"{"op":"+","args":["i",-3]}"#), v("j"), v("k")]));
+        let r = reach(&q_band([
+            e(r#"{"op":"+","args":["i",-3]}"#),
+            v("j"),
+            v("k"),
+        ]));
         assert_eq!(offs(&r, "lon"), vec![-3]);
     }
 
@@ -696,7 +719,11 @@ mod tests {
         assert_eq!(l.class, Class::Stencil);
         assert_eq!(l.radius["lon"], (4, 3));
         // Stencil beats column: a vertical offset with a horizontal one.
-        let mixed = q_band([e(r#"{"op":"+","args":["i",1]}"#), v("j"), e(r#"{"op":"+","args":["k",1]}"#)]);
+        let mixed = q_band([
+            e(r#"{"op":"+","args":["i",1]}"#),
+            v("j"),
+            e(r#"{"op":"+","args":["k",1]}"#),
+        ]);
         assert_eq!(class(&[mixed]).class, Class::Stencil);
         // A vertical offset alone is column.
         let up = q_band([v("i"), v("j"), e(r#"{"op":"+","args":["k",1]}"#)]);

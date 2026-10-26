@@ -198,7 +198,9 @@ mod tests {
     #[test]
     fn decomposition() {
         // n-ary +, nested.
-        let t = additive_terms(&e(r#"{"op":"+","args":["a",{"op":"+","args":["b","c"]},"d"]}"#));
+        let t = additive_terms(&e(
+            r#"{"op":"+","args":["a",{"op":"+","args":["b","c"]},"d"]}"#,
+        ));
         assert_eq!(js(&t), r#"["a","b","c","d"]"#);
         // Binary -: the right operand's summands negated one by one.
         let t = additive_terms(&e(
@@ -210,7 +212,10 @@ mod tests {
         );
         // Unary -.
         let t = additive_terms(&e(r#"{"op":"-","args":[{"op":"+","args":["a","b"]}]}"#));
-        assert_eq!(js(&t), r#"[{"op":"-","args":["a"]},{"op":"-","args":["b"]}]"#);
+        assert_eq!(
+            js(&t),
+            r#"[{"op":"-","args":["a"]},{"op":"-","args":["b"]}]"#
+        );
         // Double negation is not simplified.
         let t = additive_terms(&e(r#"{"op":"-","args":["a",{"op":"-","args":["b"]}]}"#));
         assert_eq!(

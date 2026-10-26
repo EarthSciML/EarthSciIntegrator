@@ -16,7 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     /// `leaf` (`coupled: false`) or `coupled`, with its operators in order.
-    Leaf { ops: Vec<String>, coupled: bool },
+    Leaf {
+        ops: Vec<String>,
+        coupled: bool,
+    },
     Sequence(Vec<Node>),
     Strang(Vec<Node>),
     Subcycle(Box<Node>),
@@ -112,7 +115,11 @@ impl Node {
 fn names(v: Option<&Value>) -> Vec<String> {
     match v {
         Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
         _ => vec![],
     }
 }
@@ -194,7 +201,12 @@ pub fn tree(rc: &RunConfig, info: &ModelInfo, ops: &BTreeMap<String, Operator>) 
         return parse(&schedule, "root".into(), "/schedule".into(), false);
     }
     let mut leaves = Vec::new();
-    for class in [Class::Global, Class::Stencil, Class::Column, Class::Pointwise] {
+    for class in [
+        Class::Global,
+        Class::Stencil,
+        Class::Column,
+        Class::Pointwise,
+    ] {
         // `ops` iterates in code-point order of the names.
         let members: Vec<&String> = ops
             .values()
@@ -258,7 +270,9 @@ fn is_path_form(id: &str) -> bool {
         return false;
     };
     rest.split('.').skip(1).all(|seg| {
-        seg == "subcycle" || seg == "every" || (!seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
+        seg == "subcycle"
+            || seg == "every"
+            || (!seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
     }) && (rest.is_empty() || rest.starts_with('.'))
 }
 
@@ -320,7 +334,9 @@ fn check_unsupported(root: &Node) -> Result<()> {
                             return Err(refuse(
                                 codes::UNSUPPORTED_STEP_LIMIT,
                                 ptr(&n.key_ptr("limits"), i),
-                                format!("the observed step limit {l} needs a limit operator (U6, M4b)"),
+                                format!(
+                                    "the observed step limit {l} needs a limit operator (U6, M4b)"
+                                ),
                             ));
                         }
                     }
@@ -358,7 +374,11 @@ fn rule_3(root: &Node, cx: &CheckContext) -> Result<()> {
     for n in root.preorder() {
         let mut named: Vec<(String, String)> = Vec::new();
         if let Kind::Leaf { ops, .. } = &n.kind {
-            named.extend(ops.iter().enumerate().map(|(i, o)| (o.clone(), n.op_ptr(i))));
+            named.extend(
+                ops.iter()
+                    .enumerate()
+                    .map(|(i, o)| (o.clone(), n.op_ptr(i))),
+            );
         }
         named.extend(frozen_ops(n));
         for (op, at) in named {
@@ -446,7 +466,11 @@ pub fn imex_partition(
     let implicit = imex_part(imex.get("implicit"), leaf, ops);
     let explicit = match imex.get("explicit") {
         Some(e) => imex_part(Some(e), leaf, ops),
-        None => leaf.iter().filter(|o| !implicit.contains(o)).cloned().collect(),
+        None => leaf
+            .iter()
+            .filter(|o| !implicit.contains(o))
+            .cloned()
+            .collect(),
     };
     let mut seen = BTreeSet::new();
     for o in implicit.iter().chain(&explicit) {
@@ -608,7 +632,9 @@ fn rule_9(root: &Node, cx: &CheckContext) -> Result<()> {
     if cx.rc.at("/adjoint/functional/over").and_then(Value::as_str) == Some("saveat") {
         if let Some(s) = cx.rc.at("/output/saveat") {
             let s = duration(s, "/output/saveat", cx.info)?;
-            if let Some(tau) = multiples(s, iv).find(|t| !on_fixed_boundary(*t, iv.start, iv.end, dt)) {
+            if let Some(tau) =
+                multiples(s, iv).find(|t| !on_fixed_boundary(*t, iv.start, iv.end, dt))
+            {
                 return Err(refuse(
                     codes::TSTOP_OFF_FIXED_STEP,
                     "/adjoint/functional/over",
@@ -721,7 +747,10 @@ pub fn write(
     out.insert("id".into(), json!(n.id()));
     let dur = |v: &Value, at: String| duration(v, &at, info).map(|x| json!(x));
     match &n.kind {
-        Kind::Leaf { ops: names, coupled } => {
+        Kind::Leaf {
+            ops: names,
+            coupled,
+        } => {
             let s = strategy(n)?;
             out.insert(
                 if *coupled { "coupled" } else { "leaf" }.into(),
@@ -736,7 +765,10 @@ pub fn write(
                 };
                 out.insert("dt".into(), v);
             }
-            let control_in = given("control").and_then(Value::as_object).cloned().unwrap_or_default();
+            let control_in = given("control")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             let cptr = |k: &str| ptr(&n.key_ptr("control"), k);
             let mut control = Map::new();
             control.insert(
@@ -761,7 +793,10 @@ pub fn write(
                 control.insert("controller".into(), json!(controller));
                 control.insert(
                     "maxiters".into(),
-                    control_in.get("maxiters").cloned().unwrap_or(json!(1000000)),
+                    control_in
+                        .get("maxiters")
+                        .cloned()
+                        .unwrap_or(json!(1000000)),
                 );
                 for k in ["dt0", "dtmin", "dtmax"] {
                     if let Some(v) = control_in.get(k) {
@@ -774,15 +809,24 @@ pub fn write(
                 out.insert("jacobian".into(), json!(s.jacobian));
                 out.insert("linsolve".into(), s.linsolve.clone().unwrap_or(Value::Null));
             }
-            let domain_in = given("domain").and_then(Value::as_object).cloned().unwrap_or_default();
+            let domain_in = given("domain")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             let mut domain = Map::new();
             domain.insert(
                 "on_violation".into(),
-                domain_in.get("on_violation").cloned().unwrap_or(json!("reject")),
+                domain_in
+                    .get("on_violation")
+                    .cloned()
+                    .unwrap_or(json!("reject")),
             );
             domain.insert(
                 "check_stages".into(),
-                domain_in.get("check_stages").cloned().unwrap_or(json!(false)),
+                domain_in
+                    .get("check_stages")
+                    .cloned()
+                    .unwrap_or(json!(false)),
             );
             if let Some(nn) = domain_in.get("nonnegative") {
                 domain.insert("nonnegative".into(), nn.clone());
@@ -797,10 +841,15 @@ pub fn write(
                     (None, Some(imex)) => imex_partition(imex, names, ops).unwrap_or_default(),
                     (None, None) => (names.clone(), vec![]),
                 };
-                out.insert("imex".into(), json!({"explicit": explicit, "implicit": implicit}));
+                out.insert(
+                    "imex".into(),
+                    json!({"explicit": explicit, "implicit": implicit}),
+                );
                 out.insert(
                     "implicit_solve".into(),
-                    given("implicit_solve").cloned().unwrap_or(json!("converged")),
+                    given("implicit_solve")
+                        .cloned()
+                        .unwrap_or(json!("converged")),
                 );
             }
             if s.alg == "Theta" {
@@ -842,8 +891,10 @@ pub fn write(
             } else {
                 "strang"
             };
-            let list: Result<Vec<Value>> =
-                children.iter().map(|c| write(c, info, ops, strategy)).collect();
+            let list: Result<Vec<Value>> = children
+                .iter()
+                .map(|c| write(c, info, ops, strategy))
+                .collect();
             out.insert(key.into(), Value::Array(list?));
         }
         Kind::Subcycle(child) => {
@@ -883,6 +934,9 @@ pub fn write(
     Ok(Value::Object(out))
 }
 
+/// The smallest `{"max": d}` of a `limits` list.
+type SmallestMax<'a> = dyn Fn(Option<&Value>, &str) -> Result<Option<f64>> + 'a;
+
 /// The reference step Δ of every leaf, by node id (§5.5.4): the root
 /// receives `step.dt` when fixed, else the smallest `{"max": d}` of
 /// `step.limits`, else `tf − t0`; a `sequence` passes its Δ on, a `strang`
@@ -917,12 +971,16 @@ pub fn reference_steps(
         delta: f64,
         info: &ModelInfo,
         out: &mut BTreeMap<String, f64>,
-        smallest_max: &dyn Fn(Option<&Value>, &str) -> Result<Option<f64>>,
+        smallest_max: &SmallestMax,
     ) -> Result<()> {
         match &n.kind {
             Kind::Leaf { .. } => {
                 let own = match n.value.get("dt") {
-                    Some(dt) if dt.as_str().is_none_or(|s| s != "step" && s != "accumulated") => {
+                    Some(dt)
+                        if dt
+                            .as_str()
+                            .is_none_or(|s| s != "step" && s != "accumulated") =>
+                    {
                         Some(duration(dt, &n.key_ptr("dt"), info)?)
                     }
                     _ => None,
@@ -985,7 +1043,15 @@ mod tests {
         let ids: Vec<&str> = root.preorder().iter().map(|n| n.id()).collect();
         assert_eq!(
             ids,
-            ["transport", "root.0", "root.0.0", "root.1", "root.1.every", "root.2", "root.2.subcycle"]
+            [
+                "transport",
+                "root.0",
+                "root.0.0",
+                "root.1",
+                "root.1.every",
+                "root.2",
+                "root.2.subcycle"
+            ]
         );
         let leaf = &root.leaves()[1];
         assert_eq!(leaf.pointer, "/schedule/sequence/1/every");
@@ -1000,9 +1066,18 @@ mod tests {
         assert!(!on_fixed_boundary(7.0, 0.0, 3600.0, 300.0));
         // tf is always a boundary.
         assert!(on_fixed_boundary(1000.0, 0.0, 1000.0, 300.0));
-        let iv = Interval { start: 0.0, end: 21.0 };
-        assert_eq!(multiples(7.0, iv).collect::<Vec<_>>(), vec![7.0, 14.0, 21.0]);
-        let iv = Interval { start: 7.0, end: 20.0 };
+        let iv = Interval {
+            start: 0.0,
+            end: 21.0,
+        };
+        assert_eq!(
+            multiples(7.0, iv).collect::<Vec<_>>(),
+            vec![7.0, 14.0, 21.0]
+        );
+        let iv = Interval {
+            start: 7.0,
+            end: 20.0,
+        };
         assert_eq!(multiples(7.0, iv).collect::<Vec<_>>(), vec![14.0]);
     }
 }

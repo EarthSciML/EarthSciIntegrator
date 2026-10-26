@@ -169,9 +169,7 @@ pub fn linsolve_object(given: &Value) -> Value {
 }
 
 fn not_known(what: &str) -> PlanError {
-    PlanError::NotYetImplemented(format!(
-        "{what} needs EarthSciASTDiff (stage 2 of M2)"
-    ))
+    PlanError::NotYetImplemented(format!("{what} needs EarthSciASTDiff (stage 2 of M2)"))
 }
 
 /// The table row's `linsolve` for a leaf's class, when the leaf forms a
@@ -330,10 +328,24 @@ mod tests {
         assert!(forms_jacobian("Theta"));
         assert!(!forms_jacobian("SSPRK43"));
         assert!(!forms_jacobian("WRF_RK3"));
-        for a in ["ForwardEuler", "SSPRK33", "SSPRK104", "WRF_RK3", "IMEXEuler", "Theta"] {
+        for a in [
+            "ForwardEuler",
+            "SSPRK33",
+            "SSPRK104",
+            "WRF_RK3",
+            "IMEXEuler",
+            "Theta",
+        ] {
             assert!(!has_error_estimate(a), "{a}");
         }
-        for a in ["Tsit5", "SSPRK43", "Rosenbrock23", "Kvaerno4", "RK4", "BackwardEuler"] {
+        for a in [
+            "Tsit5",
+            "SSPRK43",
+            "Rosenbrock23",
+            "Kvaerno4",
+            "RK4",
+            "BackwardEuler",
+        ] {
             assert!(has_error_estimate(a), "{a}");
         }
         assert!(classical_rosenbrock("Rodas4"));
@@ -347,19 +359,31 @@ mod tests {
         let s = |a, r, c, h| stiffness_rules_1_to_3(a, r, c, h);
         assert_eq!(
             s(Some("Rodas4"), false, Class::Stencil, None),
-            Some(Stiffness { stiff: true, source: StiffnessSource::RunConfig })
+            Some(Stiffness {
+                stiff: true,
+                source: StiffnessSource::RunConfig
+            })
         );
         assert_eq!(
             s(Some("SSPRK33"), true, Class::Pointwise, Some("high")),
-            Some(Stiffness { stiff: false, source: StiffnessSource::RunConfig })
+            Some(Stiffness {
+                stiff: false,
+                source: StiffnessSource::RunConfig
+            })
         );
         assert_eq!(
             s(Some("auto"), true, Class::Pointwise, Some("high")),
-            Some(Stiffness { stiff: true, source: StiffnessSource::ReactionSystems })
+            Some(Stiffness {
+                stiff: true,
+                source: StiffnessSource::ReactionSystems
+            })
         );
         assert_eq!(
             s(None, false, Class::Pointwise, Some("high")),
-            Some(Stiffness { stiff: true, source: StiffnessSource::SolverHint })
+            Some(Stiffness {
+                stiff: true,
+                source: StiffnessSource::SolverHint
+            })
         );
         assert_eq!(s(None, false, Class::Column, Some("high")), None);
         assert_eq!(s(None, false, Class::Pointwise, Some("moderate")), None);
@@ -371,7 +395,10 @@ mod tests {
         let r = resolve_leaf(&auto, &facts(Class::Pointwise, true), "/schedule").unwrap();
         assert_eq!(r.alg, "Rosenbrock23");
         assert_eq!(r.jacobian.as_deref(), Some("symbolic"));
-        assert_eq!(r.linsolve, Some(json!({"block_lu": {"pivot": true, "refine": 0}})));
+        assert_eq!(
+            r.linsolve,
+            Some(json!({"block_lu": {"pivot": true, "refine": 0}}))
+        );
         assert_eq!(r.dt_scope, "cell");
         let mut f = facts(Class::Pointwise, true);
         f.reltol = 1e-6;
@@ -380,12 +407,21 @@ mod tests {
         assert_eq!(r.alg, "Rodas4");
         assert_eq!(r.linsolve, Some(json!({"sparse_block_lu": {"refine": 0}})));
         f.block_vars = Some(None);
-        assert_eq!(code(resolve_leaf(&auto, &f, "/schedule")), codes::AUTO_STRATEGY_UNAVAILABLE);
+        assert_eq!(
+            code(resolve_leaf(&auto, &f, "/schedule")),
+            codes::AUTO_STRATEGY_UNAVAILABLE
+        );
         f.block_vars = Some(Some(2));
         f.uniform_shapes = false;
-        assert_eq!(code(resolve_leaf(&auto, &f, "/schedule")), codes::AUTO_STRATEGY_UNAVAILABLE);
+        assert_eq!(
+            code(resolve_leaf(&auto, &f, "/schedule")),
+            codes::AUTO_STRATEGY_UNAVAILABLE
+        );
         let r = resolve_leaf(&auto, &facts(Class::Pointwise, false), "/s").unwrap();
-        assert_eq!((r.alg.as_str(), r.dt_scope.as_str(), r.linsolve), ("Tsit5", "cell", None));
+        assert_eq!(
+            (r.alg.as_str(), r.dt_scope.as_str(), r.linsolve),
+            ("Tsit5", "cell", None)
+        );
         let r = resolve_leaf(&auto, &facts(Class::Column, true), "/s").unwrap();
         assert_eq!(r.alg, "TRBDF2");
         assert_eq!(r.linsolve, Some(json!({"banded": {}})));
@@ -398,29 +434,59 @@ mod tests {
         }
         let mut f = facts(Class::Stencil, true);
         f.stiff_column_ops = Some(vec!["mix".into()]);
-        assert_eq!(code(resolve_leaf(&auto, &f, "/s")), codes::AUTO_STRATEGY_UNAVAILABLE);
+        assert_eq!(
+            code(resolve_leaf(&auto, &f, "/s")),
+            codes::AUTO_STRATEGY_UNAVAILABLE
+        );
         f.dt_given = true;
         let r = resolve_leaf(&auto, &f, "/s").unwrap();
         assert_eq!(r.alg, "IMEXEuler");
         assert_eq!(r.imex_implicit, Some(vec!["mix".to_string()]));
         assert_eq!(r.linsolve, Some(json!({"banded": {}})));
-        assert_eq!(code(resolve_leaf(&auto, &facts(Class::Global, true), "/s")), codes::AUTO_STRATEGY_UNAVAILABLE);
-        assert_eq!(resolve_leaf(&auto, &facts(Class::Global, false), "/s").unwrap().alg, "SSPRK43");
+        assert_eq!(
+            code(resolve_leaf(&auto, &facts(Class::Global, true), "/s")),
+            codes::AUTO_STRATEGY_UNAVAILABLE
+        );
+        assert_eq!(
+            resolve_leaf(&auto, &facts(Class::Global, false), "/s")
+                .unwrap()
+                .alg,
+            "SSPRK43"
+        );
         // Unknown stiffness is not a refusal.
         let mut f = facts(Class::Pointwise, true);
         f.stiff = None;
-        assert!(matches!(resolve_leaf(&auto, &f, "/s"), Err(PlanError::NotYetImplemented(_))));
+        assert!(matches!(
+            resolve_leaf(&auto, &f, "/s"),
+            Err(PlanError::NotYetImplemented(_))
+        ));
     }
 
     #[test]
     fn given_methods() {
         // Explicit: no jacobian, no linsolve, the class's dt_scope.
-        let r = resolve_leaf(&json!({"alg": "ForwardEuler", "dt": "step"}), &facts(Class::Pointwise, false), "/s").unwrap();
-        assert_eq!((r.jacobian, r.linsolve, r.dt_scope.as_str()), (None, None, "cell"));
+        let r = resolve_leaf(
+            &json!({"alg": "ForwardEuler", "dt": "step"}),
+            &facts(Class::Pointwise, false),
+            "/s",
+        )
+        .unwrap();
+        assert_eq!(
+            (r.jacobian, r.linsolve, r.dt_scope.as_str()),
+            (None, None, "cell")
+        );
         // Implicit with omitted jacobian and linsolve: the class's row.
-        let r = resolve_leaf(&json!({"alg": "Rodas4"}), &facts(Class::Pointwise, true), "/s").unwrap();
+        let r = resolve_leaf(
+            &json!({"alg": "Rodas4"}),
+            &facts(Class::Pointwise, true),
+            "/s",
+        )
+        .unwrap();
         assert_eq!(r.jacobian.as_deref(), Some("symbolic"));
-        assert_eq!(r.linsolve, Some(json!({"block_lu": {"pivot": true, "refine": 0}})));
+        assert_eq!(
+            r.linsolve,
+            Some(json!({"block_lu": {"pivot": true, "refine": 0}}))
+        );
         // Given options are kept, in object form with defaults.
         let r = resolve_leaf(
             &json!({"alg": "Rodas4", "linsolve": {"block_lu": {"pivot": false}}, "control": {"dt_scope": "global"}}),
@@ -428,20 +494,37 @@ mod tests {
             "/s",
         )
         .unwrap();
-        assert_eq!(r.linsolve, Some(json!({"block_lu": {"pivot": false, "refine": 0}})));
+        assert_eq!(
+            r.linsolve,
+            Some(json!({"block_lu": {"pivot": false, "refine": 0}}))
+        );
         assert_eq!(r.dt_scope, "global");
-        let r = resolve_leaf(&json!({"alg": "Rodas4", "linsolve": "dense_lu"}), &facts(Class::Pointwise, true), "/s").unwrap();
+        let r = resolve_leaf(
+            &json!({"alg": "Rodas4", "linsolve": "dense_lu"}),
+            &facts(Class::Pointwise, true),
+            "/s",
+        )
+        .unwrap();
         assert_eq!(r.linsolve, Some(json!({"dense_lu": {}})));
         // An implicit method on a stencil leaf without linsolve.
         assert_eq!(
-            code(resolve_leaf(&json!({"alg": "TRBDF2"}), &facts(Class::Stencil, true), "/s")),
+            code(resolve_leaf(
+                &json!({"alg": "TRBDF2"}),
+                &facts(Class::Stencil, true),
+                "/s"
+            )),
             codes::AUTO_STRATEGY_UNAVAILABLE
         );
         assert_eq!(
-            resolve_leaf(&json!({"alg": "TRBDF2"}), &facts(Class::Column, true), "/s").unwrap().linsolve,
+            resolve_leaf(&json!({"alg": "TRBDF2"}), &facts(Class::Column, true), "/s")
+                .unwrap()
+                .linsolve,
             Some(json!({"banded": {}}))
         );
-        assert_eq!(linsolve_object(&json!("sparse_block_lu")), json!({"sparse_block_lu": {"refine": 0}}));
+        assert_eq!(
+            linsolve_object(&json!("sparse_block_lu")),
+            json!({"sparse_block_lu": {"refine": 0}})
+        );
         assert_eq!(linsolve_object(&json!("gmres")), json!({"gmres": {}}));
         assert_eq!(
             linsolve_object(&json!({"gmres": {"restart": 30}})),

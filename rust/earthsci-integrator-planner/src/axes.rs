@@ -50,7 +50,9 @@ pub fn resolve(rc: &RunConfig, info: &ModelInfo) -> Result<Axes> {
         .map(str::to_string);
     if let Some(v) = &vertical {
         if !info.index_sets.contains_key(v) {
-            return Err(unresolved(format!("vertical axis {v} is not an index set of the model")));
+            return Err(unresolved(format!(
+                "vertical axis {v} is not an index set of the model"
+            )));
         }
     }
     let horizontal: Vec<String> = match given.and_then(|a| a.get("horizontal")) {
@@ -67,7 +69,9 @@ pub fn resolve(rc: &RunConfig, info: &ModelInfo) -> Result<Axes> {
                     )));
                 }
                 if vertical.as_deref() == Some(h.as_str()) {
-                    return Err(unresolved(format!("{h} is named both horizontal and vertical")));
+                    return Err(unresolved(format!(
+                        "{h} is named both horizontal and vertical"
+                    )));
                 }
             }
             names

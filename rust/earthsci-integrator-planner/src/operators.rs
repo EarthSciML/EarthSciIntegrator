@@ -198,7 +198,10 @@ pub fn select(
     }
     let mut out = BTreeMap::new();
     for (name, idx) in assigned {
-        let bind_dt = declared.get(name.as_str()).and_then(|op| op.get("bind_dt")).cloned();
+        let bind_dt = declared
+            .get(name.as_str())
+            .and_then(|op| op.get("bind_dt"))
+            .cloned();
         let (writes, reads) = dof_sets(info, idx.iter().map(|&i| &terms[i]));
         out.insert(
             name.clone(),

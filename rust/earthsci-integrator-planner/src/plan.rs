@@ -164,7 +164,11 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         .flat_map(|r| r.keys())
         .map(String::as_str)
         .collect();
-    let solver_stiffness = info.file.solver.as_ref().and_then(|s| s.stiffness.as_deref());
+    let solver_stiffness = info
+        .file
+        .solver
+        .as_ref()
+        .and_then(|s| s.stiffness.as_deref());
     let mut stiffness = BTreeMap::new();
     for (name, op) in &ops {
         let leaf_alg = root
@@ -178,7 +182,12 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         });
         stiffness.insert(
             name.clone(),
-            strategy::stiffness_rules_1_to_3(leaf_alg, rs_term, op.locality.class, solver_stiffness),
+            strategy::stiffness_rules_1_to_3(
+                leaf_alg,
+                rs_term,
+                op.locality.class,
+                solver_stiffness,
+            ),
         );
     }
     let inputs = settings::inputs(&rc, &info);
@@ -311,8 +320,7 @@ impl Planned {
             .iter()
             .map(|o| (o.clone(), self.operators[o].locality.class))
             .collect();
-        let stiffs: Option<Vec<bool>> =
-            names.iter().map(|o| self.stiffness_of(o, facts)).collect();
+        let stiffs: Option<Vec<bool>> = names.iter().map(|o| self.stiffness_of(o, facts)).collect();
         let stiff_column_ops: Option<Vec<String>> = ops
             .iter()
             .filter(|(_, c)| *c == Class::Column)
@@ -320,8 +328,7 @@ impl Planned {
             .collect::<Option<Vec<_>>>()
             .map(|v| v.into_iter().filter(|(_, s)| *s).map(|(o, _)| o).collect());
         let states = settings::leaf_states(n, &self.operators);
-        let shapes: BTreeSet<&Vec<String>> =
-            states.iter().map(|s| &self.model.shapes[s]).collect();
+        let shapes: BTreeSet<&Vec<String>> = states.iter().map(|s| &self.model.shapes[s]).collect();
         let uniform_shapes = shapes.len() <= 1;
         let block_vars = facts.map(|f| {
             let mut union = BTreeSet::new();
@@ -365,7 +372,13 @@ impl Planned {
         for n in self.schedule.leaves() {
             algs.insert(n.id().to_string(), strategy(n)?.alg);
         }
-        settings::precision(&self.run_config, &self.model, &self.operators, &self.schedule, &algs)?;
+        settings::precision(
+            &self.run_config,
+            &self.model,
+            &self.operators,
+            &self.schedule,
+            &algs,
+        )?;
         Ok(resolved)
     }
 

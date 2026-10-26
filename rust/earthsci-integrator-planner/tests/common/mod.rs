@@ -77,16 +77,26 @@ impl BandSource for HandBands {
                             .flat_map(|o| {
                                 let c = match o {
                                     0 => v("i"),
-                                    o if o < 0 => e(&format!(r#"{{"op":"-","args":["i",{}]}}"#, -o)),
+                                    o if o < 0 => {
+                                        e(&format!(r#"{{"op":"-","args":["i",{}]}}"#, -o))
+                                    }
                                     o => e(&format!(r#"{{"op":"+","args":["i",{o}]}}"#)),
                                 };
                                 same(&move |d| (d == 0).then(|| c.clone()))
                             })
                             .collect(),
+                        // First-order upwind along cell, seam row 1 reading cell 64.
+                        ("advection_reaction", 1, 0) => {
+                            let mut b = same(&|_| None);
+                            b.extend(same(&|_| Some(e(r#"{"op":"-","args":["i",1]}"#))));
+                            b
+                        }
                         // Upwind along lat.
                         ("reseact_shaped", 2, 1) => {
                             let mut b = same(&|_| None);
-                            b.extend(same(&|d| (d == 1).then(|| e(r#"{"op":"-","args":["j",1]}"#))));
+                            b.extend(same(&|d| {
+                                (d == 1).then(|| e(r#"{"op":"-","args":["j",1]}"#))
+                            }));
                             b
                         }
                         // The column mean: a contraction over lev.

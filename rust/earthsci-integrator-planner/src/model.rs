@@ -181,7 +181,9 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         return Err(refuse(
             codes::TOY_MODEL_NOT_PLANNABLE,
             "/model",
-            format!("{model} names a hand-written toy problem, which only the conformance harness runs"),
+            format!(
+                "{model} names a hand-written toy problem, which only the conformance harness runs"
+            ),
         ));
     }
     let path = rc.dir().join(model);
@@ -296,7 +298,10 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
     };
     // Declared shapes now; lifted states get theirs in `resolve_lifted_shapes`.
     for s in info.states.clone() {
-        let declared = info.flat.state_variables[&s].shape.clone().unwrap_or_default();
+        let declared = info.flat.state_variables[&s]
+            .shape
+            .clone()
+            .unwrap_or_default();
         info.shapes.insert(s, declared);
     }
     Ok(info)
@@ -306,7 +311,12 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
 /// the model's directory as base, must equal the run config's own location
 /// written the same way.
 fn check_external(rc: &RunConfig, file: &EsmFile, model_path: &Path) -> Result<()> {
-    if file.solver.as_ref().and_then(|s| s.external.as_ref()).is_none() {
+    if file
+        .solver
+        .as_ref()
+        .and_then(|s| s.external.as_ref())
+        .is_none()
+    {
         return Ok(());
     }
     let model_dir = model_path.parent().unwrap_or(Path::new("."));
@@ -377,7 +387,9 @@ pub fn resolve_lifted_shapes(info: &mut ModelInfo) -> Result<()> {
                 return Err(refuse(
                     codes::LIFT_SHAPE_UNRESOLVED,
                     "/model",
-                    format!("no declared shape has the extents {extents:?} of the lifted state {state}"),
+                    format!(
+                        "no declared shape has the extents {extents:?} of the lifted state {state}"
+                    ),
                 ))
             }
         }

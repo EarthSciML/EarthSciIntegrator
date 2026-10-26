@@ -133,7 +133,7 @@ pub fn format_number(x: f64) -> Result<String, String> {
             out.push_str(&digits[1..]);
         }
         out.push('e');
-        out.push(if n - 1 >= 0 { '+' } else { '-' });
+        out.push(if n > 0 { '+' } else { '-' });
         let _ = write!(out, "{}", (n - 1).abs());
     }
     Ok(out)
@@ -181,9 +181,12 @@ fn even_tie(x: f64, digits: &str, exp: i32) -> Option<(String, i32)> {
         (String::from_utf8(hi).ok()?, e)
     };
     let parses = |d: &str, ex: i32| {
-        format!("{d}e{}", ex - d.len() as i32 + 1).parse::<f64>().ok() == Some(x)
+        format!("{d}e{}", ex - d.len() as i32 + 1)
+            .parse::<f64>()
+            .ok()
+            == Some(x)
     };
-    let even = |d: &str| (d.as_bytes()[d.len() - 1] - b'0') % 2 == 0;
+    let even = |d: &str| (d.as_bytes()[d.len() - 1] - b'0').is_multiple_of(2);
     for (d, ex) in [(lo, e), (hi, hi_exp)] {
         if even(&d) && parses(&d, ex) {
             let d = d.trim_end_matches('0');
@@ -295,7 +298,7 @@ mod tests {
         );
         // RFC 8785 §3.2.2's example.
         let v = json!({
-            "numbers": [333333333.33333329, 1E30, 4.50, 2e-3, 0.000000000000000000000000001],
+            "numbers": [333_333_333.333_333_3, 1E30, 4.50, 2e-3, 0.000000000000000000000000001],
             "string": "\u{20ac}$\u{000F}\nA'B\"\\\\\"/",
             "literals": [null, true, false]
         });
