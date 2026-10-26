@@ -18,6 +18,8 @@ every refusal fixture's code is listed in spec/planner-errors.json, hand-written
 expected plans are canonical JSON, and every .esm document under
 tests/conformance loads, validates and flattens with EarthSciAST 0.4.0
 (the earthsci-ast Python package; with --require-esm a missing package fails).
+The spec targets EarthSciAST 0.5.0 (spec/plan.md §0.2); ESM_VERSION and the CI
+pin move to 0.5.0 once it is on PyPI.
 
 Usage: python tests/conformance/validate_schemas.py [--require-esm]
 Needs jsonschema >= 4.18 (for the `referencing` registry).

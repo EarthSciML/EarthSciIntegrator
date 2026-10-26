@@ -22,9 +22,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # earthsci-ast is EarthSciAST's Python binding, pinned to the release the
-      # M2 fixtures are written against (spec/plan.md §0.2): tier 0 loads,
-      # validates and flattens every .esm under tests/conformance with it.
+      # earthsci-ast is EarthSciAST's Python binding: tier 0 loads, validates
+      # and flattens every .esm under tests/conformance with it. The spec
+      # targets EarthSciAST 0.5.0 (spec/plan.md §0.2); this pin stays at 0.4.0,
+      # which loads the same fixtures, until 0.5.0 is on PyPI.
       - run: pip install "jsonschema>=4.18" "earthsci-ast==0.4.0"
       - run: python tests/conformance/validate_schemas.py --require-esm
       - name: M1 and M2 cases are up to date with their generators

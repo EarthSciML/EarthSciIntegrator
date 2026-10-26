@@ -1,6 +1,6 @@
 # Upstream RFC drafts
 
-**Status:** drafts, 2026-10-13, filed upstream as issues on 2026-10-23 (the Issue column). Needed-by dates updated 2026-10-14 for milestone M4b (D37). Upstream progress updated 2026-10-25 (the table below the list). The 2026-10-14 reuse audit (survey §6) verified that each ask names a real gap: none of U1–U15 duplicates existing upstream code.
+**Status:** drafts, 2026-10-13, filed upstream as issues on 2026-10-23 (the Issue column). Needed-by dates updated 2026-10-14 for milestone M4b (D37). Upstream progress updated 2026-10-26 (the table below the list). The 2026-10-14 reuse audit (survey §6) verified that each ask names a real gap: none of U1–U15 duplicates existing upstream code.
 
 These are the changes EarthSciIntegrator needs in sibling repos. Each draft follows the EarthSciAST RFC format and cites current upstream code by `file:line`. Anything a draft could not verify is labelled as an assumption. The integrator-side context is in [`../architecture.md`](../architecture.md) §13 and [`../decisions.md`](../decisions.md).
 
@@ -24,17 +24,18 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 | U16 | EarthSciAST spec | [`solver.time_span`](U16-solver-time-span.md): the run interval a document asks for (D60) | [EarthSciAST#550](https://github.com/EarthSciML/EarthSciAST/issues/550) | M2 |
 | U17 | EarthSciASTDiff | [Time-derivative bands](U17-time-derivative-bands.md): ∂f/∂t as a specified, golden-gated band model, for Rosenbrock's `f_t` | [EarthSciASTDiff#11](https://github.com/EarthSciML/EarthSciASTDiff/issues/11) | M3 (restores M2's time-dependent Rosenbrock cases) |
 
-**Upstream progress** (2026-10-25):
+**Upstream progress** (2026-10-26):
 
 | # | State |
 |---|---|
 | U1 | Done: released in EarthSciAST v0.4.0 (esm 1.3.0), esm-spec §2.2.6, with the location accessor. |
 | U2 | Done: released in EarthSciAST v0.4.0, `equation_contributions` (esm-libraries-spec §4.7.5), plus Rust's `equation_lifted`. |
-| U3 | Merged as EarthSciAST#557; not yet in a release. |
-| U4 | In review as EarthSciAST PR #561. Rust's M2 end-to-end runs wait for it (spec/toy-problems.md §4). |
+| U3 | Done: released in EarthSciAST v0.5.0 (EarthSciAST#557; esm stays 1.3.0), range-restricted right-hand sides over tiles and lanes in Julia and Rust (API_SPEC §5.8, CONFORMANCE_SPEC §5.50). On 2026-10-26 v0.5.0 awaits registration in Julia's General registry, and crates.io and PyPI still have 0.4.0. |
+| U4 | Done: released in EarthSciAST v0.5.0 (EarthSciAST#561), `rhs_program` with forcing sets in Julia and Rust's `RhsProgram` (`Send + Sync`) (API_SPEC §5.8, CONFORMANCE_SPEC §5.51). Rust's M2 end-to-end runs can use it (spec/toy-problems.md §4). |
+| U10 | Merged on EarthSciASTDiff `main`, closing EarthSciASTDiff#4: catch-up (W0, #5), trimmed evaluation document (W1, #8), scatter plans (W3, #10), Rust production assembly (W2, W4, W5, #12). To be released with EarthSciASTDiff 0.2. |
 | U16 | Done: released in EarthSciAST v0.4.0 (esm 1.3.0), esm-spec §2.2.7, with `resolve_time_span` in every binding. |
-| U17 | Drafted 2026-10-25, filed as EarthSciASTDiff#11 the same day. EarthSciASTDiff `main` already computes `wrt = time` bands in Julia, Rust and Python; the ask is the spec text and cross-binding goldens. |
-| others | Open. EarthSciASTDiff 0.2 (on EarthSciAST 0.4, both languages) is expected before M2's stage 2; spec/plan.md is written against its `main`. |
+| U17 | Done on EarthSciASTDiff `main` (EarthSciASTDiff#13, closing #11): `esm-jacobian-spec.md` §4.2 specifies `wrt: "time"` bands, §8 their evaluation document, and the `tgrad_photolysis` goldens gate them in Julia, Rust and Python. To be released with EarthSciASTDiff 0.2. |
+| others | Open. EarthSciASTDiff 0.2 (on EarthSciAST 0.5, both languages; today its Julia package is 0.1.0 with EarthSciAST compat "0.4, 0.5", and its Rust crate is unpublished and depends on EarthSciAST by path) is expected before M2's stage 2; spec/plan.md is written against its `main`. |
 
 **Cross-cutting prerequisites** (architecture §13):
 - esm 1.3.0 for the three model repos.

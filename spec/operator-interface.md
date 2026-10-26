@@ -94,7 +94,7 @@ A runtime that executes a plan (spec/plan.md) builds each operator the schedule 
 
 ### 8.1 Building the kernels
 
-- **Right-hand side.** Load `derived/<name>.rhs.esm` with EarthSciAST and build its right-hand side **through `flatten`**: Julia `build_evaluator(flatten(load_path(path)))` (Julia's `build_evaluator` on the unflattened file refuses the documents' fully scoped self-references, spec/plan.md §10 item 3); Rust the public reentrant right-hand side of U4 (EarthSciAST PR #561) built from the flattened document. Julia's `f!` is not reentrant until U4 (architecture §7.3), so a Julia runtime calls it from one thread at a time.
+- **Right-hand side.** Load `derived/<name>.rhs.esm` with EarthSciAST and build its right-hand side **through `flatten`**: Julia `build_evaluator(flatten(load_path(path)))` (Julia's `build_evaluator` on the unflattened file refuses the documents' fully scoped self-references, spec/plan.md §10 item 3); Rust the public reentrant right-hand side of U4 (`RhsProgram`, EarthSciAST 0.5.0) built from the flattened document. Julia's `f!` is not reentrant (architecture §7.3), so a Julia runtime that calls it calls it from one thread at a time; EarthSciAST 0.5.0's `rhs_program` is the reentrant Julia entry (U4).
 - **Jacobian.** Load and build `derived/<name>.jacobian.esm` the same way. Its right-hand side at $(u, p, t)$ holds band field `J_k` in the slots of the state `_jacobian.J_k` (spec/plan.md §6.2).
 - A build failure refuses the leaf, naming the operator and the document.
 
