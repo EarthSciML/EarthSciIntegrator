@@ -318,7 +318,8 @@ checksum = "e1d926b4d407d372f141f93bb444696142c29d32962ccbd3531117cf3aa0bfa9"
 [[package]]
 name = "earthsci-ast"
 version = "0.5.0"
-source = "git+https://github.com/EarthSciML/EarthSciAST?rev=f6f8a4bfde30363cdc3ddd75e7cc18360842df5b#f6f8a4bfde30363cdc3ddd75e7cc18360842df5b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fa6b7fe77d35f31175947d1b266a5021ee6ce1f2b2b05b8559ccb574763c6b7"
 dependencies = [
  "diffsol",
  "faer",
