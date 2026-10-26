@@ -1,8 +1,8 @@
 # Toy problems and the M1 conformance cases
 
-**Status:** M1 draft, 2026-10-23. Normative for both implementations.
+**Status:** M1 draft, 2026-10-23; §4 (the `.esm` versions and the M2 end-to-end cases) added 2026-10-25. Normative for both implementations.
 
-M1's gate (architecture §14) is conformance tiers 2 and 3 on toy problems. The problems are written by hand in each language behind the operator interface ([`operator-interface.md`](operator-interface.md)), not compiled from `.esm` documents (D53): Rust has no public reentrant right-hand side until U4 lands. `.esm` versions of the same problems join the suite once it does, and must give the same results.
+M1's gate (architecture §14) is conformance tiers 2 and 3 on toy problems. The problems are written by hand in each language behind the operator interface ([`operator-interface.md`](operator-interface.md)), not compiled from `.esm` documents (D53): Rust has no public reentrant right-hand side until U4 lands. `.esm` versions of the same problems join the suite at M2 (§4), planned and run end to end, and must give the same results.
 
 Each problem below fixes its equations, operators, layout, parameters, initial state and interval exactly. Both implementations MUST implement every listed operator call (operator-interface.md §3) with hand-derived derivatives, not automatic differentiation, so the derivatives themselves are under test. The Julia implementation's ForwardDiff Jacobian of `rhs` is a test oracle for them.
 
@@ -112,3 +112,38 @@ The values in this example are illustrative:
 - `stats.accepted` and `stats.rejected` sum over all leaves and macro steps.
 
 Result files under `tests/conformance/m1/reference/` are checked in. They are produced by a Julia script with OrdinaryDiffEq (`Rodas5P` for stiff and `Vern9` for non-stiff problems, `reltol = abstol = 1e-13`); for `advection_reaction` the reference integrates the unsplit sum of both operators, so `order` checks measure the splitting error. The script and the files arrive with the Julia M1 implementation. Julia and Rust results are produced by CI and compared there, not checked in.
+
+## 4. The toy problems as `.esm` documents (M2)
+
+M2's runtimes execute plans end to end (D80). The gate replays the M1 cases on `.esm` versions of the problems: the planner plans each case, the runtime builds its operators from the plan (spec/operator-interface.md §8) and runs it, and the result must match the same implementation's run of the M1 case on the hand-written problem. Julia runs them from M2; Rust joins once U4 (EarthSciAST PR #561) gives it a public reentrant right-hand side.
+
+### 4.1 Documents
+
+The documents are in [`../tests/conformance/toys/`](../tests/conformance/toys/), esm 1.3.0, each validated by EarthSciAST 0.4.0 in conformance tier 0. Each writes §1's equations with §1's parameter values, initial state and interval (`solver.time_span`), and evaluates to the same right-hand side up to the order of floating-point operations:
+
+| Problem | File | Components and operators | Layout of §1 |
+|---|---|---|---|
+| `forced_decay` | `forced_decay.esm` | model `Decay`; operator `decay` = `{"components": "Decay"}` | `Decay.u` |
+| `van_der_pol` | `van_der_pol_nonstiff.esm`, `van_der_pol_stiff.esm` (one document per variant, since a run config cannot override a parameter) | model `Oscillator`; `oscillator` | `Oscillator.y`, `Oscillator.z` |
+| `robertson` | `robertson.esm` | model `Kinetics`; `kinetics` | `Kinetics.y1`, `y2`, `y3` |
+| `photostationary_cells` | `photostationary_cells.esm` | model `Photo`, arrays over index set `cell` (16), $\varphi_c$ written as $(\pi/8)(i - 1)$ for 1-based $i$; `photochemistry` | `Photo.NO2`, `Photo.NO`, `Photo.O3`, species-major |
+| `advection_reaction` | `advection_reaction.esm` | model `Reaction` owns $A$ and $B$ and the exchange; model `Transport` authors `D(Reaction.A)` (periodic upwind, the seam cell reading cell 64), joined by `operator_compose`; `transport` = `{"components": "Transport"}`, `reaction` = `{"components": "Reaction"}` | `Reaction.A`, `Reaction.B`, species-major |
+| `source_decay_map` | `source_decay_map.esm` | model `Box`; the map is the observed `Box.u_decayed` reading `Box.dt` (eqice's form) | `Box.u` |
+
+`source_decay_map` is planned only from M4b, when `map` operators arrive (U6); at M2 its document is validated and its planning is a refusal fixture (`unsupported_map_operator`).
+
+### 4.2 Cases
+
+[`../tests/conformance/m2/cases.json`](../tests/conformance/m2/cases.json) is generated from the M1 cases by [`make_cases.py`](../tests/conformance/m2/make_cases.py) beside it; CI checks the two agree. An M2 case is the M1 case, changed as follows:
+
+- `id` is the M1 case's `id` prefixed with `m2.`, so the two suites' result files (§3) never carry the same `case`;
+- `model` is the problem's document, relative to the cases file, and `operators` defines the problem's operators by the selectors of §4.1, so the M1 schedule's operator names resolve;
+- every leaf's `control.dt_scope` is `global`, as at M1, where the planner would resolve pointwise leaves to `cell` (D17);
+- `adjoint` is removed and the only check is `toy_equivalence` (§4.3): planned operators do not yet provide `vjp_p` or second-order calls (spec/operator-interface.md §8.3);
+- `layout` lists the variables of §4.1's last column.
+
+Left out: `source_decay_map` (maps), and every case with a Rosenbrock leaf on a time-dependent problem (`forced_decay`, `photostationary_cells`), since planned operators have no `ft` at M2 (spec/plan.md §10 item 4; U17 restores them). That leaves 41 of the 51 M1 cases.
+
+### 4.3 The `toy_equivalence` check
+
+A runtime writes an M2 case's result file (§3) with `u` in the case's `layout`: the listed variables' cells, each variable column-major, in the listed order. That is §1's layout. The check compares this result file with the same implementation's result file for the M1 case named by `against`, by the rule of the `cross_language` check (§2.1) with the check's `rtol` and `rtol_steps_differ`: states agree to `rtol` relative to each component's largest magnitude when the accepted step counts agree, and to `rtol_steps_differ` when they differ. Only states and step counts are compared; an M1 gradient case's `functional` and `gradient` have no counterpart in its M2 run. The two runs evaluate the same equations in a different order of floating-point operations (the hand-written right-hand side against EarthSciAST's compiled one, and species order inside a `block_lu` block), so step sequences may differ in adaptive runs, as between languages.

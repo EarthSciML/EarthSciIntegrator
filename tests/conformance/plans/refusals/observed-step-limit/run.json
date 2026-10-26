@@ -1,0 +1,13 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../fixtures/cross_component_term/model.esm",
+  "step": {
+    "limits": [
+      "Chem.ratio",
+      {
+        "max": 60
+      }
+    ]
+  },
+  "schedule": "auto"
+}

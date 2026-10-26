@@ -1,0 +1,13 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Everything automatic: one default_stencil operator, SSPRK43 as the root adaptive leaf; axes by default (lon, lat, lev all horizontal is too many, so axes are given).",
+  "model": "model.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "schedule": "auto"
+}

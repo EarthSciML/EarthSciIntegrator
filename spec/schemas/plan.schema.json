@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://earthsciml.org/schemas/esm-integrator/0.1.0/plan.schema.json",
   "title": "EarthSciIntegrator plan",
-  "description": "The planner's output (spec/plan.md). Skeleton at spec 0.1.0: the field set is fixed here so that tier-1 goldens have a target; the contents of operator structure and the checkpoint actions are filled in at M2 and M4. A plan is serialized as RFC 8785 canonical JSON and must be byte-identical between the Julia and Rust planners, so it records nothing implementation-specific.",
+  "description": "The planner's output (spec/plan.md). M2 draft: every field is specified there except the checkpoint actions, which arrive at M4. A plan is serialized as RFC 8785 canonical JSON and must be byte-identical between the Julia and Rust planners, so it records nothing implementation-specific.",
   "type": "object",
   "required": ["esm_integrator", "inputs", "time", "operators", "schedule", "step", "derived"],
   "additionalProperties": false,
@@ -44,7 +44,7 @@
     "precision": {
       "description": "Resolved precision roles per leaf, keyed by node id. Every role is present.",
       "type": "object",
-      "propertyNames": {"$ref": "run-config.schema.json#/$defs/identifier"},
+      "propertyNames": {"$ref": "run-config.schema.json#/$defs/nodeKey"},
       "additionalProperties": {
         "allOf": [
           {"$ref": "run-config.schema.json#/$defs/precisionRoles"},
@@ -69,27 +69,32 @@
       }
     },
     "validation": {
-      "description": "Pass 8's checks. Only outcomes are recorded, never measured errors, which differ between implementations.",
+      "description": "Pass 8's checks (spec/plan.md §8). Only outcomes are recorded, never measured errors, which differ between implementations. rhs_sum is one check over the whole model and names no operator; band_model and non_empty name theirs.",
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["check", "operator", "passed"],
+        "required": ["check", "passed"],
         "additionalProperties": false,
         "properties": {
           "check": {"enum": ["rhs_sum", "band_model", "non_empty"]},
           "operator": {"$ref": "run-config.schema.json#/$defs/operatorName"},
           "passed": {"const": true}
-        }
+        },
+        "if": {"properties": {"check": {"const": "rhs_sum"}}},
+        "then": {"not": {"required": ["operator"]}},
+        "else": {"required": ["operator"]}
       }
     }
   },
 
   "$defs": {
     "resolvedNode": {
-      "description": "A run-config schedule node with an id, whose child nodes are resolved nodes too.",
+      "description": "A run-config schedule node with an id, whose child nodes are resolved nodes too. A leaf's or coupled node's operators are always a list (spec/plan.md §7.1).",
       "$ref": "run-config.schema.json#/$defs/node",
       "required": ["id"],
       "properties": {
+        "leaf": {"type": "array"},
+        "coupled": {"type": "array"},
         "sequence": {"items": {"$ref": "#/$defs/resolvedNode"}},
         "strang": {"items": {"$ref": "#/$defs/resolvedNode"}},
         "subcycle": {"$ref": "#/$defs/resolvedNode"},
@@ -120,7 +125,7 @@
     },
     "operatorPlan": {
       "type": "object",
-      "required": ["kind", "locality", "writes", "reads"],
+      "required": ["kind", "locality", "writes", "reads", "terms", "structure", "stiffness"],
       "additionalProperties": false,
       "properties": {
         "kind": {"enum": ["rhs", "algebraic", "map", "limit", "condition"]},
@@ -131,7 +136,7 @@
           "properties": {
             "class": {"$ref": "run-config.schema.json#/$defs/locality"},
             "radius": {
-              "description": "Stencil reach per horizontal axis: [cells toward lower index, cells toward higher index]. Present only for class 'stencil'.",
+              "description": "Stencil reach per horizontal axis: [cells toward lower index, cells toward higher index]. Present only for class 'stencil', with every horizontal axis (spec/plan.md §5.2.4).",
               "type": "object",
               "minProperties": 1,
               "propertyNames": {"$ref": "run-config.schema.json#/$defs/identifier"},
@@ -147,13 +152,27 @@
         "writes": {"$ref": "#/$defs/sortedNames"},
         "reads": {"$ref": "#/$defs/sortedNames"},
         "terms": {
-          "description": "Provenance paths of the contributions assigned to this operator (U2), in flattened-equation order.",
-          "type": "array", "items": {"type": "string", "minLength": 1}
+          "description": "The operator's terms (spec/plan.md §5.1), in flattened-equation order, then contribution, then summand.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["variable", "contribution", "summand", "provenance", "locality"],
+            "additionalProperties": false,
+            "properties": {
+              "variable": {"$ref": "run-config.schema.json#/$defs/qualifiedName"},
+              "contribution": {"type": "integer", "minimum": 0},
+              "summand": {"type": "integer", "minimum": 0},
+              "provenance": {
+                "description": "A component path, coupling:<k>, or several joined by + (D64).",
+                "type": "string",
+                "pattern": "^([A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*|coupling:[0-9]+)(\\+([A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*|coupling:[0-9]+))*$"
+              },
+              "locality": {"$ref": "run-config.schema.json#/$defs/locality"}
+            }
+          }
         },
-        "structure": {
-          "description": "Filled in at M2 (architecture §3.2 pass 4).",
-          "type": "object"
-        },
+        "structure": {"$ref": "#/$defs/structure"},
         "stiffness": {
           "type": "object",
           "required": ["class", "source"],
@@ -163,7 +182,100 @@
             "source": {"enum": ["reaction_systems", "solver_hint", "gershgorin", "run_config"]}
           }
         }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"locality": {"properties": {"class": {"const": "stencil"}}}}},
+          "then": {"properties": {"structure": {"required": ["stencil"]}}},
+          "else": {"properties": {"structure": {"not": {"required": ["stencil"]}}}}
+        },
+        {
+          "if": {"properties": {"locality": {"properties": {"class": {"const": "column"}}}}},
+          "then": {"properties": {"structure": {"required": ["column"]}}},
+          "else": {"properties": {"structure": {"not": {"required": ["column"]}}}}
+        },
+        {
+          "if": {"not": {"properties": {"locality": {"properties": {"class": {"const": "pointwise"}}}}}},
+          "then": {"properties": {"structure": {"not": {"required": ["block"]}}}}
+        }
+      ]
+    },
+    "structure": {
+      "description": "Pass 4 (spec/plan.md §5.4).",
+      "type": "object",
+      "required": ["class", "linear_in_u", "depends_on_t", "bands"],
+      "additionalProperties": false,
+      "properties": {
+        "class": {"enum": ["block_diagonal", "banded", "general", "empty"]},
+        "linear_in_u": {"type": "boolean"},
+        "depends_on_t": {"type": "boolean"},
+        "bands": {
+          "description": "Band positions in field order: band k is J_k of the Jacobian document (EarthSciASTDiff serialize_band without coef).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["row", "col", "rows", "row_idx", "col_idx"],
+            "additionalProperties": false,
+            "properties": {
+              "row": {"$ref": "run-config.schema.json#/$defs/qualifiedName"},
+              "col": {"$ref": "run-config.schema.json#/$defs/qualifiedName"},
+              "rows": {
+                "type": "array",
+                "items": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+              },
+              "row_idx": {"type": "array", "items": {"type": ["string", "integer"]}},
+              "col_idx": {"type": "array"},
+              "contracted": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "array", "minItems": 3, "maxItems": 3,
+                  "prefixItems": [{"type": "string"}, {"type": "integer"}, {"type": "integer"}]
+                }
+              }
+            }
+          }
+        },
+        "block": {
+          "description": "EarthSciASTDiff's block-diagonal factorization plan, 1-based (esm-jacobian-spec §6, without its type tag).",
+          "type": "object",
+          "required": ["vars", "ordering", "pattern", "lu_pattern"],
+          "additionalProperties": false,
+          "properties": {
+            "vars": {"type": "array", "items": {"$ref": "run-config.schema.json#/$defs/qualifiedName"}, "minItems": 1},
+            "ordering": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 1},
+            "pattern": {"$ref": "#/$defs/pairs"},
+            "lu_pattern": {"$ref": "#/$defs/pairs"}
+          }
+        },
+        "column": {
+          "type": "object",
+          "required": ["axis", "kl", "ku"],
+          "additionalProperties": false,
+          "properties": {
+            "axis": {"$ref": "run-config.schema.json#/$defs/identifier"},
+            "kl": {"type": "integer", "minimum": 0},
+            "ku": {"type": "integer", "minimum": 0}
+          }
+        },
+        "stencil": {
+          "type": "object",
+          "required": ["footprint"],
+          "additionalProperties": false,
+          "properties": {
+            "footprint": {
+              "description": "Distinct reduced horizontal offset vectors, in axes.horizontal order, sorted lexicographically (spec/plan.md §5.4).",
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 2}
+            }
+          }
+        }
       }
+    },
+    "pairs": {
+      "type": "array",
+      "items": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2}
     },
     "sortedNames": {
       "description": "Qualified names, sorted by Unicode code point (spec/plan.md §2).",
@@ -185,8 +297,9 @@
           "additionalProperties": {"type": "integer", "minimum": 0}
         },
         "shards": {
+          "description": "Shard count per pointwise or column leaf, by node id (spec/plan.md §7.4).",
           "type": "object",
-          "propertyNames": {"$ref": "run-config.schema.json#/$defs/identifier"},
+          "propertyNames": {"$ref": "run-config.schema.json#/$defs/nodeKey"},
           "additionalProperties": {"type": "integer", "minimum": 1}
         },
         "output_shard": {
@@ -198,7 +311,7 @@
       }
     },
     "checkpointSchedule": {
-      "description": "D34: computed once by the planner, executed by both runtimes. The action vocabulary is provisional until M4.",
+      "description": "D34: computed once by the planner, executed by both runtimes. Until M4 it is the placeholder {kind: all, macro_steps: 0} (D78); the action vocabulary is provisional until then.",
       "type": "object",
       "required": ["kind", "macro_steps"],
       "additionalProperties": false,

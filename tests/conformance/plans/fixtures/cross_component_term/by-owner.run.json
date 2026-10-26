@@ -1,0 +1,42 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Owners at work: the NO sink reads only Dep, so components Dep takes it; the O3 sink reads Dep and Met and has no owner, so it is taken by variable and label.",
+  "model": "model.esm",
+  "operators": {
+    "chemistry": {
+      "select": {
+        "components": "Chem"
+      }
+    },
+    "deposition": {
+      "select": {
+        "components": "Dep"
+      }
+    },
+    "scavenging": {
+      "select": {
+        "terms": [
+          "coupling:0"
+        ],
+        "variables": [
+          "Chem.O3"
+        ]
+      }
+    }
+  },
+  "step": {
+    "dt": 60
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": [
+          "chemistry",
+          "deposition",
+          "scavenging"
+        ],
+        "alg": "Rodas4"
+      }
+    ]
+  }
+}

@@ -129,7 +129,7 @@ The planner and the runtime are separate on purpose:
 7. **Partition plan.** Rank and tile decomposition, halo widths per operator (the radius from pass 2), and shard sizing for pointwise and column leaves. The output stores' shard shape is an input: rank block boundaries fall on multiples of the output shard length, so ranks can write concurrently without locks (U12).
 8. **Validation and emission.** Checks:
    - Σ (operator RHS) = flat RHS at sampled states, within tolerance;
-   - **every** operator's band models against an independent derivative at sampled non-default states (reseact: "never FD-validate at the default IC"). This is mandatory, not sampled: EarthSciASTDiff's inliner has two paths that are silently wrong, found by reading (a contracting observed loses its Σ; a faq-defined observed is treated as a state). The oracle is ForwardDiff on EarthSciAST's Dual-transparent `f!` in Julia, which avoids reseact's "no good FD step across thirty orders of magnitude" problem; the Rust planner compares its assembled values to the Julia-produced `.jvals.json` goldens at the same states rather than taking finite differences. No reusable tool for this exists today: reseact's `validate_plan` checks gather plans against index maps, and EarthSciASTDiff's oracle lives only in its tests;
+   - **every** operator's band models against an independent derivative at sampled non-default states (reseact: "never FD-validate at the default IC"). This is mandatory, not sampled: EarthSciASTDiff's inliner has two paths that are silently wrong, found by reading (a contracting observed loses its Σ; a faq-defined observed is treated as a state). The oracle is ForwardDiff on EarthSciAST's Dual-transparent `f!` in Julia, which avoids reseact's "no good FD step across thirty orders of magnitude" problem; the Rust planner, which has no automatic differentiation, checks against central finite differences with steps scaled per state component, at a looser tolerance, and in the conformance suite additionally compares its assembled values to the Julia planner's values at the same states, which keeps the exact cross-language check (spec/plan.md §8.2, D76). No reusable tool for this exists today: reseact's `validate_plan` checks gather plans against index maps, and EarthSciASTDiff's oracle lives only in its tests;
    - a non-empty plan is required, because reseact's band model once went silently empty.
 
    Then write `plan.json` (canonical JSON) and `derived/*.esm`.
@@ -604,6 +604,8 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U13 | EarthSciAST (Julia) | Traceable per-operator StableHLO fragments (`operator_ir`, `emit_fragment`), f32 emission, fixed-order folds | M5g |
 | U14 | EarthSciAST | Numerical vs semantic precision: an omitted `element_type` is unspecified, so the run config may choose (D29) | M5g, M7 |
 | U15 | EarthSciAST (Julia) | Execute recurrences in the native compiler and the StableHLO emitter | M7 |
+| U16 | EarthSciAST | `solver.time_span`, the run interval a document asks for (D60); released in v0.4.0 | M2 |
+| U17 | EarthSciASTDiff | Time-derivative bands (∂f/∂t) specified and golden-gated, for Rosenbrock's `f_t` on time-dependent operators; the code exists on `main` | M3 |
 
 **Prerequisites the drafts uncovered:**
 - **esm 1.3.0.** U01 and U14 ship in esm 1.3.0. reseact (esm 1.0.0), eqice and EqWeFiC (1.0.0/1.1.0) must move to 1.3.0 before they can use `solver.external` or an f32 choice.

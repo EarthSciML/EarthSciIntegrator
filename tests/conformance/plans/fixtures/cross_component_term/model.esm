@@ -1,0 +1,79 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "cross_component_term",
+    "description": "M2 planner fixture: two couple-written sink terms. The NO sink reads only Dep's variables, so Dep owns it; the O3 sink reads Dep's and Met's, so provenance and reads cannot place it (D65)."
+  },
+  "models": {
+    "Chem": {
+      "variables": {
+        "O3": {
+          "type": "unknown",
+          "default": 40.5
+        },
+        "NO": {
+          "type": "unknown",
+          "default": 5.5
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.0044
+        },
+        "ratio": {
+          "type": "unknown"
+        }
+      },
+      "equations": [
+        {
+          "lhs": "ratio",
+          "rhs": {"op": "/", "args": ["NO", "O3"]}
+        },
+        {
+          "lhs": {"op": "D", "args": ["O3"], "wrt": "t"},
+          "rhs": {"op": "*", "args": [-1, "k", "O3", "NO"]}
+        },
+        {
+          "lhs": {"op": "D", "args": ["NO"], "wrt": "t"},
+          "rhs": {"op": "-", "args": [{"op": "*", "args": ["k", "ratio"]}, {"op": "*", "args": ["k", "O3", "NO"]}]}
+        }
+      ]
+    },
+    "Dep": {
+      "variables": {
+        "vd": {
+          "type": "parameter",
+          "default": 0.0125
+        },
+        "kNO": {
+          "type": "parameter",
+          "default": 0.0002
+        }
+      },
+      "equations": []
+    },
+    "Met": {
+      "variables": {
+        "h": {
+          "type": "parameter",
+          "default": 850.5
+        }
+      },
+      "equations": []
+    }
+  },
+  "coupling": [
+    {
+      "type": "couple",
+      "systems": ["Chem", "Dep"],
+      "connector": {
+        "equations": [{"from": "Dep.vd", "to": "Chem.O3", "transform": "additive", "expression": {"op": "/", "args": [{"op": "*", "args": [-1, "Dep.vd", "Chem.O3"]}, "Met.h"]}}, {"from": "Dep.kNO", "to": "Chem.NO", "transform": "additive", "expression": {"op": "*", "args": [-1, "Dep.kNO", "Chem.NO"]}}]
+      }
+    }
+  ],
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 600
+    }
+  }
+}

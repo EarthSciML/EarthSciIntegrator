@@ -1,0 +1,81 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "advection_reaction",
+    "description": "spec/toy-problems.md \u00a71.5: periodic first-order upwind advection of A (component Transport) and linear exchange A <-> B (component Reaction)."
+  },
+  "index_sets": {
+    "cell": {
+      "kind": "interval",
+      "size": 64
+    }
+  },
+  "models": {
+    "Reaction": {
+      "variables": {
+        "A": {
+          "type": "unknown",
+          "shape": ["cell"],
+          "default": 1
+        },
+        "B": {
+          "type": "unknown",
+          "shape": ["cell"],
+          "default": 0
+        },
+        "k1": {
+          "type": "parameter",
+          "default": 50
+        },
+        "k2": {
+          "type": "parameter",
+          "default": 25
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["A"], "wrt": "t"},
+          "rhs": {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": {"from": "cell"}}, "expr": {"op": "+", "args": [{"op": "*", "args": [-1, "k1", {"op": "index", "args": ["A", "i"]}]}, {"op": "*", "args": ["k2", {"op": "index", "args": ["B", "i"]}]}]}}
+        },
+        {
+          "lhs": {"op": "D", "args": ["B"], "wrt": "t"},
+          "rhs": {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": {"from": "cell"}}, "expr": {"op": "-", "args": [{"op": "*", "args": ["k1", {"op": "index", "args": ["A", "i"]}]}, {"op": "*", "args": ["k2", {"op": "index", "args": ["B", "i"]}]}]}}
+        },
+        {
+          "lhs": {"op": "ic", "args": ["A"]},
+          "rhs": {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": {"from": "cell"}}, "expr": {"op": "+", "args": [1, {"op": "*", "args": [0.5, {"op": "sin", "args": [{"op": "*", "args": [0.09817477042468103, {"op": "-", "args": ["i", 0.5]}]}]}]}]}}
+        }
+      ]
+    },
+    "Transport": {
+      "variables": {
+        "v": {
+          "type": "parameter",
+          "default": 1
+        },
+        "dx": {
+          "type": "parameter",
+          "default": 0.015625
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["Reaction.A"], "wrt": "t"},
+          "rhs": {"op": "makearray", "args": [], "regions": [[[2, 64]], [[1, 1]]], "values": [{"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": [2, 64]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": ["Transport.v", "Transport.dx"]}, {"op": "-", "args": [{"op": "index", "args": ["Reaction.A", "i"]}, {"op": "index", "args": ["Reaction.A", {"op": "-", "args": ["i", 1]}]}]}]}}, {"op": "*", "args": [-1, {"op": "/", "args": ["Transport.v", "Transport.dx"]}, {"op": "-", "args": [{"op": "index", "args": ["Reaction.A", 1]}, {"op": "index", "args": ["Reaction.A", 64]}]}]}]}
+        }
+      ]
+    }
+  },
+  "coupling": [
+    {
+      "type": "operator_compose",
+      "systems": ["Reaction", "Transport"]
+    }
+  ],
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 0.5
+    }
+  }
+}

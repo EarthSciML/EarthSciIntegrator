@@ -18,6 +18,7 @@
       "minLength": 1
     },
     "time": {"$ref": "#/$defs/time"},
+    "axes": {"$ref": "#/$defs/axes"},
     "operators": {
       "type": "object",
       "propertyNames": {
@@ -117,6 +118,17 @@
       ]
     },
 
+    "axes": {
+      "description": "The roles of the model's index sets (spec/run-config.md §6.1, D67): one or two horizontal axes, in the order partition.ranks and partition.tiles divide them, and at most one vertical axis. Defaults: no vertical axis; every index set that shapes a state, other than the vertical one, horizontal.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "horizontal": {"type": "array", "items": {"$ref": "#/$defs/identifier"}, "minItems": 1, "maxItems": 2, "uniqueItems": true},
+        "vertical": {"$ref": "#/$defs/identifier"}
+      }
+    },
+
     "operator": {
       "description": "A named group of additive right-hand-side terms (select), or a step map (map). spec/run-config.md §3.",
       "oneOf": [
@@ -191,11 +203,24 @@
       ]
     },
     "nodeId": {
-      "description": "Optional name for a node, so precision, partition and output can refer to it. Unique within the schedule. 'auto' and 'default' are reserved.",
-      "allOf": [
-        {"$ref": "#/$defs/identifier"},
-        {"not": {"$ref": "#/$defs/reservedWord"}}
+      "description": "Optional name for a node, so precision, partition and output can refer to it. Unique within the schedule. 'auto' and 'default' are reserved. An id of path form (root, root.0, root.1.every) is the planner's (spec/plan.md §7.1); a run config may write one only on the node whose path it is.",
+      "oneOf": [
+        {"allOf": [
+          {"$ref": "#/$defs/identifier"},
+          {"not": {"$ref": "#/$defs/reservedWord"}},
+          {"not": {"const": "root"}}
+        ]},
+        {"$ref": "#/$defs/nodePath"}
       ]
+    },
+    "nodePath": {
+      "description": "A node's path from the schedule root (spec/plan.md §7.1): root, then .<i> for the i-th child of a sequence or strang, .subcycle or .every for the child of those nodes.",
+      "type": "string",
+      "pattern": "^root(\\.([0-9]+|subcycle|every))*$"
+    },
+    "nodeKey": {
+      "description": "A key that names an operator or a node: an identifier or a node path.",
+      "anyOf": [{"$ref": "#/$defs/identifier"}, {"$ref": "#/$defs/nodePath"}]
     },
     "operatorRefs": {
       "oneOf": [
@@ -580,7 +605,7 @@
         "shards": {
           "description": "Shard count per operator or node id, for pointwise and column leaves.",
           "type": "object",
-          "propertyNames": {"$ref": "#/$defs/identifier"},
+          "propertyNames": {"$ref": "#/$defs/nodeKey"},
           "additionalProperties": {"oneOf": [{"type": "integer", "minimum": 1}, {"$ref": "#/$defs/auto"}]}
         }
       }
@@ -603,7 +628,7 @@
     "precision": {
       "description": "Precision roles (architecture §8, D18, D29). Keys are 'default', operator names or node ids.",
       "type": "object",
-      "propertyNames": {"$ref": "#/$defs/identifier"},
+      "propertyNames": {"$ref": "#/$defs/nodeKey"},
       "additionalProperties": {"$ref": "#/$defs/precisionRoles"}
     },
     "precisionRoles": {

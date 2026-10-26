@@ -1,0 +1,48 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "source_decay_map",
+    "description": "spec/toy-problems.md \u00a71.6: u' = a, then the map u <- u exp(-r dt), written as an observed that reads dt (eqice style). Planned from M4b, when map operators arrive (U6)."
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "u": {
+          "type": "unknown",
+          "default": 0
+        },
+        "a": {
+          "type": "parameter",
+          "default": 1
+        },
+        "r": {
+          "type": "parameter",
+          "default": 0.5
+        },
+        "dt": {
+          "type": "parameter",
+          "default": 1
+        },
+        "u_decayed": {
+          "type": "unknown"
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
+          "rhs": "a"
+        },
+        {
+          "lhs": "u_decayed",
+          "rhs": {"op": "*", "args": ["u", {"op": "exp", "args": [{"op": "*", "args": [-1, "r", "dt"]}]}]}
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 4
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../fixtures/pointwise_chemistry/model.esm",
+  "operators": {
+    "ghost": {
+      "select": {
+        "components": "Chem",
+        "locality": "stencil"
+      }
+    }
+  },
+  "schedule": "auto"
+}

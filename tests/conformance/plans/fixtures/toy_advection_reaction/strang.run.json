@@ -1,0 +1,48 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "The M2 version of M1 case advection_reaction.strang.order: Strang splitting of the two toy operators, selected by provenance.",
+  "model": "../../../toys/advection_reaction.esm",
+  "operators": {
+    "transport": {
+      "select": {
+        "components": "Transport"
+      }
+    },
+    "reaction": {
+      "select": {
+        "components": "Reaction"
+      }
+    }
+  },
+  "step": {
+    "dt": 0.05
+  },
+  "schedule": {
+    "strang": [
+      {
+        "leaf": "transport",
+        "alg": "SSPRK43",
+        "control": {
+          "reltol": 1e-10,
+          "abstol": 1e-12,
+          "dt_scope": "global"
+        }
+      },
+      {
+        "leaf": "reaction",
+        "alg": "Rodas4",
+        "jacobian": "symbolic",
+        "linsolve": {
+          "block_lu": {
+            "pivot": false
+          }
+        },
+        "control": {
+          "reltol": 1e-10,
+          "abstol": 1e-12,
+          "dt_scope": "global"
+        }
+      }
+    ]
+  }
+}

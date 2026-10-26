@@ -1,6 +1,6 @@
 # Upstream RFC drafts
 
-**Status:** drafts, 2026-10-13, filed upstream as issues on 2026-10-23 (the Issue column). Needed-by dates updated 2026-10-14 for milestone M4b (D37). The 2026-10-14 reuse audit (survey §6) verified that each ask names a real gap: none of U1–U15 duplicates existing upstream code.
+**Status:** drafts, 2026-10-13, filed upstream as issues on 2026-10-23 (the Issue column). Needed-by dates updated 2026-10-14 for milestone M4b (D37). Upstream progress updated 2026-10-25 (the table below the list). The 2026-10-14 reuse audit (survey §6) verified that each ask names a real gap: none of U1–U15 duplicates existing upstream code.
 
 These are the changes EarthSciIntegrator needs in sibling repos. Each draft follows the EarthSciAST RFC format and cites current upstream code by `file:line`. Anything a draft could not verify is labelled as an assumption. The integrator-side context is in [`../architecture.md`](../architecture.md) §13 and [`../decisions.md`](../decisions.md).
 
@@ -22,6 +22,19 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 | U14 | EarthSciAST spec | [Declared vs unspecified precision](U14-numerical-vs-semantic-precision.md) (D29) | [EarthSciAST#545](https://github.com/EarthSciML/EarthSciAST/issues/545) | M5g, M7 |
 | U15 | EarthSciAST.jl | [Recurrence execution](U15-julia-recurrence-execution.md), native and StableHLO | [EarthSciAST#546](https://github.com/EarthSciML/EarthSciAST/issues/546) | M7 |
 | U16 | EarthSciAST spec | [`solver.time_span`](U16-solver-time-span.md): the run interval a document asks for (D60) | [EarthSciAST#550](https://github.com/EarthSciML/EarthSciAST/issues/550) | M2 |
+| U17 | EarthSciASTDiff | [Time-derivative bands](U17-time-derivative-bands.md): ∂f/∂t as a specified, golden-gated band model, for Rosenbrock's `f_t` | [EarthSciASTDiff#11](https://github.com/EarthSciML/EarthSciASTDiff/issues/11) | M3 (restores M2's time-dependent Rosenbrock cases) |
+
+**Upstream progress** (2026-10-25):
+
+| # | State |
+|---|---|
+| U1 | Done: released in EarthSciAST v0.4.0 (esm 1.3.0), esm-spec §2.2.6, with the location accessor. |
+| U2 | Done: released in EarthSciAST v0.4.0, `equation_contributions` (esm-libraries-spec §4.7.5), plus Rust's `equation_lifted`. |
+| U3 | Merged as EarthSciAST#557; not yet in a release. |
+| U4 | In review as EarthSciAST PR #561. Rust's M2 end-to-end runs wait for it (spec/toy-problems.md §4). |
+| U16 | Done: released in EarthSciAST v0.4.0 (esm 1.3.0), esm-spec §2.2.7, with `resolve_time_span` in every binding. |
+| U17 | Drafted 2026-10-25, filed as EarthSciASTDiff#11 the same day. EarthSciASTDiff `main` already computes `wrt = time` bands in Julia, Rust and Python; the ask is the spec text and cross-binding goldens. |
+| others | Open. EarthSciASTDiff 0.2 (on EarthSciAST 0.4, both languages) is expected before M2's stage 2; spec/plan.md is written against its `main`. |
 
 **Cross-cutting prerequisites** (architecture §13):
 - esm 1.3.0 for the three model repos.

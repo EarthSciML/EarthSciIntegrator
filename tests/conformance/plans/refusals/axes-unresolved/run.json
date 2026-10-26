@@ -1,0 +1,10 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../fixtures/periodic_stencil/model.esm",
+  "axes": {
+    "horizontal": [
+      "longitude"
+    ]
+  },
+  "schedule": "auto"
+}

@@ -1,0 +1,8 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "model.esm",
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "Rodas4"
+  }
+}

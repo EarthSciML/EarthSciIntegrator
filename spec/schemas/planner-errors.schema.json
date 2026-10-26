@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://earthsciml.org/schemas/esm-integrator/0.1.0/planner-errors.schema.json",
+  "title": "EarthSciIntegrator planner refusal codes",
+  "description": "The machine-readable list of planner refusal codes (spec/planner-errors.json, D79).",
+  "type": "object",
+  "required": ["esm_integrator", "codes"],
+  "additionalProperties": false,
+  "properties": {
+    "esm_integrator": {"$ref": "run-config.schema.json#/$defs/semver"},
+    "description": {"type": "string"},
+    "codes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["code", "rule", "where", "meaning"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "rule": {"oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+          "where": {"type": "string", "minLength": 1},
+          "meaning": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

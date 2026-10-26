@@ -1,6 +1,6 @@
 # The run configuration
 
-**Status:** M0 draft, 2026-10-23. Normative for both implementations (D1, D8). The structure is fixed by [`schemas/run-config.schema.json`](schemas/run-config.schema.json); this chapter gives the meaning, and the rules a schema cannot check (§8). Background is in architecture §3–§5 and decisions D2, D21, D24.
+**Status:** M0 draft, 2026-10-23; M2 additions 2026-10-25 (`axes`, §6.1; time origin, §1.1; selector attribution, §3.1; refusal codes, §8). Normative for both implementations (D1, D8). The structure is fixed by [`schemas/run-config.schema.json`](schemas/run-config.schema.json); this chapter gives the meaning, and the rules a schema cannot check (§8). Background is in architecture §3–§5 and decisions D2, D21, D24.
 
 A run configuration says how to integrate one `.esm` model: how its right-hand side is split into operators, how the operators are scheduled and with which methods, how the macro step is chosen, how the domain is partitioned, at what precision each part runs, and what the adjoint differentiates. The `.esm` stays free of algorithm names (D2).
 
@@ -19,17 +19,17 @@ A run integrates over an interval $[t_0, t_f]$. Three sources may give it. In or
 
 1. **The caller**: an argument of the API call that plans or runs the model, or a command-line option of a tool that does.
 2. **The run config**: `time`.
-3. **The model**: the `.esm` document's `solver.time_span` (U16, pending upstream).
+3. **The model**: the `.esm` document's `solver.time_span` (U16, in EarthSciAST 0.4.0 and esm 1.3.0; esm-spec §2.2.7), read with EarthSciAST's `resolve_time_span`.
 
 The most preferred source that gives an interval gives all of it; start and end are never taken from different sources. If none gives one, the planner refuses (§8 rule 14).
 
 `time` is `{"start": T, "end": T}` or `{"start": T, "duration": D}`. `D` is a number of seconds or a `"<number> <unit>"` string (§2.2), but not a parameter name: the interval is fixed when the plan is made, and a parameter can be overridden or differentiated later. `T` is a **time**, either:
 - a number of seconds of model time; or
-- an RFC 3339 timestamp in UTC (`"2019-07-01T00:00:00Z"`), meaning the seconds since `1970-01-01T00:00:00Z` with no leap seconds (POSIX time).
+- an RFC 3339 timestamp in UTC (`"2019-07-01T00:00:00Z"`), meaning the seconds from the model's **time origin** to that instant, with no leap seconds.
 
-A timestamp fixes model time zero at `1970-01-01T00:00:00Z`, so timestamps suit only models whose time is POSIX time, as EarthSciMLBase's `DateTime` intervals are; a model whose $t = 0$ is its own start takes numbers. `start` and `end` are both numbers or both timestamps; the schema refuses a mix. A timestamp names a real instant: the schema bounds each field and has no second 60 (no leap seconds), and the planner refuses a day the month does not have (§8 rule 14).
+The time origin is the model's, by esm-spec §2.2.7: `domain.temporal.reference_time`, else `domain.temporal.start`, else `1970-01-01T00:00:00Z` (POSIX time). A timestamp from the caller or the run config is converted exactly as EarthSciAST converts a `solver.time_span` timestamp, so all three sources share one clock (D74; this replaces the M0 rule that fixed run-config timestamps at the POSIX epoch). A model with no temporal anchor whose $t = 0$ is its own start takes numbers. `start` and `end` are both numbers or both timestamps; the schema refuses a mix. A timestamp names a real instant: the schema bounds each field and has no second 60 (no leap seconds), and the planner refuses a day the month does not have (§8 rule 14).
 
-The end must be after the start (§8 rule 14). The caller gives a time the same way. `solver.time_span` is in the document's time units, which the planner converts to seconds; if the document's independent variable has no units, its numbers are taken as seconds and a timestamp there is refused (§8 rule 14).
+The end must be after the start (§8 rule 14). The caller gives a time the same way. `solver.time_span` numbers are seconds of the document's independent variable (esm-spec §2.2.7); a timestamp anywhere is refused when the model's origin field is present but unreadable (§8 rule 14).
 
 Times derived from the interval count from model time zero, not from $t_0$: `hit_multiples` (§5) and `every` firing times (§4.9). With timestamps they are therefore aligned to UTC, so a `hit_multiples` of `"1 h"` falls on the hour. The one exception is a fixed `step.dt`, whose macro steps start at $t_0$ (§5).
 
@@ -44,7 +44,7 @@ The planner resolves the interval afresh for every run, from the sources that ru
 - The four locality names `pointwise`, `column`, `stencil` and `global` are reserved. They are never operator names, so wherever a value may be either (§4.5), there is no ambiguity.
 - `auto` and `default` are reserved too: `auto` because it is the planner's-choice value (§2.3), and `default` because it is the fallback key of `precision` (§7.1), whose other keys are operator names and node ids. Neither is an operator name or a node id.
 - Names beginning `default_` are reserved for the default operators (§3.3).
-- A **node id** is an optional identifier on any schedule node, unique within the schedule. Precision, partition and output may refer to a node by id. The planner gives every node an id in the plan (spec/plan.md §3).
+- A **node id** is an optional identifier on any schedule node, unique within the schedule. Precision, partition and output may refer to a node by id. The planner gives every node an id in the plan: unnamed nodes get their path from the root (`root`, `root.0`, `root.1.every`; spec/plan.md §7.1). A run config may write a path-form id only on the node whose path it is.
 
 ### 2.2 Durations
 
@@ -69,13 +69,13 @@ An operator is a named group of additive right-hand-side terms, or a step map. T
 
 `{"select": {...}, "bind_dt": {...}}`.
 
-- The planner splits every `D(x, t)` right-hand side into additive terms. Each term carries its provenance, the component (or coupling entry) that authored it (U2).
+- The planner splits every `D(x, t)` right-hand side into additive terms: the summands of each U2 contribution (spec/plan.md §5.1.1, D64). Each term carries its provenance, the component (or coupling entry) that authored it, written as a **provenance label**: the component path, `coupling:<k>` for the coupling entry at 0-based position $k$, or several joined by `+`.
 - A selector matches a term when **every** key present matches (conjunction):
-  - `components`: the term's provenance is one of these components or lies under one of them;
+  - `components`: the term's **owner** is one of these components or lies under one of them. The owner is the authoring component; for a term a coupling entry wrote, it is the one other component whose variables the term reads, and a term reading variables of two or more other components has none (spec/plan.md §5.1.2, D65);
   - `variables`: the term contributes to one of these state variables;
   - `locality`: the term's locality (architecture §3.2 pass 2) is one of these;
-  - `terms`: the term's provenance path is listed exactly.
-- **Each term belongs to exactly one operator.** A term matched by two selectors is an error naming both operators (§8).
+  - `terms`: the term's provenance label is listed exactly.
+- **Each term belongs to exactly one operator.** A term matched by two selectors is an error naming both operators (§8). A term with no owner that no selector matches is an error when any selector uses `components`, since its operator would otherwise be chosen by default (§8 rule 4).
 - Algebraic equations are selected the same way, by component or variable, and form algebraic operators that a `solve` node (§4.10) names.
 - `bind_dt` (§4.4) here applies wherever the operator is advanced.
 
@@ -112,7 +112,7 @@ The schedule is a tree of nodes. Every node advances the model over an interval 
 - **Methods without an error estimate.** Adaptive stepping needs an embedded error estimate. `ForwardEuler`, `SSPRK33`, `SSPRK104`, `WRF_RK3`, `IMEXEuler` and `Theta` have none, so a leaf using one of them must give `dt` (D52). Legacy increments use `"step"`. An `alg` of `"auto"` with `dt` omitted resolves to a method that has an estimate, and on a stiff leaf never to SDIRK2, Kvaerno3 or Kvaerno4, whose estimate is unreliable on stiff problems (D59).
 - `control`: `reltol` and `abstol` (a number, or per variable); `dt0`, `dtmin`, `dtmax`; `controller` (PI, I or PID, with OrdinaryDiffEqCore's constants per method); `dt_scope` (`global`, `shard` or `cell`; D17 makes `cell` the default for pointwise leaves and `global` for stencil leaves); `maxiters`. Omitted tolerances default to DiffEqBase's, `reltol` $10^{-3}$ and `abstol` $10^{-6}$. An implicit leaf (SDIRK, IMEX Euler, θ-method) uses the tolerances at fixed `dt` too, to scale its Newton increments (spec/methods.md §5.2). A non-finite error estimate is a reject. A step below `dtmin` ends the run with a return code instead of hanging (architecture §5.1).
 - `jacobian`: `symbolic` (EarthSciASTDiff band models), `ad` (DifferentiationInterface, Julia only, D38) or `fd`.
-- `linsolve`: the W-matrix solver of architecture §6.1, or `dense_lu`, a dense LU of the whole system, for toy problems and tests only (operator-interface.md §4). Until the planner chooses (M2), the default is `block_lu` for a `block_diagonal` leaf and `dense_lu` otherwise. As an object it carries options: `block_lu.pivot` (default true), `refine` (iterative-refinement sweeps for low-precision factors, architecture §8), Krylov `restart`, `rtol`, `maxiter`, `precond` and `fallback` (the preconditioner tried when the first fails to converge).
+- `linsolve`: the W-matrix solver of architecture §6.1, or `dense_lu`, a dense LU of the whole system, for toy problems and tests only (operator-interface.md §4). The planner resolves an omitted or `"auto"` `linsolve` by spec/plan.md §5.5.3; for the hand-written toy problems of M1, which the planner does not plan, the default is `block_lu` for a `block_diagonal` leaf and `dense_lu` otherwise. As an object it carries options: `block_lu.pivot` (default true), `refine` (iterative-refinement sweeps for low-precision factors, architecture §8), Krylov `restart`, `rtol`, `maxiter`, `precond` and `fallback` (the preconditioner tried when the first fails to converge).
 - `domain`: `nonnegative` (`"all"` or a list of variables), `on_violation` (`reject`, the default, D19; or `clip`), and `check_stages` (also check Rosenbrock stage values).
 - `imex` (§4.5), `implicit_solve` (§4.5), `frozen` (§4.6), `partition` (§6), `bind_dt` (§4.4) and `theta` (the θ-method's off-centring, in $[0, 1]$). `theta` is required when `alg` is `Theta`, and a leaf without it is refused; it has no default.
 
@@ -190,6 +190,12 @@ Then, for both:
 
 ## 6. Partition
 
+### 6.1 Axes
+
+`axes: {"horizontal": [h_1, h_2], "vertical": v}` names the roles of the model's index sets (D67). Locality analysis (architecture §3.2 pass 2) reads offsets on the vertical axis as column reach and offsets on horizontal axes as stencil reach; `ranks` and `tiles` divide `h_1` by their first entry and `h_2` by their second. Defaults: no vertical axis, and every index set that shapes a state variable, other than the vertical one, horizontal in the model's `index_sets` order. A model without a vertical axis has no column operators. The planner refuses an index set that does not exist, one named twice, or more than two horizontal axes after defaults (spec/plan.md §5.2.1).
+
+### 6.2 Decomposition
+
 - `ranks`: the 2-D grid of MPI ranks over the horizontal axes. Decomposition is horizontal only (D20).
 - `tiles`: the 2-D grid of thread tiles within each rank.
 - `shards`: shard counts per operator or node id, for pointwise and column leaves. A leaf's own `partition` (`shards`, or `shard_size` in lanes) overrides it.
@@ -230,18 +236,18 @@ The schema checks structure. The planner additionally refuses, naming the offend
 1. a `model` that does not load, or a `solver.external` that does not name this file back (§1);
 2. a qualified name that does not resolve in the flattened model, or resolves to the wrong kind (a map target that is not a state variable or parameter, a limit that is not an observed);
 3. an operator name used in the schedule that is neither defined nor an existing default operator;
-4. a term selected by two operators, or an operator whose selector matches nothing;
+4. a term selected by two operators, an operator whose selector matches nothing, or a term with no owner that no selector matches while some selector uses `components` (§3.1);
 5. an operator that the schedule never advances, or advances twice in one invocation outside `strang`;
 6. an `imex` partition that leaves a term in neither part or in both;
-7. duplicate node ids;
+7. duplicate node ids, or a path-form id on a node whose path it is not (§2.1);
 8. a `hold: "tendency"` `every` whose child is not a single leaf;
 9. a tstop that is not $t_0$ plus a multiple of a fixed `step.dt` (`every` firing times are not tstops then, §4.9), unless the schedule's root is a single `leaf` or `coupled` node with `dt` omitted or numeric, which lands on such tstops inside the macro step; a root leaf with `dt` `"step"` or `"accumulated"` takes one step per macro step and cannot;
 10. a precision role that contradicts a declared `element_type`, or `rhs` below `state`;
 11. a `wrt` entry that matches nothing, or names a parameter bound by `bind_dt`;
 12. a `step` with neither `dt` nor `limits` whose schedule root is not a single adaptive `leaf` or `coupled` node (§5);
 13. a leaf with `dt` omitted whose method has no error estimate (§4.2);
-14. no run interval from any source; one whose end is not after its start; a timestamp naming a day its month does not have; or a timestamp in a model's `solver.time_span` when the model's independent variable has no units (§1.1);
+14. no run interval from any source; one whose end is not after its start; a timestamp naming a day its month does not have; or a timestamp from any source when the model's time-origin field is present but unreadable (§1.1);
 15. a leaf with `dt` omitted that has a `bind_dt: "leaf"` parameter but no `control.dt0`, since the first-step algorithm evaluates the right-hand side before any step size exists (spec/methods.md §9);
 16. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
 
-Error codes for these refusals are assigned with the planner (M2).
+Each refusal has a code, listed with the rule it implements in [`planner-errors.json`](planner-errors.json) (D79); a refusal reports its code and the run-config pointer, which conformance fixtures check, and a message, which they do not. At M2, rule 16 also covers algebraic equations, events, every parameter `update` rule, data-loader forcing, `map` operators and nodes, observed step limits and `solve` nodes (spec/plan.md §0.1, D75).

@@ -1,0 +1,52 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "column_contraction",
+    "description": "M2 planner fixture: a PBL-mean-like full-column contraction (faq over lev) relaxing each level toward its column mean."
+  },
+  "index_sets": {
+    "lon": {
+      "kind": "interval",
+      "size": 3
+    },
+    "lat": {
+      "kind": "interval",
+      "size": 2
+    },
+    "lev": {
+      "kind": "interval",
+      "size": 5
+    }
+  },
+  "models": {
+    "Mix": {
+      "variables": {
+        "q": {
+          "type": "unknown",
+          "shape": ["lon", "lat", "lev"],
+          "default": 2.5
+        },
+        "kmix": {
+          "type": "parameter",
+          "default": 0.2
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["q"], "wrt": "t"},
+          "rhs": {"op": "makearray", "args": [], "regions": [[[1, 3], [1, 2], [1, 5]]], "values": [{"op": "faq", "args": [], "output_idx": ["i", "j", "k"], "ranges": {"i": [1, 3], "j": [1, 2], "k": [1, 5]}, "expr": {"op": "*", "args": ["Mix.kmix", {"op": "-", "args": [{"op": "/", "args": [{"op": "faq", "args": [], "output_idx": [], "ranges": {"kk": [1, 5]}, "expr": {"op": "index", "args": ["Mix.q", "i", "j", "kk"]}}, 5]}, {"op": "index", "args": ["Mix.q", "i", "j", "k"]}]}]}}]}
+        },
+        {
+          "lhs": {"op": "ic", "args": ["q"]},
+          "rhs": {"op": "faq", "args": [], "output_idx": ["i", "j", "k"], "ranges": {"i": [1, 3], "j": [1, 2], "k": [1, 5]}, "expr": {"op": "/", "args": [{"op": "+", "args": [{"op": "*", "args": [10, "k"]}, "i"]}, 7]}}
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 600
+    }
+  }
+}

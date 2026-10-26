@@ -1,0 +1,14 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/robertson.esm",
+  "precision": {
+    "default": {
+      "state": "f64",
+      "rhs": "f32"
+    }
+  },
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "Rodas4"
+  }
+}

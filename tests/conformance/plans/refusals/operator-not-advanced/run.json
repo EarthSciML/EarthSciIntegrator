@@ -1,0 +1,20 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../fixtures/pointwise_chemistry/model.esm",
+  "operators": {
+    "chem": {
+      "select": {
+        "components": "Chem"
+      }
+    },
+    "dep": {
+      "select": {
+        "components": "Dep"
+      }
+    }
+  },
+  "schedule": {
+    "leaf": "chem",
+    "alg": "Rosenbrock23"
+  }
+}

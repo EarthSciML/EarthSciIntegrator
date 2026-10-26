@@ -3,7 +3,7 @@ title: "`solver.time_span`: the run interval a document asks for"
 description: "One optional `{start, end}` field in the top-level `solver` block giving the simulation interval the document is meant to run over, resolved like `abstol` and `reltol`: an explicit argument at the call site wins, then this field. Purely additive and advisory; it changes no flattened system."
 ---
 
-Status: draft (proposed by EarthSciIntegrator, 2026-10-23)
+Status: draft (proposed by EarthSciIntegrator, 2026-10-23); done upstream: released in EarthSciAST v0.4.0 (esm 1.3.0)
 Target: EarthSciAST `esm-spec.md` §2.2 and `esm-schema.json` `$defs.Solver`; additive, in the same format version as U1 (`solver.external`) if that has not shipped, otherwise the next minor version
 Needed by: EarthSciIntegrator milestone M2
 Integrator refs: spec/run-config.md §1.1; decisions D60, D2, D24

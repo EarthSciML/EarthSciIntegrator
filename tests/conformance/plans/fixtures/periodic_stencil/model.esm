@@ -1,0 +1,57 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "periodic_stencil",
+    "description": "M2 planner fixture: PPM-like periodic advection along lon, reach 3 cells toward lower index and 2 toward higher, with the seam written as literal wrapped indices."
+  },
+  "index_sets": {
+    "lon": {
+      "kind": "interval",
+      "size": 8
+    },
+    "lat": {
+      "kind": "interval",
+      "size": 2
+    },
+    "lev": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Transport": {
+      "variables": {
+        "q": {
+          "type": "unknown",
+          "shape": ["lon", "lat", "lev"],
+          "default": 1.5
+        },
+        "c": {
+          "type": "parameter",
+          "shape": ["lon", "lat", "lev"],
+          "default": 0.125
+        },
+        "dx": {
+          "type": "parameter",
+          "default": 0.125
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["q"], "wrt": "t"},
+          "rhs": {"op": "makearray", "args": [], "regions": [[[4, 6], [1, 2], [1, 2]], [[1, 1], [1, 2], [1, 2]], [[2, 2], [1, 2], [1, 2]], [[3, 3], [1, 2], [1, 2]], [[7, 7], [1, 2], [1, 2]], [[8, 8], [1, 2], [1, 2]]], "values": [{"op": "faq", "args": [], "output_idx": ["i", "j", "k"], "ranges": {"i": [4, 6], "j": [1, 2], "k": [1, 2]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", "i", "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["Transport.q", {"op": "-", "args": ["i", 3]}, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["Transport.q", {"op": "-", "args": ["i", 2]}, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["Transport.q", {"op": "-", "args": ["i", 1]}, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["Transport.q", "i", "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["Transport.q", {"op": "+", "args": ["i", 1]}, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["Transport.q", {"op": "+", "args": ["i", 2]}, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 2], "k": [1, 2]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 1, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["Transport.q", 6, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["Transport.q", 7, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["Transport.q", 8, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["Transport.q", 1, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["Transport.q", 2, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["Transport.q", 3, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 2], "k": [1, 2]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 2, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["Transport.q", 7, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["Transport.q", 8, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["Transport.q", 1, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["Transport.q", 2, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["Transport.q", 3, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["Transport.q", 4, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 2], "k": [1, 2]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 3, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["Transport.q", 8, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["Transport.q", 1, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["Transport.q", 2, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["Transport.q", 3, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["Transport.q", 4, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["Transport.q", 5, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 2], "k": [1, 2]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 7, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["Transport.q", 4, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["Transport.q", 5, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["Transport.q", 6, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["Transport.q", 7, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["Transport.q", 8, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["Transport.q", 1, "j", "k"]}]}]}]}}, {"op": "faq", "args": [], "output_idx": ["j", "k"], "ranges": {"j": [1, 2], "k": [1, 2]}, "expr": {"op": "*", "args": [-1, {"op": "/", "args": [{"op": "index", "args": ["Transport.c", 8, "j", "k"]}, "Transport.dx"]}, {"op": "+", "args": [{"op": "*", "args": [-0.0125, {"op": "index", "args": ["Transport.q", 5, "j", "k"]}]}, {"op": "*", "args": [0.0875, {"op": "index", "args": ["Transport.q", 6, "j", "k"]}]}, {"op": "*", "args": [-0.6375, {"op": "index", "args": ["Transport.q", 7, "j", "k"]}]}, {"op": "*", "args": [0.2625, {"op": "index", "args": ["Transport.q", 8, "j", "k"]}]}, {"op": "*", "args": [0.3375, {"op": "index", "args": ["Transport.q", 1, "j", "k"]}]}, {"op": "*", "args": [-0.0375, {"op": "index", "args": ["Transport.q", 2, "j", "k"]}]}]}]}}]}
+        },
+        {
+          "lhs": {"op": "ic", "args": ["q"]},
+          "rhs": {"op": "faq", "args": [], "output_idx": ["i", "j", "k"], "ranges": {"i": [1, 8], "j": [1, 2], "k": [1, 2]}, "expr": {"op": "+", "args": [1, {"op": "*", "args": [0.5, {"op": "sin", "args": [{"op": "*", "args": [0.7853981633974483, "i"]}]}]}]}}
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 0.5
+    }
+  }
+}

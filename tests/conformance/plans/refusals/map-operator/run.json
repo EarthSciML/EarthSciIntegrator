@@ -1,0 +1,34 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/source_decay_map.esm",
+  "operators": {
+    "source": {
+      "select": {
+        "components": "Box"
+      }
+    },
+    "decay": {
+      "map": {
+        "Box.u": "Box.u_decayed"
+      },
+      "bind_dt": {
+        "Box.dt": "node"
+      }
+    }
+  },
+  "step": {
+    "dt": 0.5
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "source",
+        "alg": "ForwardEuler",
+        "dt": "step"
+      },
+      {
+        "map": "decay"
+      }
+    ]
+  }
+}

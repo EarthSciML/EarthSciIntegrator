@@ -1,0 +1,27 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../fixtures/reseact_shaped/model.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 300
+  },
+  "operators": {
+    "chemistry": {
+      "select": {
+        "components": "Chem"
+      }
+    },
+    "local": {
+      "select": {
+        "locality": "pointwise"
+      }
+    }
+  },
+  "schedule": "auto"
+}

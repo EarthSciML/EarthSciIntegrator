@@ -1,0 +1,8 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../fixtures/pointwise_chemistry/model.esm",
+  "schedule": {
+    "leaf": "missing",
+    "alg": "Rosenbrock23"
+  }
+}
