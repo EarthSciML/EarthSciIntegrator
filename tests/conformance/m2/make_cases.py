@@ -39,8 +39,9 @@ PROBLEMS = {
 }
 # A Rosenbrock leaf needs f_t on a time-dependent problem, which planned
 # operators do not provide at M2 (spec/operator-interface.md §8.3).
-ROSENBROCK = {"Rosenbrock23", "ROS2", "ROS3P", "Rodas3", "Rodas4", "Rodas5P",
-              "KPP_Ros2", "KPP_Ros3", "KPP_Ros4", "KPP_Rodas3", "KPP_Rodas4"}
+ROSENBROCK = {t["name"] for t in (json.loads(f.read_text())
+                                  for f in (HERE.parents[2] / "spec" / "tableaus").glob("*.json"))
+              if t["family"] == "rosenbrock"}
 
 
 def leaves(node):
@@ -69,11 +70,13 @@ def m2_case(m1):
         # M1 toy leaves all run with dt_scope global (spec/toy-problems.md);
         # the planner would otherwise resolve pointwise leaves to cell (D17).
         node.setdefault("control", {}).setdefault("dt_scope", "global")
-    xl = next(c for c in m1["checks"] if c["check"] == "cross_language")
+    xl = next((c for c in m1["checks"] if c["check"] == "cross_language"), None)
+    if xl is None:
+        raise SystemExit(f"M1 case {m1['id']} has no cross_language check to take tolerances from")
     check = {"check": "toy_equivalence", "against": m1["id"], "rtol": xl["rtol"]}
     if "rtol_steps_differ" in xl:
         check["rtol_steps_differ"] = xl["rtol_steps_differ"]
-    case = {"id": m1["id"], "run_config": rc, "tspan": m1["tspan"]}
+    case = {"id": "m2." + m1["id"], "run_config": rc, "tspan": m1["tspan"]}
     if "saveat" in m1:
         case["saveat"] = m1["saveat"]
     case["layout"] = layout

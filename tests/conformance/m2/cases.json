@@ -3,7 +3,7 @@
  "generated_by": "tests/conformance/m2/make_cases.py",
  "cases": [
   {
-   "id": "forced_decay.ForwardEuler.fixed",
+   "id": "m2.forced_decay.ForwardEuler.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -42,7 +42,7 @@
    ]
   },
   {
-   "id": "forced_decay.Heun.fixed",
+   "id": "m2.forced_decay.Heun.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -81,7 +81,7 @@
    ]
   },
   {
-   "id": "forced_decay.SSPRK33.fixed",
+   "id": "m2.forced_decay.SSPRK33.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -120,7 +120,7 @@
    ]
   },
   {
-   "id": "forced_decay.SSPRK43.fixed",
+   "id": "m2.forced_decay.SSPRK43.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -159,7 +159,7 @@
    ]
   },
   {
-   "id": "forced_decay.RK4.fixed",
+   "id": "m2.forced_decay.RK4.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -198,7 +198,7 @@
    ]
   },
   {
-   "id": "forced_decay.Tsit5.fixed",
+   "id": "m2.forced_decay.Tsit5.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -237,7 +237,7 @@
    ]
   },
   {
-   "id": "forced_decay.BS3.fixed",
+   "id": "m2.forced_decay.BS3.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -276,7 +276,7 @@
    ]
   },
   {
-   "id": "forced_decay.SSPRK104.fixed",
+   "id": "m2.forced_decay.SSPRK104.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -315,7 +315,7 @@
    ]
   },
   {
-   "id": "forced_decay.WRF_RK3.fixed",
+   "id": "m2.forced_decay.WRF_RK3.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -354,7 +354,7 @@
    ]
   },
   {
-   "id": "forced_decay.BackwardEuler.fixed",
+   "id": "m2.forced_decay.BackwardEuler.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -395,7 +395,7 @@
    ]
   },
   {
-   "id": "forced_decay.TRBDF2.fixed",
+   "id": "m2.forced_decay.TRBDF2.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -436,7 +436,7 @@
    ]
   },
   {
-   "id": "forced_decay.SDIRK2.fixed",
+   "id": "m2.forced_decay.SDIRK2.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -477,7 +477,7 @@
    ]
   },
   {
-   "id": "forced_decay.Kvaerno3.fixed",
+   "id": "m2.forced_decay.Kvaerno3.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -518,7 +518,7 @@
    ]
   },
   {
-   "id": "forced_decay.Kvaerno4.fixed",
+   "id": "m2.forced_decay.Kvaerno4.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -559,7 +559,7 @@
    ]
   },
   {
-   "id": "forced_decay.IMEXEuler.fixed",
+   "id": "m2.forced_decay.IMEXEuler.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -603,7 +603,7 @@
    ]
   },
   {
-   "id": "forced_decay.Theta.fixed",
+   "id": "m2.forced_decay.Theta.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -645,7 +645,7 @@
    ]
   },
   {
-   "id": "forced_decay.Tsit5.gradient",
+   "id": "m2.forced_decay.Tsit5.gradient",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -684,7 +684,7 @@
    ]
   },
   {
-   "id": "forced_decay.Kvaerno3.gradient",
+   "id": "m2.forced_decay.Kvaerno3.gradient",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -725,7 +725,7 @@
    ]
   },
   {
-   "id": "forced_decay.IMEXEuler.gradient",
+   "id": "m2.forced_decay.IMEXEuler.gradient",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -769,7 +769,7 @@
    ]
   },
   {
-   "id": "forced_decay.Theta.gradient",
+   "id": "m2.forced_decay.Theta.gradient",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/forced_decay.esm",
@@ -811,7 +811,7 @@
    ]
   },
   {
-   "id": "van_der_pol.nonstiff.SSPRK43.fixed",
+   "id": "m2.van_der_pol.nonstiff.SSPRK43.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_nonstiff.esm",
@@ -851,7 +851,7 @@
    ]
   },
   {
-   "id": "van_der_pol.nonstiff.Tsit5.fixed",
+   "id": "m2.van_der_pol.nonstiff.Tsit5.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_nonstiff.esm",
@@ -891,7 +891,7 @@
    ]
   },
   {
-   "id": "van_der_pol.nonstiff.BS3.fixed",
+   "id": "m2.van_der_pol.nonstiff.BS3.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_nonstiff.esm",
@@ -931,7 +931,7 @@
    ]
   },
   {
-   "id": "van_der_pol.nonstiff.RK4.fixed",
+   "id": "m2.van_der_pol.nonstiff.RK4.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_nonstiff.esm",
@@ -971,7 +971,7 @@
    ]
   },
   {
-   "id": "van_der_pol.nonstiff.Tsit5.adaptive",
+   "id": "m2.van_der_pol.nonstiff.Tsit5.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_nonstiff.esm",
@@ -1018,7 +1018,7 @@
    ]
   },
   {
-   "id": "van_der_pol.stiff.Rosenbrock23.adaptive",
+   "id": "m2.van_der_pol.stiff.Rosenbrock23.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_stiff.esm",
@@ -1062,7 +1062,7 @@
    ]
   },
   {
-   "id": "van_der_pol.stiff.Rodas4.adaptive",
+   "id": "m2.van_der_pol.stiff.Rodas4.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_stiff.esm",
@@ -1106,7 +1106,7 @@
    ]
   },
   {
-   "id": "van_der_pol.stiff.Rodas5P.adaptive",
+   "id": "m2.van_der_pol.stiff.Rodas5P.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_stiff.esm",
@@ -1150,7 +1150,7 @@
    ]
   },
   {
-   "id": "van_der_pol.stiff.TRBDF2.adaptive",
+   "id": "m2.van_der_pol.stiff.TRBDF2.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_stiff.esm",
@@ -1194,7 +1194,7 @@
    ]
   },
   {
-   "id": "van_der_pol.stiff.Kvaerno4.adaptive",
+   "id": "m2.van_der_pol.stiff.Kvaerno4.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/van_der_pol_stiff.esm",
@@ -1238,7 +1238,7 @@
    ]
   },
   {
-   "id": "robertson.Rosenbrock23.adaptive",
+   "id": "m2.robertson.Rosenbrock23.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/robertson.esm",
@@ -1288,7 +1288,7 @@
    ]
   },
   {
-   "id": "robertson.Rodas4.adaptive",
+   "id": "m2.robertson.Rodas4.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/robertson.esm",
@@ -1338,7 +1338,7 @@
    ]
   },
   {
-   "id": "robertson.Rodas5P.adaptive",
+   "id": "m2.robertson.Rodas5P.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/robertson.esm",
@@ -1388,7 +1388,7 @@
    ]
   },
   {
-   "id": "robertson.TRBDF2.adaptive",
+   "id": "m2.robertson.TRBDF2.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/robertson.esm",
@@ -1438,7 +1438,7 @@
    ]
   },
   {
-   "id": "robertson.Kvaerno4.adaptive",
+   "id": "m2.robertson.Kvaerno4.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/robertson.esm",
@@ -1488,7 +1488,7 @@
    ]
   },
   {
-   "id": "photostationary_cells.Kvaerno4.adaptive",
+   "id": "m2.photostationary_cells.Kvaerno4.adaptive",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/photostationary_cells.esm",
@@ -1541,7 +1541,7 @@
    ]
   },
   {
-   "id": "advection_reaction.lie.order",
+   "id": "m2.advection_reaction.lie.order",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/advection_reaction.esm",
@@ -1607,7 +1607,7 @@
    ]
   },
   {
-   "id": "advection_reaction.lie.gradient",
+   "id": "m2.advection_reaction.lie.gradient",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/advection_reaction.esm",
@@ -1673,7 +1673,7 @@
    ]
   },
   {
-   "id": "advection_reaction.strang.order",
+   "id": "m2.advection_reaction.strang.order",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/advection_reaction.esm",
@@ -1739,7 +1739,7 @@
    ]
   },
   {
-   "id": "advection_reaction.strang.gradient",
+   "id": "m2.advection_reaction.strang.gradient",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/advection_reaction.esm",
@@ -1805,7 +1805,7 @@
    ]
   },
   {
-   "id": "advection_reaction.subcycle.fixed",
+   "id": "m2.advection_reaction.subcycle.fixed",
    "run_config": {
     "esm_integrator": "0.1.0",
     "model": "../toys/advection_reaction.esm",
