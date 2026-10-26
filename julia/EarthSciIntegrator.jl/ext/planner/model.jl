@@ -102,7 +102,7 @@ first variable of the flattened model, searching `state_variables`, then
 declared shape has exactly the lift's extents, index set by index set;
 `lift_shape_unresolved` when none does.
 
-EarthSciAST 0.4's Julia `flatten` already writes a `shape` on lifted states
+EarthSciAST 0.5's (and 0.4's) Julia `flatten` already writes a `shape` on lifted states
 (it is `["cell"]` even when no variable declares that shape), which §6.1.3
 and §10 item 1 say it does not record. Those shapes are not declarations, so
 lifted states are skipped in the search, and the refusal fixture
