@@ -360,4 +360,17 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     include("rosenbrock.jl")
     include("extra.jl")
     include("implicit.jl")
+    include("planner_pure.jl")
+
+    # The planner's passes need EarthSciAST, whose compat pins SciMLBase to 2;
+    # in this environment that would hold OrdinaryDiffEqSDIRK, the M1 oracle,
+    # at 1.x. They run in their own environment, test/planner/.
+    @testset "planner passes (EarthSciAST extension, test/planner/)" begin
+        env = joinpath(@__DIR__, "planner")
+        own(cmd) = addenv(cmd, "JULIA_LOAD_PATH" => "@:@stdlib", "JULIA_PROJECT" => env)
+        julia = Base.julia_cmd()
+        setup = "using Pkg; Pkg.develop(PackageSpec(path = $(repr(dirname(@__DIR__))))); Pkg.instantiate()"
+        @test success(pipeline(own(`$julia --project=$env -e $setup`); stdout, stderr))
+        @test success(pipeline(own(`$julia --project=$env $(joinpath(env, "runtests.jl"))`); stdout, stderr))
+    end
 end

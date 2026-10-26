@@ -1,0 +1,8 @@
+[deps]
+EarthSciAST = "c7bf5e87-b31b-4281-bdce-ffb8a46ec87c"
+EarthSciIntegrator = "32373ebd-92e7-4f26-b916-9b5db62dd90f"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+EarthSciAST = "0.5"
