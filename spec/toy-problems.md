@@ -2,7 +2,7 @@
 
 **Status:** M1 draft, 2026-10-23; §4 (the `.esm` versions and the M2 end-to-end cases) added 2026-10-25. Normative for both implementations.
 
-M1's gate (architecture §14) is conformance tiers 2 and 3 on toy problems. The problems are written by hand in each language behind the operator interface ([`operator-interface.md`](operator-interface.md)), not compiled from `.esm` documents (D53): Rust has no public reentrant right-hand side until U4 lands. `.esm` versions of the same problems join the suite at M2 (§4), planned and run end to end, and must give the same results.
+M1's gate (architecture §14) is conformance tiers 2 and 3 on toy problems. The problems are written by hand in each language behind the operator interface ([`operator-interface.md`](operator-interface.md)), not compiled from `.esm` documents (D53): at M1 Rust had no public reentrant right-hand side (U4, since released in EarthSciAST 0.5.0). `.esm` versions of the same problems join the suite at M2 (§4), planned and run end to end, and must give the same results.
 
 Each problem below fixes its equations, operators, layout, parameters, initial state and interval exactly. Both implementations MUST implement every listed operator call (operator-interface.md §3) with hand-derived derivatives, not automatic differentiation, so the derivatives themselves are under test. The Julia implementation's ForwardDiff Jacobian of `rhs` is a test oracle for them.
 
@@ -115,11 +115,11 @@ Result files under `tests/conformance/m1/reference/` are checked in. They are pr
 
 ## 4. The toy problems as `.esm` documents (M2)
 
-M2's runtimes execute plans end to end (D80). The gate replays the M1 cases on `.esm` versions of the problems: the planner plans each case, the runtime builds its operators from the plan (spec/operator-interface.md §8) and runs it, and the result must match the same implementation's run of the M1 case on the hand-written problem. Julia runs them from M2; Rust joins once U4 (EarthSciAST PR #561) gives it a public reentrant right-hand side.
+M2's runtimes execute plans end to end (D80). The gate replays the M1 cases on `.esm` versions of the problems: the planner plans each case, the runtime builds its operators from the plan (spec/operator-interface.md §8) and runs it, and the result must match the same implementation's run of the M1 case on the hand-written problem. Julia and Rust both run them from M2; both build their right-hand sides through the public reentrant `rhs_program` (U4, EarthSciAST 0.5.0; D53).
 
 ### 4.1 Documents
 
-The documents are in [`../tests/conformance/toys/`](../tests/conformance/toys/), esm 1.3.0, each validated by EarthSciAST 0.4.0 in conformance tier 0. Each writes §1's equations with §1's parameter values, initial state and interval (`solver.time_span`), and evaluates to the same right-hand side up to the order of floating-point operations:
+The documents are in [`../tests/conformance/toys/`](../tests/conformance/toys/), esm 1.3.0, each validated by EarthSciAST in conformance tier 0 (spec/plan.md §0.2). Each writes §1's equations with §1's parameter values, initial state and interval (`solver.time_span`), and evaluates to the same right-hand side up to the order of floating-point operations:
 
 | Problem | File | Components and operators | Layout of §1 |
 |---|---|---|---|

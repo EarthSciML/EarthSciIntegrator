@@ -3,8 +3,8 @@ title: "Range-restricted, operator-restricted right-hand sides: tiles with halos
 description: "Evaluate one operator's right-hand side — a subset of additive terms selected by provenance, writing only that operator's variables — over a box of cells (a horizontal tile with whole columns) that reads halo cells from an extended local array, or over a runtime list of cells gathered into lanes. Index space stays global, so makearray boundary regions apply exactly where the global domain has a boundary and interior stencils apply at every other tile edge. The contract is bitwise: the tiles' outputs, assembled, equal the operator's global right-hand side bit for bit."
 ---
 
-Status: draft (proposed by EarthSciIntegrator, 2026-10-13); merged upstream as EarthSciAST#557, not yet released
-Target: EarthSciAST API_SPEC §5.8 (new entries beside `esm_problem`; no schema or format-version change); `EarthSciAST.jl` and `earthsci-ast-rs` next minor (0.3.0); Python later.
+Status: draft (proposed by EarthSciIntegrator, 2026-10-13); done upstream: released in EarthSciAST v0.5.0 (EarthSciAST#557)
+Target: EarthSciAST API_SPEC §5.8 (new entries beside `esm_problem`; no schema or format-version change); `EarthSciAST.jl` and `earthsci-ast-rs` v0.5.0 (released); Python later.
 Needed by: EarthSciIntegrator milestone M3 (tiles in shared memory, and lane pools), then M5 (MPI ranks).
 Integrator refs: architecture.md §3.2 (passes 2, 3, 7, 8), §7.1, §7.2, §7.6, §7.7, §13 (U3); decisions D6, D7, D10, D11, D14, D17, D20, decisions.md §2.2
 
