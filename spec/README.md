@@ -23,7 +23,7 @@ Chapters still to come: linear and nonlinear solvers beyond what methods.md stat
 
 ## Upstream versions
 
-The spec is written against these sibling releases; conformance tier 0 pins the first in CI (`earthsci-ast==0.4.0`, the Python binding, until 0.5.0 is on PyPI: 0.5.0 adds only features outside Python's loader, so every fixture that loads under 0.4.0 loads under 0.5.0):
+The spec is written against these sibling releases; conformance tier 0 pins the first in CI (`earthsci-ast==0.5.0`, the Python binding):
 
 | Package | Version | Used for |
 |---|---|---|
@@ -44,4 +44,4 @@ The spec is written against these sibling releases; conformance tier 0 pins the 
 
 ## Conformance tiers
 
-Architecture §12 defines tiers 1–4. M0 adds a tier 0 that runs today: [`../tests/conformance/validate_schemas.py`](../tests/conformance/validate_schemas.py) checks that the schemas are valid 2020-12 schemas, that every fixture under `*/valid/` validates and that every fixture under `*/invalid/` does not. From M2 it also checks the planner fixtures' structure and loads, validates and flattens every `.esm` fixture with EarthSciAST's Python binding, 0.4.0 until 0.5.0 is on PyPI (spec/plan.md §0.2, §9). Tier 1, the planner goldens, is spec/plan.md §9.
+Architecture §12 defines tiers 1–4. M0 adds a tier 0 that runs today: [`../tests/conformance/validate_schemas.py`](../tests/conformance/validate_schemas.py) checks that the schemas are valid 2020-12 schemas, that every fixture under `*/valid/` validates and that every fixture under `*/invalid/` does not. From M2 it also checks the planner fixtures' structure and loads, validates and flattens every `.esm` fixture with EarthSciAST's Python binding, 0.5.0 (spec/plan.md §0.2, §9). Tier 1, the planner goldens, is spec/plan.md §9.

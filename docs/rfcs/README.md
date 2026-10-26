@@ -30,7 +30,7 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 |---|---|
 | U1 | Done: released in EarthSciAST v0.4.0 (esm 1.3.0), esm-spec §2.2.6, with the location accessor. |
 | U2 | Done: released in EarthSciAST v0.4.0, `equation_contributions` (esm-libraries-spec §4.7.5), plus Rust's `equation_lifted`. |
-| U3 | Done: released in EarthSciAST v0.5.0 (EarthSciAST#557; esm stays 1.3.0), range-restricted right-hand sides over tiles and lanes in Julia and Rust (API_SPEC §5.8, CONFORMANCE_SPEC §5.50). On 2026-10-26 v0.5.0 awaits registration in Julia's General registry, and crates.io and PyPI still have 0.4.0. |
+| U3 | Done: released in EarthSciAST v0.5.0 (EarthSciAST#557; esm stays 1.3.0), range-restricted right-hand sides over tiles and lanes in Julia and Rust (API_SPEC §5.8, CONFORMANCE_SPEC §5.50). Published 2026-10-26 to Julia's General registry, crates.io and PyPI. |
 | U4 | Done: released in EarthSciAST v0.5.0 (EarthSciAST#561), `rhs_program` with forcing sets in Julia and Rust's `RhsProgram` (`Send + Sync`) (API_SPEC §5.8, CONFORMANCE_SPEC §5.51). Rust's M2 end-to-end runs can use it (spec/toy-problems.md §4). |
 | U10 | Merged on EarthSciASTDiff `main`, closing EarthSciASTDiff#4: catch-up (W0, #5), trimmed evaluation document (W1, #8), scatter plans (W3, #10), Rust production assembly (W2, W4, W5, #12). To be released with EarthSciASTDiff 0.2. |
 | U16 | Done: released in EarthSciAST v0.4.0 (esm 1.3.0), esm-spec §2.2.7, with `resolve_time_span` in every binding. |

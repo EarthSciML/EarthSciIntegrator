@@ -3,7 +3,7 @@ title: "Time-derivative bands"
 description: "A Rosenbrock step needs f_t = ∂f/∂t of every operator that depends on time explicitly, such as photolysis that follows the sun. EarthSciASTDiff's main already differentiates with respect to t in Julia, Python and Rust (wrt = time), but its spec still lists tgrad as out of scope and no cross-binding golden gates it. This RFC asks to make time-derivative bands a specified, golden-gated artifact, with the band shape, the serialized block, the evaluation document, and a clear statement of what the derivative leaves out (time dependence that enters through forcing data)."
 ---
 
-Status: draft (proposed by EarthSciIntegrator, 2026-10-25); done upstream on EarthSciASTDiff `main` (EarthSciASTDiff#13, closing #11), to be released with EarthSciASTDiff 0.2
+Status: draft (proposed by EarthSciIntegrator, 2026-10-25); done upstream on EarthSciASTDiff `main` (EarthSciASTDiff#13, closing #11), to be released with EarthSciASTDiff 0.2. The planner's numerical check of time bands (the counterpart of D76's state-Jacobian tolerances) is specified with M3, when the time-dependent Rosenbrock cases return.
 Target: EarthSciASTDiff (`esm-jacobian-spec.md` §1, §4 `"wrt"`, §5 fixtures, §7 scope list, §8 evaluation document; draft spec, no version number yet). Julia reference, Rust and Python ports.
 Needed by: EarthSciIntegrator milestone M3 (reseact's chemistry runs `Rosenbrock23` with time-varying photolysis). Within M2 it would restore the Rosenbrock end-to-end cases on time-dependent toy problems that D80 leaves out.
 Integrator refs: architecture.md §3.2 (pass 6), §5 (Rosenbrock); spec/operator-interface.md §3 (`ft`), §8.3; spec/plan.md §10; spec/toy-problems.md §4.2; decisions D8, D62, D80
@@ -17,7 +17,7 @@ Rosenbrock methods add $h\gamma_i f_t$ to every stage when the right-hand side d
 **Proposal.**
 
 1. **Specify `wrt: "time"`** in `esm-jacobian-spec.md` §4: a band list whose single column is the scalar site `t`. Every entry has `col: "t"`, `col_idx: []`, and the usual `row`, `rows`, `row_idx`, `coef`. The meaning is §4's with $J$ an $N \times 1$ matrix.
-2. **Move `tgrad` out of §7's out-of-scope list** and state the semantics already implemented: `datetime.*` differentiates to 0, `interp.linear` and `interp.bilinear` of `t` to the active-segment slope, and observeds are not inlined by the time-dependence seed (below).
+2. **Move `tgrad` out of §7's out-of-scope list** and state the semantics already implemented: `datetime.*` differentiates to 0 (upstream, EarthSciASTDiff#13, specified `datetime.julian_day` as $1/86400$ instead, since the Julian day carries the fractional time of day, and a `datetime` name outside the registry as underivable; EarthSciIntegrator follows upstream), `interp.linear` and `interp.bilinear` of `t` to the active-segment slope, and observeds are not inlined by the time-dependence seed (below).
 3. **Golden-gate it.** Add a non-autonomous fixture, with `.bands.json`, `.block.json`, `.evaldoc.json` and `.jvals.json` goldens for `wrt = time`, compared byte for byte across Julia, Rust and Python as the state goldens are.
 4. **State what $\partial f/\partial t$ omits.** Time dependence that enters through forcing data (two-record blend weights, data-updated parameters) is not in the band model. Say so normatively, and either (a) leave it to the consumer, or (b) add bands with respect to forcing-blend weights, which U7 (∂f/∂forcing) already covers.
 
