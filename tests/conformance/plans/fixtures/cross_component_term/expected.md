@@ -50,11 +50,13 @@ All are `pointwise` (scalar states). The observed `Chem.ratio` defines no term.
 
 - `deposition` matches the `NO` sink through its owner `Dep` (D65); `scavenging` matches the `O3` sink, which has no owner. Neither sink matches two selectors. With `scavenging` removed, planning is refused with `ambiguous_term_owner` (refusal fixture `ambiguous-term-owner`), because the `O3` sink would fall to `default_pointwise` while a selector uses `components`.
 - `chemistry` as in `by-label`. `deposition`: `writes` `["Chem.NO"]`, `reads` `["Chem.NO", "Dep.kNO"]`, one band (`Chem.NO`, `Chem.NO`), `block.vars` `["Chem.NO"]`, `pattern` `[[1,1]]`. `scavenging`: `writes` `["Chem.O3"]`, `reads` `["Chem.O3", "Dep.vd", "Met.h"]`, one band (`Chem.O3`, `Chem.O3`), `block.vars` `["Chem.O3"]`. All three `{"stiff", "run_config"}`.
-- Root leaf:
+- Schedule: the run config writes a one-child `sequence`, which §7.1 keeps, so the root is the sequence and the leaf is `root.0`:
 
 ```json
-{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
+{"id": "root", "sequence": [
+  {"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
+]}
 ```
 
   (The block size is 2, the union of the operators' block variables.)
-- `partition.shards` `{"root": 1}`.
+- `partition.shards` `{"root.0": 1}`; `precision` keyed `root.0`.

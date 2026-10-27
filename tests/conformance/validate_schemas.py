@@ -16,7 +16,7 @@ tests/conformance/README.md): every case run config validates and names a
 model that exists, every case has a section in its fixture's expected.md,
 every refusal fixture's code is listed in spec/planner-errors.json, hand-written
 expected plans are canonical JSON, and every .esm document under
-tests/conformance loads, validates and flattens with EarthSciAST 0.4.0
+tests/conformance loads, validates and flattens with EarthSciAST 0.5.0
 (the earthsci-ast Python package; with --require-esm a missing package fails).
 
 Usage: python tests/conformance/validate_schemas.py [--require-esm]
@@ -58,7 +58,7 @@ DOCUMENTS = [
 ]
 PLAN_FIXTURES = FIXTURES / "plans" / "fixtures"
 REFUSALS = FIXTURES / "plans" / "refusals"
-ESM_VERSION = "0.4.0"  # EarthSciAST, esm 1.3.0 (spec/plan.md §0.2)
+ESM_VERSION = "0.5.0"  # EarthSciAST, esm 1.3.0 (spec/plan.md §0.2)
 
 
 def load(path):
