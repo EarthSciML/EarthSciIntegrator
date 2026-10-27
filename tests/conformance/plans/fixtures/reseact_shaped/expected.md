@@ -25,6 +25,8 @@ Grid `lon × lat × lev` = 8 × 3 × 4 (96 cells, 288 DOFs). `solver`: `stiffnes
 | 2 | 1 | Transport | stencil, radius `lon` [0, 0], `lat` [1, 0] | the `lat` advection |
 | 3 | 0 | Mix | column | the column mean |
 
+The reaction-system summands are in the form of esm-libraries-spec §4.6.2 (EarthSciAST 0.6.0), as in `pointwise_chemistry`: for `NO2`, `-1 * (Chem.j * NO2[i,j,k])` then `Chem.k * NO[i,j,k] * O3[i,j,k]`; for `NO` and `O3`, `Chem.j * NO2[i,j,k]` then `-1 * (Chem.k * NO[i,j,k] * O3[i,j,k])`.
+
 The Transport contribution splits at its `+` into two terms with one provenance (D64): that is what lets a run config select advection by component while each direction keeps its own reach.
 
 **Structures by locality** (the same whether the operators are named or default):

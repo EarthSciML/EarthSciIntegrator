@@ -12,17 +12,17 @@ The model: reaction system `Chem` (NO2 + hν → NO + O3, rate `j`; NO + O3 → 
 
 | variable | c | s | provenance | locality | the summand |
 |---|---|---|---|---|---|
-| Chem.NO2 | 0 | 0 | Chem | pointwise | `-(Chem.j * NO2[i])` |
+| Chem.NO2 | 0 | 0 | Chem | pointwise | `-1 * (Chem.j * NO2[i])` |
 | Chem.NO2 | 0 | 1 | Chem | pointwise | `Chem.k * NO[i] * O3[i]` |
 | Chem.NO2 | 1 | 0 | Dep | pointwise | `index(makearray(…-kd·cellw[i]·NO2[i]…), i)` |
 | Chem.NO | 0 | 0 | Chem | pointwise | `Chem.j * NO2[i]` |
-| Chem.NO | 0 | 1 | Chem | pointwise | `-(Chem.k * NO[i] * O3[i])` |
+| Chem.NO | 0 | 1 | Chem | pointwise | `-1 * (Chem.k * NO[i] * O3[i])` |
 | Chem.NO | 1 | 0 | Dep | pointwise | the Dep sink for NO |
 | Chem.O3 | 0 | 0 | Chem | pointwise | `Chem.j * NO2[i]` |
-| Chem.O3 | 0 | 1 | Chem | pointwise | `-(Chem.k * NO[i] * O3[i])` |
+| Chem.O3 | 0 | 1 | Chem | pointwise | `-1 * (Chem.k * NO[i] * O3[i])` |
 | Chem.O3 | 1 | 0 | Dep | pointwise | the Dep sink for O3 |
 
-(The reaction-system summands are as Julia's EarthSciAST 0.5.0 `flatten` writes them: a loss is a one-argument `-`, `-(Chem.j * NO2[i])`, not `-1 * Chem.j * NO2[i]`. Rust's and Python's write `-1.0 * (…)` and `-1 * (…)`, an upstream difference, spec/plan.md §10 item 10. The golden review checks there are two per species, split at the `+`.)
+(The reaction-system summands are in the form of esm-libraries-spec §4.6.2, which every EarthSciAST binding writes from 0.6.0: the rate law is one n-ary `*` with the rate constant first, a gain of 1 is the bare rate law, and a loss of 1 is the two-operand product `-1 * (rate law)` with an integer `-1`, `{"op": "*", "args": [-1, {"op": "*", "args": ["Chem.j", NO2[i]]}]}`. A species' reaction terms are one n-ary `+` in reaction order. The golden review checks there are two per species, split at the `+`.)
 
 **One operator holds all nine terms.** Its entry:
 - `locality`: `{"class": "pointwise"}`.
