@@ -436,3 +436,65 @@ fn precision_conflict_pointer() {
         (codes::PRECISION_CONFLICT, "/precision/deposition".into())
     );
 }
+
+/// Rule 3 checks the operator names of an `IMEXEuler` leaf's `imex`, before
+/// rule 6 checks the partition; locality names are not operator names, and
+/// an `imex` on another method is ignored.
+#[test]
+fn imex_operator_names() {
+    let imex = |v: Value| {
+        rob(
+            json!({"step": {"dt": 40}}),
+            json!({"alg": "IMEXEuler", "dt": 1, "imex": v}),
+        )
+    };
+    // An undefined operator in a list, even with a partition that is also bad.
+    assert_eq!(
+        refused(
+            "imex-undef-list",
+            None,
+            imex(json!({"implicit": ["kinetics"], "explicit": ["kinetics", "ghost"]}))
+        ),
+        (
+            codes::OPERATOR_UNDEFINED,
+            "/schedule/imex/explicit/1".into()
+        )
+    );
+    // `explicit` before `implicit`.
+    assert_eq!(
+        refused(
+            "imex-undef-both",
+            None,
+            imex(json!({"implicit": "ghost1", "explicit": ["ghost2"]}))
+        ),
+        (
+            codes::OPERATOR_UNDEFINED,
+            "/schedule/imex/explicit/0".into()
+        )
+    );
+    // A part written as one string.
+    assert_eq!(
+        refused(
+            "imex-undef-string",
+            None,
+            imex(json!({"implicit": "ghost"}))
+        ),
+        (codes::OPERATOR_UNDEFINED, "/schedule/imex/implicit".into())
+    );
+    // A locality name is not checked by rule 3; the partition then fails
+    // rule 6 (the explicit part is empty, kinetics is pointwise and in both).
+    assert_eq!(
+        refused(
+            "imex-locality",
+            None,
+            imex(json!({"implicit": "pointwise", "explicit": "kinetics"}))
+        ),
+        (codes::IMEX_PARTITION_INVALID, "/schedule/imex".into())
+    );
+    // An imex on a leaf whose written alg is not IMEXEuler is ignored.
+    let ignored = rob(
+        json!({}),
+        json!({"linsolve": "dense_lu", "imex": {"implicit": ["ghost"]}}),
+    );
+    assert!(run("imex-ignored", None, ignored).is_ok());
+}
