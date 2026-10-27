@@ -1,2 +1,14 @@
 __pycache__/
 *.pyc
+
+# Generated docs (see docs/site.toml, docs/api/)
+/build/
+/docs/content/architecture.md
+/docs/content/decisions.md
+/docs/content/survey.md
+/docs/content/rfcs/
+/docs/content/spec/
+/docs/content/generated/
+/docs/static/files/
+/docs/api/examples/rust/Cargo.lock
+/docs/api/examples/julia/Manifest.toml

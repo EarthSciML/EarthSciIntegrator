@@ -70,18 +70,85 @@ writes(::AbstractOperator, N) = collect(1:N)
 """`opname(op)`: the operator's name, as a run config's schedule names it."""
 function opname end
 
+"""
+    rhs!(op, out, u, p, t)
+
+`out += f_k(u, p, t)`: the operator's contribution to the right-hand side.
+
+Operator calls are methods of these generic functions on an operator type (operator-interface.md §5). The term-operator calls accumulate into `out`; [`apply!`](@ref) overwrites it.
+"""
 function rhs! end
+"""
+    jvp_u!(op, out, u, p, t, v)
+
+`out += J_k(u) v`: the Jacobian-vector product.
+"""
 function jvp_u! end
+"""
+    vjp_u!(op, out, u, p, t, w)
+
+`out += J_k(u)ᵀ w`: the vector-Jacobian product with respect to the state.
+"""
 function vjp_u! end
+"""
+    vjp_p!(op, out, u, p, t, w)
+
+`out += f_{k,p}(u)ᵀ w`: the vector-Jacobian product with respect to the parameters.
+"""
 function vjp_p! end
+"""
+    jac!(op, out::JacobianStorage, u, p, t)
+
+`J_k(u)` accumulated into the leaf's matrix storage (operator-interface.md §4).
+"""
 function jac! end
+"""
+    ft!(op, out, u, p, t)
+
+`out += ∂f_k/∂t`: the explicit time derivative. Zero when [`depends_on_t`](@ref) is false.
+"""
 function ft! end
+"""
+    hess_u!(op, out, u, p, t, μ)
+
+`out += ∇_u Σᵢ μᵢᵀ J_k(u) wᵢ`, for `μ` a vector of `(μᵢ, wᵢ)` pairs. Zero when [`linear_in_u`](@ref) is true.
+"""
 function hess_u! end
+"""
+    hess_p!(op, out, u, p, t, μ)
+
+`out += ∇_p Σᵢ μᵢᵀ J_k(u) wᵢ`, for `μ` a vector of `(μᵢ, wᵢ)` pairs.
+"""
 function hess_p! end
+"""
+    ft_vjp_u!(op, out, u, p, t, ν)
+
+`out += ∇_u (νᵀ ∂f_k/∂t)`.
+"""
 function ft_vjp_u! end
+"""
+    ft_vjp_p!(op, out, u, p, t, ν)
+
+`out += ∇_p (νᵀ ∂f_k/∂t)`.
+"""
 function ft_vjp_p! end
+"""
+    apply!(op, out, mask, u, p, t, Δ)
+
+Apply the map operator: `out = M(u, p, t, Δ)`, recording in `mask` (one byte per decision) the discrete decisions taken; the adjoint holds them fixed (operator-interface.md §7).
+"""
 function apply! end
+"""
+    map_vjp!(op, out_u, out_p, u, p, t, Δ, mask, w)
+
+Accumulate the vector-Jacobian product of a map operator, with the decisions in `mask` held fixed, into `out_u` and `out_p` (operator-interface.md §7).
+"""
 function map_vjp! end
+"""
+    map_jvp!(op, out, u, p, t, Δ, mask, v_u, v_p)
+
+The Jacobian-vector product `(∂M/∂u) v_u + (∂M/∂p) v_p` of a map operator, with the decisions in `mask` held fixed, written to `out`, for tangent checks (operator-interface.md §7).
+"""
 function map_jvp! end
 
 """

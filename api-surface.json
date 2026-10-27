@@ -1,0 +1,344 @@
+{
+  "$schema_note": "Manifest for the generated API reference (see tools/api_docs/README.md in EarthSciML/earthsci.dev). Julia and Rust implement one spec (spec/) natively, so most names are per-language; rows that share a canonical name are the same operation.",
+  "version": 1,
+  "symbols": [
+    {
+      "name": "spec_version",
+      "kind": "constant",
+      "tier": "stable",
+      "bindings": {
+        "julia": "SPEC_VERSION",
+        "rust": "SPEC_VERSION"
+      }
+    },
+    {
+      "name": "toy_problem",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "toy_problem",
+        "rust": "toy::toy_problem"
+      }
+    },
+    {
+      "name": "toy_problem",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "toy::ToyProblem"
+      }
+    },
+    {
+      "name": "run_config",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "config::RunConfig"
+      }
+    },
+    {
+      "name": "build_run",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "build_run"
+      }
+    },
+    {
+      "name": "run_spec",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "schedule::RunSpec"
+      }
+    },
+    {
+      "name": "forward",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "forward!"
+      }
+    },
+    {
+      "name": "forward_run",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "schedule::ForwardRun"
+      }
+    },
+    {
+      "name": "replay",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "replay"
+      }
+    },
+    {
+      "name": "gradient",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "gradient"
+      }
+    },
+    {
+      "name": "gradient_result",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "adjoint::Gradient"
+      }
+    },
+    {
+      "name": "tape",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "tape::Tape"
+      }
+    },
+    {
+      "name": "odefunction",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "odefunction"
+      }
+    },
+    {
+      "name": "tableaus",
+      "kind": "constant",
+      "tier": "stable",
+      "bindings": {
+        "julia": "TABLEAUS"
+      }
+    },
+    {
+      "name": "operator",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "operator::Operator"
+      }
+    },
+    {
+      "name": "map_operator",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "operator::MapOperator"
+      }
+    },
+    {
+      "name": "rhs",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "rhs!"
+      }
+    },
+    {
+      "name": "jvp_u",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jvp_u!"
+      }
+    },
+    {
+      "name": "vjp_u",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp_u!"
+      }
+    },
+    {
+      "name": "vjp_p",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp_p!"
+      }
+    },
+    {
+      "name": "jac",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jac!"
+      }
+    },
+    {
+      "name": "ft",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ft!"
+      }
+    },
+    {
+      "name": "hess_u",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "hess_u!"
+      }
+    },
+    {
+      "name": "hess_p",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "hess_p!"
+      }
+    },
+    {
+      "name": "ft_vjp_u",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ft_vjp_u!"
+      }
+    },
+    {
+      "name": "ft_vjp_p",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ft_vjp_p!"
+      }
+    },
+    {
+      "name": "apply",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "apply!"
+      }
+    },
+    {
+      "name": "map_vjp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "map_vjp!"
+      }
+    },
+    {
+      "name": "map_jvp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "map_jvp!"
+      }
+    },
+    {
+      "name": "error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "rust": "Error"
+      }
+    },
+    {
+      "name": "config_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ConfigError"
+      }
+    },
+    {
+      "name": "unsupported_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "UnsupportedError"
+      }
+    },
+    {
+      "name": "replay_mismatch_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ReplayMismatchError"
+      }
+    },
+    {
+      "name": "plan",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "plan"
+      }
+    },
+    {
+      "name": "plan_dict",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "plan_dict"
+      }
+    },
+    {
+      "name": "plan_json",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "plan_json"
+      }
+    },
+    {
+      "name": "jcs",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jcs"
+      }
+    },
+    {
+      "name": "planner_refusal",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PlannerRefusal"
+      }
+    },
+    {
+      "name": "planner_stage_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PlannerStageError"
+      }
+    },
+    {
+      "name": "plan_backend",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PlanBackend"
+      }
+    },
+    {
+      "name": "pending_backend",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PendingBackend"
+      }
+    },
+    {
+      "name": "band_entry",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "BandEntry"
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+[deps]
+EarthSciIntegrator = "32373ebd-92e7-4f26-b916-9b5db62dd90f"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
+
+[sources]
+EarthSciIntegrator = {path = "../../../../julia/EarthSciIntegrator.jl"}
+
+[compat]
+JSON3 = "1"
+julia = "1.11"

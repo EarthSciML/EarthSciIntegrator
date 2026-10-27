@@ -1,0 +1,22 @@
+# Runnable examples for the generated API reference (see tools/api_docs/README.md
+# in EarthSciML/earthsci.dev). Built against the in-repo crate, never a
+# published release.
+[package]
+name = "earthsci-integrator-api-examples"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# A workspace of its own, so cargo never looks for one further up the tree.
+[workspace]
+
+[dependencies]
+earthsci-integrator = { path = "../../../../rust/earthsci-integrator" }
+serde_json = "1"
+
+[profile.dev]
+debug = false
+
+[[example]]
+name = "forward_and_gradient"
+path = "forward_and_gradient.rs"
