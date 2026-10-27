@@ -33,7 +33,7 @@ The Transport contribution splits at its `+` into two terms with one provenance 
 - The pointwise operator (six Chem and three Dep terms): `class` `block_diagonal`; `block` `vars` `["Chem.NO", "Chem.NO2", "Chem.O3"]`, `ordering` `[1, 2, 3]`, full 3 × 3 `pattern` and `lu_pattern`; `linear_in_u` false; `reads` `["Chem.NO", "Chem.NO2", "Chem.O3", "Chem.j", "Chem.k", "Dep.vd"]`.
 - Every operator `writes` `["Chem.NO", "Chem.NO2", "Chem.O3"]`.
 
-**Derived documents.** Each right-hand-side document declares models `Chem`, `Dep`, `Mix`, `Transport` (in `stable_json` key order), all three species with shape `["lon", "lat", "lev"]`, every parameter, and the species equations `D(Chem.X) = faq{output_idx ["i", "j", "k"], ranges {"i": [1, 8], "j": [1, 3], "k": [1, 4]}, expr: <fold of the operator's terms for X>}`, the `faq` wrapper's indices and ranges copied from the flattened lifted equation (§6.1.2).
+**Derived documents.** Each right-hand-side document declares models `Chem`, `Dep`, `Mix`, `Transport` (in `stable_json` key order), all three species with shape `["lon", "lat", "lev"]`, every parameter, and the species equations `D(Chem.X) = faq{output_idx ["i", "j", "k"], ranges {"i": {"from": "lon"}, "j": {"from": "lat"}, "k": {"from": "lev"}}, expr: <fold of the operator's terms for X>}`, the `faq` wrapper's indices copied from the flattened lifted equation and its ranges built from the shape (§6.1.2).
 
 **Time.** `{"start": 0, "end": 3600}`; `step` per case.
 

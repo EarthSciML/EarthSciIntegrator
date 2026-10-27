@@ -12,17 +12,17 @@ The model: reaction system `Chem` (NO2 + hν → NO + O3, rate `j`; NO + O3 → 
 
 | variable | c | s | provenance | locality | the summand |
 |---|---|---|---|---|---|
-| Chem.NO2 | 0 | 0 | Chem | pointwise | `-1 * Chem.j * NO2[i]` |
+| Chem.NO2 | 0 | 0 | Chem | pointwise | `-(Chem.j * NO2[i])` |
 | Chem.NO2 | 0 | 1 | Chem | pointwise | `Chem.k * NO[i] * O3[i]` |
 | Chem.NO2 | 1 | 0 | Dep | pointwise | `index(makearray(…-kd·cellw[i]·NO2[i]…), i)` |
 | Chem.NO | 0 | 0 | Chem | pointwise | `Chem.j * NO2[i]` |
-| Chem.NO | 0 | 1 | Chem | pointwise | `-1 * Chem.k * NO[i] * O3[i]` |
+| Chem.NO | 0 | 1 | Chem | pointwise | `-(Chem.k * NO[i] * O3[i])` |
 | Chem.NO | 1 | 0 | Dep | pointwise | the Dep sink for NO |
 | Chem.O3 | 0 | 0 | Chem | pointwise | `Chem.j * NO2[i]` |
-| Chem.O3 | 0 | 1 | Chem | pointwise | `-1 * Chem.k * NO[i] * O3[i]` |
+| Chem.O3 | 0 | 1 | Chem | pointwise | `-(Chem.k * NO[i] * O3[i])` |
 | Chem.O3 | 1 | 0 | Dep | pointwise | the Dep sink for O3 |
 
-(The exact form of the reaction-system summands is EarthSciAST's `derive_odes` output; the golden review checks there are two per species, split at the `+`.)
+(The reaction-system summands are as Julia's EarthSciAST 0.5.0 `flatten` writes them: a loss is a one-argument `-`, `-(Chem.j * NO2[i])`, not `-1 * Chem.j * NO2[i]`. Rust's and Python's write `-1.0 * (…)` and `-1 * (…)`, an upstream difference, spec/plan.md §10 item 10. The golden review checks there are two per species, split at the `+`.)
 
 **One operator holds all nine terms.** Its entry:
 - `locality`: `{"class": "pointwise"}`.
@@ -32,7 +32,7 @@ The model: reaction system `Chem` (NO2 + hν → NO + O3, rate `j`; NO + O3 → 
 - `structure.block`: `vars` `["Chem.NO", "Chem.NO2", "Chem.O3"]`, `ordering` `[1, 2, 3]` (a full 3 × 3 pattern gives every candidate the same Markowitz cost, and the first wins), `pattern` and `lu_pattern` all nine pairs `[1,1] … [3,3]`.
 - `stiffness`: per case below.
 
-**Derived documents (§6).** `derived/<op>.rhs.esm` declares models `Chem` (unknowns `NO`, `NO2`, `O3`, shape `["cell"]`, defaults 5.5, 10.5, 40.5; parameters `j`, `k`) and `Dep` (parameters `cellw`, `kd`); index set `cell` of size 4. Each species equation is `D(Chem.X) = faq{output_idx ["i"], ranges {"i": [1, 4]}, expr: (t1 + t2) + t3}`, the fold of that species' three terms. No `ic` equations (none in the model). `derived/<op>.jacobian.esm` adds model `_jacobian` with one `J_k` per band, each of shape `["cell"]`.
+**Derived documents (§6).** `derived/<op>.rhs.esm` declares models `Chem` (unknowns `NO`, `NO2`, `O3`, shape `["cell"]`, defaults 5.5, 10.5, 40.5; parameters `j`, `k`) and `Dep` (parameters `cellw`, `kd`); index set `cell` of size 4. Each species equation is `D(Chem.X) = faq{output_idx ["i"], ranges {"i": {"from": "cell"}}, expr: (t1 + t2) + t3}` (ranges built from the shape `["cell"]`, §6.1.2), the fold of that species' three terms. No `ic` equations (none in the model). `derived/<op>.jacobian.esm` adds model `_jacobian` with one `J_k` per band, each of shape `["cell"]`.
 
 **Validation (§8).** `[{"check": "rhs_sum", "passed": true}, {"check": "band_model", "operator": <op>, "passed": true}, {"check": "non_empty", "operator": <op>, "passed": true}]`.
 
