@@ -50,8 +50,8 @@ The planner resolves the interval afresh for every run, from the sources that ru
 
 A duration is positive. It is one of:
 - a number of seconds;
-- a string `"<number> <unit>"`, with the space optional, where the unit is `s`, `min` (60 s), `h` (3600 s) or `day` (86 400 s). The number's digits before any exponent are not all zero, so `"0 s"` and `"0.0 day"` are refused by the schema;
-- the qualified name of a model parameter whose value is in seconds (WRF's `chemdt`). It is read once, at plan time, from the parameter's default or the value the run supplies.
+- a string `"<number> <unit>"`, with the space optional, where the unit is `s`, `min` (60 s), `h` (3600 s) or `day` (86 400 s). The number's digits before any exponent are not all zero, so `"0 s"` and `"0.0 day"` are refused by the schema. Its value in seconds is the number parsed as the nearest binary64, times the unit's seconds (an exact integer), one rounding in all (spec/plan.md §7.1);
+- the qualified name of a model parameter whose value is in seconds (WRF's `chemdt`). It is read once, at plan time, from the parameter's default or the value the run supplies, and must be a positive finite number, else the planner refuses (`run_config_invalid`, at the duration's key).
 
 The words `auto`, `step` and `accumulated` are reserved and are never parameter names in a duration.
 
@@ -114,7 +114,7 @@ The schedule is a tree of nodes. Every node advances the model over an interval 
 - `jacobian`: `symbolic` (EarthSciASTDiff band models), `ad` (DifferentiationInterface, Julia only, D38) or `fd`.
 - `linsolve`: the W-matrix solver of architecture §6.1, or `dense_lu`, a dense LU of the whole system, for toy problems and tests only (operator-interface.md §4). The planner resolves an omitted or `"auto"` `linsolve` by spec/plan.md §5.5.3; for the hand-written toy problems of M1, which the planner does not plan, the default is `block_lu` for a `block_diagonal` leaf and `dense_lu` otherwise. As an object it carries options: `block_lu.pivot` (default true), `refine` (iterative-refinement sweeps for low-precision factors, architecture §8), Krylov `restart`, `rtol`, `maxiter`, `precond` and `fallback` (the preconditioner tried when the first fails to converge).
 - `domain`: `nonnegative` (`"all"` or a list of variables), `on_violation` (`reject`, the default, D19; or `clip`), and `check_stages` (also check Rosenbrock stage values).
-- `imex` (§4.5), `implicit_solve` (§4.5), `frozen` (§4.6), `partition` (§6), `bind_dt` (§4.4) and `theta` (the θ-method's off-centring, in $[0, 1]$). `theta` is required when `alg` is `Theta`, and a leaf without it is refused; it has no default.
+- `imex` (§4.5), `implicit_solve` (§4.5), `frozen` (§4.6), `partition` (§6; a `leaf` only, since a `coupled` node is not sharded at M2), `bind_dt` (§4.4) and `theta` (the θ-method's off-centring, in $[0, 1]$). `theta` is required when `alg` is `Theta`, and a leaf without it is refused; it has no default.
 
 ### 4.3 `coupled`
 
@@ -198,7 +198,7 @@ Then, for both:
 
 - `ranks`: the 2-D grid of MPI ranks over the horizontal axes. Decomposition is horizontal only (D20).
 - `tiles`: the 2-D grid of thread tiles within each rank.
-- `shards`: shard counts per operator or node id, for pointwise and column leaves. A leaf's own `partition` (`shards`, or `shard_size` in lanes) overrides it.
+- `shards`: shard counts per operator or node id, for pointwise and column leaves. A leaf's own `partition` (`shards`, or `shard_size` in lanes) overrides it. An entry for a `coupled` node, or for an operator a `coupled` node names, is refused (spec/plan.md §7.4).
 
 The planner derives halo widths and shard sizing (architecture §3.2 pass 7). Results are bitwise identical for a fixed decomposition (D10).
 
@@ -225,7 +225,7 @@ The math is in [`adjoint.md`](adjoint.md).
 
 ### 7.3 `output` and `restart`
 
-- `output.sinks`: EarthSciIO sinks by `path`, with `variables` and their own `saveat`; `output.saveat` is the default. Output times are tstops, so `saveat` never needs dense output in v1. The output times are exactly the listed ones; with no `saveat` they are $t_f$ alone, and $t_f$ is not added to a list that omits it. A listed $t_0$ is accepted and adds nothing: the initial state is always reported, and a functional over `saveat` has no term at $t_0$. A time outside $[t_0, t_f]$ is refused.
+- `output.sinks`: EarthSciIO sinks by `path`, with `variables` and their own `saveat`; `output.saveat` is the default. Output times are tstops, so `saveat` never needs dense output in v1. `saveat` is a duration $d$, and the output times are its multiples $k\,d$ ($k$ an integer, each the binary64 product), counted from model time zero (the model's time origin, §1.1, D74) like `hit_multiples`, that lie in $(t_0, t_f]$; $t_f$ is not added when it is not a multiple (D83). With no `saveat` the output time is $t_f$ alone. The initial state is always reported, and a functional over `saveat` has no term at $t_0$.
 - `output.accumulators`: name → observed. The planner adds each as an integrated state (D26).
 - `restart`: `path`, cadence `every`, and `from`, a restart store to start from. Restart is bitwise for the same decomposition (architecture §11).
 
@@ -234,11 +234,11 @@ The math is in [`adjoint.md`](adjoint.md).
 The schema checks structure. The planner additionally refuses, naming the offending key:
 
 1. a `model` that does not load, or a `solver.external` that does not name this file back (§1);
-2. a qualified name that does not resolve in the flattened model, or resolves to the wrong kind (a map target that is not a state variable or parameter, a limit that is not an observed);
+2. a qualified name that does not resolve in the flattened model, or resolves to the wrong kind (a map target that is not a state variable or parameter, a limit that is not an observed, a `bind_dt` key that is not a parameter, a per-variable `abstol` key or `domain.nonnegative` entry that is not a state), or a `precision` key that is not `default`, an operator name or a node id;
 3. an operator name used in the schedule that is neither defined nor an existing default operator;
 4. a term selected by two operators, an operator whose selector matches nothing, or a term with no owner that no selector matches while some selector uses `components` (§3.1);
-5. an operator that the schedule never advances, or advances twice in one invocation outside `strang`;
-6. an `imex` partition that leaves a term in neither part or in both;
+5. an operator that the schedule never advances, or advances twice in one invocation outside `strang`: an operator named by two `leaf` or `coupled` nodes (a `strang` running a child twice is one place). A `frozen` entry counts as advancing for "never advances" but not for "twice" (spec/plan.md §7.1, D84);
+6. an `imex` partition that leaves a term in neither part or in both, or an `IMEXEuler` leaf with no `imex`;
 7. duplicate node ids, or a path-form id on a node whose path it is not (§2.1);
 8. a `hold: "tendency"` `every` whose child is not a single leaf;
 9. a tstop that is not $t_0$ plus a multiple of a fixed `step.dt` (`every` firing times are not tstops then, §4.9), unless the schedule's root is a single `leaf` or `coupled` node with `dt` omitted or numeric, which lands on such tstops inside the macro step; a root leaf with `dt` `"step"` or `"accumulated"` takes one step per macro step and cannot;
@@ -248,6 +248,6 @@ The schema checks structure. The planner additionally refuses, naming the offend
 13. a leaf with `dt` omitted whose method has no error estimate (§4.2);
 14. no run interval from any source; one whose end is not after its start; a timestamp naming a day its month does not have; or a timestamp from any source when the model's time-origin field is present but unreadable (§1.1);
 15. a leaf with `dt` omitted that has a `bind_dt: "leaf"` parameter but no `control.dt0`, since the first-step algorithm evaluates the right-hand side before any step size exists (spec/methods.md §9);
-16. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
+16. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22; `unsupported_crossing_update` wins over the general `unsupported_parameter_update`), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
 
-Each refusal has a code, listed with the rule it implements in [`planner-errors.json`](planner-errors.json) (D79); a refusal reports its code and the run-config pointer, which conformance fixtures check, and a message, which they do not. At M2, rule 16 also covers algebraic equations, events, every parameter `update` rule, data-loader forcing, `map` operators and nodes, observed step limits and `solve` nodes (spec/plan.md §0.1, D75).
+Each refusal has a code, listed with the rule it implements in [`planner-errors.json`](planner-errors.json) (D79); a refusal reports its code and the run-config pointer, which conformance fixtures check, and a message, which they do not. Where the cause has no run-config key of its own, or the key is not obvious, the pointer is fixed, and spec/planner-errors.json gives it in the code's description; that file is the one list of these pointers. They include `""` for a schema failure and for refusals about the caller's interval, `/model` for refusals about the model alone, `/schedule` for a default operator no node advances, and the precision entry that set the role for precision refusals. At M2, rule 16 also covers algebraic equations, events, every parameter `update` rule, data-loader forcing, `map` operators and nodes, observed step limits and `solve` nodes (spec/plan.md §0.1, D75).
