@@ -413,8 +413,13 @@ end
         @test try_plan(sv(15; over = "final")) === nothing
         @test EI.multiples_in(15.0, 0.0, 40.0) == [15.0, 30.0]
         @test EI.multiples_in(15.0, 20.0, 40.0) == [30.0]
-        # 3 × 0.1 = 0.30000000000000004 > 0.3: read literally, the product is not in (t₀, t_f].
+        # hit_multiples: plain products in (t₀, t_f].
         @test EI.multiples_in(0.1, 0.0, 0.3) == [0.1, 0.2]
+        # Output times: a product within the landing tolerance of t_f is t_f; one near t₀ is excluded.
+        @test EI.output_times(0.1, 0.0, 0.3) == [0.1, 0.2, 0.3]
+        @test EI.output_times(15.0, 0.0, 40.0) == [15.0, 30.0]
+        @test EI.output_times(0.1, 3 * 0.1, 0.5) == [0.4, 0.5]     # 0.30000000000000004 ≈ t₀, excluded
+        @test EI.output_times(0.1, 0.0, 0.7) == [0.1, 0.2, 3 * 0.1, 0.4, 0.5, 0.6000000000000001, 0.7]
         # Mixed declared element types in one leaf.
         mixed = joinpath(tmp, "mixed.esm")
         decay(x) = Dict("lhs" => Dict("op" => "D", "args" => [x], "wrt" => "t"), "rhs" => Dict("op" => "*", "args" => [-0.5, x]))
@@ -428,12 +433,18 @@ end
               ("precision_contradicts_declaration", "/schedule/sequence/0")
         @test try_plan(Dict("model" => mixed, "operators" => kin, "schedule" => leaf("kinetics"),
             "precision" => Dict("default" => Dict("state" => "f32")))) == ("precision_contradicts_declaration", "/precision/default")
-        # precision_conflict is reported at the leaf's second operator entry.
+        # precision_conflict: the first entry in the leaf's operator order that disagrees with the first.
         three = Dict("a" => Dict("select" => Dict("variables" => "Kinetics.y1")), "b" => Dict("select" => Dict("variables" => "Kinetics.y2")),
             "c" => Dict("select" => Dict("variables" => "Kinetics.y3")))
         @test try_plan(Dict("operators" => three, "schedule" => leaf(["a", "b", "c"]; linsolve = "dense_lu"),
             "precision" => Dict("a" => Dict("factors" => "f64"), "b" => Dict("factors" => "f64"), "c" => Dict("factors" => "f32")))) ==
+              ("precision_conflict", "/precision/c")
+        @test try_plan(Dict("operators" => three, "schedule" => leaf(["c", "a", "b"]; linsolve = "dense_lu"),
+            "precision" => Dict("a" => Dict("factors" => "f64"), "b" => Dict("factors" => "f32"), "c" => Dict("rhs" => "f64")))) ==
               ("precision_conflict", "/precision/b")
+        # Rule 9 with output times near t_f (D83): saveat 0.1 on [0, 0.3] with step.dt 0.1 is on the step.
+        @test try_plan(Dict("operators" => kin, "schedule" => seqroot, "step" => Dict("dt" => 0.1), "time" => Dict("start" => 0, "end" => 0.3),
+            "output" => Dict("saveat" => 0.1), "adjoint" => Dict("functional" => Dict("sum" => "Kinetics.y3", "over" => "saveat"), "wrt" => ["u0"]))) === nothing
         # Model-scope order (§4 step 6): events before parameter updates, crossing replacing the general code.
         evdoc = JSON.parsefile(joinpath(CONF, "plans", "refusals", "discrete-event", "model.esm"))
         evdoc["models"]["Box"]["variables"]["k"]["shape"] = []

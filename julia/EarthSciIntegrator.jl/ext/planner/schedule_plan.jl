@@ -185,13 +185,39 @@ function multiples_in(d::Float64, t0::Float64, tf::Float64)
 end
 
 """
+    output_times(d, t0, tf) -> Vector{Float64}
+
+The output times of an `output.saveat` duration `d` (spec/run-config.md §7.3,
+D83): the multiples `k·d` from model time zero (binary64 products) in
+`(t₀, t_f]`, except that a multiple within the landing tolerance of `t_f`
+(`|τ − b| ≤ 100 ε(max(|τ|, |b|))`) is the output time `t_f` itself, and one
+within it of `t₀` is excluded. So `d` = 0.1 on [0, 0.3] gives 0.1, 0.2, 0.3.
+"""
+function output_times(d::Float64, t0::Float64, tf::Float64)
+    out = Float64[]
+    k = floor(Int, t0 / d) - 1
+    while true
+        τ = k * d
+        if lands_near(τ, tf)
+            isempty(out) || last(out) != tf ? push!(out, tf) : nothing
+        elseif τ > tf
+            break
+        elseif τ > t0 && !lands_near(τ, t0)
+            push!(out, τ)
+        end
+        k += 1
+    end
+    return out
+end
+
+"""
     tstops_known(ctx) -> Vector{Tuple{Float64, String}}
 
 The tstops M2 can know (spec/plan.md §7.3), each with the key that gave it:
 the multiples of `step.hit_multiples` in `(t₀, t_f]`, then the adjoint's
 observation times (`t_f` for `over: "final"`, none for `"time"`, and for
-`"saveat"` the output times: the multiples of `output.saveat` in
-`(t₀, t_f]`, or `t_f` alone without it; D83).
+`"saveat"` the output times of `output.saveat` ([`output_times`](@ref)), or
+`t_f` alone without it; D83).
 
 Spec ambiguity: §7.3 refuses an observation time "at the adjoint's key"; the
 key used is `/adjoint/functional/over`, the one that makes them observation
@@ -215,7 +241,7 @@ function tstops_known(ctx)
             out_cfg = get(config, "output", Dict{String, Any}())
             if haskey(out_cfg, "saveat")
                 d = plan_duration(m, out_cfg["saveat"], "/output/saveat")
-                append!(out, [(τ, at) for τ in multiples_in(d, t0, tf)])
+                append!(out, [(τ, at) for τ in output_times(d, t0, tf)])
             else
                 push!(out, (tf, at))
             end

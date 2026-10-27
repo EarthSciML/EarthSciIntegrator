@@ -153,12 +153,12 @@ function resolve_precision(ctx, root::SNode)
                 continue
             end
             ents = [(o, pc[o][r]) for o in names if haskey(pc, o) && haskey(pc[o], r)]
-            # spec/planner-errors.json: reported at "the second entry in the leaf's
-            # operator order" (read literally, even when the disagreement is with a
-            # later entry; partition_conflict instead names the first entry that
-            # disagrees with the first).
-            any(e -> e[2] != ents[1][2], ents) && refuse("precision_conflict", jptr("/precision", ents[2][1]),
-                "precision entries for the operators of leaf $(n.id) ($(join(first.(ents), ", "))) disagree on $r")
+            # Reported at the first entry, in the leaf's operator order, that
+            # disagrees with the first entry setting the role (as partition_conflict).
+            for (o, v) in ents
+                v == ents[1][2] || refuse("precision_conflict", jptr("/precision", o),
+                    "precision entries for operators $(ents[1][1]) and $o of leaf $(n.id) disagree on $r")
+            end
             if !isempty(ents)
                 roles[r] = ents[1][2]; src[r] = ents[1][1]
             elseif haskey(pc, "default") && haskey(pc["default"], r)
