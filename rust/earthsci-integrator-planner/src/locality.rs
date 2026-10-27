@@ -128,18 +128,17 @@ fn int_lit(e: &Expr) -> Option<i64> {
     }
 }
 
-/// An integer constant: an integer literal, or `+`, `-` (binary or unary)
-/// or `*` whose arguments are integer literals.
-///
-/// SPEC FINDING (§5.2.3): "`+`, `-`, `*` of integer literals" is read
-/// literally, one level deep; a nested product such as `2 * (3 + 1)` is not
-/// a constant.
+/// An integer constant (§5.2.3), recursively: an integer literal, a `-` of
+/// one or two integer constants, or a `+` or `*` of one or more, evaluated
+/// exactly in 64-bit signed integers. An expression whose value, or any of
+/// whose sub-expressions' values, overflows is not one. A float literal is
+/// never one, even when integral.
 fn int_const(e: &Expr) -> Option<i64> {
     if let Some(k) = int_lit(e) {
         return Some(k);
     }
     let n = node(e)?;
-    let args: Option<Vec<i64>> = n.args.iter().map(int_lit).collect();
+    let args: Option<Vec<i64>> = n.args.iter().map(int_const).collect();
     let args = args?;
     match (n.op.as_str(), args.as_slice()) {
         ("+", [_, ..]) => args.iter().try_fold(0i64, |a, b| a.checked_add(*b)),
@@ -194,8 +193,8 @@ fn raw_offsets(c: &Expr, r: &RowIdx, range: (i64, i64)) -> Option<BTreeSet<i64>>
     // c an integer constant k.
     if let Some(k) = int_const(c) {
         return Some(match r {
-            RowIdx::Fixed(rho) => [k - rho].into(),
-            RowIdx::Name(_) => (k - range.1..=k - range.0).collect(),
+            RowIdx::Fixed(rho) => [k.checked_sub(*rho)?].into(),
+            RowIdx::Name(_) => (k.checked_sub(range.1)?..=k.checked_sub(range.0)?).collect(),
         });
     }
     None
@@ -230,10 +229,16 @@ pub fn band_reach(
     }
     let contracted: BTreeSet<&str> = b.contracted.iter().map(|(n, _, _)| n.as_str()).collect();
     for (d, set) in ys.iter().enumerate() {
-        // SPEC FINDING (§5.2.3): dimensions are paired by index-set name; a
-        // row variable with two dimensions on the same index set is paired
-        // with its first one.
-        let Some(xd) = xs.iter().position(|s| s == set) else {
+        // The j-th dimension of y on `set` (counting y's dimensions on `set`
+        // from the left) pairs with the j-th dimension of x on `set`.
+        let j = ys[..d].iter().filter(|s| *s == set).count();
+        let Some(xd) = xs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| *s == set)
+            .nth(j)
+            .map(|(i, _)| i)
+        else {
             reach.covers.insert(set.clone());
             continue;
         };
@@ -275,10 +280,9 @@ pub struct Locality {
 
 /// The class and radius of a term from its band list (§5.2.4).
 ///
-/// SPEC FINDING (§5.2.3–§5.2.4): offsets on an *other* axis (one a state
-/// uses that is neither horizontal nor vertical) are not mentioned by the
-/// class rules; read literally they make the term neither global, stencil
-/// nor column, so they are ignored here.
+/// Offsets on an other axis do not affect the class; a reach that covers one
+/// makes the term global (§5.2.4, D82). No size check on the radius is
+/// needed: reduction keeps `lower + upper + 1` within the axis size.
 pub fn classify(
     bands: &[BandEntry],
     shapes: &BTreeMap<String, Vec<String>>,
@@ -306,9 +310,6 @@ pub fn classify(
         let os = offsets.get(h).cloned().unwrap_or_default();
         let lower = os.iter().filter(|o| **o < 0).map(|o| -o).max().unwrap_or(0);
         let upper = os.iter().filter(|o| **o > 0).copied().max().unwrap_or(0);
-        if lower + upper + 1 > sizes[h] {
-            global = true;
-        }
         stencil |= lower > 0 || upper > 0;
         radius.insert(h.clone(), (lower, upper));
     }
@@ -614,6 +615,105 @@ mod tests {
             vec![v("i"), v("t")],
         );
         assert_eq!(class(&[b]).class, Class::Global);
+    }
+
+    #[test]
+    fn integer_constants_are_recursive() {
+        // Nested, n-ary + and *, unary and binary -.
+        assert_eq!(
+            int_const(&e(r#"{"op":"*","args":[2,{"op":"+","args":[3,1]}]}"#)),
+            Some(8)
+        );
+        assert_eq!(int_const(&e(r#"{"op":"+","args":[1,2,3]}"#)), Some(6));
+        assert_eq!(int_const(&e(r#"{"op":"+","args":[5]}"#)), Some(5));
+        assert_eq!(int_const(&e(r#"{"op":"*","args":[7]}"#)), Some(7));
+        assert_eq!(
+            int_const(&e(
+                r#"{"op":"-","args":[{"op":"-","args":[4]},{"op":"*","args":[2,2,2]}]}"#
+            )),
+            Some(-12)
+        );
+        // Not constants: a float literal, a name, three-argument -, other ops.
+        assert_eq!(int_const(&e(r#"{"op":"+","args":[1,1.0]}"#)), None);
+        assert_eq!(int_const(&e("2.0")), None);
+        assert_eq!(int_const(&e(r#"{"op":"+","args":[1,"i"]}"#)), None);
+        assert_eq!(int_const(&e(r#"{"op":"-","args":[1,2,3]}"#)), None);
+        assert_eq!(int_const(&e(r#"{"op":"/","args":[4,2]}"#)), None);
+        // 64-bit overflow anywhere is not a constant, even if the total fits.
+        let big = i64::MAX;
+        assert_eq!(
+            int_const(&e(&format!(r#"{{"op":"+","args":[{big},1]}}"#))),
+            None
+        );
+        assert_eq!(
+            int_const(&e(&format!(
+                r#"{{"op":"-","args":[{{"op":"+","args":[{big},1]}},1]}}"#
+            ))),
+            None
+        );
+        assert_eq!(
+            int_const(&e(&format!(r#"{{"op":"-","args":[{big},1]}}"#))),
+            Some(big - 1)
+        );
+        // A nested constant column index against a fixed row: {k − ρ}.
+        let b = band(
+            "q",
+            "q",
+            &[(1, 1), (1, 3), (1, 4)],
+            vec![RowIdx::Fixed(1), name("j"), name("k")],
+            vec![
+                e(r#"{"op":"*","args":[2,{"op":"+","args":[1,1]}]}"#),
+                v("j"),
+                v("k"),
+            ],
+        );
+        assert_eq!(offs(&reach(&b), "lon"), vec![3]);
+        // An overflowing index covers the axis.
+        let b = band(
+            "q",
+            "q",
+            &[(1, 1), (1, 3), (1, 4)],
+            vec![RowIdx::Fixed(1), name("j"), name("k")],
+            vec![
+                e(&format!(r#"{{"op":"*","args":[{big},2]}}"#)),
+                v("j"),
+                v("k"),
+            ],
+        );
+        assert!(reach(&b).covers.contains("lon"));
+    }
+
+    /// An index set twice in one shape: the j-th dimension of the column on
+    /// it pairs with the j-th of the row on it.
+    #[test]
+    fn repeated_index_set_pairs_in_order() {
+        let mut g = grid();
+        g.shapes
+            .insert("mm".into(), vec!["lon".into(), "lon".into()]);
+        let b = band(
+            "mm",
+            "mm",
+            &[(1, 8), (1, 8)],
+            vec![name("a"), name("b")],
+            vec![v("a"), e(r#"{"op":"+","args":["b",1]}"#)],
+        );
+        let r = band_reach(&b, &g.shapes, &g.sizes, &g.axes);
+        // The first lon pairs with the first (offset 0), the second with the
+        // second (offset +1); pairing both with the first would give "b"
+        // against "a", a cover.
+        assert!(r.covers.is_empty());
+        assert_eq!(offs(&r, "lon"), vec![0, 1]);
+        // A column with two lon dimensions read from a row with one: the
+        // second has no partner and covers lon.
+        let b = band(
+            "q",
+            "mm",
+            &[(1, 8), (1, 3), (1, 4)],
+            vec![name("i"), name("j"), name("k")],
+            vec![v("i"), v("i")],
+        );
+        let r = band_reach(&b, &g.shapes, &g.sizes, &g.axes);
+        assert!(r.covers.contains("lon"));
     }
 
     #[test]

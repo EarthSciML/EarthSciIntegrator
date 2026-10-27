@@ -2,7 +2,7 @@
 //! step, partition, precision, the checkpoint placeholder with the adjoint's
 //! checks, and inputs.
 
-use crate::axes::Axes;
+use crate::axes::{Axes, Role};
 use crate::error::{codes, ptr, refuse, Result};
 use crate::locality::Class;
 use crate::model::ModelInfo;
@@ -78,12 +78,36 @@ pub fn leaf_states(n: &Node, ops: &BTreeMap<String, Operator>) -> Vec<String> {
     out.into_iter().collect()
 }
 
+/// The cells of a leaf for `shard_size` (§7.4): the largest, over the
+/// states its operators write, of the product of the sizes of the state's
+/// dimensions on horizontal axes and, for a pointwise leaf only, on the
+/// vertical axis; other axes are not counted, and a state with no such
+/// dimension counts 1.
+pub fn leaf_cells(
+    n: &Node,
+    ops: &BTreeMap<String, Operator>,
+    info: &ModelInfo,
+    axes: &Axes,
+    class: Class,
+) -> i64 {
+    leaf_states(n, ops)
+        .iter()
+        .map(|s| {
+            info.shapes[s]
+                .iter()
+                .filter(|d| match axes.role(d) {
+                    Role::Horizontal => true,
+                    Role::Vertical => class == Class::Pointwise,
+                    Role::Other => false,
+                })
+                .map(|d| info.index_sets[d])
+                .product::<i64>()
+        })
+        .max()
+        .unwrap_or(1)
+}
+
 /// §7.4 (D77): `ranks`, `tiles`, `halo` and `shards`.
-///
-/// SPEC FINDING (§7.4): "the leaf's array cells" for `shard_size` is read
-/// as the cells of the first array state, in canonical order, the leaf
-/// writes (1 when it writes only scalars), and "columns" as those cells
-/// divided by the vertical extent of that state's shape.
 pub fn partition(
     rc: &RunConfig,
     info: &ModelInfo,
@@ -143,10 +167,31 @@ pub fn partition(
     }
     let run_shards = rc.at("/partition/shards").and_then(Value::as_object);
     let count = |v: &Value| v.as_i64().unwrap_or(1); // "auto" is 1 at M2.
+                                                     // A `coupled` node gets no `shards` entry; a `partition.shards` key that
+                                                     // is a coupled node's id, or an operator a coupled node names, could
+                                                     // shard nothing, and is refused first, keys in code-point order.
+    if let Some(m) = run_shards {
+        let mut coupled: BTreeSet<String> = BTreeSet::new();
+        for n in root.leaves() {
+            if let Kind::Leaf {
+                ops: names,
+                coupled: true,
+            } = &n.kind
+            {
+                coupled.insert(n.id().to_string());
+                coupled.extend(names.iter().cloned());
+            }
+        }
+        let keys: BTreeSet<&String> = m.keys().collect();
+        if let Some(k) = keys.into_iter().find(|k| coupled.contains(k.as_str())) {
+            return Err(refuse(
+                codes::RUN_CONFIG_INVALID,
+                ptr("/partition/shards", k),
+                format!("partition.shards entry {k} is a coupled node or one of its operators, which are not sharded"),
+            ));
+        }
+    }
     let mut shards = Map::new();
-    // SPEC FINDING (§7.4): `shards` is written "for every pointwise or
-    // column leaf"; read literally, `coupled` nodes get no entry (§7.5 names
-    // "every leaf and coupled node" explicitly, §7.4 does not).
     for n in root.leaves() {
         let Kind::Leaf {
             ops: names,
@@ -166,17 +211,7 @@ pub fn partition(
             .and_then(|p| p.get("shard_size"))
             .and_then(Value::as_i64)
         {
-            let states = leaf_states(n, ops);
-            let first = states.iter().find(|s| !info.shapes[*s].is_empty());
-            let cells = first.map_or(1, |s| {
-                let all = info.cells(s);
-                match (&axes.vertical, class) {
-                    (Some(v), Class::Column) if info.shapes[s].contains(v) => {
-                        all / info.index_sets[v]
-                    }
-                    _ => all,
-                }
-            });
+            let cells = leaf_cells(n, ops, info, axes, class);
             (cells + size - 1) / size
         } else if let Some(s) = run_shards.and_then(|m| m.get(n.id())) {
             count(s)
@@ -230,9 +265,10 @@ fn declared(element_type: &str) -> Option<&'static str> {
 /// `algs` gives each leaf's method where it is known (a given `alg`, or
 /// the resolved one); the classical-Rosenbrock check runs for those.
 ///
-/// SPEC FINDING (§7.5): when the leaf's states declare different
-/// `element_type`s, no `state` role satisfies them all; that is read as
-/// `precision_contradicts_declaration`.
+/// A leaf whose states declare different `element_type`s is
+/// `precision_contradicts_declaration`, at the entry that set `state`, else
+/// at the leaf's pointer. Unknown precision keys were refused with rule 2
+/// (§7.1).
 pub fn precision(
     rc: &RunConfig,
     info: &ModelInfo,
@@ -313,9 +349,13 @@ pub fn precision(
             })
             .collect();
         if decl.len() > 1 {
+            let at = set
+                .get("state")
+                .map(|(_, at)| at.clone())
+                .unwrap_or_else(|| n.pointer.clone());
             return Err(refuse(
                 codes::PRECISION_CONTRADICTS_DECLARATION,
-                "/precision",
+                at,
                 format!(
                     "the states of leaf {} declare different element types",
                     n.id()

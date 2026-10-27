@@ -75,15 +75,11 @@ pub struct StructureFacts {
 
 /// Plans the run config at `path` as far as stage 1 goes.
 pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Planned> {
-    // §4 steps 1–6.
+    // §4 steps 1–7.
     let rc = runconfig::read(path)?;
     let mut info = model::read(&rc)?;
-    // §4 step 7: axes (with the shapes of lifted states, §6.1.3) and time.
-    //
-    // SPEC FINDING (§4 step 7, §6.1.3): lifted states' shapes are resolved
-    // here whether or not `axes` is given, since the default axes and the
-    // locality rules both need every state's index sets; the order of
-    // `lift_shape_unresolved` against later refusals is otherwise unstated.
+    // §4 step 8: the shapes of lifted states (§6.1.3), whether or not `axes`
+    // is given, then the axes, then the time.
     model::resolve_lifted_shapes(&mut info)?;
     let axes = axes::resolve(&rc, &info)?;
     let interval = time::resolve(&rc, &info, options.time.as_ref())?;
@@ -91,12 +87,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     // Pass 1: terms.
     let terms = terms::terms(&info)?;
 
-    // Pass 2, per term.
-    //
-    // SPEC FINDING (§4, §5.1.3, §5.2): pass 1's selection needs each term's
-    // locality, which pass 2 defines, so the per-term half of pass 2 runs
-    // between pass 1's terms and its selection; a `band_model_failed` for a
-    // term therefore comes before every selection refusal.
+    // Each term's locality, before selection, which reads it (§4 "Order of
+    // refusals" item 2, D81).
     let bands = match bands.term_bands(&info, &terms) {
         Ok(Some(b)) => b,
         Ok(None) => {
@@ -146,11 +138,9 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     )?;
     let step = settings::step(&rc, &info)?;
     let partition = settings::partition(&rc, &info, &axes, &ops, &root)?;
-    // The classical-Rosenbrock check of §7.5 for the methods the run config
-    // gives. SPEC FINDING (§4, §7.5): an `"auto"` method is resolved in pass
-    // 5, after §7.5's checks, so a low-precision role on a leaf whose
-    // resolved method is a classical Rosenbrock (Rodas4 at a tight `reltol`)
-    // is checked again once the method is resolved (`resolve_schedule`).
+    // §7.5's classical-Rosenbrock check runs here for the methods the run
+    // config gives, and for an `"auto"` method once §5.5.3 resolves it (§4
+    // "Order of refusals" item 6).
     let given_algs = given_algs(&root);
     let precision = settings::precision(&rc, &info, &ops, &root, &given_algs)?;
     let checkpoint_schedule = settings::checkpoint(&rc, &info, &root)?;

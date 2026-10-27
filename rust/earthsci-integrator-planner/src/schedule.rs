@@ -236,10 +236,10 @@ pub fn tree(rc: &RunConfig, info: &ModelInfo, ops: &BTreeMap<String, Operator>) 
 /// parameter's default. A name that is not a parameter with a scalar default
 /// is `name_unresolved` or `name_wrong_kind` (rule 2).
 ///
-/// SPEC FINDING (spec/run-config.md §2.2): a duration is positive, which the
-/// schema checks for literals only; a parameter whose default is not a
-/// positive finite number is refused here with `run_config_invalid`. The
-/// literal 0 a `phase` may be never comes from a parameter.
+/// A parameter whose default is not a positive finite number is
+/// `run_config_invalid` at the duration's key (spec/run-config.md §2.2,
+/// spec/plan.md §7.1). The literal 0 a `phase` may be never comes from a
+/// parameter.
 pub fn duration(v: &Value, pointer: &str, info: &ModelInfo) -> Result<f64> {
     if let Some(x) = literal_duration(v) {
         return Ok(x);
@@ -297,7 +297,9 @@ pub struct CheckContext<'a> {
 /// spec/plan.md §7.1: the unsupported nodes of §0.1 in tree order, then
 /// spec/run-config.md §8 rules 3, 5–9, 12, 13 and 15, in rule order.
 pub fn check(root: &Node, cx: &CheckContext) -> Result<()> {
-    check_unsupported(root)?;
+    check_unsupported(root, cx)?;
+    check_step_limits(cx)?;
+    rule_2(root, cx)?;
     rule_3(root, cx)?;
     rule_5(root, cx)?;
     rule_6(root, cx)?;
@@ -310,10 +312,49 @@ pub fn check(root: &Node, cx: &CheckContext) -> Result<()> {
     Ok(())
 }
 
+/// A name in a `limits` list: resolved first (`name_unresolved`;
+/// `name_wrong_kind` when it is not an observed), then refused,
+/// `unsupported_step_limit`, at its pointer (§7.1).
+fn observed_limit(l: &Value, at: String, info: &ModelInfo) -> Result<()> {
+    let name = l.as_str().unwrap_or_default();
+    if !info.is_name(name) {
+        return Err(refuse(
+            codes::NAME_UNRESOLVED,
+            at,
+            format!("{name} is not a name of the flattened model"),
+        ));
+    }
+    if !info.is_observed(name) {
+        return Err(refuse(
+            codes::NAME_WRONG_KIND,
+            at,
+            format!("the step limit {name} is not an observed"),
+        ));
+    }
+    Err(refuse(
+        codes::UNSUPPORTED_STEP_LIMIT,
+        at,
+        format!("the observed step limit {name} needs a limit operator (U6, M4b)"),
+    ))
+}
+
+/// The observeds in `step.limits`, entries in written order, after the
+/// schedule's unsupported constructs (§7.1).
+fn check_step_limits(cx: &CheckContext) -> Result<()> {
+    if let Some(Value::Array(limits)) = cx.rc.at("/step/limits") {
+        for (i, l) in limits.iter().enumerate() {
+            if l.is_string() {
+                observed_limit(l, ptr("/step/limits", i), cx.info)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `map`, `solve` and `split_explicit` nodes, and observed limits of a
 /// `subcycle`, in tree order. (`coupled` with algebraic operators cannot
 /// occur: algebraic equations were refused at §4 step 6.)
-fn check_unsupported(root: &Node) -> Result<()> {
+fn check_unsupported(root: &Node, cx: &CheckContext) -> Result<()> {
     for n in root.preorder() {
         match n.kind {
             Kind::Map => {
@@ -341,18 +382,174 @@ fn check_unsupported(root: &Node) -> Result<()> {
                 if let Some(Value::Array(limits)) = n.value.get("limits") {
                     for (i, l) in limits.iter().enumerate() {
                         if l.is_string() {
-                            return Err(refuse(
-                                codes::UNSUPPORTED_STEP_LIMIT,
-                                ptr(&n.key_ptr("limits"), i),
-                                format!(
-                                    "the observed step limit {l} needs a limit operator (U6, M4b)"
-                                ),
-                            ));
+                            observed_limit(l, ptr(&n.key_ptr("limits"), i), cx.info)?;
                         }
                     }
                 }
             }
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// A name that must be a model parameter (`bind_dt` keys).
+fn must_be_parameter(name: &str, at: String, info: &ModelInfo) -> Result<()> {
+    if !info.is_name(name) {
+        return Err(refuse(
+            codes::NAME_UNRESOLVED,
+            at,
+            format!("{name} is not a name of the flattened model"),
+        ));
+    }
+    if !info.is_parameter(name) {
+        return Err(refuse(
+            codes::NAME_WRONG_KIND,
+            at,
+            format!("{name} is not a parameter"),
+        ));
+    }
+    Ok(())
+}
+
+/// A name that must be a state (`control.abstol` keys, `domain.nonnegative`
+/// entries).
+fn must_be_state(name: &str, at: String, info: &ModelInfo) -> Result<()> {
+    if !info.is_name(name) {
+        return Err(refuse(
+            codes::NAME_UNRESOLVED,
+            at,
+            format!("{name} is not a name of the flattened model"),
+        ));
+    }
+    if !info.is_state(name) {
+        return Err(refuse(
+            codes::NAME_WRONG_KIND,
+            at,
+            format!("{name} is not a state variable"),
+        ));
+    }
+    Ok(())
+}
+
+/// A `bind_dt` object's keys, in code-point order, must be parameters.
+fn bind_dt_keys(b: Option<&Value>, at: &str, info: &ModelInfo) -> Result<()> {
+    if let Some(m) = b.and_then(Value::as_object) {
+        let keys: BTreeSet<&String> = m.keys().collect();
+        for k in keys {
+            must_be_parameter(k, ptr(at, k), info)?;
+        }
+    }
+    Ok(())
+}
+
+/// A duration's names resolve (rule 2), and a parameter's default is a
+/// positive finite number.
+fn check_duration(v: Option<&Value>, at: String, info: &ModelInfo) -> Result<()> {
+    match v {
+        Some(v)
+            if v.as_i64() != Some(0)
+                && v.as_str() != Some("step")
+                && v.as_str() != Some("accumulated") =>
+        {
+            duration(v, &at, info).map(|_| ())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// A node's parameter-name durations, in this order: `dt`, `control.dt0`,
+/// `control.dtmin`, `control.dtmax`, `period`, `phase`, each `limits`
+/// entry's `max`, then each `frozen` entry's `period` and `phase`.
+fn node_durations(n: &Node, info: &ModelInfo) -> Result<()> {
+    let v = &n.value;
+    check_duration(v.get("dt"), n.key_ptr("dt"), info)?;
+    for k in ["dt0", "dtmin", "dtmax"] {
+        let c = v.get("control").and_then(|c| c.get(k));
+        check_duration(c, ptr(&n.key_ptr("control"), k), info)?;
+    }
+    check_duration(v.get("period"), n.key_ptr("period"), info)?;
+    check_duration(v.get("phase"), n.key_ptr("phase"), info)?;
+    if let Some(Value::Array(limits)) = v.get("limits") {
+        for (i, l) in limits.iter().enumerate() {
+            let at = ptr(&ptr(&n.key_ptr("limits"), i), "max");
+            check_duration(l.get("max"), at, info)?;
+        }
+    }
+    if let Some(Value::Array(frozen)) = v.get("frozen") {
+        for (i, f) in frozen.iter().enumerate() {
+            let at = ptr(&n.key_ptr("frozen"), i);
+            check_duration(f.get("period"), ptr(&at, "period"), info)?;
+            check_duration(f.get("phase"), ptr(&at, "phase"), info)?;
+        }
+    }
+    Ok(())
+}
+
+/// Rule 2 for the names §5.1.3 has not checked, in §7.1's order: the
+/// operators' `bind_dt` keys; the parameter-name durations outside the
+/// schedule; per node in tree order its durations, `bind_dt` keys,
+/// per-variable `control.abstol` keys and `domain.nonnegative` entries; then
+/// the `precision` keys.
+///
+/// SPEC FINDING (§7.1 rule 2 item 3): the order of one node's several
+/// parameter-name durations is not given; [`node_durations`] fixes one.
+fn rule_2(root: &Node, cx: &CheckContext) -> Result<()> {
+    let info = cx.info;
+    if let Some(ops) = cx.rc.at("/operators").and_then(Value::as_object) {
+        let names: BTreeSet<&String> = ops.keys().collect();
+        for name in names {
+            let at = ptr(&ptr("/operators", name), "bind_dt");
+            bind_dt_keys(ops[name].get("bind_dt"), &at, info)?;
+        }
+    }
+    check_duration(cx.rc.at("/step/dt"), "/step/dt".into(), info)?;
+    if let Some(Value::Array(limits)) = cx.rc.at("/step/limits") {
+        for (i, l) in limits.iter().enumerate() {
+            check_duration(l.get("max"), ptr(&ptr("/step/limits", i), "max"), info)?;
+        }
+    }
+    for k in ["hit_multiples", "resolution"] {
+        check_duration(cx.rc.at(&format!("/step/{k}")), ptr("/step", k), info)?;
+    }
+    check_duration(cx.rc.at("/output/saveat"), "/output/saveat".into(), info)?;
+    if let Some(Value::Array(sinks)) = cx.rc.at("/output/sinks") {
+        for (i, s) in sinks.iter().enumerate() {
+            check_duration(
+                s.get("saveat"),
+                ptr(&ptr("/output/sinks", i), "saveat"),
+                info,
+            )?;
+        }
+    }
+    for n in root.preorder() {
+        node_durations(n, info)?;
+        bind_dt_keys(n.value.get("bind_dt"), &n.key_ptr("bind_dt"), info)?;
+        let control = n.key_ptr("control");
+        if let Some(Value::Object(abstol)) = n.value.get("control").and_then(|c| c.get("abstol")) {
+            let keys: BTreeSet<&String> = abstol.keys().collect();
+            for k in keys {
+                must_be_state(k, ptr(&ptr(&control, "abstol"), k), info)?;
+            }
+        }
+        if let Some(Value::Array(nn)) = n.value.get("domain").and_then(|d| d.get("nonnegative")) {
+            let at = ptr(&n.key_ptr("domain"), "nonnegative");
+            for (i, s) in nn.iter().enumerate() {
+                must_be_state(s.as_str().unwrap_or_default(), ptr(&at, i), info)?;
+            }
+        }
+    }
+    if let Some(precision) = cx.rc.at("/precision").and_then(Value::as_object) {
+        let ids: BTreeSet<&str> = root.preorder().iter().map(|n| n.id()).collect();
+        let keys: BTreeSet<&String> = precision.keys().collect();
+        for k in keys {
+            if k != "default" && !cx.ops.contains_key(k.as_str()) && !ids.contains(k.as_str()) {
+                return Err(refuse(
+                    codes::NAME_UNRESOLVED,
+                    ptr("/precision", k),
+                    format!("the precision key {k} names no operator, node or default"),
+                ));
+            }
         }
     }
     Ok(())
@@ -404,14 +601,11 @@ fn rule_3(root: &Node, cx: &CheckContext) -> Result<()> {
     Ok(())
 }
 
-/// Rule 5: every operator is advanced by some node, and by no more than one
-/// leaf.
-///
-/// SPEC FINDING (spec/run-config.md §8 rule 5): "advances twice in one
-/// invocation outside strang" is read as: named by two or more `leaf` or
-/// `coupled` nodes of the tree (a `strang` repeating its own children is not
-/// counted, since each child is one node). A `frozen` entry counts as
-/// advancing the operator for "advanced by no node" but not for "twice".
+/// Rule 5 (spec/plan.md §7.1, D84): every operator is advanced somewhere (a
+/// `leaf` or `coupled` node, or a `frozen` entry of one, names it), and no
+/// operator is named by two `leaf` or `coupled` nodes (`frozen` entries do
+/// not count toward "twice"). A default operator advanced nowhere is
+/// reported at `/schedule`.
 fn rule_5(root: &Node, cx: &CheckContext) -> Result<()> {
     let mut advanced: BTreeSet<String> = BTreeSet::new();
     let mut first: BTreeMap<String, String> = BTreeMap::new();
@@ -508,7 +702,11 @@ fn rule_6(root: &Node, cx: &CheckContext) -> Result<()> {
             continue;
         }
         let Some(imex) = n.value.get("imex") else {
-            continue;
+            return Err(refuse(
+                codes::IMEX_PARTITION_INVALID,
+                n.pointer.clone(),
+                "an IMEXEuler leaf needs imex; there is no default partition",
+            ));
         };
         if imex_partition(imex, ops, cx.ops).is_none() {
             return Err(refuse(
@@ -575,28 +773,38 @@ fn eps(x: f64) -> f64 {
     f64::from_bits(x.to_bits() + 1) - x
 }
 
-/// Whether `tau` falls on a boundary `t0 + k·dt` of a fixed macro step, or
-/// on `tf`, within the landing tolerance (spec/run-config.md §5).
+/// `λ(a, b)` of spec/plan.md §7.3: `|a − b| ≤ 100 ε(max(|a|, |b|))`.
+fn lands(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 100.0 * eps(a.abs().max(b.abs()))
+}
+
+/// Whether the tstop `tau` is on the fixed step (spec/plan.md §7.3):
+/// `λ(τ, tf)`; or, with `r` the integer nearest `(τ − t0)/dt`, some
+/// `k ∈ {r − 1, r, r + 1}`, `k ≥ 1`, has `λ(τ, t0 + k·dt)` and the macro
+/// step from `t0 + (k − 1)·dt` is not a stop step (spec/methods.md §10 with
+/// `h = dt`, `t_stop = tf`).
 fn on_fixed_boundary(tau: f64, t0: f64, tf: f64, dt: f64) -> bool {
-    let lands = |b: f64| (tau - b).abs() <= 100.0 * eps(tau.abs().max(b.abs()));
-    if lands(tf) {
+    if lands(tau, tf) {
         return true;
     }
-    let k = ((tau - t0) / dt).round();
-    if k < 0.0 {
-        return false;
-    }
-    [k - 1.0, k, k + 1.0]
+    let r = ((tau - t0) / dt).round();
+    [r - 1.0, r, r + 1.0]
         .into_iter()
-        .filter(|k| *k >= 0.0)
-        .any(|k| lands(t0 + k * dt))
+        .filter(|k| *k >= 1.0)
+        .any(|k| {
+            let b = t0 + k * dt;
+            let ta = if k == 1.0 { t0 } else { t0 + (k - 1.0) * dt };
+            let stop_step = dt + 100.0 * eps(ta.abs().max(tf.abs())) >= tf - ta;
+            lands(tau, b) && !stop_step
+        })
 }
 
 /// The multiples `j·m` of a duration in `(t0, tf]`, counted from model time
 /// zero (spec/run-config.md §1.1).
 fn multiples(m: f64, iv: Interval) -> impl Iterator<Item = f64> {
-    let first = (iv.start / m).floor() as i64 + 1;
-    let last = (iv.end / m).floor() as i64;
+    // One candidate either side of the quotients, filtered by the products.
+    let first = (iv.start / m).floor() as i64;
+    let last = (iv.end / m).floor() as i64 + 1;
     (first..=last)
         .map(move |j| j as f64 * m)
         .filter(move |t| *t > iv.start && *t <= iv.end)
@@ -613,13 +821,13 @@ fn root_lands_itself(root: &Node) -> bool {
 }
 
 /// Rule 9, for the tstops M2 can know: `hit_multiples` and the adjoint's
-/// observation times (spec/plan.md §7.3).
+/// observation times (spec/plan.md §7.3, D83): for `over: "saveat"` the
+/// multiples of `output.saveat` from model time zero in `(t0, tf]` (`tf`
+/// alone without it), for `over: "final"` `tf`, which is always on the
+/// step, and none for `over: "time"`.
 ///
-/// SPEC FINDING (spec/plan.md §7.3, spec/run-config.md §7.3): the adjoint's
-/// observation times for `over: "saveat"` are read as the multiples of
-/// `output.saveat` counted from model time zero in `(t0, tf]` (and `tf`
-/// alone without `output.saveat`); `over: "final"` observes `tf`, which is
-/// always a boundary, and `over: "time"` has no point terms.
+/// SPEC FINDING (§7.3): "the adjoint's key" for an observation time off the
+/// step is read as `/adjoint/functional/over`.
 fn rule_9(root: &Node, cx: &CheckContext) -> Result<()> {
     let Some(dt) = cx.rc.at("/step/dt") else {
         return Ok(());
@@ -1076,6 +1284,17 @@ mod tests {
         assert!(!on_fixed_boundary(7.0, 0.0, 3600.0, 300.0));
         // tf is always a boundary.
         assert!(on_fixed_boundary(1000.0, 0.0, 1000.0, 300.0));
+        // k ≥ 1: landing on t0 itself does not count.
+        let t1 = 1.0 + eps(1.0);
+        assert!(!on_fixed_boundary(t1, 1.0, 10.0, 1.0));
+        // A boundary reached only by a stop step does not count: tau lands
+        // on 4 = 0 + 4·1, but tf is within the stop rule's tolerance of 4,
+        // so the step from 3 is a stop step, and tau is not within λ of tf.
+        let e = eps(4.0);
+        let (tau, tf) = (4.0 - 60.0 * e, 4.0 + 60.0 * e);
+        assert!(lands(tau, 4.0) && !lands(tau, tf));
+        assert!(!on_fixed_boundary(tau, 0.0, tf, 1.0));
+        assert!(on_fixed_boundary(tau, 0.0, 5.0, 1.0));
         let iv = Interval {
             start: 0.0,
             end: 21.0,

@@ -228,6 +228,11 @@ mod tests {
         assert!(is_literal_zero(&e("0")));
         assert!(is_literal_zero(&e("0.0")));
         assert!(!is_literal_zero(&e("1")));
+        // In `a - 0` the second summand is `-(0)`, an operation, and is kept
+        // (spec/plan.md §5.1.1).
+        let t = additive_terms(&e(r#"{"op":"-","args":["a",0]}"#));
+        assert_eq!(js(&t), r#"["a",{"op":"-","args":[0]}]"#);
+        assert!(t.iter().all(|s| !is_literal_zero(s)));
     }
 
     #[test]

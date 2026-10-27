@@ -103,7 +103,9 @@ pub fn check_schema(value: &Value) -> Result<()> {
     if let Some(e) = validator().iter_errors(value).next() {
         return Err(refuse(
             codes::RUN_CONFIG_INVALID,
-            e.instance_path.to_string(),
+            // At the empty pointer: a failing `oneOf` has no single
+            // location (spec/plan.md §4 step 1).
+            "",
             format!("the run config does not validate against its schema: {e}"),
         ));
     }
@@ -145,6 +147,9 @@ mod tests {
         assert_eq!(literal_duration(&json!("1e2 s")), Some(100.0));
         assert_eq!(literal_duration(&json!("3650 day")), Some(3650.0 * 86400.0));
         assert_eq!(literal_duration(&json!("0.5 s")), Some(0.5));
+        // The number as the nearest binary64, times the unit (spec/plan.md §7.1).
+        assert_eq!(literal_duration(&json!("1.1 h")), Some(3960.0000000000005));
+        assert_eq!(literal_duration(&json!("1.1h")), Some(1.1 * 3600.0));
         assert_eq!(literal_duration(&json!("Met.dt")), None);
     }
 

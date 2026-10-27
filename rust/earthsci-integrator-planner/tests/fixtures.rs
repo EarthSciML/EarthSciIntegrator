@@ -131,11 +131,8 @@ fn cross_component_term_by_owner() {
             ("scavenging", &["Chem.O3"]),
         ],
     );
-    // SPEC FINDING: expected.md shows this leaf as the root (`id` "root",
-    // shards {"root": 1}), but by-owner.run.json writes it inside a
-    // one-child `sequence`, and spec/plan.md §7.1 keeps a written sequence
-    // (only the "auto" schedule unwraps a single leaf, D72). The literal
-    // reading is tested: the leaf is `root.0`.
+    // The run config writes a one-child `sequence`, which §7.1 keeps, so the
+    // leaf is `root.0` (expected.md).
     same(
         &p.resolve_schedule(Some(&f)).unwrap(),
         &json!({"id": "root", "sequence": [{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}]}),

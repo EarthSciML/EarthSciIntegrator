@@ -17,6 +17,7 @@ pub mod codes {
     pub const UNSUPPORTED_STEP_LIMIT: &str = "unsupported_step_limit";
     pub const UNSUPPORTED_SOLVE_NODE: &str = "unsupported_solve_node";
     pub const UNSUPPORTED_SPLIT_EXPLICIT: &str = "unsupported_split_explicit";
+    pub const UNSUPPORTED_CROSSING_UPDATE: &str = "unsupported_crossing_update";
     pub const AXES_UNRESOLVED: &str = "axes_unresolved";
     pub const NAME_UNRESOLVED: &str = "name_unresolved";
     pub const NAME_WRONG_KIND: &str = "name_wrong_kind";
@@ -72,6 +73,7 @@ pub mod codes {
         UNSUPPORTED_STEP_LIMIT,
         UNSUPPORTED_SOLVE_NODE,
         UNSUPPORTED_SPLIT_EXPLICIT,
+        UNSUPPORTED_CROSSING_UPDATE,
         AXES_UNRESOLVED,
         NAME_UNRESOLVED,
         NAME_WRONG_KIND,

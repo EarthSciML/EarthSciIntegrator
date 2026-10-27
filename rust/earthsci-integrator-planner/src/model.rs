@@ -111,6 +111,19 @@ pub(crate) fn collect_strings(v: &Value, f: &mut impl FnMut(&str)) {
     }
 }
 
+/// The `ranges` of a lifted equation's `faq` in a derived document
+/// (spec/plan.md §6.1.2): the d-th name of `output_idx` maps to
+/// `{"from": X_d}`, `X_d` the index set of dimension d of the state's shape.
+/// Built rather than copied, since the bindings write the flattened ranges
+/// differently.
+pub fn lifted_ranges(output_idx: &[String], shape: &[String]) -> serde_json::Map<String, Value> {
+    output_idx
+        .iter()
+        .zip(shape)
+        .map(|(i, set)| (i.clone(), serde_json::json!({"from": set})))
+        .collect()
+}
+
 /// The operator node of an expression, if it is one.
 pub fn node(e: &Expr) -> Option<&earthsci_ast::ExpressionNode> {
     match e {
@@ -239,6 +252,21 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
             "the flattened model has events; condition and map operators arrive at M4b".into(),
         );
     }
+    // At the parameter-update place, a `crossing` rule on any parameter
+    // takes the more specific code, whatever the parameters' order (§4 step 6).
+    let crossing = |v: &earthsci_ast::ModelVariable| {
+        v.update.as_ref().is_some_and(|u| {
+            u.rules()
+                .iter()
+                .any(|r| matches!(r, earthsci_ast::ParameterUpdate::Crossing { .. }))
+        })
+    };
+    if let Some((name, _)) = flat.parameters.iter().find(|(_, v)| crossing(v)) {
+        return scope(
+            codes::UNSUPPORTED_CROSSING_UPDATE,
+            format!("parameter {name} has a crossing update rule, which is not in v1 (D22)"),
+        );
+    }
     if let Some((name, _)) = flat.parameters.iter().find(|(_, v)| v.update.is_some()) {
         return scope(
             codes::UNSUPPORTED_PARAMETER_UPDATE,
@@ -265,9 +293,7 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
             }
         }
     }
-    // spec/plan.md §6.1.4. SPEC FINDING: §4 does not place this refusal in
-    // the order of refusals; it needs nothing but the model, so it is made
-    // here, after the M2 scope checks of step 6, rather than in pass 6.
+    // §4 step 7 (§6.1.4, D81).
     let top_level = file
         .models
         .iter()
@@ -373,12 +399,17 @@ pub fn resolve_lifted_shapes(info: &mut ModelInfo) -> Result<()> {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     for (state, extents) in lifted {
+        // Non-lifted variables only: a shape `flatten` records on a lifted
+        // state itself is ignored (Rust's records none; Julia's does).
+        let lifted = &info.flat.lifted_shapes;
         let candidates = info
             .flat
             .state_variables
-            .values()
-            .chain(info.flat.parameters.values())
-            .chain(info.flat.observed_variables.values());
+            .iter()
+            .chain(info.flat.parameters.iter())
+            .chain(info.flat.observed_variables.iter())
+            .filter(|(k, _)| !lifted.contains_key(*k))
+            .map(|(_, v)| v);
         let found = candidates.filter_map(|v| v.shape.as_ref()).find(|shape| {
             shape.len() == extents.len()
                 && shape
@@ -402,4 +433,21 @@ pub fn resolve_lifted_shapes(info: &mut ModelInfo) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifted_faq_ranges() {
+        let r = lifted_ranges(
+            &["i".into(), "j".into(), "k".into()],
+            &["lon".into(), "lat".into(), "lev".into()],
+        );
+        assert_eq!(
+            Value::Object(r),
+            serde_json::json!({"i": {"from": "lon"}, "j": {"from": "lat"}, "k": {"from": "lev"}})
+        );
+    }
 }
