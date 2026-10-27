@@ -60,7 +60,8 @@ function BandEntry(d::AbstractDict)
         Tuple{String, Int, Int}[])
 end
 
-_is_int_literal(x) = x isa Integer && !(x isa Bool)
+"""An integer literal (§5.2.3): a number the flattened model holds as an integer (serialized as a JSON integer), within 64-bit signed range. A float such as `1.0` is not one."""
+_is_int_literal(x) = x isa Integer && !(x isa Bool) && typemin(Int) <= x <= typemax(Int)
 
 """Whether a serialized index expression mentions `name`."""
 _mentions(x, name) = x isa AbstractString ? x == name :
@@ -69,10 +70,11 @@ _mentions(x, name) = x isa AbstractString ? x == name :
     x isa AbstractVector ? any(a -> _mentions(a, name), x) : false
 
 """
-The value of an integer constant (§5.2.3: a literal, or `+`, `-`, `*` of
-integer literals), or `nothing`. Nested `+`, `-`, `*` of such constants are
-accepted too, and a one-argument `-` negates (spec finding: §5.2.3 says
-"of integer literals" without saying whether they nest).
+The value of an integer constant (§5.2.3), or `nothing`: recursively, an
+integer literal, a `-` of one or two integer constants, or a `+` or `*` of
+one or more. The value is computed exactly in 64-bit signed integers; an
+expression whose value or any sub-expression's value overflows is not a
+constant.
 """
 function _int_constant(x)
     _is_int_literal(x) && return Int(x)
@@ -80,13 +82,24 @@ function _int_constant(x)
     op = get(x, "op", nothing)
     op in ("+", "-", "*") || return nothing
     length(keys(x)) == 2 || return nothing          # exactly "op" and "args"
-    vals = [_int_constant(a) for a in x["args"]]
-    (isempty(vals) || any(isnothing, vals)) && return nothing
-    op == "+" && return sum(vals)
-    op == "*" && return prod(vals)
-    length(vals) == 1 && return -vals[1]
-    length(vals) == 2 && return vals[1] - vals[2]
-    return nothing
+    args = x["args"]
+    (args isa AbstractVector && !isempty(args)) || return nothing
+    op == "-" && length(args) > 2 && return nothing
+    vals = Int[]
+    for a in args
+        v = _int_constant(a)
+        v === nothing && return nothing
+        push!(vals, v)
+    end
+    try
+        op == "+" && return foldl(Base.Checked.checked_add, vals)
+        op == "*" && return foldl(Base.Checked.checked_mul, vals)
+        length(vals) == 1 && return Base.Checked.checked_neg(vals[1])
+        return Base.Checked.checked_sub(vals[1], vals[2])
+    catch e
+        e isa OverflowError && return nothing
+        rethrow()
+    end
 end
 
 """
@@ -142,9 +155,8 @@ end
 
 §5.2.3 for one band entry. `shapes` gives each array variable's index-set
 names. Dimensions of the row and column variables are paired by index-set
-name; when an index set appears more than once in a shape, the `j`-th
-occurrence in the column pairs with the `j`-th in the row (spec finding:
-§5.2.3 does not say).
+name: the `j`-th dimension of the column variable on an index set pairs with
+the `j`-th dimension of the row variable on it (§5.2.3).
 """
 function band_reach(b::BandEntry, shapes, axes::Axes, sizes)
     xs = get(shapes, b.row, String[])
@@ -185,10 +197,10 @@ end
 §5.2.4: a term's class from its band list, with its radius per horizontal
 axis when it is a stencil (`nothing` otherwise).
 
-Spec finding: §5.2.4 classifies by horizontal and vertical offsets only; a
-nonzero offset on an "other" axis (an index set neither horizontal nor
-vertical, only possible when `axes` is given) makes nothing coarser, so it is
-read literally as pointwise reach.
+Offsets on an "other" axis (neither horizontal nor vertical) do not affect
+the class, while a reach that covers one makes the term global (§5.2.4,
+D82). No radius size check is needed: reduction keeps every horizontal
+offset in [−⌊N/2⌋, ⌈N/2⌉ − 1], so lower + upper + 1 never exceeds N.
 """
 function classify_bands(bands::AbstractVector{BandEntry}, shapes, axes::Axes, sizes)
     isglobal = false
@@ -209,7 +221,6 @@ function classify_bands(bands::AbstractVector{BandEntry}, shapes, axes::Axes, si
         lower = maximum((-o for o in os if o < 0); init = 0)
         upper = maximum((o for o in os if o > 0); init = 0)
         radius[X] = (lower, upper)
-        lower + upper + 1 > sizes[X] && (isglobal = true)
     end
     isglobal && return (:global, nothing)
     any(X -> any(!=(0), get(offs, X, Int[])), axes.horizontal) && return (:stencil, radius)

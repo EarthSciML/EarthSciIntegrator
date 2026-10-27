@@ -99,16 +99,12 @@ end
     lifted_shape(flat, name, extents, sizes) -> Vector{String}
 
 spec/plan.md §6.1.3: a lifted state's shape is the declared shape of the
-first variable of the flattened model, searching `state_variables`, then
-`parameters`, then `observed_variables`, each in document order, whose
-declared shape has exactly the lift's extents, index set by index set;
-`lift_shape_unresolved` when none does.
-
-EarthSciAST 0.5's (and 0.4's) Julia `flatten` already writes a `shape` on lifted states
-(it is `["cell"]` even when no variable declares that shape), which §6.1.3
-and §10 item 1 say it does not record. Those shapes are not declarations, so
-lifted states are skipped in the search, and the refusal fixture
-`lift-shape-unresolved` is refused as the spec intends.
+first non-lifted variable of the flattened model, searching
+`state_variables`, then `parameters`, then `observed_variables`, each in
+document order, whose declared shape has exactly the lift's extents, index
+set by index set; `lift_shape_unresolved` when none does. The `shape` that
+Julia's `flatten` records on a lifted state itself (`["cell"]`, even when no
+variable declares it) is ignored, as §6.1.3 says.
 """
 function lifted_shape(flat, name, extents::Vector{Int}, sizes)
     for dict in (flat.state_variables, flat.parameters, flat.observed_variables), (vname, v) in dict
@@ -125,8 +121,8 @@ end
     plan_model(inputs) -> PlanModel
 
 The flattened model's names, shapes and equations (§4). Resolves lifted
-shapes (§6.1.3), so `lift_shape_unresolved` is raised here, in §4 step 7,
-where the axes defaults first need state shapes (§5.2.1).
+shapes (§6.1.3), so `lift_shape_unresolved` is raised here, in §4 step 8,
+before the axes, which need state shapes (§5.2.1).
 """
 function plan_model(inp::PlanInputs)
     flat = inp.flat
@@ -159,6 +155,25 @@ function plan_model(inp::PlanInputs)
     return PlanModel(inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
         collect(keys(flat.observed_variables)), shapes, sizes, Set(keys(flat.lifted_shapes)), state_eqs,
         observed_defs, reaction_system_paths(inp.file))
+end
+
+"""
+    lifted_ranges(m, eq_index, var) -> (output_idx, ranges)
+
+The `faq` wrapper of a lifted state equation as §6.1.2 writes it in a derived
+document: `output_idx` copied from the flattened equation's right-hand-side
+`faq`, and `ranges` built, not copied, mapping the `d`-th name of
+`output_idx` to `{"from": X_d}`, `X_d` the index set of dimension `d` of the
+state's shape (§6.1.3). (Julia's `flatten` writes `{"from": "cell"}`, Rust's
+`[1, 4]`; building them keeps the documents the same in both.)
+"""
+function lifted_ranges(m::PlanModel, ei::Int, var::AbstractString)
+    rhs = m.flat.equations[ei].rhs
+    O = String[String(x) for x in rhs.output_idx]
+    shape = m.shapes[var]
+    length(O) == length(shape) || error("lifted equation for $var: output_idx $O does not match its shape $shape")
+    G = Dict{String, Any}(O[d] => Dict{String, Any}("from" => shape[d]) for d in eachindex(O))
+    return O, G
 end
 
 """The names (states, parameters, observeds) an expression references; `t` and index names are not names (§5.3)."""

@@ -171,10 +171,10 @@ or to its locality's default operator; a term matched twice, an owner-less
 term left unmatched while some selector uses `components`, and an operator
 that matches nothing are refused.
 
-Spec finding: §5.1.3 does not order its refusals. They are raised in the
-order written: map operators (operators in code-point order), unresolved or
-non-state `variables` entries, then per term in term order, then operators
-that match nothing (code-point order).
+The refusals come in §5.1.3's order: map operators (code-point order),
+unresolved or non-state `variables` entries (operators in code-point order,
+entries in written order), then per term in term order, then the first
+operator in code-point order that matches nothing.
 """
 function select_operators(m::PlanModel, terms::Vector{Term}, config::AbstractDict)
     opdefs = get(config, "operators", Dict{String, Any}())

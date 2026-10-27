@@ -20,7 +20,6 @@ const STAGE2_REFUSALS = Dict(
     "auto-stiff-not-block-diagonal" => "the array state's locality needs its bands",
     "operator-undefined" => "the default operator's existence needs the lifted terms' localities",
     "partition-too-fine" => "the auto schedule needs the stencil term's locality",
-    "reserved-component-name" => "§6.1.4 comes after the strategies, which need the Gershgorin bound",
     "selector-matches-nothing" => "the locality selector needs the lifted terms' localities",
     "split-explicit" => "default operators need the reseact-shaped terms' localities",
     "step-control-missing" => "the auto schedule needs the reseact-shaped terms' localities",
@@ -146,9 +145,7 @@ end
         @test ops["scavenging"].writes == ["Chem.O3"] && ops["scavenging"].reads == ["Chem.O3", "Dep.vd", "Met.h"]
         @test ops["chemistry"].reads == ["Chem.NO", "Chem.O3", "Chem.k", "Chem.ratio"]
         @test all(==((:stiff, "run_config")), values(d.stiffness))
-        # Spec finding: expected.md calls this leaf the root (id "root", shards {"root": 1}),
-        # but by-owner.run.json wraps it in a one-child sequence, which §7.1 keeps:
-        # the root is the sequence and the leaf is root.0.
+        # The run config writes a one-child sequence, which §7.1 keeps (expected.md).
         @test jcs(d.schedule) == jcs(JSON.parse("""{"id": "root", "sequence": [{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}]}"""))
         @test d.partition == Dict("ranks" => [1, 1], "tiles" => [1, 1], "shards" => Dict("root.0" => 1))
         @test d.step == Dict("dt" => 60.0, "hit" => String[])
@@ -343,6 +340,94 @@ end
               ("operator_undefined", "/schedule/leaf")
         @test try_plan(Dict("model" => cross, "schedule" => Dict("sequence" => [leaf("default_pointwise"),
             Dict("map" => "x")]), "step" => Dict("dt" => 60))) == ("unsupported_map_operator", "/schedule/sequence/1")
+
+        # Rule 5 (D84): a frozen entry advances its operator, but does not count toward "twice".
+        two = Dict("a" => Dict("select" => Dict("variables" => "Kinetics.y1")), "b" => Dict("select" => Dict("variables" => ["Kinetics.y2", "Kinetics.y3"])))
+        @test try_plan(Dict("operators" => two, "schedule" => Dict("sequence" => [leaf("a"; dt = 0.1, frozen = ["b"], linsolve = "dense_lu"), leaf("b"; dt = 0.1, linsolve = "dense_lu")]),
+            "step" => Dict("dt" => 1))) === nothing
+        @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; dt = 0.1, frozen = ["b"], linsolve = "dense_lu"), "step" => Dict("dt" => 1))) === nothing
+        @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; dt = 0.1), "step" => Dict("dt" => 1))) ==
+              ("operator_not_advanced", "/operators/b")
+        # An IMEXEuler leaf without imex is refused at the leaf's pointer.
+        @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1)]),
+            "step" => Dict("dt" => 1))) == ("imex_partition_invalid", "/schedule/sequence/0")
+        # Rule 2 (§7.1), in its order.
+        bound(k) = Dict("kinetics" => Dict("select" => Dict("components" => "Kinetics"), "bind_dt" => Dict(k => "node")))
+        @test try_plan(Dict("operators" => bound("Nope.k"), "schedule" => leaf("kinetics"))) ==
+              ("name_unresolved", "/operators/kinetics/bind_dt/Nope.k")
+        @test try_plan(Dict("operators" => bound("Kinetics.y1"), "schedule" => leaf("kinetics"))) ==
+              ("name_wrong_kind", "/operators/kinetics/bind_dt/Kinetics.y1")
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; bind_dt = Dict("Kinetics.y2" => "node")))) ==
+              ("name_wrong_kind", "/schedule/bind_dt/Kinetics.y2")
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; control = Dict("abstol" => Dict("Kinetics.k1" => 1e-9))))) ==
+              ("name_wrong_kind", "/schedule/control/abstol/Kinetics.k1")
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; domain = Dict("nonnegative" => ["Kinetics.y1", "Nope.y"])))) ==
+              ("name_unresolved", "/schedule/domain/nonnegative/1")
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => 40))) ==
+              ("name_unresolved", "/schedule/dt")
+        # step's durations come before the schedule's; output's too.
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => "Kinetics.y1"))) ==
+              ("name_wrong_kind", "/step/dt")
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => 40),
+            "output" => Dict("saveat" => "Nope.s"))) == ("name_unresolved", "/output/saveat")
+        # A parameter-name duration must default to a positive number.
+        zero = joinpath(tmp, "zero.esm")
+        zdoc = JSON.parsefile(rob)
+        zdoc["models"]["Kinetics"]["variables"]["dtz"] = Dict("type" => "parameter", "default" => 0)
+        write(zero, JSON.json(zdoc))
+        @test try_plan(Dict("model" => zero, "operators" => kin, "schedule" => leaf("kinetics"), "step" => Dict("dt" => "Kinetics.dtz"))) ==
+              ("run_config_invalid", "/step/dt")
+        # Precision keys: default, an operator (named or default) or a node id.
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"), "precision" => Dict("chem" => Dict("state" => "f64")))) ==
+              ("name_unresolved", "/precision/chem")
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; id = "chem"), "precision" => Dict("chem" => Dict("state" => "f64"),
+            "kinetics" => Dict("rhs" => "f64"), "default" => Dict("tables" => "f64")))) === nothing
+        # Observed step.limits come after the schedule's unsupported constructs.
+        @test try_plan(Dict("model" => cross, "schedule" => Dict("sequence" => [Dict("solve" => "default_pointwise",
+            "unknowns" => ["Chem.O3"], "method" => Dict("newton" => Dict()))]), "step" => Dict("limits" => ["Chem.ratio"]))) ==
+              ("unsupported_solve_node", "/schedule/sequence/0")
+        @test try_plan(Dict("model" => cross, "schedule" => leaf("default_pointwise"), "step" => Dict("limits" => [Dict("max" => 60), "Chem.k"]))) ==
+              ("name_wrong_kind", "/step/limits/1")
+        # Rule 9 for the adjoint's observation times (D83): output.saveat multiples from time zero.
+        sv(save; over = "saveat") = Dict("operators" => kin, "schedule" => seqroot, "step" => Dict("dt" => 10),
+            "output" => Dict("saveat" => save), "adjoint" => Dict("functional" => Dict("sum" => "Kinetics.y3", "over" => over), "wrt" => ["u0"]))
+        @test try_plan(sv(20)) === nothing
+        @test try_plan(sv(15)) == ("tstop_off_fixed_step", "/adjoint/functional/over")
+        @test try_plan(sv(15; over = "time")) === nothing
+        @test try_plan(sv(15; over = "final")) === nothing
+        @test EI.multiples_in(15.0, 0.0, 40.0) == [15.0, 30.0]
+        @test EI.multiples_in(15.0, 20.0, 40.0) == [30.0]
+        # 3 × 0.1 = 0.30000000000000004 > 0.3: read literally, the product is not in (t₀, t_f].
+        @test EI.multiples_in(0.1, 0.0, 0.3) == [0.1, 0.2]
+        # Mixed declared element types in one leaf.
+        mixed = joinpath(tmp, "mixed.esm")
+        decay(x) = Dict("lhs" => Dict("op" => "D", "args" => [x], "wrt" => "t"), "rhs" => Dict("op" => "*", "args" => [-0.5, x]))
+        write(mixed, JSON.json(Dict("esm" => "1.3.0", "metadata" => Dict("name" => "mixed"),
+            "models" => Dict("Kinetics" => Dict("variables" => Dict(
+                "u" => Dict("type" => "unknown", "default" => 1.5, "element_type" => "Float32"),
+                "v" => Dict("type" => "unknown", "default" => 1.5, "element_type" => "Float64")),
+                "equations" => [decay("u"), decay("v")])),
+            "solver" => Dict("time_span" => Dict("start" => 0, "end" => 40)))))
+        @test try_plan(Dict("model" => mixed, "operators" => kin, "schedule" => Dict("sequence" => [leaf("kinetics")]), "step" => Dict("dt" => 40))) ==
+              ("precision_contradicts_declaration", "/schedule/sequence/0")
+        @test try_plan(Dict("model" => mixed, "operators" => kin, "schedule" => leaf("kinetics"),
+            "precision" => Dict("default" => Dict("state" => "f32")))) == ("precision_contradicts_declaration", "/precision/default")
+        # precision_conflict is reported at the leaf's second operator entry.
+        three = Dict("a" => Dict("select" => Dict("variables" => "Kinetics.y1")), "b" => Dict("select" => Dict("variables" => "Kinetics.y2")),
+            "c" => Dict("select" => Dict("variables" => "Kinetics.y3")))
+        @test try_plan(Dict("operators" => three, "schedule" => leaf(["a", "b", "c"]; linsolve = "dense_lu"),
+            "precision" => Dict("a" => Dict("factors" => "f64"), "b" => Dict("factors" => "f64"), "c" => Dict("factors" => "f32")))) ==
+              ("precision_conflict", "/precision/b")
+        # Model-scope order (§4 step 6): events before parameter updates, crossing replacing the general code.
+        evdoc = JSON.parsefile(joinpath(CONF, "plans", "refusals", "discrete-event", "model.esm"))
+        evdoc["models"]["Box"]["variables"]["k"]["shape"] = []
+        evdoc["models"]["Box"]["variables"]["k"]["update"] = Dict("kind" => "schedule", "times" => [0.5], "expression" => 0.25)
+        evpath = joinpath(tmp, "event_update.esm")
+        write(evpath, JSON.json(evdoc))
+        @test try_plan(Dict("model" => evpath, "schedule" => leaf("default_pointwise"))) == ("unsupported_event", "/model")
+        # Reserved component name at load, without bands.
+        @test refusal(() -> EarthSciIntegrator.plan(joinpath(CONF, "plans", "refusals", "reserved-component-name", "run.json"))) ==
+              ("reserved_component_name", "/model")
     end
 
     @testset "the auto schedule on a scalar model" begin
@@ -376,6 +461,7 @@ end
         @test EI.resolve_time(m, Dict("time" => Dict("start" => 0.1, "duration" => 0.2)))[2] === 0.1 + 0.2
         @test EI.resolve_time(m, Dict{String, Any}()) == (0.0, 40.0)
         @test EI.plan_duration(m, "2 day", "/x") == 172800.0
+        @test EI.plan_duration(m, "1.1 h", "/x") === 3960.0000000000005      # §7.1: one rounding, 1.1 × 3600
         @test EI.plan_duration(m, "Kinetics.k2", "/x") == 3.0e7
         @test refusal(() -> EI.plan_duration(m, "Kinetics.y1", "/x")) == ("name_wrong_kind", "/x")
         @test refusal(() -> EI.plan_duration(m, "Nope.x", "/x")) == ("name_unresolved", "/x")
@@ -402,16 +488,49 @@ end
     end
 
     @testset "tstops on a fixed step.dt (rule 9)" begin
-        @test EI.lands_on_boundary(0.0, 1.0e7, 1.0e-3, 3600.0)
-        @test !EI.lands_on_boundary(0.0, 1.0e7, 7.0, 3600.0)
-        @test EI.lands_on_boundary(0.0, 1.0, 0.1, 0.3)              # 0.1 + 0.1 + 0.1 ≠ 0.3, within tolerance
-        @test EI.lands_on_boundary(0.0, 1.05, 0.1, 1.05)            # t_f always is one
-        @test EI.lands_on_boundary(0.0, 1.05, 0.1, 1.0)
-        @test !EI.lands_on_boundary(0.5, 2.0, 1.0, 0.75)
+        @test EI.on_fixed_step(0.0, 1.0e7, 1.0e-3, 3600.0)
+        @test !EI.on_fixed_step(0.0, 1.0e7, 7.0, 3600.0)
+        @test EI.on_fixed_step(0.0, 1.0, 0.1, 0.3)              # 0.1 + 0.1 + 0.1 ≠ 0.3, within tolerance
+        @test EI.on_fixed_step(0.0, 1.05, 0.1, 1.05)            # t_f always is one
+        @test EI.on_fixed_step(0.0, 1.05, 0.1, 1.0)
+        @test !EI.on_fixed_step(0.5, 2.0, 1.0, 0.75)
         for (t0, tf, dt, τ) in ((0.0, 1.0, 0.1, 0.3), (0.0, 1.05, 0.1, 1.0), (0.25, 3.0, 0.5, 1.75), (0.0, 1.0, 0.25, 0.6))
             bounds, _ = EarthSciIntegrator.macro_bounds(t0, tf, dt, [τ])
-            @test EI.lands_on_boundary(t0, tf, dt, τ) == (τ in bounds)
+            @test EI.on_fixed_step(t0, tf, dt, τ) == (τ in bounds)
         end
+    end
+
+    @testset "shards (§7.4)" begin
+        tmp = mktempdir()
+        sp = ["Chem.NO", "Chem.NO2", "Chem.O3"]
+        bands = Dict((s, c, k) => [BandEntry(s, x, [(1, 4)], Union{String, Int}["i"], Any["i"]) for x in sp] for s in sp, c in 0:1, k in 0:1)
+        blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => sp))
+        model = abspath(joinpath(PFIX, "pointwise_chemistry", "model.esm"))
+        function draft(sched; partition = Dict{String, Any}())
+            path = joinpath(tmp, "run.json")
+            write(path, JSON.json(Dict("esm_integrator" => "0.1.0", "model" => model, "schedule" => sched, "partition" => partition,
+                "operators" => Dict("chem" => Dict("select" => Dict("components" => ["Chem", "Dep"]))))))
+            return EarthSciIntegrator.plan(path; backend = HandBackend(bands = bands, structures = Dict{String, Any}("chem" => blk)))
+        end
+        # 4 cells, 3 per shard: 2 shards.
+        d = draft(Dict("leaf" => "chem", "alg" => "Rodas4", "partition" => Dict("shard_size" => 3)))
+        @test d.partition["shards"] == Dict("root" => 2)
+        # A coupled node gets no shards entry; an entry naming it or its operator is refused.
+        d = draft(Dict("coupled" => "chem", "alg" => "Rodas4"))
+        @test d.partition["shards"] == Dict()
+        @test refusal(() -> draft(Dict("coupled" => "chem", "alg" => "Rodas4", "id" => "c"); partition = Dict("shards" => Dict("chem" => 2, "c" => 3)))) ==
+              ("run_config_invalid", "/partition/shards/c")
+        # leaf_cells: horizontal dimensions, and the vertical one for a pointwise leaf only.
+        ctx = (axes = Axes(["lon", "lat"], "lev"),
+               model = (sizes = Dict("lon" => 8, "lat" => 3, "lev" => 4, "spc" => 5),
+                        shapes = Dict("A" => ["lon", "lat", "lev"], "B" => ["lon", "lat", "spc"])),
+               ops = Dict("o" => (writes = ["A", "B"],)))
+        @test EI.leaf_cells(ctx, ["o"], :column) == 24
+        @test EI.leaf_cells(ctx, ["o"], :pointwise) == 96
+        # The lifted faq's ranges are built from the state's shape (§6.1.2).
+        m = d.ctx.model
+        ei, var, lifted = m.state_eqs[1]
+        @test lifted && EI.lifted_ranges(m, ei, var) == (["i"], Dict("i" => Dict("from" => "cell")))
     end
 
     @testset "schedule helpers" begin

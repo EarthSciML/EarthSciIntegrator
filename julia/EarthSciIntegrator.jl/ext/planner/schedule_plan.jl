@@ -167,101 +167,240 @@ function expand_imex(n::SNode, ops)
 end
 
 """
-    tstops_known(t0, tf, step, m, config) -> Vector{Float64}
+    multiples_in(d, t0, tf) -> Vector{Float64}
 
-The tstops M2 can know (spec/plan.md §7.3): the multiples of
-`hit_multiples` in `(t₀, t_f]`, counted from model time zero
-(spec/run-config.md §1.1), and the adjoint's observation times.
-
-Spec finding: an adjoint over `saveat` observes at the output times, which
-come from `output.saveat`, a duration whose times the specs do not
-enumerate (from zero or from `t₀`); they are not checked. `final` observes at
-`t_f`, always a boundary.
+Every `k·d` (`k` an integer, the binary64 product), counted from model time
+zero, that lies in `(t₀, t_f]` (spec/plan.md §7.3, D83).
 """
-function tstops_known(m::PlanModel, t0, tf, config)
-    step = get(config, "step", Dict{String, Any}())
+function multiples_in(d::Float64, t0::Float64, tf::Float64)
     out = Float64[]
-    if haskey(step, "hit_multiples")
-        h = plan_duration(m, step["hit_multiples"], "/step/hit_multiples")
-        j = floor(Int, t0 / h)
-        while true
-            τ = j * h
-            τ > tf && break
-            τ > t0 && push!(out, τ)
-            j += 1
-        end
+    k = floor(Int, t0 / d) - 1
+    while true
+        τ = k * d
+        τ > tf && break
+        τ > t0 && push!(out, τ)
+        k += 1
     end
     return out
 end
 
 """
-    lands_on_boundary(t0, tf, dt, τ) -> Bool
+    tstops_known(ctx) -> Vector{Tuple{Float64, String}}
 
-Whether `macro_bounds(t0, tf, dt, [τ])` has `τ` as a boundary, for `τ` in
-`(t₀, t_f]`, without listing the boundaries: `t_f` always is one; otherwise
-`τ` must be within the landing tolerance of the nearest `b = t₀ + k·dt`, and
-the step that reaches `b` must not be the stop step. (The stop test is made
-from `t₀ + (k−1)·dt`; `macro_bounds` makes it from that boundary as snapped
-to a tstop, which moves it by at most the tolerance.)
+The tstops M2 can know (spec/plan.md §7.3), each with the key that gave it:
+the multiples of `step.hit_multiples` in `(t₀, t_f]`, then the adjoint's
+observation times (`t_f` for `over: "final"`, none for `"time"`, and for
+`"saveat"` the output times: the multiples of `output.saveat` in
+`(t₀, t_f]`, or `t_f` alone without it; D83).
+
+Spec ambiguity: §7.3 refuses an observation time "at the adjoint's key"; the
+key used is `/adjoint/functional/over`, the one that makes them observation
+times.
 """
-function lands_on_boundary(t0::Float64, tf::Float64, dt::Float64, τ::Float64)
-    τ == tf && return true
-    k = round((τ - t0) / dt)
-    k >= 1 || return false
-    b = t0 + k * dt
-    abs(τ - b) <= 100 * eps(max(abs(τ), abs(b))) || return false
-    _, isstop = stop_rule(k == 1 ? t0 : t0 + (k - 1) * dt, dt, tf)
-    return !isstop
+function tstops_known(ctx)
+    m, config = ctx.model, ctx.config
+    t0, tf = ctx.time
+    step = get(config, "step", Dict{String, Any}())
+    out = Tuple{Float64, String}[]
+    if haskey(step, "hit_multiples")
+        h = plan_duration(m, step["hit_multiples"], "/step/hit_multiples")
+        append!(out, [(τ, "/step/hit_multiples") for τ in multiples_in(h, t0, tf)])
+    end
+    if haskey(config, "adjoint")
+        over = config["adjoint"]["functional"]["over"]
+        at = "/adjoint/functional/over"
+        if over == "final"
+            push!(out, (tf, at))
+        elseif over == "saveat"
+            out_cfg = get(config, "output", Dict{String, Any}())
+            if haskey(out_cfg, "saveat")
+                d = plan_duration(m, out_cfg["saveat"], "/output/saveat")
+                append!(out, [(τ, at) for τ in multiples_in(d, t0, tf)])
+            else
+                push!(out, (tf, at))
+            end
+        end
+    end
+    return out
+end
+
+"""`λ(a, b)`: within spec/methods.md §10's landing tolerance, `|a − b| ≤ 100 ε(max(|a|, |b|))`."""
+lands_near(a::Float64, b::Float64) = abs(a - b) <= 100 * eps(max(abs(a), abs(b)))
+
+"""
+    on_fixed_step(t0, tf, dt, τ) -> Bool
+
+spec/plan.md §7.3's test, exactly: `λ(τ, t_f)`; or, with `r` the integer
+nearest `(τ − t₀)/dt`, some `k ∈ {r − 1, r, r + 1}`, `k ≥ 1`, has
+`b = t₀ + k·dt` with `λ(τ, b)`, and the macro step from `t₀ + (k − 1)·dt`
+(`t₀` for `k = 1`) is not a stop step (spec/methods.md §10).
+"""
+function on_fixed_step(t0::Float64, tf::Float64, dt::Float64, τ::Float64)
+    lands_near(τ, tf) && return true
+    q = (τ - t0) / dt
+    isfinite(q) || return false
+    r = round(Int, q)
+    for k in (r - 1, r, r + 1)
+        k >= 1 || continue
+        b = t0 + k * dt
+        lands_near(τ, b) || continue
+        _, isstop = stop_rule(k == 1 ? t0 : t0 + (k - 1) * dt, dt, tf)
+        isstop || return true
+    end
+    return false
+end
+
+"""Refuse unless `name` is a `kind` (`:state`, `:parameter`, `:observed`) of the flattened model (rule 2)."""
+function need_kind(m::PlanModel, name, kind::Symbol, at::AbstractString, what::AbstractString)
+    k = name_kind(m, String(name))
+    k === nothing && refuse("name_unresolved", at, "$what $name is not a name of the flattened model")
+    k === kind || refuse("name_wrong_kind", at, "$what $name is a $k, not a $kind")
+    return nothing
+end
+
+"""The duration keys of a schedule node, with their pointers, in the order rule 2 checks them."""
+function node_durations(n::SNode)
+    out = Tuple{Any, String}[]
+    spec = n.spec
+    if is_leaflike(n)
+        haskey(spec, "dt") && !(spec["dt"] in ("step", "accumulated")) && push!(out, (spec["dt"], nptr(n, "dt")))
+        ctrl = get(spec, "control", Dict{String, Any}())
+        for k in ("dt0", "dtmin", "dtmax")
+            haskey(ctrl, k) && push!(out, (ctrl[k], nptr(n, "control", k)))
+        end
+        for (i, f) in enumerate(get(spec, "frozen", Any[]))
+            f isa AbstractDict || continue
+            push!(out, (f["period"], nptr(n, "frozen", i - 1, "period")))
+            haskey(f, "phase") && f["phase"] != 0 && push!(out, (f["phase"], nptr(n, "frozen", i - 1, "phase")))
+        end
+    elseif n.kind == "subcycle"
+        for (i, l) in enumerate(get(spec, "limits", Any[]))
+            l isa AbstractDict && push!(out, (l["max"], nptr(n, "limits", i - 1, "max")))
+        end
+    elseif n.kind == "every"
+        push!(out, (spec["period"], nptr(n, "period")))
+        haskey(spec, "phase") && spec["phase"] != 0 && push!(out, (spec["phase"], nptr(n, "phase")))
+    end
+    return out
+end
+
+"""
+    check_names(ctx, nodes)
+
+Rule 2 as spec/plan.md §7.1 orders it, for the names §5.1.3 has not checked:
+operators' `bind_dt` keys; the parameter-name durations of `step` and
+`output`; per node in tree order its durations, `bind_dt` keys, per-variable
+`control.abstol` keys and `domain.nonnegative` entries; then the `precision`
+keys. Durations are read through [`plan_duration`](@ref), which also refuses
+a parameter default that is not a positive finite number (`run_config_invalid`).
+
+Spec ambiguity: the order of one node's own durations is not given; the
+order used is `dt`, `control.dt0`, `dtmin`, `dtmax`, `frozen` entries'
+`period` and `phase`, a `subcycle`'s `limits` maxima, an `every`'s `period`
+and `phase`.
+"""
+function check_names(ctx, nodes)
+    m, ops, config = ctx.model, ctx.ops, ctx.config
+    opdefs = get(config, "operators", Dict{String, Any}())
+    for o in sort!(String.(collect(keys(opdefs))))
+        bd = get(opdefs[o], "bind_dt", nothing)
+        bd === nothing && continue
+        for k in sort!(String.(collect(keys(bd))))
+            need_kind(m, k, :parameter, jptr("/operators", o, "bind_dt", k), "bind_dt key")
+        end
+    end
+    step = get(config, "step", Dict{String, Any}())
+    haskey(step, "dt") && plan_duration(m, step["dt"], "/step/dt")
+    for (i, l) in enumerate(get(step, "limits", Any[]))
+        l isa AbstractDict && plan_duration(m, l["max"], jptr("/step/limits", i - 1, "max"))
+    end
+    haskey(step, "hit_multiples") && plan_duration(m, step["hit_multiples"], "/step/hit_multiples")
+    haskey(step, "resolution") && plan_duration(m, step["resolution"], "/step/resolution")
+    out = get(config, "output", Dict{String, Any}())
+    haskey(out, "saveat") && plan_duration(m, out["saveat"], "/output/saveat")
+    for (i, sk) in enumerate(get(out, "sinks", Any[]))
+        haskey(sk, "saveat") && plan_duration(m, sk["saveat"], jptr("/output/sinks", i - 1, "saveat"))
+    end
+    for n in nodes
+        for (d, at) in node_durations(n)
+            plan_duration(m, d, at)
+        end
+        is_leaflike(n) || continue
+        for k in sort!(String.(collect(keys(get(n.spec, "bind_dt", Dict{String, Any}())))))
+            need_kind(m, k, :parameter, nptr(n, "bind_dt", k), "bind_dt key")
+        end
+        abstol = get(get(n.spec, "control", Dict{String, Any}()), "abstol", nothing)
+        if abstol isa AbstractDict
+            for k in sort!(String.(collect(keys(abstol))))
+                need_kind(m, k, :state, nptr(n, "control", "abstol", k), "abstol key")
+            end
+        end
+        nn = get(get(n.spec, "domain", Dict{String, Any}()), "nonnegative", nothing)
+        if nn isa AbstractVector
+            for (i, v) in enumerate(nn)
+                need_kind(m, v, :state, nptr(n, "domain", "nonnegative", i - 1), "domain.nonnegative entry")
+            end
+        end
+    end
+    ids = Set(n.id for n in nodes)
+    for k in sort!(String.(collect(keys(get(config, "precision", Dict{String, Any}())))))
+        (k == "default" || haskey(ops, k) || k in ids) || refuse("name_unresolved", jptr("/precision", k),
+            "precision key $k names no operator, node or default")
+    end
+    return nothing
 end
 
 """
     check_schedule(ctx, root)
 
-spec/plan.md §7.1: unsupported nodes in tree order, then spec/run-config.md
-§8 rules 3, 5–9, 12, 13 and 15 in rule order.
+spec/plan.md §7.1: the schedule's unsupported constructs in tree order, then
+observed `step.limits` entries in written order, then spec/run-config.md §8
+rules 2, 3, 5–9, 12, 13 and 15 in rule order.
 """
 function check_schedule(ctx, root::SNode)
     m, ops, config = ctx.model, ctx.ops, ctx.config
     nodes = allnodes(root)
+    function observed_limit(l, at)
+        need_kind(m, l, :observed, at, "step limit")
+        refuse("unsupported_step_limit", at, "observed step limits need limit operators, U6 (M4b)")
+    end
     # Unsupported constructs, tree order (§0.1).
     for n in nodes
-        n.kind == "map" && refuse("unsupported_map_operator", n.ptr, "map nodes need U6 (M4b)")
-        n.kind == "solve" && refuse("unsupported_solve_node", n.ptr, "solve nodes need U6 (M4b)")
-        n.kind == "split_explicit" && refuse("unsupported_split_explicit", n.ptr, "split_explicit arrives at M7")
+        n.kind == "map" && refuse("unsupported_map_operator", nptr(n), "map nodes need U6 (M4b)")
+        n.kind == "solve" && refuse("unsupported_solve_node", nptr(n), "solve nodes need U6 (M4b)")
+        n.kind == "split_explicit" && refuse("unsupported_split_explicit", nptr(n), "split_explicit arrives at M7")
         # (coupled with algebraic operators cannot occur: §4 step 6 refused algebraic equations.)
         if n.kind == "subcycle" && haskey(n.spec, "limits")
-            # Spec finding: §7.1 lists map, solve, split_explicit and coupled DAE as
-            # its unsupported nodes; an observed subcycle limit (§0.1) is refused
-            # here too, in tree order, after its name is resolved (rule 2).
             for (i, l) in enumerate(n.spec["limits"])
-                l isa AbstractString || continue
-                at = nptr(n, "limits", i - 1)
-                k = name_kind(m, l)
-                k === nothing && refuse("name_unresolved", at, "step limit $l is not a name of the model")
-                k === :observed || refuse("name_wrong_kind", at, "step limit $l is a $k, not an observed")
-                refuse("unsupported_step_limit", at, "observed step limits need limit operators, U6 (M4b)")
+                l isa AbstractString && observed_limit(l, nptr(n, "limits", i - 1))
             end
         end
     end
+    step = get(config, "step", Dict{String, Any}())
+    for (i, l) in enumerate(get(step, "limits", Any[]))
+        l isa AbstractString && observed_limit(l, jptr("/step/limits", i - 1))
+    end
+    # Rule 2: names.
+    check_names(ctx, nodes)
     # Rule 3: operator names.
     for n in nodes, (o, p) in vcat(operator_refs(n), frozen_refs(n), imex_refs(n))
         haskey(ops, o) || refuse("operator_undefined", p,
             "the schedule names operator $o, which is neither defined in the run config nor an existing default operator")
     end
-    # Rule 5: every operator advanced exactly once. Spec finding: "advances twice
-    # in one invocation outside strang" is read as "named by two places in the
-    # tree" (a strang's repeated invocation of a child is one place); a frozen
-    # entry advances its operator too.
-    places = Dict{String, Vector{String}}()
-    for n in nodes, (o, p) in vcat(operator_refs(n), frozen_refs(n))
-        push!(get!(places, o, String[]), p)
+    # Rule 5 (§7.1, D84): advanced somewhere (a frozen entry counts), and named by
+    # at most one leaf or coupled node (a frozen entry does not count).
+    advanced = Set{String}()
+    for n in nodes, (o, _) in vcat(operator_refs(n), frozen_refs(n))
+        push!(advanced, o)
     end
     for o in sort!(collect(keys(ops)))
-        haskey(places, o) || refuse("operator_not_advanced", isempty(ops[o].pointer) ? "/schedule" : ops[o].pointer,
+        o in advanced || refuse("operator_not_advanced", isempty(ops[o].pointer) ? "/schedule" : ops[o].pointer,
             "operator $o is advanced by no node of the schedule")
     end
-    for n in nodes, (o, p) in vcat(operator_refs(n), frozen_refs(n))
-        p != places[o][1] && refuse("operator_advanced_twice", p, "operator $o is advanced twice in one invocation")
+    named = Set{String}()
+    for n in nodes, (o, p) in operator_refs(n)
+        o in named && refuse("operator_advanced_twice", p, "operator $o is advanced twice in one invocation")
+        push!(named, o)
     end
     # Rule 6: imex partitions.
     for n in nodes
@@ -283,16 +422,14 @@ function check_schedule(ctx, root::SNode)
         n.kind == "every" && get(n.spec, "hold", "none") == "tendency" && n.children[1].kind != "leaf" &&
             refuse("hold_tendency_child_not_leaf", nptr(n, "every"), "an every with hold: tendency needs a single leaf as its child")
     end
-    # Rule 9: tstops on a fixed step.dt.
-    step = get(config, "step", Dict{String, Any}())
+    # Rule 9: tstops on a fixed step.dt (§7.3's test).
     if haskey(step, "dt")
         dt = plan_duration(m, step["dt"], "/step/dt")
         lands_inside = is_leaflike(root) && (!haskey(root.spec, "dt") || !(root.spec["dt"] in ("step", "accumulated")))
         if !lands_inside
             t0, tf = ctx.time
-            τs = sort!(unique!(tstops_known(m, t0, tf, config)))
-            for τ in τs
-                lands_on_boundary(t0, tf, dt, τ) || refuse("tstop_off_fixed_step", "/step/hit_multiples",
+            for (τ, at) in tstops_known(ctx)
+                on_fixed_step(t0, tf, dt, τ) || refuse("tstop_off_fixed_step", at,
                     "tstop $τ s is not t₀ plus a multiple of step.dt = $dt s, and the schedule root cannot land on it")
             end
         end
@@ -431,9 +568,8 @@ end
 
 The number of variables in the union of the leaf's operators' `structure.block`
 variables (§5.5.3), when the leaf's Jacobian storage is `block_diagonal`:
-every operator has `structure.block`, and the leaf's states (the states its
-operators write; spec finding: §5.5.3 says "the leaf's state variables") are
-all arrays of one shape or all scalars. Otherwise `auto_strategy_unavailable`.
+every operator has `structure.block`, and the leaf's state variables (the
+states its operators write, §5.5.3) are all arrays of one shape or all scalars. Otherwise `auto_strategy_unavailable`.
 """
 function leaf_block_size(ctx, n::SNode, at)
     vars = Set{String}()
@@ -551,8 +687,7 @@ function resolve_leaf(ctx, n::SNode, stiff)
             haskey(ctrl, k) && (c[k] = plan_duration(m, ctrl[k], nptr(n, "control", k)))
         end
     else
-        # Spec finding: §7.1 lists controller, dt0, dtmin and dtmax for adaptive
-        # leaves only; given on a fixed-dt leaf they are not written.
+        # §7.1: a leaf with a dt has no controller, dt0, dtmin or dtmax.
         haskey(ctrl, "maxiters") && (c["maxiters"] = ctrl["maxiters"])
     end
     out["control"] = c
@@ -565,8 +700,7 @@ function resolve_leaf(ctx, n::SNode, stiff)
     haskey(dom, "nonnegative") && (d["nonnegative"] = dom["nonnegative"])
     out["domain"] = d
     if alg == "IMEXEuler"
-        # Spec finding: the schema does not require imex on an IMEXEuler leaf and
-        # §7.1 gives no default partition; without one the implicit part is empty.
+        # §7.1, rule 6: an IMEXEuler leaf without imex is refused at its pointer.
         imex === nothing && !haskey(spec, "imex") &&
             refuse("imex_partition_invalid", nptr(n), "IMEXEuler needs an imex partition with a non-empty implicit part")
         expl, impl = imex !== nothing ? imex : expand_imex(n, ctx.ops)

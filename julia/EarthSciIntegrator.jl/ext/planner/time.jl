@@ -28,9 +28,7 @@ function plan_duration(m::PlanModel, x, at::AbstractString)
     k === :parameter || refuse("name_wrong_kind", at, "duration $(repr(x)) names a $k, not a parameter")
     d = m.flat.parameters[x].default
     d isa Real || refuse("name_wrong_kind", at, "duration parameter $x has no scalar numeric default")
-    # Spec finding: §2.2 makes a duration positive, which the schema checks
-    # only for a literal; a parameter's default is checked here, and §7.2 names
-    # no code for it.
+    # §7.1: a parameter-name duration must default to a positive finite number.
     (isfinite(d) && d > 0) || refuse("run_config_invalid", at, "duration parameter $x has default $d, not a positive number of seconds")
     return Float64(d)
 end
@@ -58,8 +56,7 @@ function _bound_seconds(T, domain, at::AbstractString)
     parts = EarthSciAST._datetime_parts(String(T), EarthSciAST._TIME_SPAN_TIMESTAMP_RE)
     parts === nothing && refuse("time_invalid_date", at, "timestamp $(repr(T)) names no calendar day")
     origin = EarthSciAST._time_origin(domain)
-    # Spec finding: spec/plan.md §7.2 gives time_origin_invalid no pointer; the
-    # timestamp that needs the origin is named.
+    # §7.2: time_origin_invalid is at the key of the timestamp that needs the origin.
     origin isa Tuple || refuse("time_origin_invalid", at,
         "timestamp $(repr(T)) needs the model's time origin, and its domain.temporal field is not an RFC 3339 date-time")
     (w, f), (w0, f0) = parts, origin

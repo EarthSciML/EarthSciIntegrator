@@ -109,6 +109,17 @@ const PFIX = joinpath(CONF, "plans", "fixtures")
         @test raw_offsets(op("-", op("+", 4, 4), 1), 8, 8, 8) == [-1]
         @test raw_offsets(Dict{String, Any}("op" => "-", "args" => Any[2]), 1, 1, 1) == [-3]
         @test raw_offsets(1, 1, 1, 1) == [0]
+        # Integer constants (§5.2.3): n-ary + and *, one- or two-argument -, integer literals only,
+        # exact in 64-bit integers.
+        nop(o, xs...) = Dict{String, Any}("op" => o, "args" => Any[xs...])
+        @test raw_offsets(nop("+", 1, 2, 3), 1, 1, 1) == [5]
+        @test raw_offsets(nop("*", 2, 2, 2), 1, 1, 1) == [7]
+        @test raw_offsets(nop("-", 1, 2, 3), 1, 1, 1) === nothing          # three-argument -
+        @test raw_offsets(nop("+", "i", 1.0), "i", 1, 8) === nothing       # a float literal is not an integer
+        @test raw_offsets(2.0, 1, 1, 1) === nothing
+        @test raw_offsets(nop("*", typemax(Int), 2), 1, 1, 1) === nothing  # overflow: not a constant
+        @test raw_offsets(nop("-", typemin(Int)), 1, 1, 1) === nothing
+        @test raw_offsets(nop("+", nop("*", 2^31, 2^31), nop("-", 2^62)), 1, 1, 1) == [-1]
         # An integer constant against a name over [lo, hi]: {k − hi, …, k − lo}.
         @test raw_offsets(3, "i", 2, 4) == [-1, 0, 1]
         @test cls(band([3, "j", "k"]; rows = [(2, 4), (1, 3), (1, 4)])) == (:stencil, Dict("lon" => (1, 1), "lat" => (0, 0)))

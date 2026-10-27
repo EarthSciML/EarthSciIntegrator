@@ -153,10 +153,10 @@ function check_scope(flat::EarthSciAST.FlattenedSystem)
     (isempty(flat.continuous_events) && isempty(flat.discrete_events)) || refuse("unsupported_event", "/model",
         "the flattened model has $(length(flat.continuous_events)) continuous and $(length(flat.discrete_events)) discrete events; " *
         "condition and map operators need U6 (M4b)")
-    # Spec finding: §0.1 lists crossing updates under both
-    # unsupported_parameter_update ("of any kind") and, through rule 16,
-    # unsupported_crossing_update. The more specific code is used, for the
-    # first parameter with a crossing update if any has one.
+    # §4 step 6: at the parameter-update place, unsupported_crossing_update when
+    # any parameter has a crossing rule (reported for the first such
+    # parameter), else unsupported_parameter_update; algebraic equations and
+    # events come first whatever the rules.
     kinds(v) = v.update === nothing ? String[] : [u.kind for u in v.update]
     updated = [(name, kinds(v)) for (name, v) in flat.parameters if !isempty(kinds(v))]
     if !isempty(updated)
