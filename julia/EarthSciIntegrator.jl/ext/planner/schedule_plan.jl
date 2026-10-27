@@ -258,28 +258,33 @@ function need_kind(m::PlanModel, name, kind::Symbol, at::AbstractString, what::A
     return nothing
 end
 
-"""The duration keys of a schedule node, with their pointers, in the order rule 2 checks them."""
+"""
+The duration keys of a schedule node, with their pointers, in the order rule 2
+checks them: `dt`, `control.dt0`, `dtmin`, `dtmax`, `period`, `phase`, each
+`limits[i].max` in order, then each `frozen[i]`'s `period` and `phase` in
+order (the order the Rust planner uses; §7.1 does not give one).
+"""
 function node_durations(n::SNode)
     out = Tuple{Any, String}[]
     spec = n.spec
-    if is_leaflike(n)
-        haskey(spec, "dt") && !(spec["dt"] in ("step", "accumulated")) && push!(out, (spec["dt"], nptr(n, "dt")))
-        ctrl = get(spec, "control", Dict{String, Any}())
-        for k in ("dt0", "dtmin", "dtmax")
-            haskey(ctrl, k) && push!(out, (ctrl[k], nptr(n, "control", k)))
+    ctrl = is_leaflike(n) ? get(spec, "control", Dict{String, Any}()) : Dict{String, Any}()
+    is_leaflike(n) && haskey(spec, "dt") && !(spec["dt"] in ("step", "accumulated")) && push!(out, (spec["dt"], nptr(n, "dt")))
+    for k in ("dt0", "dtmin", "dtmax")
+        haskey(ctrl, k) && push!(out, (ctrl[k], nptr(n, "control", k)))
+    end
+    n.kind == "every" && push!(out, (spec["period"], nptr(n, "period")))
+    n.kind == "every" && haskey(spec, "phase") && spec["phase"] != 0 && push!(out, (spec["phase"], nptr(n, "phase")))
+    if n.kind == "subcycle"
+        for (i, l) in enumerate(get(spec, "limits", Any[]))
+            l isa AbstractDict && push!(out, (l["max"], nptr(n, "limits", i - 1, "max")))
         end
+    end
+    if is_leaflike(n)
         for (i, f) in enumerate(get(spec, "frozen", Any[]))
             f isa AbstractDict || continue
             push!(out, (f["period"], nptr(n, "frozen", i - 1, "period")))
             haskey(f, "phase") && f["phase"] != 0 && push!(out, (f["phase"], nptr(n, "frozen", i - 1, "phase")))
         end
-    elseif n.kind == "subcycle"
-        for (i, l) in enumerate(get(spec, "limits", Any[]))
-            l isa AbstractDict && push!(out, (l["max"], nptr(n, "limits", i - 1, "max")))
-        end
-    elseif n.kind == "every"
-        push!(out, (spec["period"], nptr(n, "period")))
-        haskey(spec, "phase") && spec["phase"] != 0 && push!(out, (spec["phase"], nptr(n, "phase")))
     end
     return out
 end
@@ -294,10 +299,7 @@ operators' `bind_dt` keys; the parameter-name durations of `step` and
 keys. Durations are read through [`plan_duration`](@ref), which also refuses
 a parameter default that is not a positive finite number (`run_config_invalid`).
 
-Spec ambiguity: the order of one node's own durations is not given; the
-order used is `dt`, `control.dt0`, `dtmin`, `dtmax`, `frozen` entries'
-`period` and `phase`, a `subcycle`'s `limits` maxima, an `every`'s `period`
-and `phase`.
+One node's own durations are checked in [`node_durations`](@ref)'s order.
 """
 function check_names(ctx, nodes)
     m, ops, config = ctx.model, ctx.ops, ctx.config

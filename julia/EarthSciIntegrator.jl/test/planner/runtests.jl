@@ -67,6 +67,9 @@ end
               [Dict("op" => "*", "args" => [a, Dict("op" => "+", "args" => [b, c])])]
         # A three-argument `-` is "anything else".
         @test length(EI.additive_terms(E(Dict("op" => "-", "args" => [a, b, c])))) == 1
+        # a - 0 keeps its second summand, -(0): an operation, not a literal (§5.1.1).
+        @test S.(EI.additive_terms(E(Dict("op" => "-", "args" => [a, 0])))) == [a, Dict("op" => "-", "args" => [0])]
+        @test !EI.is_zero_literal(EI.additive_terms(E(Dict("op" => "-", "args" => [a, 0])))[2])
         @test EI.is_zero_literal(E(0)) && EI.is_zero_literal(E(0.0)) && !EI.is_zero_literal(E(Dict("op" => "-", "args" => [0])))
     end
 
@@ -365,6 +368,19 @@ end
               ("name_unresolved", "/schedule/domain/nonnegative/1")
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => 40))) ==
               ("name_unresolved", "/schedule/dt")
+        # One node's durations: dt, control.dt0/dtmin/dtmax, ..., then frozen entries.
+        @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; control = Dict("dtmax" => "Nope.c"), linsolve = "dense_lu",
+            frozen = [Dict("every" => "b", "period" => "Nope.b")]), "step" => Dict("dt" => 40))) == ("name_unresolved", "/schedule/control/dtmax")
+        @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; dt = "Nope.a", control = Dict("dt0" => "Nope.c"), linsolve = "dense_lu",
+            frozen = [Dict("every" => "b", "period" => "Nope.b")]), "step" => Dict("dt" => 40))) == ("name_unresolved", "/schedule/dt")
+        @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; linsolve = "dense_lu",
+            frozen = [Dict("every" => "b", "period" => "Nope.b")]), "step" => Dict("dt" => 40))) == ("name_unresolved", "/schedule/frozen/0/period")
+        sub = Dict("every" => Dict("subcycle" => leaf("kinetics"; linsolve = "dense_lu"), "limits" => [Dict("max" => "Nope.m")]),
+            "period" => 40, "phase" => "Nope.p")
+        @test try_plan(Dict("operators" => kin, "schedule" => sub, "step" => Dict("dt" => 40))) == ("name_unresolved", "/schedule/phase")
+        sub["phase"] = 0
+        @test try_plan(Dict("operators" => kin, "schedule" => sub, "step" => Dict("dt" => 40))) ==
+              ("name_unresolved", "/schedule/every/limits/0/max")
         # step's durations come before the schedule's; output's too.
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => "Kinetics.y1"))) ==
               ("name_wrong_kind", "/step/dt")
@@ -534,6 +550,10 @@ end
     end
 
     @testset "schedule helpers" begin
+        # Every node of an "auto" schedule is reported at /schedule.
+        auto = EI.build_snode(Dict("sequence" => Any[Dict("leaf" => ["a"], "alg" => "auto"), Dict("leaf" => ["b"], "alg" => "auto")]),
+            "root", "/schedule", true)
+        @test all(n -> EI.nptr(n) == "/schedule" && EI.nptr(n, "alg") == "/schedule", EI.allnodes(auto))
         mkop(name, loc) = (o = EI.PlanOperator(name, EI.Term[], nothing, "", loc, nothing, String[], String[], nothing); o)
         ops = Dict("a" => mkop("a", :pointwise), "b" => mkop("b", :stencil), "c" => mkop("c", :pointwise))
         @test EI.auto_schedule(ops, nothing) == Dict("sequence" => Any[

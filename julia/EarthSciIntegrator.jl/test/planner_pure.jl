@@ -119,6 +119,9 @@ const PFIX = joinpath(CONF, "plans", "fixtures")
         @test raw_offsets(2.0, 1, 1, 1) === nothing
         @test raw_offsets(nop("*", typemax(Int), 2), 1, 1, 1) === nothing  # overflow: not a constant
         @test raw_offsets(nop("-", typemin(Int)), 1, 1, 1) === nothing
+        @test raw_offsets(typemin(Int), 1, 1, 1) === nothing                # k − ρ overflows: anything else
+        @test raw_offsets(typemax(Int), "i", -2, 4) === nothing             # k − lo overflows
+        @test raw_offsets(nop("-", "i", typemin(Int)), "i", 1, 8) === nothing
         @test raw_offsets(nop("+", nop("*", 2^31, 2^31), nop("-", 2^62)), 1, 1, 1) == [-1]
         # An integer constant against a name over [lo, hi]: {k − hi, …, k − lo}.
         @test raw_offsets(3, "i", 2, 4) == [-1, 0, 1]

@@ -119,13 +119,27 @@ function raw_offsets(c, r, lo::Int, hi::Int)
         elseif c["op"] == "+" && _is_int_literal(a) && b == r
             return [Int(a)]                  # δ + r
         elseif c["op"] == "-" && a == r && _is_int_literal(b)
+            b == typemin(Int) && return nothing   # −δ overflows: anything else
             return [-Int(b)]                 # r − δ
         end
     end
     k = _int_constant(c)
     if k !== nothing
-        _is_int_literal(r) && return [k - Int(r)]
-        r isa AbstractString && return collect((k - hi):(k - lo))
+        # An offset that overflows 64-bit integers, although k is a constant, is
+        # "anything else": the reach covers the axis (as the Rust planner reads it).
+        sub(x, y) = try
+            Base.Checked.checked_sub(x, y)
+        catch e
+            e isa OverflowError ? nothing : rethrow()
+        end
+        if _is_int_literal(r)
+            o = sub(k, Int(r))
+            return o === nothing ? nothing : [o]
+        elseif r isa AbstractString
+            a, b = sub(k, hi), sub(k, lo)
+            (a === nothing || b === nothing) && return nothing
+            return collect(a:b)
+        end
     end
     return nothing
 end
