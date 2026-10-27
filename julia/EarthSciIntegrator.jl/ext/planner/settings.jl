@@ -216,8 +216,7 @@ function check_adjoint(ctx, root::SNode)
     m = ctx.model
     bound = Set{String}()
     for n in allnodes(root)
-        is_leaflike(n) || continue
-        foreach(b -> push!(bound, b[1]), leaf_bindings(n, ctx.ops))
+        is_leaflike(n) && haskey(n.spec, "bind_dt") && union!(bound, String.(keys(n.spec["bind_dt"])))
     end
     for (_, op) in ctx.ops
         op.bind_dt === nothing || union!(bound, String.(keys(op.bind_dt)))

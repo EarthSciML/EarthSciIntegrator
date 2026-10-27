@@ -14,7 +14,7 @@ module EarthSciIntegratorEarthSciASTExt
 
 import EarthSciAST
 import EarthSciIntegrator: plan, plan_dict, plan_json
-using EarthSciIntegrator: SPEC_VERSION, TABLEAUS, has_error_estimate, macro_bounds, PlannerRefusal, PlannerStageError,
+using EarthSciIntegrator: SPEC_VERSION, TABLEAUS, has_error_estimate, stop_rule, PlannerRefusal, PlannerStageError,
     refuse, jptr, jcs, schema_errors, run_config_schema, BandEntry, Axes, axis_role, classify_bands, coarser, LOCALITY_ORDER, PlanBackend,
     PendingBackend, term_bands, operator_structure, gershgorin_bound, derived_and_validation
 using JSON

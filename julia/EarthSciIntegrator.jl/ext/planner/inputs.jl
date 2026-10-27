@@ -144,14 +144,17 @@ function check_scope(flat::EarthSciAST.FlattenedSystem)
     (isempty(flat.continuous_events) && isempty(flat.discrete_events)) || refuse("unsupported_event", "/model",
         "the flattened model has $(length(flat.continuous_events)) continuous and $(length(flat.discrete_events)) discrete events; " *
         "condition and map operators need U6 (M4b)")
-    for (name, v) in flat.parameters
-        (v.update === nothing || isempty(v.update)) && continue
-        kinds = [u.kind for u in v.update]
-        # Spec finding: §0.1 lists crossing updates under both
-        # unsupported_parameter_update ("of any kind") and, through rule 16,
-        # unsupported_crossing_update. The more specific code is used.
-        code = "crossing" in kinds ? "unsupported_crossing_update" : "unsupported_parameter_update"
-        refuse(code, "/model", "parameter $name has update rules of kind $(join(kinds, ", ")); none is planned at M2 (D75)")
+    # Spec finding: §0.1 lists crossing updates under both
+    # unsupported_parameter_update ("of any kind") and, through rule 16,
+    # unsupported_crossing_update. The more specific code is used, for the
+    # first parameter with a crossing update if any has one.
+    kinds(v) = v.update === nothing ? String[] : [u.kind for u in v.update]
+    updated = [(name, kinds(v)) for (name, v) in flat.parameters if !isempty(kinds(v))]
+    if !isempty(updated)
+        i = something(findfirst(u -> "crossing" in u[2], updated), 1)
+        name, ks = updated[i]
+        code = "crossing" in ks ? "unsupported_crossing_update" : "unsupported_parameter_update"
+        refuse(code, "/model", "parameter $name has update rules of kind $(join(ks, ", ")); none is planned at M2 (D75)")
     end
     isempty(flat.loader_fields) || refuse("unsupported_forcing", "/model",
         "the flattened model reads data-loader fields; forcing epochs arrive at M3")

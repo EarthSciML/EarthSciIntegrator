@@ -28,63 +28,19 @@ function plan_duration(m::PlanModel, x, at::AbstractString)
     k === :parameter || refuse("name_wrong_kind", at, "duration $(repr(x)) names a $k, not a parameter")
     d = m.flat.parameters[x].default
     d isa Real || refuse("name_wrong_kind", at, "duration parameter $x has no scalar numeric default")
+    # Spec finding: §2.2 makes a duration positive, which the schema checks
+    # only for a literal; a parameter's default is checked here, and §7.2 names
+    # no code for it.
+    (isfinite(d) && d > 0) || refuse("run_config_invalid", at, "duration parameter $x has default $d, not a positive number of seconds")
     return Float64(d)
 end
 
 # ---------------------------------------------------------------------------
 # Timestamps, converted as esm-spec §2.2.7 converts a time_span bound (D74).
-
-const _UTC_TIMESTAMP_RE =
-    r"^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])(\.[0-9]+)?Z\z"
-const _RFC3339_RE =
-    r"^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt]([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?([Zz]|([+-])([0-9]{2}):([0-9]{2}))\z"
-
-_leap(y::Int) = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
-_days_in_month(y::Int, m::Int) = m == 2 ? (_leap(y) ? 29 : 28) : (m in (4, 6, 9, 11) ? 30 : 31)
-
-"""Days from 1970-01-01 to `y-m-d`, proleptic Gregorian (Hinnant's `days_from_civil`), exact integers."""
-function _epoch_days(y::Int, m::Int, d::Int)
-    y -= m <= 2
-    era = fld(y, 400)
-    yoe = y - era * 400
-    doy = div(153 * (m + (m > 2 ? -3 : 9)) + 2, 5) + d - 1
-    doe = yoe * 365 + div(yoe, 4) - div(yoe, 100) + doy
-    return era * 146097 + doe - 719468
-end
-
-"""`(W, f)`: whole seconds from the POSIX epoch, offset subtracted, and the fraction in [0, 1); `nothing` when `s` names no instant."""
-function _datetime_parts(s::AbstractString, re::Regex)
-    mt = match(re, s)
-    mt === nothing && return nothing
-    y, mo, d, h, mi, sec = (parse(Int, mt.captures[i]) for i in 1:6)
-    (1 <= mo <= 12 && 1 <= d <= _days_in_month(y, mo) && h <= 23 && mi <= 59 && sec <= 59) || return nothing
-    offset = 0
-    if length(mt.captures) >= 9 && mt.captures[9] !== nothing
-        oh, om = parse(Int, mt.captures[10]), parse(Int, mt.captures[11])
-        (oh <= 23 && om <= 59) || return nothing
-        offset = (mt.captures[9] == "-" ? -1 : 1) * (oh * 3600 + om * 60)
-    end
-    whole = _epoch_days(y, mo, d) * 86400 + h * 3600 + mi * 60 + sec - offset
-    frac = mt.captures[7] === nothing ? 0.0 : parse(Float64, "0" * mt.captures[7])
-    return (whole, frac)
-end
-
-"""
-The model's time origin `(W₀, f₀)` (esm-spec §2.2.7): `domain.temporal.reference_time`,
-else `domain.temporal.start`, else the POSIX epoch; `nothing` when the
-selected field is present but not an RFC 3339 date-time.
-"""
-function model_time_origin(file::EarthSciAST.EsmFile)
-    dom = file.domain
-    temporal = dom === nothing ? nothing : dom.temporal
-    temporal isa AbstractDict || return (0, 0.0)
-    for key in ("reference_time", "start")
-        haskey(temporal, key) || continue
-        v = temporal[key]
-        return v isa AbstractString ? _datetime_parts(v, _RFC3339_RE) : nothing
-    end
-    return (0, 0.0)
-end
+# EarthSciAST's own reading is used (its internal `_datetime_parts` and
+# `_time_origin`), so a planner time and a solver.time_span bound cannot
+# disagree; both return the parts rather than a refusal, so the codes of
+# spec/plan.md §7.2 stay the planner's.
 
 """
     time_seconds(m, T, at) -> Float64
@@ -96,12 +52,12 @@ counted from the model's time origin as `(W − W₀) + (f − f₀)` (D74).
 """
 function time_seconds(m::PlanModel, T, at::AbstractString)
     T isa Real && !(T isa Bool) && return Float64(T)
-    parts = _datetime_parts(String(T), _UTC_TIMESTAMP_RE)
+    parts = EarthSciAST._datetime_parts(String(T), EarthSciAST._TIME_SPAN_TIMESTAMP_RE)
     parts === nothing && refuse("time_invalid_date", at, "timestamp $(repr(T)) names no calendar day")
-    origin = model_time_origin(m.file)
+    origin = EarthSciAST._time_origin(m.file.domain)
     # Spec finding: spec/plan.md §7.2 gives time_origin_invalid no pointer; the
     # timestamp that needs the origin is named.
-    origin === nothing && refuse("time_origin_invalid", at,
+    origin isa Tuple || refuse("time_origin_invalid", at,
         "timestamp $(repr(T)) needs the model's time origin, and its domain.temporal field is not an RFC 3339 date-time")
     (w, f), (w0, f0) = parts, origin
     return Float64(w - w0) + (f - f0)

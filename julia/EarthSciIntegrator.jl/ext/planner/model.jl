@@ -12,7 +12,8 @@ The flattened model as the passes read it.
 
 - `states`: the state variables, the keys of `state_variables` that some
   equation's left-hand side differentiates, in document order;
-  `canonical` is the same names sorted by code point (§4).
+  `state_set` holds them for lookup, and `canonical` is the same names
+  sorted by code point (§4).
 - `shapes`: index-set names per array variable: the declared shape, or for
   a lifted state the shape of §6.1.3.
 - `sizes`: every index set's size, in the flattened model's `index_sets` order.
@@ -24,6 +25,7 @@ struct PlanModel
     flat::EarthSciAST.FlattenedSystem
     contributions::Vector{Vector{Contribution}}
     states::Vector{String}
+    state_set::Set{String}
     canonical::Vector{String}
     params::Vector{String}
     observeds::Vector{String}
@@ -35,7 +37,7 @@ struct PlanModel
     reaction_systems::Set{String}
 end
 
-is_state(m::PlanModel, n) = n in m.states
+is_state(m::PlanModel, n) = n in m.state_set
 is_param(m::PlanModel, n) = haskey(m.flat.parameters, n)
 is_observed(m::PlanModel, n) = haskey(m.flat.observed_variables, n)
 is_name(m::PlanModel, n) = is_state(m, n) || is_param(m, n) || is_observed(m, n)
@@ -154,7 +156,7 @@ function plan_model(inp::PlanInputs)
     for (k, ext) in flat.lifted_shapes
         shapes[k] = lifted_shape(flat, k, ext, sizes)
     end
-    return PlanModel(inp.file, flat, inp.contributions, states, sort(states), collect(keys(flat.parameters)),
+    return PlanModel(inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
         collect(keys(flat.observed_variables)), shapes, sizes, Set(keys(flat.lifted_shapes)), state_eqs,
         observed_defs, reaction_system_paths(inp.file))
 end

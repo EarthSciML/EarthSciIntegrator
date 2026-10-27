@@ -12,9 +12,9 @@ round-trips, `-0` written `0`, plain decimal notation for decimal exponents in
 `[-6, 21)`, exponential notation (`1e-7`, `1.5e+21`) otherwise. NaN and the
 infinities have no JSON form and are an `ArgumentError`.
 
-Integers are written as the double they denote (RFC 8785 treats every JSON
-number as an IEEE 754 double); one that a double cannot hold exactly is an
-`ArgumentError` rather than a silently rounded value.
+Integers and floats of other widths are written as the double they denote
+(RFC 8785 treats every JSON number as an IEEE 754 double); one that a double
+cannot hold exactly is an `ArgumentError` rather than a silently rounded value.
 """
 function ecma_number(x::Integer)
     x isa Bool && throw(ArgumentError("a Bool is not a JSON number"))
@@ -24,7 +24,9 @@ function ecma_number(x::Integer)
 end
 
 function ecma_number(x::AbstractFloat)
-    x = Float64(x)
+    f = Float64(x)
+    (isnan(x) || f == x) || throw(ArgumentError("$x has no exact binary64 form"))
+    x = f
     isfinite(x) || throw(ArgumentError("$x has no JSON form (RFC 8785 §3.2.2.3)"))
     x == 0 && return "0"                      # +0 and -0
     neg = x < 0

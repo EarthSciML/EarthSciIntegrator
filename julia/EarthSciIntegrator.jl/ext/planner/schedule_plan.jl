@@ -195,6 +195,26 @@ function tstops_known(m::PlanModel, t0, tf, config)
 end
 
 """
+    lands_on_boundary(t0, tf, dt, τ) -> Bool
+
+Whether `macro_bounds(t0, tf, dt, [τ])` has `τ` as a boundary, for `τ` in
+`(t₀, t_f]`, without listing the boundaries: `t_f` always is one; otherwise
+`τ` must be within the landing tolerance of the nearest `b = t₀ + k·dt`, and
+the step that reaches `b` must not be the stop step. (The stop test is made
+from `t₀ + (k−1)·dt`; `macro_bounds` makes it from that boundary as snapped
+to a tstop, which moves it by at most the tolerance.)
+"""
+function lands_on_boundary(t0::Float64, tf::Float64, dt::Float64, τ::Float64)
+    τ == tf && return true
+    k = round((τ - t0) / dt)
+    k >= 1 || return false
+    b = t0 + k * dt
+    abs(τ - b) <= 100 * eps(max(abs(τ), abs(b))) || return false
+    _, isstop = stop_rule(k == 1 ? t0 : t0 + (k - 1) * dt, dt, tf)
+    return !isstop
+end
+
+"""
     check_schedule(ctx, root)
 
 spec/plan.md §7.1: unsupported nodes in tree order, then spec/run-config.md
@@ -271,12 +291,9 @@ function check_schedule(ctx, root::SNode)
         if !lands_inside
             t0, tf = ctx.time
             τs = sort!(unique!(tstops_known(m, t0, tf, config)))
-            if !isempty(τs)
-                bounds, _ = macro_bounds(t0, tf, dt, τs)
-                for τ in τs
-                    τ in bounds || refuse("tstop_off_fixed_step", "/step/hit_multiples",
-                        "tstop $τ s is not t₀ plus a multiple of step.dt = $dt s, and the schedule root cannot land on it")
-                end
+            for τ in τs
+                lands_on_boundary(t0, tf, dt, τ) || refuse("tstop_off_fixed_step", "/step/hit_multiples",
+                    "tstop $τ s is not t₀ plus a multiple of step.dt = $dt s, and the schedule root cannot land on it")
             end
         end
     end
@@ -476,7 +493,9 @@ function resolve_leaf(ctx, n::SNode, stiff)
             if isstiff
                 alg = reltol >= 1e-3 ? "Rosenbrock23" : "Rodas4"
                 jac === nothing && (jac = "symbolic")
-                ls === nothing && (ls = _pointwise_linsolve(leaf_block_size(ctx, n, at)))
+                # The row needs block_diagonal storage even when linsolve is given.
+                bsize = leaf_block_size(ctx, n, at)
+                ls === nothing && (ls = _pointwise_linsolve(bsize))
             else
                 alg = "Tsit5"
             end

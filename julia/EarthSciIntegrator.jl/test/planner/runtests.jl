@@ -370,7 +370,27 @@ end
         @test EI.plan_duration(m, "Kinetics.k2", "/x") == 3.0e7
         @test refusal(() -> EI.plan_duration(m, "Kinetics.y1", "/x")) == ("name_wrong_kind", "/x")
         @test refusal(() -> EI.plan_duration(m, "Nope.x", "/x")) == ("name_unresolved", "/x")
-        @test EI._epoch_days(2000, 3, 1) == 11017
+        # A duration parameter must default to a positive number of seconds.
+        v = m.flat.parameters["Kinetics.k2"]
+        kw = (f => getfield(v, f) for f in fieldnames(typeof(v)) if !(f in (:type, :default)))
+        for d in (0.0, -1.0)
+            m.flat.parameters["Kinetics.k2"] = EarthSciAST.ModelVariable(v.type; default = d, kw...)
+            @test refusal(() -> EI.plan_duration(m, "Kinetics.k2", "/x")) == ("run_config_invalid", "/x")
+        end
+        m.flat.parameters["Kinetics.k2"] = v
+    end
+
+    @testset "tstops on a fixed step.dt (rule 9)" begin
+        @test EI.lands_on_boundary(0.0, 1.0e7, 1.0e-3, 3600.0)
+        @test !EI.lands_on_boundary(0.0, 1.0e7, 7.0, 3600.0)
+        @test EI.lands_on_boundary(0.0, 1.0, 0.1, 0.3)              # 0.1 + 0.1 + 0.1 ≠ 0.3, within tolerance
+        @test EI.lands_on_boundary(0.0, 1.05, 0.1, 1.05)            # t_f always is one
+        @test EI.lands_on_boundary(0.0, 1.05, 0.1, 1.0)
+        @test !EI.lands_on_boundary(0.5, 2.0, 1.0, 0.75)
+        for (t0, tf, dt, τ) in ((0.0, 1.0, 0.1, 0.3), (0.0, 1.05, 0.1, 1.0), (0.25, 3.0, 0.5, 1.75), (0.0, 1.0, 0.25, 0.6))
+            bounds, _ = EarthSciIntegrator.macro_bounds(t0, tf, dt, [τ])
+            @test EI.lands_on_boundary(t0, tf, dt, τ) == (τ in bounds)
+        end
     end
 
     @testset "schedule helpers" begin

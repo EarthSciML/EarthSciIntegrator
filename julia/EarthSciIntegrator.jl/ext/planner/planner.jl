@@ -53,13 +53,14 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
     ctx.terms = build_terms(m)
     term_localities!(ctx, ctx.terms)
     ctx.ops = select_operators(m, ctx.terms, config)
-    for o in sort!(collect(keys(ctx.ops)))
+    opnames = sort!(collect(keys(ctx.ops)))
+    for o in opnames
         operator_locality!(ctx.ops[o], axes)
     end
-    for o in sort!(collect(keys(ctx.ops)))             # pass 3
+    for o in opnames                                   # pass 3
         dof_sets!(m, ctx.ops[o])
     end
-    for o in sort!(collect(keys(ctx.ops)))             # pass 4
+    for o in opnames                                   # pass 4
         ctx.ops[o].structure = operator_structure(backend, ctx, ctx.ops[o])
     end
     # §7.1: the schedule.
