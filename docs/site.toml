@@ -1,0 +1,25 @@
+id = "integrator"
+title = "EarthSciIntegrator"
+description = "One specification for integrating EarthSciML models — explicit, implicit and IMEX methods, operator splitting, a planner, and discrete adjoints — implemented natively in Julia and Rust and checked against each other."
+repo = "EarthSciML/EarthSciIntegrator"
+
+# Run from the repo root before the docs-bundle action (see templates/docs.yml
+# in EarthSciML/earthsci.dev): builds docs/content/{architecture,decisions,
+# survey}.md, rfcs/ and spec/ from the files the repo already keeps.
+prebuild = ["python docs/build_content.py"]
+
+[[nav]]
+title = "Specification"
+path = "spec/"
+[[nav]]
+title = "Architecture"
+path = "architecture/"
+[[nav]]
+title = "Decisions"
+path = "decisions/"
+[[nav]]
+title = "Survey"
+path = "survey/"
+[[nav]]
+title = "RFCs"
+path = "rfcs/"

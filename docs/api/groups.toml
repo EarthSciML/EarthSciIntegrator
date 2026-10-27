@@ -1,0 +1,54 @@
+# Topic grouping of the canonical stable operations, for the generated API
+# reference (tools/api_docs/render.py in EarthSciML/earthsci.dev).
+
+[[group]]
+id = "runs"
+title = "Building and running"
+description = "Turning a run configuration into a run, integrating it forward over an interval, and reading the result."
+ops = [
+  "spec_version", "build_run", "run_spec", "run_config", "forward", "forward_run",
+  "toy_problem", "tableaus", "odefunction",
+]
+
+[[group]]
+id = "adjoint"
+title = "Replay and adjoint"
+description = "Replaying a recorded run on its frozen tape and differentiating it with the discrete adjoint."
+ops = ["replay", "gradient", "gradient_result", "tape"]
+
+[[group]]
+id = "operators"
+title = "The operator interface"
+description = "What a leaf calls on an operator: the right-hand side, its derivative products and Jacobian, and map operators."
+ops = [
+  "operator", "map_operator",
+  "rhs", "jvp_u", "vjp_u", "vjp_p", "jac", "ft", "hess_u", "hess_p",
+  "ft_vjp_u", "ft_vjp_p", "apply", "map_vjp", "map_jvp",
+]
+
+[[group]]
+id = "planner"
+title = "The planner"
+description = "Planning a run from an `.esm` document and a run configuration (Julia, and the Rust `earthsci-integrator-planner` crate)."
+ops = [
+  "plan", "plan_dict", "plan_json", "jcs", "plan_backend", "pending_backend",
+  "band_entry", "plan_options", "planned", "read_run_config", "planner_run_config",
+]
+
+[[group]]
+id = "solvers"
+title = "Solvers"
+description = "The time-stepping methods (Rust `earthsci-integrator-solvers` crate): explicit Runge-Kutta, Rosenbrock and implicit solvers, the step-size controller and the method tableaus."
+ops = [
+  "tableau", "all_tableaus", "explicit_rk", "rosenbrock", "implicit", "controller",
+  "initial_dt", "scalar", "rhs_fn",
+]
+
+[[group]]
+id = "errors"
+title = "Errors"
+description = "Refusals of a run configuration or plan, and failed runs."
+ops = [
+  "error", "config_error", "unsupported_error", "replay_mismatch_error",
+  "planner_refusal", "planner_stage_error", "plan_error", "erk_error",
+]

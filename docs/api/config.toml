@@ -1,0 +1,32 @@
+# API reference configuration, read by the shared tooling in
+# EarthSciML/earthsci.dev (tools/api_docs; schema in its README.md).
+
+[reference]
+title = "EarthSciIntegrator"
+summary = "implement the one EarthSciIntegrator spec (`spec/`) natively, checked against each other by a shared conformance suite."
+
+[bindings.julia]
+path = "julia/EarthSciIntegrator.jl"
+package = "EarthSciIntegrator"
+env = "docs/api/examples/julia"
+# `odefunction`'s method lives in a package extension (SciMLBase). The planner's
+# EarthSciAST extension is not loaded: its docstring-bearing generic `plan` is in
+# the main module.
+load = ["SciMLBase"]
+
+[bindings.rust]
+# Three crates of the rust/ workspace. A manifest spelling that starts with a
+# crate's module name belongs to that crate; any other belongs to the first.
+# earthsci-integrator-mpi is an empty scaffold with no public items yet.
+
+[[bindings.rust.crates]]
+path = "rust/earthsci-integrator"
+crate = "earthsci-integrator"
+
+[[bindings.rust.crates]]
+path = "rust/earthsci-integrator-planner"
+crate = "earthsci-integrator-planner"
+
+[[bindings.rust.crates]]
+path = "rust/earthsci-integrator-solvers"
+crate = "earthsci-integrator-solvers"
