@@ -51,7 +51,7 @@ The planner resolves the interval afresh for every run, from the sources that ru
 A duration is positive. It is one of:
 - a number of seconds;
 - a string `"<number> <unit>"`, with the space optional, where the unit is `s`, `min` (60 s), `h` (3600 s) or `day` (86 400 s). The number's digits before any exponent are not all zero, so `"0 s"` and `"0.0 day"` are refused by the schema. Its value in seconds is the number parsed as the nearest binary64, times the unit's seconds (an exact integer), one rounding in all (spec/plan.md §7.1);
-- the qualified name of a model parameter whose value is in seconds (WRF's `chemdt`). It is read once, at plan time, from the parameter's default or the value the run supplies.
+- the qualified name of a model parameter whose value is in seconds (WRF's `chemdt`). It is read once, at plan time, from the parameter's default or the value the run supplies, and must be a positive finite number, else the planner refuses (`run_config_invalid`, at the duration's key).
 
 The words `auto`, `step` and `accumulated` are reserved and are never parameter names in a duration.
 
