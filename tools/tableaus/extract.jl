@@ -1,6 +1,7 @@
 # Extract the coefficient tables of every v1 method into spec/tableaus/<Name>.json.
 #
 #     julia --project=tools/tableaus tools/tableaus/extract.jl
+#     tools/sync-package-data.sh    # copy them into the Julia package and the crate
 #
 # Coefficients come from the installed OrdinaryDiffEq packages (D31): read from
 # their tableau constructors where one exists, transcribed here with a citation

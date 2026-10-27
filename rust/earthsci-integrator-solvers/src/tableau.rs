@@ -174,9 +174,11 @@ pub struct Tableau {
 
 macro_rules! tableau_sources {
     ($($name:literal),* $(,)?) => {
-        /// `(alg, JSON text)` for every file in `spec/tableaus/`.
+        /// `(alg, JSON text)` for every file in `spec/tableaus/`, embedded from
+        /// the crate's own copy in `data/tableaus/` (a published crate cannot
+        /// reach spec/; `tools/sync-package-data.sh` refreshes the copy).
         const SOURCES: &[(&str, &str)] = &[
-            $(($name, include_str!(concat!("../../../spec/tableaus/", $name, ".json")))),*
+            $(($name, include_str!(concat!("../data/tableaus/", $name, ".json")))),*
         ];
     };
 }

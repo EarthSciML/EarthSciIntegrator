@@ -5,12 +5,16 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Also a release gate: release-register.yml calls it before registering.
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # github.workflow is the CALLER's name when release-register.yml calls this,
+  # so that run does not cancel (or get cancelled by) the push's own CI run.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,6 +36,16 @@ jobs:
           python tests/conformance/m1/make_cases.py
           python tests/conformance/m2/make_cases.py
           git diff --exit-code tests/conformance/m1/cases.json tests/conformance/m2/cases.json
+      # The packages read copies of spec/ data from their own directories,
+      # since a registered or published package cannot reach spec/.
+      - name: Package data copies match spec/
+        run: |
+          tools/sync-package-data.sh
+          git add -N julia/EarthSciIntegrator.jl/data rust/*/data
+          if ! git diff --exit-code --stat -- julia/EarthSciIntegrator.jl/data rust/*/data; then
+            echo "::error::Package data differs from spec/. Run tools/sync-package-data.sh and commit the result."
+            exit 1
+          fi
 
   julia:
     name: Julia ${{ matrix.version }}

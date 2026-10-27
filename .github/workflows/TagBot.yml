@@ -1,0 +1,21 @@
+name: Release 2 - TagBot
+
+# Step 2 of 3 (see release-register.yml). When General merges a registration,
+# the JuliaTagBot account comments on an issue here, and this workflow tags the
+# registered commit `v<version>` and creates the GitHub release from the
+# registration's release notes. The tag push starts release.yml.
+
+on:
+  issue_comment:
+    types:
+      - created
+  workflow_dispatch:
+
+jobs:
+  TagBot:
+    if: github.event_name == 'workflow_dispatch' || github.actor == 'JuliaTagBot'
+    uses: EarthSciML/.github/.github/workflows/release-tagbot.yml@main
+    with:
+      julia-subdir: julia/EarthSciIntegrator.jl
+    # The org's TagBot App key (TAGBOT_APP_PRIVATE_KEY); see EarthSciML/.github.
+    secrets: inherit
