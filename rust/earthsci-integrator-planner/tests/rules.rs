@@ -437,9 +437,10 @@ fn precision_conflict_pointer() {
     );
 }
 
-/// Rule 3 checks the operator names of an `IMEXEuler` leaf's `imex`, before
-/// rule 6 checks the partition; locality names are not operator names, and
-/// an `imex` on another method is ignored.
+/// Rule 3 checks the operator names of a leaf's `imex`, after its `frozen`
+/// entries and before rule 6 checks the partition; locality names are not
+/// operator names; an `imex` on another method is still checked by rule 3
+/// but not by rule 6.
 #[test]
 fn imex_operator_names() {
     let imex = |v: Value| {
@@ -491,10 +492,32 @@ fn imex_operator_names() {
         ),
         (codes::IMEX_PARTITION_INVALID, "/schedule/imex".into())
     );
-    // An imex on a leaf whose written alg is not IMEXEuler is ignored.
-    let ignored = rob(
+    // Frozen entries come before imex entries.
+    let both = rob(
+        json!({"step": {"dt": 40}}),
+        json!({"alg": "IMEXEuler", "dt": 1, "frozen": [{"every": "ghost1", "period": 10}],
+               "imex": {"implicit": ["ghost2"]}}),
+    );
+    assert_eq!(
+        refused("imex-after-frozen", None, both),
+        (codes::OPERATOR_UNDEFINED, "/schedule/frozen/0/every".into())
+    );
+    // On a leaf whose written alg is not IMEXEuler, rule 3 still checks imex
+    let undefined = rob(
         json!({}),
         json!({"linsolve": "dense_lu", "imex": {"implicit": ["ghost"]}}),
+    );
+    assert_eq!(
+        refused("imex-other-alg", None, undefined),
+        (
+            codes::OPERATOR_UNDEFINED,
+            "/schedule/imex/implicit/0".into()
+        )
+    );
+    // but rule 6 does not: a bad partition of defined operators is ignored.
+    let ignored = rob(
+        json!({}),
+        json!({"linsolve": "dense_lu", "imex": {"implicit": ["kinetics"], "explicit": ["kinetics"]}}),
     );
     assert!(run("imex-ignored", None, ignored).is_ok());
 }

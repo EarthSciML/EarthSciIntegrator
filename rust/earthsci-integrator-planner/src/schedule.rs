@@ -575,21 +575,14 @@ fn frozen_ops(n: &Node) -> Vec<(String, String)> {
     out
 }
 
-/// The operator names an `IMEXEuler` leaf's `imex` parts hold (locality
-/// names are not operator names), with their pointers `<node>/imex/<part>/<i>`
+/// The operator names a node's `imex` parts hold (locality names are not
+/// operator names), with their pointers `<node>/imex/<part>/<i>`
 /// (`<node>/imex/<part>` for a part written as one string): `explicit`, then
-/// `implicit`, entries in written order. An `imex` key on a leaf whose
-/// written `alg` is not `IMEXEuler` is ignored (spec/plan.md §7.1).
-///
-/// SPEC FINDING (§7.1 rule 3): the place of `imex` entries among a node's
-/// operator names, and which part comes first, are not stated; they are
-/// checked after the leaf's operators and before its `frozen` entries,
-/// `explicit` before `implicit`.
+/// `implicit`, entries in written order. Rule 3 checks them on every leaf,
+/// whatever its `alg`; only rule 6 ignores an `imex` on a leaf whose written
+/// `alg` is not `IMEXEuler` (spec/plan.md §7.1).
 fn imex_ops(n: &Node) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    if n.value.get("alg").and_then(Value::as_str) != Some("IMEXEuler") {
-        return out;
-    }
     let Some(imex) = n.value.get("imex") else {
         return out;
     };
@@ -610,9 +603,10 @@ fn imex_ops(n: &Node) -> Vec<(String, String)> {
     out
 }
 
-/// Rule 3: every operator the schedule names (a leaf's or coupled node's
-/// operators, its `imex` entries, its `frozen` entries) is defined or an
-/// existing default operator. Rule 6 then checks only the partition.
+/// Rule 3 (spec/plan.md §7.1): every operator the schedule names is defined
+/// or an existing default operator; per node in tree order, its `leaf` or
+/// `coupled` list, then its `frozen` entries, then its `imex` entries. Rule 6
+/// then checks only partitions whose operators are defined.
 fn rule_3(root: &Node, cx: &CheckContext) -> Result<()> {
     for n in root.preorder() {
         let mut named: Vec<(String, String)> = Vec::new();
@@ -623,8 +617,8 @@ fn rule_3(root: &Node, cx: &CheckContext) -> Result<()> {
                     .map(|(i, o)| (o.clone(), n.op_ptr(i))),
             );
         }
-        named.extend(imex_ops(n));
         named.extend(frozen_ops(n));
+        named.extend(imex_ops(n));
         for (op, at) in named {
             if !cx.ops.contains_key(&op) {
                 return Err(refuse(
