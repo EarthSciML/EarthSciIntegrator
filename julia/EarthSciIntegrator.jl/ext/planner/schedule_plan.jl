@@ -71,7 +71,7 @@ end
 # ---------------------------------------------------------------------------
 # Checks (spec/plan.md §7.1)
 
-"""Operator references of a node, with their pointers: the leaf list, `frozen` entries, and `imex` entries that are not locality names."""
+"""Operator references of a node, with their pointers: its leaf (or coupled) list."""
 function operator_refs(n::SNode)
     refs = Tuple{String, String}[]
     is_leaflike(n) || return refs
@@ -92,21 +92,6 @@ function frozen_refs(n::SNode)
     for (i, f) in enumerate(n.spec["frozen"])
         f isa AbstractString ? push!(refs, (String(f), nptr(n, "frozen", i - 1))) :
                                push!(refs, (String(f["every"]), nptr(n, "frozen", i - 1, "every")))
-    end
-    return refs
-end
-
-function imex_refs(n::SNode)
-    refs = Tuple{String, String}[]
-    haskey(n.spec, "imex") || return refs
-    for part in ("explicit", "implicit")
-        haskey(n.spec["imex"], part) || continue
-        v = n.spec["imex"][part]
-        items = v isa AbstractString ? [(String(v), nptr(n, "imex", part))] :
-                [(String(x), nptr(n, "imex", part, i - 1)) for (i, x) in enumerate(v)]
-        for (x, p) in items
-            Symbol(x) in LOCALITY_ORDER || push!(refs, (x, p))
-        end
     end
     return refs
 end
@@ -411,7 +396,7 @@ function check_schedule(ctx, root::SNode)
     # Rule 2: names.
     check_names(ctx, nodes)
     # Rule 3: operator names.
-    for n in nodes, (o, p) in vcat(operator_refs(n), frozen_refs(n), imex_refs(n))
+    for n in nodes, (o, p) in vcat(operator_refs(n), frozen_refs(n))
         haskey(ops, o) || refuse("operator_undefined", p,
             "the schedule names operator $o, which is neither defined in the run config nor an existing default operator")
     end
@@ -430,9 +415,16 @@ function check_schedule(ctx, root::SNode)
         o in named && refuse("operator_advanced_twice", p, "operator $o is advanced twice in one invocation")
         push!(named, o)
     end
-    # Rule 6: imex partitions.
+    # Rule 6: the imex partition of a leaf whose written alg is IMEXEuler (an
+    # "auto" leaf resolved to IMEXEuler is not checked here; an imex key on a
+    # leaf of another method is ignored, as the Rust planner does). Missing
+    # imex is refused at the leaf's pointer, a bad partition at its /imex.
+    # Operator names inside imex are checked here, not by rule 3.
     for n in nodes
-        is_leaflike(n) && haskey(n.spec, "imex") && expand_imex(n, ops)
+        is_leaflike(n) && get(n.spec, "alg", "auto") == "IMEXEuler" || continue
+        haskey(n.spec, "imex") || refuse("imex_partition_invalid", nptr(n),
+            "an IMEXEuler leaf needs imex; there is no default partition")
+        expand_imex(n, ops)
     end
     # Rule 7: node ids.
     seen = Set{String}()
@@ -728,9 +720,7 @@ function resolve_leaf(ctx, n::SNode, stiff)
     haskey(dom, "nonnegative") && (d["nonnegative"] = dom["nonnegative"])
     out["domain"] = d
     if alg == "IMEXEuler"
-        # §7.1, rule 6: an IMEXEuler leaf without imex is refused at its pointer.
-        imex === nothing && !haskey(spec, "imex") &&
-            refuse("imex_partition_invalid", nptr(n), "IMEXEuler needs an imex partition with a non-empty implicit part")
+        # Rule 6 (check_schedule) has checked a written IMEXEuler leaf's imex.
         expl, impl = imex !== nothing ? imex : expand_imex(n, ctx.ops)
         out["imex"] = Dict{String, Any}("explicit" => expl, "implicit" => impl)
         out["implicit_solve"] = get(spec, "implicit_solve", "converged")

@@ -354,6 +354,21 @@ end
         # An IMEXEuler leaf without imex is refused at the leaf's pointer.
         @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1)]),
             "step" => Dict("dt" => 1))) == ("imex_partition_invalid", "/schedule/sequence/0")
+        # Rule 6 runs in §7.1's rule order, for leaves whose written alg is IMEXEuler.
+        imexleaf(imex; kw...) = merge(Dict{String, Any}("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1, "imex" => imex),
+            Dict{String, Any}(String(k) => v for (k, v) in kw))
+        @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => "ghost")), "step" => Dict("dt" => 1))) ==
+              ("imex_partition_invalid", "/schedule/imex")            # not operator_undefined: rule 3 does not read imex
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; imex = Dict("implicit" => "ghost")))) === nothing   # ignored
+        # Earlier rules win: rule 5 (advanced twice) before rule 6, rule 3 before a missing imex.
+        @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [imexleaf(Dict("implicit" => "stencil")),
+            leaf("kinetics")]), "step" => Dict("dt" => 1))) == ("operator_advanced_twice", "/schedule/sequence/1/leaf")
+        @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1),
+            leaf("ghost")]), "step" => Dict("dt" => 1))) == ("operator_undefined", "/schedule/sequence/1/leaf")
+        # ... and rule 6 before rule 7 (duplicate ids).
+        @test try_plan(Dict("operators" => two, "schedule" => Dict("sequence" => [
+            Dict("id" => "x", "leaf" => "a", "alg" => "IMEXEuler", "dt" => 0.1), Dict("id" => "x", "leaf" => "b", "alg" => "Rodas4", "linsolve" => "dense_lu")]),
+            "step" => Dict("dt" => 1))) == ("imex_partition_invalid", "/schedule/sequence/0")
         # Rule 2 (§7.1), in its order.
         bound(k) = Dict("kinetics" => Dict("select" => Dict("components" => "Kinetics"), "bind_dt" => Dict(k => "node")))
         @test try_plan(Dict("operators" => bound("Nope.k"), "schedule" => leaf("kinetics"))) ==
