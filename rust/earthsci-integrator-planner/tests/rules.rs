@@ -389,3 +389,50 @@ fn mixed_element_types() {
         )
     );
 }
+
+/// §7.5: `precision_conflict` is reported at the first operator entry, in
+/// the leaf's operator order, that disagrees with the first entry setting
+/// the role.
+#[test]
+fn precision_conflict_pointer() {
+    let model = conformance()
+        .join("plans/fixtures/cross_component_term/model.esm")
+        .canonicalize()
+        .unwrap();
+    let rc = |precision: Value| {
+        json!({
+            "esm_integrator": "0.1.0",
+            "model": model.to_string_lossy(),
+            "operators": {
+                "chemistry": {"select": {"components": "Chem"}},
+                "deposition": {"select": {"components": "Dep"}},
+                "scavenging": {"select": {"terms": ["coupling:0"], "variables": ["Chem.O3"]}}
+            },
+            "step": {"dt": 60},
+            "precision": precision,
+            // Leaf order differs from code-point order on purpose.
+            "schedule": {"leaf": ["scavenging", "chemistry", "deposition"], "alg": "Rodas4", "linsolve": "dense_lu"}
+        })
+    };
+    let at = |p: Value| refused("precision-conflict", None, rc(p));
+    // First setter scavenging (f64); chemistry agrees; deposition disagrees.
+    assert_eq!(
+        at(
+            json!({"scavenging": {"jacobian": "f64"}, "chemistry": {"jacobian": "f64"}, "deposition": {"jacobian": "f32"}})
+        ),
+        (codes::PRECISION_CONFLICT, "/precision/deposition".into())
+    );
+    // First setter scavenging; chemistry is the first to disagree, although
+    // deposition agrees with chemistry.
+    assert_eq!(
+        at(
+            json!({"scavenging": {"factors": "f64"}, "chemistry": {"factors": "f32"}, "deposition": {"factors": "f32"}})
+        ),
+        (codes::PRECISION_CONFLICT, "/precision/chemistry".into())
+    );
+    // scavenging sets nothing: chemistry is the first setter.
+    assert_eq!(
+        at(json!({"chemistry": {"tables": "f32"}, "deposition": {"tables": "f16"}})),
+        (codes::PRECISION_CONFLICT, "/precision/deposition".into())
+    );
+}

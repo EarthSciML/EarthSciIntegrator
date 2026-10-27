@@ -801,13 +801,26 @@ fn on_fixed_boundary(tau: f64, t0: f64, tf: f64, dt: f64) -> bool {
 
 /// The multiples `j·m` of a duration in `(t0, tf]`, counted from model time
 /// zero (spec/run-config.md §1.1).
+///
+/// Each multiple is the binary64 product `j·m`. One within the landing
+/// tolerance `λ` of `tf` is `tf` itself; one within `λ` of `t0` is
+/// excluded; the others are kept when they lie in `(t0, tf]` (D83, the
+/// "Fixed boundaries" landing rule of spec/run-config.md §5). So `m` 0.1 on
+/// `[0, 0.3]` gives 0.1, 0.2 and 0.3, not 0.30000000000000004.
 fn multiples(m: f64, iv: Interval) -> impl Iterator<Item = f64> {
     // One candidate either side of the quotients, filtered by the products.
     let first = (iv.start / m).floor() as i64;
     let last = (iv.end / m).floor() as i64 + 1;
-    (first..=last)
-        .map(move |j| j as f64 * m)
-        .filter(move |t| *t > iv.start && *t <= iv.end)
+    (first..=last).filter_map(move |j| {
+        let t = j as f64 * m;
+        if lands(t, iv.end) {
+            Some(iv.end)
+        } else if lands(t, iv.start) {
+            None
+        } else {
+            (t > iv.start && t <= iv.end).then_some(t)
+        }
+    })
 }
 
 /// Whether the root is a single `leaf` or `coupled` node whose `dt` is
@@ -1308,5 +1321,27 @@ mod tests {
             end: 20.0,
         };
         assert_eq!(multiples(7.0, iv).collect::<Vec<_>>(), vec![14.0]);
+        // A multiple within λ of tf is tf (3 × 0.1 = 0.30000000000000004).
+        let iv = Interval {
+            start: 0.0,
+            end: 0.3,
+        };
+        assert_eq!(multiples(0.1, iv).collect::<Vec<_>>(), vec![0.1, 0.2, 0.3]);
+        // One within λ of t0 is excluded, even when the product is above t0;
+        // 6 × 0.1 = 0.6000000000000001 is tf.
+        let iv = Interval {
+            start: 0.3,
+            end: 0.6,
+        };
+        assert_eq!(multiples(0.1, iv).collect::<Vec<_>>(), vec![0.4, 0.5, 0.6]);
+        // A hit_multiples tstop of 0.1 under dt 0.1 on [0, 0.3] is on the step.
+        assert!(multiples(
+            0.1,
+            Interval {
+                start: 0.0,
+                end: 0.3
+            }
+        )
+        .all(|t| on_fixed_boundary(t, 0.0, 0.3, 0.1)));
     }
 }
