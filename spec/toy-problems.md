@@ -107,7 +107,7 @@ The values in this example are illustrative:
 ```
 
 - `producer` is `julia`, `rust`, or `reference` (a high-accuracy OrdinaryDiffEq solve, for cases without an exact solution).
-- `t` is $t_0$ followed by the case's output times (`saveat`, default $t_f$ alone; spec/run-config.md §7.3), and `u` holds the full state at each of them, in the layout of §1. Numbers are written in shortest round-trip form.
+- `t` is $t_0$ followed by the case's output times (the case's `saveat` list, default $t_f$ alone, with $t_f$ not added to a list that omits it), and `u` holds the full state at each of them, in the layout of §1. Numbers are written in shortest round-trip form.
 - `functional` and `gradient` are present for gradient cases only.
 - `stats.accepted` and `stats.rejected` sum over all leaves and macro steps.
 

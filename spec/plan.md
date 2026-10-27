@@ -1,6 +1,6 @@
 # The plan and the planner
 
-**Status:** M2 draft, 2026-10-25. Normative for both planners (D1, D8); the M0 skeleton of 2026-10-23 fixed the field set, this draft specifies how every field is computed. Its gate is conformance tier 1 (§9): for each fixture, the Julia and Rust planners write byte-identical `plan.json` and `derived/*.esm`, equal to the checked-in goldens. The checkpoint action vocabulary is specified at M4. Background: architecture §2, §3, D8, D14, D34, D64–D80.
+**Status:** M2 draft, 2026-10-25. Normative for both planners (D1, D8); the M0 skeleton of 2026-10-23 fixed the field set, this draft specifies how every field is computed. Its gate is conformance tier 1 (§9): for each fixture, the Julia and Rust planners write byte-identical `plan.json` and `derived/*.esm`, equal to the checked-in goldens. The checkpoint action vocabulary is specified at M4. Background: architecture §2, §3, D8, D14, D34, D64–D84. Stage 1's findings (Julia PR #21, Rust PR #20) were resolved on 2026-10-26 (D81–D84).
 
 The planner reads a model and a run config and writes a **plan**: `plan.json` plus a directory `derived/` of `.esm` documents. The runtime executes only the plan. The plan is where the Julia and Rust implementations are checked against each other (D8): the same inputs and spec version must give byte-identical files in both (architecture §3.3).
 
@@ -86,17 +86,28 @@ A derived document is a JSON object built as §6 describes and written as EarthS
 
 ## 4. Reading the inputs
 
-The planner runs these steps in order and stops at the first refusal. A refusal names its code (spec/planner-errors.json), the offending run-config key as a JSON pointer (or the model location), and a message. Only the code and pointer are conformance-tested.
+The planner runs these steps in order and stops at the first refusal. A refusal names its code (spec/planner-errors.json), the offending run-config key as a JSON pointer (or the model location), and a message. Only the code and pointer are conformance-tested. For a refusal whose cause has no run-config key of its own, spec/planner-errors.json gives the pointer in the code's description (D79).
 
-1. **The run config.** Parse it; validate it against `schemas/run-config.schema.json` (`run_config_invalid`); refuse an `esm_integrator` version the planner does not implement (`version_unsupported`).
+1. **The run config.** Parse it; validate it against `schemas/run-config.schema.json` (`run_config_invalid`, at the empty pointer `""`, since a failing `oneOf` has no single location); refuse an `esm_integrator` version the planner does not implement (`version_unsupported`).
 2. **The model path.** `model` is resolved relative to the run config's directory. `toy:<problem>` is the conformance harness's and is refused by the planner (`toy_model_not_plannable`).
 3. **Load.** Load the document with EarthSciAST (Julia `EarthSciAST.load_path`). A load or validation failure, including EarthSciAST's own `solver_external_*` and `solver_time_span_*` load-time refusals, is `model_load_failed` with EarthSciAST's code in the message.
 4. **`solver.external`** (spec/run-config.md §1, rule 1). When the model carries `solver.external`, its resolved location (EarthSciAST's accessor, esm-spec §2.2.6, with the model's directory as base) must equal the run config's own location written the same way (`file://` + the absolute path with dot segments removed lexically and percent-encoded as esm-spec §2.2.6 encodes), else `solver_external_mismatch`. The comparison is of the two strings. A URL `external` never matches a file. The planner never writes `solver.external` into a derived document.
 5. **Flatten.** Flatten with EarthSciAST (`flatten`), which applies the couplings and records `equation_contributions` (esm-libraries-spec §4.7.5). Then expand surviving expression-template references (Julia `EarthSciAST.expand_flattened_refs`), lower `table_lookup` to `fn` and `enum` to integers (EarthSciAST's own lowering), each inside every contribution, as esm-libraries-spec §4.7.5 requires of passes over flattened equations. A flatten failure is `model_flatten_failed`.
-6. **M2 scope.** Refuse, in this order, a flattened model with algebraic variables, events, parameter `update` rules, loader fields, or an index set that is not an `interval` with an integer size (`unsupported_index_set`), with the codes of §0.1.
-7. **Axes** (§5.2.1) and **time** (§7.2) are resolved next, since passes 2 and 5 use them.
+6. **M2 scope.** Refuse, in this order, a flattened model with algebraic variables, events, parameter `update` rules, loader fields, or an index set that is not an `interval` with an integer size (`unsupported_index_set`), with the codes of §0.1. A `crossing` update rule is `unsupported_crossing_update`, not `unsupported_parameter_update`: the more specific code wins.
+7. **Reserved names.** Refuse a model with a top-level component named `_jacobian` (`reserved_component_name`, §6.1.4).
+8. **Axes** (§5.2.1) and **time** (§7.2) are resolved next, since passes 2 and 5 use them. The shapes of lifted states (§6.1.3) are resolved here, before the axes and whether or not the run config gives `axes`, since the default axes read every state's shape; a lifted state with no matching declared shape is `lift_shape_unresolved`. Then the axes (`axes_unresolved`), then the time.
 
-**Order of refusals.** After these steps the planner runs passes 1–4 (§5.1–§5.4), then checks the schedule (§7.1), step, partition, precision and adjoint (§7.3–§7.6), then resolves strategies (§5.5), builds the derived documents (§6) and validates (§8). The first refusal ends planning. Within §7.1, unsupported constructs are refused first, in tree order, then spec/run-config.md §8's rules in rule order.
+**Order of refusals** (D81). After these steps the planner runs, in order:
+
+1. pass 1's terms and owners (§5.1.1–§5.1.2; `term_origin_unknown`);
+2. each term's locality (§5.2.2–§5.2.4 applied to the term; `band_model_failed`), since selection reads it;
+3. selection (§5.1.3), with its refusals in the order §5.1.3 gives;
+4. each operator's class and radius (§5.2.4), pass 3 (§5.3) and pass 4 (§5.4; `band_model_failed`);
+5. the schedule (§7.1), the step (§7.3), the partition (§7.4), the precision (§7.5) and the adjoint (§7.6);
+6. the strategies (§5.5), then the precision check of §7.5 that waits for a resolved method (`precision_low_with_classical_rosenbrock` on a leaf whose `alg` is `"auto"`);
+7. the derived documents (§6) and validation (§8).
+
+So `band_model_failed` for a term precedes every selection refusal. The first refusal ends planning. Within §7.1, unsupported constructs are refused first, in tree order, then spec/run-config.md §8's rules in rule order (§7.1).
 
 The **flattened model** below means the result of step 5. Its state variables are the keys of `state_variables` that some equation's left-hand side differentiates; its **canonical state order** is those names sorted by code point, each array's cells in column-major order (EarthSciASTDiff's canonical order, esm-jacobian-spec §8). DOF $n$ (0-based) is position $n$ in that order. The initial state $u_0$ is EarthSciAST's, from building the flattened model (defaults and `field_ics`), permuted into canonical order.
 
@@ -113,7 +124,7 @@ For each equation of the flattened model, in order, whose left-hand side differe
 - `-` with one argument $a$: each summand $t$ of $a$ as `{"op": "-", "args": [t]}`;
 - anything else, including `*`, `faq`, `makearray` and `index`: itself, as one summand.
 
-A summand that is a numeric literal equal to zero is dropped (esm-libraries-spec §4.7.5 lets a binding drop a literal-zero contribution's operand). Each remaining summand is a **term**, identified by `(variable, contribution, summand)`: the dependent variable's flattened name and the two 0-based indices. For a lifted equation the contribution expressions are the per-cell bodies EarthSciAST records (the `faq` wrapper is around their sum), so terms are per-cell expressions; Rust identifies lifted equations by `equation_lifted`, Julia by the lift's shape (esm-libraries-spec §4.7.5). Equations defining observeds and `ic` equations are not split into terms.
+A summand that is a numeric literal equal to zero is dropped (esm-libraries-spec §4.7.5 lets a binding drop a literal-zero contribution's operand). Only a literal is dropped: in `a - 0` the second summand is `{"op": "-", "args": [0]}`, an operation and not a numeric literal, so it is kept as a term. Each remaining summand is a **term**, identified by `(variable, contribution, summand)`: the dependent variable's flattened name and the two 0-based indices. For a lifted equation the contribution expressions are the per-cell bodies EarthSciAST records (the `faq` wrapper is around their sum), so terms are per-cell expressions; Rust identifies lifted equations by `equation_lifted`, Julia by the lift's shape (esm-libraries-spec §4.7.5). Equations defining observeds and `ic` equations are not split into terms.
 
 A term's **provenance label** is built from its contribution's `origins`: `{"component": P}` gives `P`; `{"coupling": k}` gives `coupling:k`; several origins (a collapsed contribution) are joined by `+` in their recorded order, e.g. `SuperFast+coupling:4`. An empty `origins` list is refused (`term_origin_unknown`), since only a caller's edit of a flattened system produces one.
 
@@ -128,7 +139,7 @@ A component $C$ in a selector **covers** a component $P$ when $P = C$ or $P$ beg
 
 #### 5.1.3 Selection
 
-Every term operator of the run config (spec/run-config.md §3.1) is tested against every term. A selector matches a term when every key present matches:
+Selection runs after every term's locality is known (§5.2, §4 "Order of refusals"; D81). Every term operator of the run config (spec/run-config.md §3.1) is tested against every term. A selector matches a term when every key present matches:
 - `components`: some listed component covers the term's owner (a term with no owner never matches);
 - `variables`: the term's dependent variable is listed;
 - `locality`: the term's locality class (§5.2) is listed;
@@ -140,7 +151,15 @@ Then, for each term in term order:
 - matched by none, with no owner, while any operator's selector has a `components` key: `ambiguous_term_owner`, naming the term and the components it reads;
 - matched by none otherwise: it belongs to the **default operator** of its locality, `default_pointwise`, `default_column`, `default_stencil` or `default_global` (spec/run-config.md §3.3).
 
-An operator of the run config that no term matches is `selector_matches_nothing`; component paths in a selector are not otherwise checked against the model, while `variables` entries must name states (`name_unresolved`, `name_wrong_kind`). A `map` operator is `unsupported_map_operator`. Architecture §3.2's inlining of an assembly component's observeds, for EqWeFiC's summed tendencies, is not done at M2: such a term belongs to the assembly component by rule 1 (D65).
+An operator of the run config that no term matches is `selector_matches_nothing`; component paths in a selector are not otherwise checked against the model, while `variables` entries must name states (`name_unresolved`, `name_wrong_kind`). A `map` operator is `unsupported_map_operator`.
+
+Selection's refusals come in this order, the first one found ending planning:
+1. `unsupported_map_operator`, for the `map` operators in code-point order of operator name;
+2. `variables` entries (`name_unresolved`, `name_wrong_kind`), operators in code-point order, each operator's entries in written order;
+3. per term, in term order, `term_selected_twice` or `ambiguous_term_owner` as above;
+4. `selector_matches_nothing`, for the first such operator in code-point order.
+
+Architecture §3.2's inlining of an assembly component's observeds, for EqWeFiC's summed tendencies, is not done at M2: such a term belongs to the assembly component by rule 1 (D65).
 
 #### 5.1.4 Operators
 
@@ -154,11 +173,13 @@ An operator is the set of its terms in term order, with the run config's `bind_d
 
 #### 5.2.1 Axes
 
-The run config's `axes` (spec/run-config.md §6.1, D67) gives `horizontal`, a list of one or two index-set names, and `vertical`, one name. Defaults: no vertical axis; horizontal is every index set that is a dimension of some state's shape (§6.1.3 for lifted states), other than the vertical one, in the flattened model's `index_sets` order. A named index set that does not exist, a name in both roles, or more than two horizontal axes is `axes_unresolved`. An index set a state uses that is neither horizontal nor vertical is an **other** axis.
+The run config's `axes` (spec/run-config.md §6.1, D67) gives `horizontal`, a list of one or two index-set names, and `vertical`, one name. Defaults: no vertical axis; horizontal is every index set that is a dimension of some state's shape (§6.1.3 for lifted states, whose shapes §4 step 8 resolves first), other than the vertical one, in the flattened model's `index_sets` order. A named index set that does not exist, a name in both roles, or more than two horizontal axes is `axes_unresolved`. An index set a state uses that is neither horizontal nor vertical is an **other** axis (possible only when the run config gives `axes`). Offsets on an other axis do not affect a term's class, while a reach that covers one makes the term global (§5.2.3–§5.2.4, D82).
+
+Pass 2 runs in two parts (D81): each term's class (§5.2.2–§5.2.4) before selection (§5.1.3), which reads it, and each operator's class and radius (the end of §5.2.4) after.
 
 #### 5.2.2 A term's bands
 
-The term's **band list** is EarthSciASTDiff's state Jacobian (`jacobian_bands`, `wrt = states`) of the term's own right-hand-side document: §6.1's document for a hypothetical operator whose only term is this one, loaded and flattened by EarthSciAST and viewed with `sysview`. An EarthSciASTDiff failure (`underivable_operator`, a filtered or non-`+` `faq`, any other refusal) is `band_model_failed`, carrying its message.
+The term's **band list** is EarthSciASTDiff's state Jacobian (`jacobian_bands`, `wrt = states`) of the term's own right-hand-side document: §6.1's document for a hypothetical operator whose only term is this one, loaded and flattened by EarthSciAST and viewed with `sysview`. An EarthSciASTDiff failure (`underivable_operator`, a filtered or non-`+` `faq`, any other refusal) is `band_model_failed` at `/model`, carrying its message.
 
 This defines the band list; it does not prescribe one document per term, which at reseact's size (thousands of terms) would mean thousands of EarthSciAST loads and flattens. Pass 2 uses the bands only for the locality and radius they imply (§5.2.3), so a planner may compute them any way that gives the same offsets. One way: a single probe document in which each term is the whole right-hand side of its own new state, of the shape of the term's equation's state, and one `jacobian_bands` call, whose rows for that state are the term's bands. Whatever the method, an EarthSciASTDiff failure is reported against the term it concerns.
 
@@ -168,24 +189,26 @@ For each band entry, with row variable $x$ and column variable $y$:
 
 - **Scalar row and scalar column:** no reach.
 - **One scalar, one array:** the term is **global**.
-- **Both arrays:** dimensions are paired by index-set name. For each dimension $d$ of $y$ with index set $X$:
-  - if $x$ has no dimension on $X$: the reach covers $X$ (global if $X$ is horizontal or other, column if $X$ is vertical);
+- **Both arrays:** dimensions are paired by index-set name: the $j$-th dimension of $y$ on index set $X$ (counting only $y$'s dimensions on $X$, from the left) pairs with the $j$-th dimension of $x$ on $X$. For each dimension $d$ of $y$ with index set $X$:
+  - if $x$ has no paired dimension on $X$ (no dimension on $X$, or fewer than $j$): the reach covers $X$ (global if $X$ is horizontal or other, column if $X$ is vertical);
   - if `col_idx[d]` references a `contracted` name of the entry: likewise, the reach covers $X$;
-  - otherwise, with `row_idx` entry $r$ of $x$'s dimension on $X$ and `col_idx[d]` = $c$, the **raw offsets** are:
+  - otherwise, with `row_idx` entry $r$ of $x$'s paired dimension and `col_idx[d]` = $c$, the **raw offsets** are:
     - $c$ equal to $r$: $\{0\}$;
     - $c$ of the form $r + \delta$, $r - \delta$ or $\delta + r$, $\delta$ an integer literal: $\{\pm\delta\}$;
-    - $c$ an integer constant (a literal, or `+`, `-`, `*` of integer literals) $k$, and $r$ an integer $\rho$: $\{k - \rho\}$;
+    - $c$ an **integer constant** $k$, and $r$ an integer $\rho$: $\{k - \rho\}$. An integer constant is, recursively, an integer literal, a one-argument `-` of an integer constant, or `+`, `-` (two arguments) or `*` of integer constants; its value is evaluated exactly in 64-bit signed integers;
     - $c$ an integer constant $k$, and $r$ a name over the band's row range $[lo, hi]$ on that dimension: $\{k - hi, \ldots, k - lo\}$;
     - anything else (another index name, a table gather, a nonlinear index): the reach covers $X$.
 
-On a horizontal axis of size $N$, each raw offset $o$ is **reduced**: $o' = ((o + \lfloor N/2 \rfloor) \bmod N) - \lfloor N/2 \rfloor$, with $\bmod$ giving a value in $[0, N)$. A periodic seam, cell 1 reading cell $N$, has $o = N - 1$ and $o' = -1$ (D66). Vertical offsets are not reduced.
+On a horizontal axis of size $N$, each raw offset $o$ is **reduced**: $o' = ((o + \lfloor N/2 \rfloor) \bmod N) - \lfloor N/2 \rfloor$, with $\bmod$ giving a value in $[0, N)$. A periodic seam, cell 1 reading cell $N$, has $o = N - 1$ and $o' = -1$ (D66). Vertical offsets are not reduced. Offsets on an other axis are computed by the same rules but not used: they do not affect the class (§5.2.4, D82).
 
 #### 5.2.4 Class and radius
 
-- The term is **global** if any band makes it global, or the reach covers a horizontal or other axis, or, on some horizontal axis, its lower plus upper radius plus one exceeds the axis size.
+- The term is **global** if any band makes it global, or the reach covers a horizontal or other axis. (No size check on the radius is needed: reduction keeps every horizontal offset in $[-\lfloor N/2 \rfloor, \lceil N/2 \rceil - 1]$, so `lower` + `upper` + 1 never exceeds the axis size $N$.)
 - Otherwise **stencil** if some reduced horizontal offset is nonzero. Its radius on a horizontal axis is `[lower, upper]`: `lower` the largest $-o'$ over negative offsets on that axis (cells toward lower index), `upper` the largest $o'$ over positive ones, each 0 if there are none.
 - Otherwise **column** if some vertical offset is nonzero or the reach covers the vertical axis.
 - Otherwise **pointwise**. A term with no bands is pointwise.
+
+A nonzero offset on an other axis therefore leaves the class as the horizontal and vertical offsets give it: such a coupling stays inside one cell's block, since an other axis is never divided among shards, tiles or ranks (D82).
 
 An operator's class is the coarsest of its terms' in the order pointwise < column < stencil < global. A stencil operator's `radius` lists **every** horizontal axis, each direction the maximum over its stencil terms (0 where none reaches). Only stencil operators have `radius` (the schema checks this).
 
@@ -198,7 +221,7 @@ Both are sorted by code point (§2.1).
 
 ### 5.4 Pass 4: structure
 
-The operator's **band list** is EarthSciASTDiff's `jacobian_bands` (states) of its right-hand-side document (§6.1), in EarthSciASTDiff's order (equation order, then sorted column variable, then canonical site key; the order its `.bands.json` goldens hold). Band $k$ (1-based) is band field `J_k` of the Jacobian document (§6.2). An EarthSciASTDiff refusal is `band_model_failed`.
+The operator's **band list** is EarthSciASTDiff's `jacobian_bands` (states) of its right-hand-side document (§6.1), in EarthSciASTDiff's order (equation order, then sorted column variable, then canonical site key; the order its `.bands.json` goldens hold). Band $k$ (1-based) is band field `J_k` of the Jacobian document (§6.2). An EarthSciASTDiff refusal is `band_model_failed` at `/model`.
 
 `structure` holds:
 
@@ -257,7 +280,7 @@ A leaf's **class** is the coarsest locality of its operators, and it is **stiff*
 | stencil with a stiff column operator, no `dt`; global, stiff | refused: `auto_strategy_unavailable` | | | |
 | global, non-stiff | `SSPRK43` | — | — | `global` |
 
-The block size is the number of `vars` in the union of the leaf's operators' `structure.block` variables. The pointwise stiff row applies only when the leaf's Jacobian storage is `block_diagonal` (spec/operator-interface.md §8.3: every operator has `structure.block`, and the leaf's state variables are all arrays of one shape or all scalars), since `block_lu` and `sparse_block_lu` need it; otherwise the leaf is refused, `auto_strategy_unavailable`. A `linsolve`, `jacobian` or `dt_scope` the run config gives explicitly is kept; only `"auto"` or an omitted key is resolved, and an omitted `linsolve` or `jacobian` on an explicitly named implicit method resolves as this table's row for the leaf's class would (pointwise `block_lu`/`sparse_block_lu`, column `banded`, otherwise `auto_strategy_unavailable`). `controller` `"auto"` is `PI`.
+The block size is the number of `vars` in the union of the leaf's operators' `structure.block` variables. The pointwise stiff row applies only when the leaf's Jacobian storage is `block_diagonal` (spec/operator-interface.md §8.3: every operator has `structure.block`, and the leaf's state variables, the states its operators write, are all arrays of one shape or all scalars), since `block_lu` and `sparse_block_lu` need it; otherwise the leaf is refused, `auto_strategy_unavailable`. A `linsolve`, `jacobian` or `dt_scope` the run config gives explicitly is kept; only `"auto"` or an omitted key is resolved, and an omitted `linsolve` or `jacobian` on an explicitly named implicit method resolves as this table's row for the leaf's class would (pointwise `block_lu`/`sparse_block_lu`, column `banded`, otherwise `auto_strategy_unavailable`). `controller` `"auto"` is `PI`. Once a leaf's `"auto"` method is resolved here, its `precision_low_with_classical_rosenbrock` check (§7.5) runs.
 
 #### 5.5.4 Reference step $\Delta$
 
@@ -309,17 +332,17 @@ A variable's object is `{"type": T}` plus `"shape"` and `"default"` when present
 In each model, `equations` lists, in the flattened model's equation order, the equations whose subject belongs to that model's component (for a state equation the dependent variable, for an observed definition the observed), followed by the `ic` equations of its states in `field_ics` order. Every reference is written as its flattened (fully scoped) name, on both sides; both EarthSciAST bindings (0.4 and 0.5) resolve such references from any model (D68).
 
 - **State equation, not lifted.** `{"lhs": {"op": "D", "args": ["<x>"], "wrt": "t"}, "rhs": R}`, where R is the left fold `((t_1 + t_2) + t_3) + …` of this operator's terms of that equation in term order, written as nested binary `{"op": "+", "args": [a, b]}` (one term: the term itself). With no term: `0.0` for a scalar state, and `{"op": "makearray", "args": [], "regions": [[[1, n_1], …, [1, n_k]]], "values": [0.0]}` for an array of extents $n_1 \ldots n_k$.
-- **State equation, lifted.** The same left-hand side, `D(x)` on the whole array, and R = `{"op": "faq", "args": [], "output_idx": O, "ranges": G, "expr": F}` with `O` and `G` copied from the flattened equation's right-hand-side `faq` node and `F` the left fold of the per-cell terms; with no term, the `makearray` zero above.
+- **State equation, lifted.** The same left-hand side, `D(x)` on the whole array, and R = `{"op": "faq", "args": [], "output_idx": O, "ranges": G, "expr": F}` with `O` copied from the flattened equation's right-hand-side `faq` node, `G` mapping the $d$-th name of `O` to `{"from": X_d}`, $X_d$ the index set of dimension $d$ of the state's shape (§6.1.3), and `F` the left fold of the per-cell terms; with no term, the `makearray` zero above. `G` is built, not copied, because the bindings write the flattened ranges differently: Julia's `flatten` writes `{"from": "cell"}`, the form above, while Rust's (and Python's) write the interval `[1, 4]`.
 - **Observed definition** (a live observed): copied, left-hand side and right-hand side serialized as they stand in the flattened model.
 - **Initial condition**: `{"lhs": {"op": "ic", "args": ["<x>"]}, "rhs": E}` for every `field_ics` entry of every state, whether or not the operator writes it, so every document builds the same $u_0$.
 
 #### 6.1.3 Shapes of lifted states
 
-A lifted state has extents but no declared shape (EarthSciAST's `lifted_shapes`). Its shape is the declared shape of the first variable of the flattened model, searching `state_variables`, then `parameters`, then `observed_variables`, each in document order, whose declared shape has exactly those extents, matched index set by index set. If none does: `lift_shape_unresolved` (D68; an upstream gap, §10).
+A lifted state has extents but no declared shape (EarthSciAST's `lifted_shapes`). Its shape is the declared shape of the first non-lifted variable of the flattened model, searching `state_variables`, then `parameters`, then `observed_variables`, each in document order, whose declared shape has exactly those extents, matched index set by index set. A `shape` that `flatten` records on a lifted state itself is ignored: Julia's `flatten` writes one (`["cell"]`, even when no variable declares that shape), Rust's does not, so it cannot be relied on. If no variable matches: `lift_shape_unresolved` (D68; an upstream gap, §10), raised at §4 step 8, where the shapes are resolved.
 
 #### 6.1.4 Name collisions
 
-The planner refuses a model with a top-level component named `_jacobian` (`reserved_component_name`), since §6.2 uses that name.
+A model with a top-level component named `_jacobian` is refused at §4 step 7 (`reserved_component_name`), since §6.2 uses that name.
 
 ### 6.2 The Jacobian document `<operator>.jacobian.esm`
 
@@ -335,11 +358,24 @@ Evaluating the document's right-hand side at $(u, p, t)$ gives every band coeffi
 
 ### 7.1 Schedule
 
-The planner refuses the unsupported nodes of §0.1 (`map`, `solve`, `split_explicit`, `coupled` with algebraic operators) in tree order, then checks the schedule against spec/run-config.md §8 rules 3, 5–9, 12, 13 and 15 in rule order, with the codes of spec/planner-errors.json, and then writes the resolved tree. For every node:
+The planner refuses the unsupported constructs of §0.1 in the schedule (`map`, `solve`, `split_explicit` and `coupled` with algebraic operators, and an observed in a `subcycle`'s `limits`) in tree order, then checks the run config against spec/run-config.md §8 rules 2, 3, 5–9, 12, 13 and 15 in rule order, with the codes of spec/planner-errors.json, and then writes the resolved tree. **Tree order** is depth first, a node before its children, children in written order. An observed `subcycle` limit is first resolved as a name (`name_unresolved`; `name_wrong_kind` when it is not an observed) and then refused, `unsupported_step_limit`, at its pointer.
+
+**Rule 2 here** covers the names §5.1.3 has not already checked, in this order:
+1. each operator's `bind_dt` keys (model parameters), operators in code-point order, keys in code-point order;
+2. per schedule node in tree order: its parameter-name durations, then its `bind_dt` keys, its per-variable `control.abstol` keys and its `domain.nonnegative` entries (states), object keys in code-point order and list entries in written order;
+3. the `precision` keys, in code-point order: each must be `default`, an operator name (named or an existing default operator) or a node id, else `name_unresolved` at `/precision/<key>`.
+
+**Rule 5** (D84): an operator is **advanced** at a place when a `leaf` or `coupled` node names it or a `frozen` entry of such a node names it. An operator advanced nowhere is `operator_not_advanced`, at `/operators/<op>`, or at `/schedule` for a default operator, which has no run-config key. An operator named by two `leaf` or `coupled` nodes is `operator_advanced_twice`; a `strang` that runs a child twice is still one place, and a `frozen` entry does not count toward "twice".
+
+**Rule 15's pointer** is the binding's: the leaf's `/…/bind_dt` when the leaf gives the `"leaf"` binding, and `/operators/<op>/bind_dt` when it comes from an operator's `bind_dt`.
+
+**An `IMEXEuler` leaf without `imex`** is refused, `imex_partition_invalid`, at the leaf's pointer: the schema does not require the key, and there is no default partition.
+
+For every node:
 
 - **`id`**: the given id, else the node's path: `root` for the root; a child of a `sequence` or `strang` at position $i$ (0-based) is `<parent path>.<i>`; the child of a `subcycle` is `<parent path>.subcycle`, of an `every` `<parent path>.every`. Paths are built from positions alone, whatever ids the ancestors have, so the unnamed first child of a node `transport` at `root.0` is `root.0.0`. A run config may write a path-form id only on the node whose path it is (`node_id_reserved` otherwise), so given and assigned ids never collide; the schema accepts both forms.
 - **`leaf`, `coupled`**: always a list of operator names, in the order given (accumulation order, spec/operator-interface.md §3).
-- **Durations** (`dt` when numeric, `dt0`, `dtmin`, `dtmax`, `period`, `phase`, `{"max": …}`) are written in seconds as numbers; a parameter-name duration is the parameter's default (spec/run-config.md §2.2). `phase` 0 is written `0`.
+- **Durations** (`dt` when numeric, `dt0`, `dtmin`, `dtmax`, `period`, `phase`, `{"max": …}`) are written in seconds as numbers; a parameter-name duration is the parameter's default (spec/run-config.md §2.2). A `"<number> <unit>"` string is the number parsed as the nearest binary64, times the unit's seconds (an exact integer: 1, 60, 3600, 86400), one rounding in all; so `"1.1 h"` is the binary64 product of 1.1 and 3600, `3960.0000000000005`, not 3960. `phase` 0 is written `0`.
 
 A leaf or `coupled` node is written with exactly these keys:
 
@@ -355,33 +391,35 @@ A leaf or `coupled` node is written with exactly these keys:
 | `theta` | `Theta` | as given |
 | `frozen`, `bind_dt` | when given | as given, durations in seconds |
 
-`control` holds `reltol` (default 1e-3) and `abstol` (default 1e-6; a per-variable object as given) always; `dt_scope` always (§5.5.3; an explicit method's leaf takes the table's `dt_scope` for its class); and, for adaptive leaves only (no `dt`), `controller` (default `PI`) and `maxiters` (default 1000000), plus `dt0`, `dtmin` and `dtmax` when given (`dtmin`'s default, 0, is not a duration the schema admits, and means no minimum). A fixed-`dt` leaf's `maxiters` is written only when given (spec/methods.md §12: unlimited otherwise). A leaf's `partition` key does not appear in the resolved leaf; it lands in `partition.shards` (§7.4).
+`control` holds `reltol` (default 1e-3) and `abstol` (default 1e-6; a per-variable object as given) always; `dt_scope` always (§5.5.3; an explicit method's leaf takes the table's `dt_scope` for its class); and, for adaptive leaves only (no `dt`), `controller` (default `PI`) and `maxiters` (default 1000000), plus `dt0`, `dtmin` and `dtmax` when given (`dtmin`'s default, 0, is not a duration the schema admits, and means no minimum). A leaf with a `dt` (numeric, `"step"` or `"accumulated"`) has no `controller`, `dt0`, `dtmin` or `dtmax` in the resolved leaf, even when the run config gives them. A fixed-`dt` leaf's `maxiters` is written only when given (spec/methods.md §12: unlimited otherwise). A leaf's `partition` key does not appear in the resolved leaf; it lands in `partition.shards` (§7.4).
 
 Other nodes keep their keys, resolved recursively: `sequence`, `strang` (children), `subcycle` (`n` or `limits` with `{"max"}` in seconds), `every` (`period`, `phase` (default 0), `hold` (default `none`)).
 
 ### 7.2 Time
 
-The interval comes from the caller, the run config's `time`, or the model's `solver.time_span`, the first that gives one giving all of it (D60). Numbers are seconds. A timestamp, from any source, is converted exactly as esm-spec §2.2.7 converts a `time_span` timestamp: seconds from the model's time origin (`domain.temporal.reference_time`, else `domain.temporal.start`, else the POSIX epoch) as $(W - W_0) + (f - f_0)$ (D74). The model's `solver.time_span` is read with EarthSciAST's `resolve_time_span`. `duration` is added to the start in binary64. Refusals: no interval (`time_interval_missing`), end not after start (`time_interval_empty`), a timestamp naming no calendar day (`time_invalid_date`), a timestamp when the model's origin field is unreadable (`time_origin_invalid`) (spec/run-config.md §8 rule 14). The plan's `time` is `{"start": t_0, "end": t_f}`.
+The interval comes from the caller, the run config's `time`, or the model's `solver.time_span`, the first that gives one giving all of it (D60). Numbers are seconds. A timestamp, from any source, is converted exactly as esm-spec §2.2.7 converts a `time_span` timestamp: seconds from the model's time origin (`domain.temporal.reference_time`, else `domain.temporal.start`, else the POSIX epoch) as $(W - W_0) + (f - f_0)$ (D74). The model's `solver.time_span` is read with EarthSciAST's `resolve_time_span`. `duration` is added to the start in binary64. Refusals: no interval (`time_interval_missing`), end not after start (`time_interval_empty`), a timestamp naming no calendar day (`time_invalid_date`), a timestamp when the model's origin field is unreadable (`time_origin_invalid`, at the key of the timestamp that needs the origin, such as `/time/start`; `""` for the caller's, `/model` for the model's `solver.time_span`) (spec/run-config.md §8 rule 14). A refusal about an interval the caller gave has no run-config key and is reported at the empty pointer `""`. The plan's `time` is `{"start": t_0, "end": t_f}`.
 
 ### 7.3 Step
 
-`step` is written with `dt` (seconds) or `limits` (each `{"max": seconds}`; an observed limit is `unsupported_step_limit`) when given, `hit` always (sorted; `[]` by default), and `hit_multiples` and `resolution` (seconds) when given. With neither `dt` nor `limits` the root must be a single adaptive `leaf` or `coupled` node (`step_control_missing`, rule 12). Rule 9 (`tstop_off_fixed_step`) is checked for the tstops M2 can know: `hit_multiples` and the adjoint's observation times.
+`step` is written with `dt` (seconds) or `limits` (each `{"max": seconds}`; an observed limit is `unsupported_step_limit`) when given, `hit` always (sorted; `[]` by default), and `hit_multiples` and `resolution` (seconds) when given. With neither `dt` nor `limits` the root must be a single adaptive `leaf` or `coupled` node (`step_control_missing`, rule 12). Rule 9 (`tstop_off_fixed_step`) is checked for the tstops M2 can know: `hit_multiples` and the adjoint's observation times. The observation times are $t_f$ for `over: "final"`, none for `over: "time"`, and for `over: "saveat"` the output times of spec/run-config.md §7.3: with `output.saveat` a duration $d$, every $k\,d$ ($k$ an integer, counted from model time zero, the time origin of D74) in $(t_0, t_f]$, with $t_f$ not added; without it, $t_f$ alone (D83). Each $k\,d$ is the binary64 product.
 
 ### 7.4 Partition
 
 `partition` (D77):
-- `ranks`, `tiles`: as given, default `[1, 1]`. Entry 0 divides `axes.horizontal[0]`, entry 1 `axes.horizontal[1]`. With fewer horizontal axes, the entries for missing axes must be 1 (`partition_axis_missing`); `ranks[a] · tiles[a]` above the axis size is `partition_too_fine`.
+- `ranks`, `tiles`: as given, default `[1, 1]`. Entry 0 divides `axes.horizontal[0]`, entry 1 `axes.horizontal[1]`. With fewer horizontal axes, the entries for missing axes must be 1 (`partition_axis_missing`, at `/partition`); `ranks[a] · tiles[a]` above the axis size is `partition_too_fine`.
 - `halo`: for each horizontal axis, the largest `lower` or `upper` radius over all stencil operators, 0 when none; absent when there is no horizontal axis.
-- `shards`: for every pointwise or column leaf, by node id: the leaf's own `partition.shards`, else its `shard_size` turned into $\lceil \text{cells} / \text{shard\_size} \rceil$ (cells: the leaf's array cells for pointwise, columns for column), else the run config's `partition.shards` entry for the leaf's node id, else for one of its operators (all of a leaf's operator entries must agree, `partition_conflict`), else 1. `"auto"` is 1 at M2. With no pointwise or column leaf, `shards` is `{}`.
+- `shards`: for every pointwise or column leaf, by node id: the leaf's own `partition.shards`, else its `shard_size` turned into $\lceil \text{cells} / \text{shard\_size} \rceil$ (cells: the largest cell count among the states the leaf's operators write; for a column leaf, that count divided by the vertical axis's size, the number of columns), else the run config's `partition.shards` entry for the leaf's node id, else for one of its operators (all of a leaf's operator entries must agree, `partition_conflict`), else 1. `"auto"` is 1 at M2. With no pointwise or column leaf, `shards` is `{}`. "Leaf" here means a `leaf` node only: a `coupled` node gets no `shards` entry, unlike §7.5, which names `coupled` nodes explicitly.
 - `output_shard`: absent at M2.
 
 ### 7.5 Precision
 
-For every leaf and `coupled` node, by id, all five roles (spec/run-config.md §7.1): the node-id entry overrides the leaf's operators' entries, which override `default`, role by role; operator entries of one leaf that disagree on a role are `precision_conflict`. Unset roles: `state` is the declared `element_type` that governs the leaf's states (esm-spec §11.3.1), else `f64`; `rhs` is `state`; `jacobian` and `factors` are `rhs`; `tables` is `f64` (no forcing tables at M2). Refusals: rule 10 (`precision_contradicts_declaration`, `precision_rhs_below_state`), and a `jacobian` or `factors` role below `rhs` on a Rosenbrock method other than `Rosenbrock23` (architecture §8; `precision_low_with_classical_rosenbrock`).
+For every leaf and `coupled` node, by id, all five roles (spec/run-config.md §7.1): the node-id entry overrides the leaf's operators' entries, which override `default`, role by role; operator entries of one leaf that disagree on a role are `precision_conflict`. Unset roles: `state` is the declared `element_type` that governs the leaf's states, the states its operators write (esm-spec §11.3.1), else `f64`; `rhs` is `state`; `jacobian` and `factors` are `rhs`; `tables` is `f64` (no forcing tables at M2). Refusals: rule 10 (`precision_contradicts_declaration`, `precision_rhs_below_state`), and a `jacobian` or `factors` role below `rhs` on a Rosenbrock method other than `Rosenbrock23` (architecture §8; `precision_low_with_classical_rosenbrock`). A leaf whose states declare different `element_type`s is `precision_contradicts_declaration`, whatever the roles, since no `state` role satisfies them all. A precision key that names no operator, node or `default` is `name_unresolved`, checked with rule 2 in §7.1, not ignored.
+
+A precision refusal is reported at the precision entry that set the offending role, `/precision/<key>` (for a role left unset, the entry that set the role it defaults from; for mixed declarations with no entry setting `state`, the leaf's node in `/schedule`). For a leaf whose `alg` is given, the classical-Rosenbrock check runs here; for a leaf whose `alg` is `"auto"`, it runs after §5.5.3 resolves the method (§4 "Order of refusals").
 
 ### 7.6 Checkpoint schedule
 
-Present exactly when the run config has `adjoint`: `{"kind": "all", "macro_steps": 0}`, a placeholder that M4 replaces (D34, D78). The adjoint rules 11 (`wrt_matches_nothing`, `wrt_bound_parameter`) are checked.
+Present exactly when the run config has `adjoint`: `{"kind": "all", "macro_steps": 0}`, a placeholder that M4 replaces (D34, D78). The adjoint rules 11 (`wrt_matches_nothing`, `wrt_bound_parameter`) are checked. At M2 the `wrt` prefixes range over: `params:` the scalar parameters (`params:numeric`: those with a numeric default); `fields:` the array parameters; `forcing:` nothing, since M2 plans no forcing, so a `forcing:` entry is `wrt_matches_nothing`; `u0` the state.
 
 ### 7.7 Inputs and derived
 
@@ -425,9 +463,16 @@ Tier 0 (spec/README.md) checks the fixtures' structure: every `.esm` loads, vali
 
 Recorded here, not filed (the RFC process files them). Each item's status was rechecked on 2026-10-26 against EarthSciAST 0.5.0 and EarthSciASTDiff `main` (after EarthSciASTDiff#13):
 
-1. **Lifted states have no index-set names.** EarthSciAST's `lifted_shapes` records a lifted state's extents but not which index sets they are; §6.1.3's search for a matching declared shape works around it and fails for a lift onto a grid no variable declares. Asking: record the lift's index sets. *Still open in 0.5.0:* esm-libraries-spec §4.7.5 still defines `lifted_shapes` as post-lift extents only.
+1. **Lifted states have no index-set names.** EarthSciAST's `lifted_shapes` records a lifted state's extents but not which index sets they are; §6.1.3's search for a matching declared shape works around it and fails for a lift onto a grid no variable declares. Asking: record the lift's index sets. *Still open in 0.5.0:* esm-libraries-spec §4.7.5 still defines `lifted_shapes` as post-lift extents only. The bindings also differ beyond it: Julia's `flatten` writes index-set names as a `shape` on the lifted state (`["cell"]`, even where no variable declares that shape) and writes the lifted `faq`'s ranges as `{"from": "cell"}`; Rust's (checked in the 0.5.0 crate source, `apply_pointwise_lift`) and Python's write no `shape` and write the ranges as `[1, 4]`. §6.1.3 ignores the recorded shape and §6.1.2 builds the ranges, so neither difference reaches a plan.
 2. **EarthSciASTDiff's evaluation document for a flattened system does not load.** It declares dotted names (`SimpleOzone.O3`) in one model, which EarthSciAST 0.4.0 reads as references to an undefined system (checked in Python and Julia). §6.2 builds its own tree for this reason. The Julia builder is also internal (`_evaluation_document`). *Still open:* the trimmed evaluation document (EarthSciASTDiff#8) still declares every name in one model `JacobianEval`; for the flattened `coupled_chem_advection` fixture, EarthSciAST 0.5.0's Python binding refuses it (`reference 'SimpleOzone.O3' to undefined system 'SimpleOzone'`), and Julia loads and flattens it but refuses to build its right-hand side (`E_TREEWALK_UNKNOWN_STATE: SimpleOzone.O3`).
 3. **Julia's `build_evaluator(::EsmFile)` refuses a model's scoped references to its own variables** (`E_TREEWALK_UNBOUND_VARIABLE` for `Decay.k` inside model `Decay`) where flattening and Python accept them. *Not blocking:* still open in 0.5.0, but `build_evaluator` is deprecated since 0.4.0 and runtimes do not use it. They build derived documents with `rhs_program(esm_problem(...))` (spec/operator-interface.md §8.1), and `esm_problem` accepts such references in 0.4.0 and 0.5.0. Nothing to ask upstream.
 4. **No specified time derivative from EarthSciASTDiff.** Its `main` computes bands with respect to `t` (`wrt = :time`) in Julia, Rust and Python, but `esm-jacobian-spec.md` still lists time gradients as out of scope and no golden gates them across bindings. So M2 emits no time-derivative document, planned operators cannot provide `ft`, and Rosenbrock leaves on time-dependent planned operators wait (D80). Promoted to upstream ask U17 (docs/rfcs/U17-time-derivative-bands.md), needed by M3. *Resolved upstream* on EarthSciASTDiff `main` by EarthSciASTDiff#13 (`esm-jacobian-spec.md` §4.2 and §8, `tgrad_photolysis` goldens in Julia, Rust and Python), to be released with EarthSciASTDiff 0.2. M2's scope is unchanged: it still emits no time-derivative document (D80). M3 adds it, with the planner's numerical check of time bands (D76 covers state Jacobians only).
 5. **Julia's native compiler declines a contracting `faq` inside a lifted equation** (`compiler_refused_rule`; the interpreter evaluates it). Derived documents write a lifted equation as a whole-array `faq` whose body is the per-cell terms (§6.1.2, D68), so a lifted equation whose terms contract keeps the contracting `faq` inside it, which Julia's native compiler declines. The column fixture states its equation explicitly (a `makearray` over a `faq`, not lifted), which the native compiler accepts; no fixture yet contracts inside a lifted equation. Asking: compile a contracting `faq` inside a lifted equation natively. *Not reproduced:* 0.5.0's notes list no change here, and a small hand-written whole-array `faq` holding a contracting `faq` builds natively in both 0.4.0 and 0.5.0, so the refusal needs the original lifted case to recheck.
 6. **A `makearray` region with singleton axes** must give a value whose rank is the number of non-singleton axes in Julia, while Python accepts a value over all axes; fixtures avoid size-1 axes. *Not reproduced:* 0.5.0's notes list no change here, and a small `makearray` over a size-1 axis builds in Julia 0.4.0 and 0.5.0 with a value of either rank, so the failure needs the original case to recheck.
+
+Found while implementing M2 stage 1 (Julia PR #21, Rust PR #20), rechecked against EarthSciAST 0.5.0 on 2026-10-26:
+
+7. **Rust EarthSciAST 0.5.0 has no public `table_lookup` lowering.** §4 step 5 lowers `table_lookup` to `fn` with EarthSciAST's own lowering, which Julia exports and Rust does not. The Rust planner stops with an internal not-implemented error on a model that keeps a `table_lookup` (not a refusal code). No M2 fixture has one. Asking: a public lowering in Rust.
+8. **EarthSciAST 0.5.0 (Rust) does not compile without its `solve` feature**: its compiler-agreement adapter module is not gated on it. The Rust planner turns `solve` on although it uses no ODE solver. Asking: gate the module.
+9. **EarthSciAST.jl's weak-dependency compat `SciMLBase = "2"`** holds SciMLBase, and with it OrdinaryDiffEqSDIRK, at old versions whenever both are in an environment, which changes an M1 result. So EarthSciIntegrator.jl loads EarthSciAST as a package extension, not a dependency. A pull request to EarthSciAST accepting SciMLBase 3 is in progress.
+10. **Reaction-system summands differ between the bindings.** For a reaction whose net stoichiometry for a species is $-1$, Julia's `flatten` writes the summand as a one-argument `-`, `{"op": "-", "args": [{"op": "*", "args": ["Chem.j", NO2[i]]}]}`; Rust's (`lower_reactions_to_equations` in the 0.5.0 crate source) writes `{"op": "*", "args": [-1.0, …]}` with a float literal, and Python's `{"op": "*", "args": [-1, …]}`. The term count and classes agree, but derived documents copy terms (§6.1.2), so for a model with a reaction system the two planners' `derived/*.esm` cannot be byte-identical until the bindings agree. Asking: one form in every binding. Until then tier 1 cannot pass for `pointwise_chemistry` and `reseact_shaped` in Rust.
