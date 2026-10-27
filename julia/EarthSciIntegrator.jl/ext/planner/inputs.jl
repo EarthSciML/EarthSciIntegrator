@@ -104,6 +104,15 @@ function read_inputs(config_path::AbstractString)
     file = try
         EarthSciAST.load_path(model_path)
     catch e
+        # A solver.time_span EarthSciAST rejects at load takes its rule-14
+        # code (spec/plan.md §7.2).
+        doc = try
+            JSON.parse(String(copy(model_bytes)))
+        catch
+            nothing
+        end
+        r = model_span_refusal(doc)
+        r === nothing || throw(r)
         refuse("model_load_failed", "/model", "EarthSciAST refused to load $model: " * _load_error_message(e))
     end
     # Step 4: solver.external.

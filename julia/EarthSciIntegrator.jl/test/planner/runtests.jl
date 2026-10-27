@@ -328,7 +328,16 @@ end
         @test try_plan(adj(["fields:*"])) == ("wrt_matches_nothing", "/adjoint/wrt/0")
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"), "time" => Dict("start" => "2019-07-01T00:00:00Z",
             "end" => "2019-07-01T01:00:00Z"))) === nothing
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics")); tspan = (3, 3)) == ("time_interval_empty", "/time")
+        # The caller's interval is not in the run config: its refusals are at "".
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics")); tspan = (3, 3)) == ("time_interval_empty", "")
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"));
+            tspan = ("2021-02-30T00:00:00Z", "2021-03-02T00:00:00Z")) == ("time_invalid_date", "")
+        # A model solver.time_span EarthSciAST rejects takes its cause's code, at /model.
+        backwards = joinpath(tmp, "backwards.esm")
+        doc = JSON.parsefile(rob)
+        doc["solver"]["time_span"] = Dict("start" => 40, "end" => 0)
+        write(backwards, JSON.json(doc))
+        @test try_plan(Dict("model" => backwards, "operators" => kin, "schedule" => leaf("kinetics"))) == ("time_interval_empty", "/model")
         # The cross-component model: a schedule naming a default operator that does not exist.
         @test try_plan(Dict("model" => cross, "schedule" => leaf("default_column"), "step" => Dict("dt" => 60))) ==
               ("operator_undefined", "/schedule/leaf")
@@ -378,6 +387,18 @@ end
             @test refusal(() -> EI.plan_duration(m, "Kinetics.k2", "/x")) == ("run_config_invalid", "/x")
         end
         m.flat.parameters["Kinetics.k2"] = v
+    end
+
+    @testset "the model's solver.time_span refusals (§7.2 rule 14)" begin
+        code(doc) = (r = EI.model_span_refusal(doc); r === nothing ? nothing : (r.code, r.at))
+        @test code(Dict("solver" => Dict("time_span" => Dict("start" => 100, "end" => 50)))) == ("time_interval_empty", "/model")
+        @test code(Dict("solver" => Dict("time_span" => Dict("start" => "2021-02-30T00:00:00Z", "end" => "2021-03-02T00:00:00Z")))) ==
+              ("time_invalid_date", "/model")
+        @test code(Dict("domain" => Dict("temporal" => Dict("reference_time" => "yesterday")),
+            "solver" => Dict("time_span" => Dict("start" => "2021-03-01T00:00:00Z", "end" => "2021-03-02T00:00:00Z")))) ==
+              ("time_origin_invalid", "/model")
+        @test code(Dict("solver" => Dict("time_span" => Dict("start" => 0, "end" => 1)))) === nothing
+        @test code(Dict("solver" => Dict())) === nothing
     end
 
     @testset "tstops on a fixed step.dt (rule 9)" begin
