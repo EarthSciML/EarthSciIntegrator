@@ -238,7 +238,7 @@ The schema checks structure. The planner additionally refuses, naming the offend
 3. an operator name used in the schedule that is neither defined nor an existing default operator;
 4. a term selected by two operators, an operator whose selector matches nothing, or a term with no owner that no selector matches while some selector uses `components` (§3.1);
 5. an operator that the schedule never advances, or advances twice in one invocation outside `strang`: an operator named by two `leaf` or `coupled` nodes (a `strang` running a child twice is one place). A `frozen` entry counts as advancing for "never advances" but not for "twice" (spec/plan.md §7.1, D84);
-6. an `imex` partition that leaves a term in neither part or in both, or an `IMEXEuler` leaf with no `imex`;
+6. an `imex` partition that leaves a term in neither part or in both, or an `IMEXEuler` leaf with no `imex`; checked only on leaves whose written `alg` is `IMEXEuler`, and an `imex` key on any other leaf is ignored (spec/plan.md §7.1);
 7. duplicate node ids, or a path-form id on a node whose path it is not (§2.1);
 8. a `hold: "tendency"` `every` whose child is not a single leaf;
 9. a tstop that is not $t_0$ plus a multiple of a fixed `step.dt` (`every` firing times are not tstops then, §4.9), unless the schedule's root is a single `leaf` or `coupled` node with `dt` omitted or numeric, which lands on such tstops inside the macro step; a root leaf with `dt` `"step"` or `"accumulated"` takes one step per macro step and cannot;

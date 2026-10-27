@@ -373,7 +373,7 @@ A node's **pointer** is its JSON pointer in the run config: `/schedule` for the 
 
 **Rule 15's pointer** is the binding's: the leaf's `/…/bind_dt` when the leaf gives the `"leaf"` binding, and `/operators/<op>/bind_dt` when it comes from an operator's `bind_dt`.
 
-**Rule 6** (`imex_partition_invalid`): a bad partition is refused at the leaf's `P/imex`. **An `IMEXEuler` leaf without `imex`** is refused with the same code at the leaf's pointer: the schema does not require the key, and there is no default partition.
+**Rule 6** (`imex_partition_invalid`) is checked here, in rule order with the others, not when the leaf's settings are resolved, and only on leaves whose written `alg` is `IMEXEuler`. A bad partition is refused at the leaf's `P/imex`. **An `IMEXEuler` leaf without `imex`** is refused with the same code at the leaf's pointer: the schema does not require the key, and there is no default partition. A leaf whose `alg` is `"auto"` and resolves to `IMEXEuler` gets its partition from §5.5.3 and is not checked here. An `imex` key on a leaf whose written `alg` is not `IMEXEuler` (`"auto"` included) is ignored: it is not checked by rule 6 and does not appear in the resolved leaf.
 
 **Rule 8** (`hold_tendency_child_not_leaf`) is reported at the `every` node's `P/every`.
 
