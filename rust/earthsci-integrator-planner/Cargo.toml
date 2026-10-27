@@ -3,17 +3,17 @@ name = "earthsci-integrator-planner"
 description = "EarthSciIntegrator planner: operators, locality, structure, plan emission (spec/plan.md)."
 version.workspace = true
 edition.workspace = true
-# earthsci-ast 0.5 needs Rust 1.89.
+# earthsci-ast 0.6 needs Rust 1.89.
 rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# The planner does not use the ODE solver, but earthsci-ast 0.5.0 does not
+# The planner does not use the ODE solver, but earthsci-ast 0.6.0 does not
 # compile without its `solve` feature (its compiler-agreement adapter module
 # is not gated on it), so `solve` stays on; the command-line tool (`cli`) is
 # left out.
-earthsci-ast = { version = "0.5.0", default-features = false, features = ["solve"] }
+earthsci-ast = { version = "0.6.0", default-features = false, features = ["solve"] }
 earthsci-integrator-solvers = { path = "../earthsci-integrator-solvers" }
 indexmap = "2"
 jsonschema = { version = "0.33", default-features = false }
