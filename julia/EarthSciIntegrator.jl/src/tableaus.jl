@@ -1,12 +1,15 @@
 # Coefficient tables (spec/methods.md §1, D54).
 #
-# How the package finds them: the tables are read from the repository's
-# `spec/tableaus/*.json` when the package is precompiled, and each file is
+# How the package finds them: the tables are read from the package's own
+# `data/tableaus/*.json` when the package is precompiled, and each file is
 # registered with `include_dependency`, so editing or regenerating a table
 # invalidates the precompile cache. The numbers then live in the package image
-# as the constant `TABLEAUS`; nothing reads the files at run time. The package
-# therefore has to be used from inside the repository checkout (it is not
-# registered).
+# as the constant `TABLEAUS`; nothing reads the files at run time.
+#
+# `data/tableaus` is a copy of the repository's `spec/tableaus`, which is where
+# tables are edited: a registered package ships only this directory, so it
+# cannot read spec/. Run `tools/sync-package-data.sh` after changing a table;
+# CI fails while the copy differs.
 
 """Controller constants of a method's table (spec/methods.md §8)."""
 struct ControllerConstants
@@ -113,10 +116,10 @@ function Tableau(d::AbstractDict)
         let a = _get(d, "ordinarydiffeq_algorithm"); a === nothing ? nothing : String(a) end)
 end
 
-const TABLEAU_DIR = normpath(joinpath(@__DIR__, "..", "..", "..", "spec", "tableaus"))
+const TABLEAU_DIR = normpath(joinpath(@__DIR__, "..", "data", "tableaus"))
 
 function _load_tableaus(dir)
-    isdir(dir) || error("EarthSciIntegrator: coefficient tables not found at $dir (spec/tableaus of the repository)")
+    isdir(dir) || error("EarthSciIntegrator: coefficient tables not found at $dir (run tools/sync-package-data.sh)")
     tabs = Dict{String, Tableau}()
     for f in sort(readdir(dir))
         endswith(f, ".json") || continue
@@ -133,7 +136,7 @@ end
     TABLEAUS
 
 Every method's [`Tableau`](@ref), keyed by run-config `alg` name, read from
-`spec/tableaus/*.json` at precompile time.
+`data/tableaus/*.json` (a copy of `spec/tableaus`) at precompile time.
 """
 const TABLEAUS = _load_tableaus(TABLEAU_DIR)
 

@@ -1,0 +1,33 @@
+{
+  "alpha": [
+    [1.0],
+    [0.75, 0.25],
+    [0.3333333333333333, 0.0, 0.6666666666666666]
+  ],
+  "beta": [
+    [1.0],
+    [0.0, 0.25],
+    [0.0, 0.0, 0.6666666666666666]
+  ],
+  "c": [0.0, 1.0, 0.5],
+  "controller": null,
+  "embedded_order": null,
+  "error_estimate": "none",
+  "family": "explicit_rk",
+  "first_same_as_last": false,
+  "form": "shu_osher",
+  "name": "SSPRK33",
+  "notes": [],
+  "order": 3,
+  "ordinarydiffeq_algorithm": "SSPRK33",
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "src/ssprk_perform_step.jl",
+    "line": 132,
+    "note": "Transcribed from the perform_step! body, which writes the stages inline; alpha and beta are the same arithmetic regrouped (spec/methods.md §3.1).",
+    "package": "OrdinaryDiffEqSSPRK",
+    "version": "2.3.2"
+  },
+  "stages": 3,
+  "stiffly_accurate": false
+}

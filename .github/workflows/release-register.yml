@@ -8,7 +8,7 @@ name: Release 1 - Register Julia
 #      notes. Nothing is tagged or published.
 #   2. TagBot.yml: once General merges the registration, TagBot tags the
 #      registered commit `v<version>` and creates the GitHub release.
-#   3. release.yml: that tag push publishes the release notes (crates.io once enabled below).
+#   3. release.yml: that tag push publishes to crates.io.
 #
 # The jobs live in EarthSciML/.github; RELEASING.md there explains each step,
 # what to do when General refuses a registration, and the one-time setup.

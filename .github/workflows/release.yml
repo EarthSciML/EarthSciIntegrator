@@ -1,7 +1,7 @@
 name: Release 3 - Publish
 
 # Step 3 of 3 (see release-register.yml). TagBot's push of `v<version>` starts
-# this run, which publishes the release notes (crates.io once enabled below) from that tag. The jobs live in
+# this run, which publishes to crates.io from that tag. The jobs live in
 # EarthSciML/.github (RELEASING.md there).
 #
 # Every publish step treats "already published" as success, so a run that
@@ -39,16 +39,12 @@ jobs:
     with:
       tag: ${{ needs.resolve.outputs.tag }}
       version: ${{ needs.resolve.outputs.version }}
-      # Not yet: earthsci-integrator-solvers and -planner `include_str!` files
-      # from the repository's spec/ directory, which is outside the crates and
-      # so absent from what crates.io receives. (The Julia package reads
-      # spec/tableaus from outside its directory too, so it cannot be
-      # registered either until that moves.) Listed in dependency order.
-      # crates: >-
-      #   rust/earthsci-integrator-solvers
-      #   rust/earthsci-integrator
-      #   rust/earthsci-integrator-planner
-      #   rust/earthsci-integrator-mpi
+      # In dependency order: the other three depend on -solvers.
+      crates: >-
+        rust/earthsci-integrator-solvers
+        rust/earthsci-integrator
+        rust/earthsci-integrator-planner
+        rust/earthsci-integrator-mpi
       install-notes: |
         ```
         using Pkg; Pkg.add("EarthSciIntegrator")   # Julia
