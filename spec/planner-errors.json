@@ -22,7 +22,7 @@
     {"code": "axes_unresolved", "rule": null, "where": "spec/plan.md §5.2.1, D67", "meaning": "axes names an index set that does not exist or names one twice, or more than two horizontal axes result. Pointer: /axes."},
     {"code": "name_unresolved", "rule": 2, "where": "spec/run-config.md §8", "meaning": "A qualified name does not resolve in the flattened model, or a precision key names no operator, node or default (spec/plan.md §7.1)."},
     {"code": "name_wrong_kind", "rule": 2, "where": "spec/run-config.md §8", "meaning": "A qualified name resolves to the wrong kind of variable."},
-    {"code": "operator_undefined", "rule": 3, "where": "spec/run-config.md §8", "meaning": "The schedule names an operator that is neither defined nor an existing default operator."},
+    {"code": "operator_undefined", "rule": 3, "where": "spec/run-config.md §8", "meaning": "The schedule names an operator that is neither defined nor an existing default operator, in a leaf or coupled list, a frozen entry or an imex entry. Pointer: the entry, such as <node>/leaf/<i> or <node>/imex/<part>/<i> (spec/plan.md §7.1)."},
     {"code": "term_selected_twice", "rule": 4, "where": "spec/plan.md §5.1.3", "meaning": "A term is matched by two operators' selectors."},
     {"code": "selector_matches_nothing", "rule": 4, "where": "spec/plan.md §5.1.3", "meaning": "An operator's selector matches no term. With several, the first in code-point order is reported."},
     {"code": "ambiguous_term_owner", "rule": null, "where": "spec/plan.md §5.1.3, D65", "meaning": "A term that reads variables of two or more other components is matched by no selector while some selector uses components. Pointer: /operators."},

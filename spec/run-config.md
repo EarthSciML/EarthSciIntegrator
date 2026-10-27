@@ -235,7 +235,7 @@ The schema checks structure. The planner additionally refuses, naming the offend
 
 1. a `model` that does not load, or a `solver.external` that does not name this file back (§1);
 2. a qualified name that does not resolve in the flattened model, or resolves to the wrong kind (a map target that is not a state variable or parameter, a limit that is not an observed, a `bind_dt` key that is not a parameter, a per-variable `abstol` key or `domain.nonnegative` entry that is not a state), or a `precision` key that is not `default`, an operator name or a node id;
-3. an operator name used in the schedule that is neither defined nor an existing default operator;
+3. an operator name used in the schedule (a `leaf` or `coupled` list, a `frozen` entry, or an `imex` entry) that is neither defined nor an existing default operator;
 4. a term selected by two operators, an operator whose selector matches nothing, or a term with no owner that no selector matches while some selector uses `components` (§3.1);
 5. an operator that the schedule never advances, or advances twice in one invocation outside `strang`: an operator named by two `leaf` or `coupled` nodes (a `strang` running a child twice is one place). A `frozen` entry counts as advancing for "never advances" but not for "twice" (spec/plan.md §7.1, D84);
 6. an `imex` partition that leaves a term in neither part or in both, or an `IMEXEuler` leaf with no `imex`; checked only on leaves whose written `alg` is `IMEXEuler`, and an `imex` key on any other leaf is ignored (spec/plan.md §7.1);
