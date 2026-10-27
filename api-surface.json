@@ -273,7 +273,8 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "plan"
+        "julia": "plan",
+        "rust": "earthsci_integrator_planner::plan"
       }
     },
     {
@@ -297,7 +298,8 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "jcs"
+        "julia": "jcs",
+        "rust": "earthsci_integrator_planner::jcs::to_string"
       }
     },
     {
@@ -305,7 +307,8 @@
       "kind": "error",
       "tier": "stable",
       "bindings": {
-        "julia": "PlannerRefusal"
+        "julia": "PlannerRefusal",
+        "rust": "earthsci_integrator_planner::Refusal"
       }
     },
     {
@@ -338,6 +341,134 @@
       "tier": "stable",
       "bindings": {
         "julia": "BandEntry"
+      }
+    },
+    {
+      "name": "plan_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::PlanError"
+      }
+    },
+    {
+      "name": "plan_options",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::Options"
+      }
+    },
+    {
+      "name": "planned",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::Planned"
+      }
+    },
+    {
+      "name": "read_run_config",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::runconfig::read"
+      }
+    },
+    {
+      "name": "planner_run_config",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::runconfig::RunConfig"
+      }
+    },
+    {
+      "name": "tableau",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::tableau::Tableau"
+      }
+    },
+    {
+      "name": "tableau",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::tableau::tableau"
+      }
+    },
+    {
+      "name": "all_tableaus",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::tableau::all_tableaus"
+      }
+    },
+    {
+      "name": "explicit_rk",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::erk::ExplicitRk"
+      }
+    },
+    {
+      "name": "erk_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::erk::ErkError"
+      }
+    },
+    {
+      "name": "rosenbrock",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::rosenbrock::Rosenbrock"
+      }
+    },
+    {
+      "name": "implicit",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::implicit::Implicit"
+      }
+    },
+    {
+      "name": "controller",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::controller::Controller"
+      }
+    },
+    {
+      "name": "initial_dt",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::initdt::initial_dt"
+      }
+    },
+    {
+      "name": "scalar",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::Scalar"
+      }
+    },
+    {
+      "name": "rhs_fn",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::RhsFn"
       }
     }
   ]

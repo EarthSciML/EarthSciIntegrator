@@ -29,10 +29,19 @@ ops = [
 [[group]]
 id = "planner"
 title = "The planner"
-description = "Planning a run from an `.esm` document and a run configuration (Julia; the Rust planner is the separate `earthsci-integrator-planner` crate, not covered here)."
+description = "Planning a run from an `.esm` document and a run configuration (Julia, and the Rust `earthsci-integrator-planner` crate)."
 ops = [
   "plan", "plan_dict", "plan_json", "jcs", "plan_backend", "pending_backend",
-  "band_entry",
+  "band_entry", "plan_options", "planned", "read_run_config", "planner_run_config",
+]
+
+[[group]]
+id = "solvers"
+title = "Solvers"
+description = "The time-stepping methods (Rust `earthsci-integrator-solvers` crate): explicit Runge-Kutta, Rosenbrock and implicit solvers, the step-size controller and the method tableaus."
+ops = [
+  "tableau", "all_tableaus", "explicit_rk", "rosenbrock", "implicit", "controller",
+  "initial_dt", "scalar", "rhs_fn",
 ]
 
 [[group]]
@@ -41,5 +50,5 @@ title = "Errors"
 description = "Refusals of a run configuration or plan, and failed runs."
 ops = [
   "error", "config_error", "unsupported_error", "replay_mismatch_error",
-  "planner_refusal", "planner_stage_error",
+  "planner_refusal", "planner_stage_error", "plan_error", "erk_error",
 ]
