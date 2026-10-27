@@ -113,15 +113,11 @@ impl Node {
 }
 
 fn names(v: Option<&Value>) -> Vec<String> {
-    match v {
-        Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(a)) => a
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        _ => vec![],
-    }
+    crate::operators::strings(v)
+        .unwrap_or_default()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 /// Builds the node tree of a written schedule.
@@ -239,6 +235,11 @@ pub fn tree(rc: &RunConfig, info: &ModelInfo, ops: &BTreeMap<String, Operator>) 
 /// A duration (spec/run-config.md §2.2) in seconds: a literal, or a
 /// parameter's default. A name that is not a parameter with a scalar default
 /// is `name_unresolved` or `name_wrong_kind` (rule 2).
+///
+/// SPEC FINDING (spec/run-config.md §2.2): a duration is positive, which the
+/// schema checks for literals only; a parameter whose default is not a
+/// positive finite number is refused here with `run_config_invalid`. The
+/// literal 0 a `phase` may be never comes from a parameter.
 pub fn duration(v: &Value, pointer: &str, info: &ModelInfo) -> Result<f64> {
     if let Some(x) = literal_duration(v) {
         return Ok(x);
@@ -251,7 +252,8 @@ pub fn duration(v: &Value, pointer: &str, info: &ModelInfo) -> Result<f64> {
             format!("{name} is not a name of the flattened model"),
         ));
     }
-    info.flat
+    let x = info
+        .flat
         .parameters
         .get(name)
         .and_then(|p| p.default_scalar())
@@ -261,7 +263,15 @@ pub fn duration(v: &Value, pointer: &str, info: &ModelInfo) -> Result<f64> {
                 pointer,
                 format!("{name} is not a parameter with a scalar default in seconds"),
             )
-        })
+        })?;
+    if !(x.is_finite() && x > 0.0) {
+        return Err(refuse(
+            codes::RUN_CONFIG_INVALID,
+            pointer,
+            format!("{name} has the default {x}, and a duration is positive"),
+        ));
+    }
+    Ok(x)
 }
 
 /// Whether an id has the path form (`root`, `root.0`, `root.1.every`).

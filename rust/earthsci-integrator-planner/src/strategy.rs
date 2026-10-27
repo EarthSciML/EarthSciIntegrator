@@ -241,9 +241,11 @@ pub fn resolve_leaf(given: &Value, facts: &LeafFacts, pointer: &str) -> Result<L
     let alg = match given_str("alg") {
         Some(alg) => alg,
         None => {
-            let stiff = facts
-                .stiff
-                .ok_or_else(|| not_known("the stiffness of an operator by its Gershgorin bound"))?;
+            // The stencil row reads only its column operators' stiffness.
+            let stiff = facts.class != Class::Stencil
+                && facts.stiff.ok_or_else(|| {
+                    not_known("the stiffness of an operator by its Gershgorin bound")
+                })?;
             match (facts.class, stiff) {
                 (Class::Pointwise, true) => {
                     if facts.reltol >= 1e-3 {
@@ -318,6 +320,16 @@ mod tests {
             Err(PlanError::Refused(r)) => r.code,
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stencil_needs_only_column_stiffness() {
+        let f = LeafFacts {
+            stiff: None,
+            ..facts(Class::Stencil, false)
+        };
+        let s = resolve_leaf(&json!({"alg": "auto"}), &f, "/schedule").unwrap();
+        assert_eq!(s.alg, "SSPRK43");
     }
 
     #[test]

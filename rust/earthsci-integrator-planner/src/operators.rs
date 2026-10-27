@@ -36,7 +36,8 @@ struct Selector<'a> {
     terms: Option<Vec<&'a str>>,
 }
 
-fn strings(v: Option<&Value>) -> Option<Vec<&str>> {
+/// A string or an array of strings, as a list.
+pub(crate) fn strings(v: Option<&Value>) -> Option<Vec<&str>> {
     match v? {
         Value::String(s) => Some(vec![s.as_str()]),
         Value::Array(a) => Some(a.iter().filter_map(Value::as_str).collect()),

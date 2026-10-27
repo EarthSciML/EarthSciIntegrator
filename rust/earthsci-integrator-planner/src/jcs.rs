@@ -145,6 +145,18 @@ pub fn format_number(x: f64) -> Result<String, String> {
 /// this returns the even candidate (digits, decimal exponent) in that case.
 fn even_tie(x: f64, digits: &str, exp: i32) -> Option<(String, i32)> {
     let k = digits.len();
+    // A tie has the digits k+1.. of x equal to "5" then zeros. Twenty of
+    // them, correctly rounded, rule out nearly every number cheaply.
+    let near = format!("{:.*e}", k + 19, x);
+    let near: String = near
+        .split_once('e')?
+        .0
+        .chars()
+        .filter(|c| *c != '.')
+        .collect();
+    if near.get(k..)?.trim_end_matches('0') != "5" {
+        return None;
+    }
     // The exact decimal expansion of x (a binary64 has at most 767
     // significant decimal digits).
     let exact = format!("{:.800e}", x);

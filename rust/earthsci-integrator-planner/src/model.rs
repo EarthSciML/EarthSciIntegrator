@@ -102,7 +102,7 @@ impl ModelInfo {
 }
 
 /// Every string value in a serialized expression (object keys excluded).
-fn collect_strings(v: &Value, f: &mut impl FnMut(&str)) {
+pub(crate) fn collect_strings(v: &Value, f: &mut impl FnMut(&str)) {
     match v {
         Value::String(s) => f(s),
         Value::Array(a) => a.iter().for_each(|x| collect_strings(x, f)),
@@ -192,7 +192,14 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
     let load_failed = |m: String| refuse(codes::MODEL_LOAD_FAILED, "/model", m);
     let bytes = std::fs::read(&path)
         .map_err(|e| load_failed(format!("cannot read {}: {e}", path.display())))?;
-    let file = earthsci_ast::load_path(&path).map_err(|e| load_failed(e.to_string()))?;
+    let file = earthsci_ast::load_path(&path).map_err(|e| {
+        // A `solver.time_span` EarthSciAST rejects at load takes its rule-14
+        // code (spec/plan.md §7.2).
+        serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|doc| crate::time::model_span_refusal(&doc))
+            .unwrap_or_else(|| load_failed(e.to_string()))
+    })?;
     let validation = earthsci_ast::validate(&file);
     if !validation.is_valid {
         return Err(load_failed(format!(

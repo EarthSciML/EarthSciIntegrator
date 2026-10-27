@@ -124,18 +124,12 @@ fn parse_date_time(s: &str, utc_only: bool) -> std::result::Result<Instant, Stam
 /// The model's time origin (esm-spec §2.2.7): `domain.temporal.reference_time`,
 /// else `domain.temporal.start`, else the POSIX epoch. `Err` carries the
 /// unreadable field.
-fn time_origin(info: &ModelInfo) -> std::result::Result<Instant, String> {
+fn time_origin(temporal: Option<&Value>) -> std::result::Result<Instant, String> {
     let epoch = Instant {
         whole: 0,
         frac: 0.0,
     };
-    let temporal = info
-        .file
-        .domain
-        .as_ref()
-        .and_then(|d| d.temporal.as_ref())
-        .and_then(Value::as_object);
-    let Some(temporal) = temporal else {
+    let Some(temporal) = temporal.and_then(Value::as_object) else {
         return Ok(epoch);
     };
     for key in ["reference_time", "start"] {
@@ -151,7 +145,7 @@ fn time_origin(info: &ModelInfo) -> std::result::Result<Instant, String> {
 }
 
 /// One bound of a run interval, in seconds of model time.
-fn bound(v: &Value, pointer: &str, info: &ModelInfo) -> Result<f64> {
+fn bound(v: &Value, pointer: &str, temporal: Option<&Value>) -> Result<f64> {
     if let Some(x) = v.as_f64() {
         return Ok(x);
     }
@@ -168,7 +162,7 @@ fn bound(v: &Value, pointer: &str, info: &ModelInfo) -> Result<f64> {
             format!("{text} is not an RFC 3339 UTC timestamp"),
         ),
     })?;
-    let origin = time_origin(info).map_err(|field| {
+    let origin = time_origin(temporal).map_err(|field| {
         refuse(
             codes::TIME_ORIGIN_INVALID,
             pointer,
@@ -179,16 +173,24 @@ fn bound(v: &Value, pointer: &str, info: &ModelInfo) -> Result<f64> {
 }
 
 /// An interval given as `{"start", "end"}` or `{"start", "duration"}`, with
-/// the refusals of spec/run-config.md §8 rule 14 at `base`.
-fn from_value(v: &Value, base: &str, info: &ModelInfo) -> Result<Interval> {
-    let start = bound(&v["start"], &ptr(base, "start"), info)?;
+/// the refusals of spec/run-config.md §8 rule 14 at `base`, or at the field
+/// under `base` when `fields` (the interval is in the run config).
+fn from_value(v: &Value, base: &str, fields: bool, temporal: Option<&Value>) -> Result<Interval> {
+    let at = |key: &str| {
+        if fields {
+            ptr(base, key)
+        } else {
+            base.to_string()
+        }
+    };
+    let start = bound(&v["start"], &at("start"), temporal)?;
     let end = match (v.get("end"), v.get("duration")) {
-        (Some(e), _) => bound(e, &ptr(base, "end"), info)?,
+        (Some(e), _) => bound(e, &at("end"), temporal)?,
         (None, Some(d)) => {
             let d = literal_duration(d).ok_or_else(|| {
                 refuse(
                     codes::RUN_CONFIG_INVALID,
-                    ptr(base, "duration"),
+                    at("duration"),
                     format!("{d} is not a literal duration"),
                 )
             })?;
@@ -213,6 +215,29 @@ fn from_value(v: &Value, base: &str, info: &ModelInfo) -> Result<Interval> {
     Ok(Interval { start, end })
 }
 
+/// The rule-14 refusal, at `/model`, for a model document whose
+/// `solver.time_span` EarthSciAST rejects. EarthSciAST gives every such
+/// rejection the one code `solver_time_span_invalid`; spec/plan.md §7.2 asks
+/// for the code of the cause, which is why the planner keeps its own reading
+/// of esm-spec §2.2.7. `None` when the cause is not one of rule 14's (a
+/// malformed bound, which the schema reports).
+pub fn model_span_refusal(doc: &Value) -> Option<PlanError> {
+    let span = doc.pointer("/solver/time_span")?;
+    match from_value(span, "/model", false, doc.pointer("/domain/temporal")) {
+        Err(PlanError::Refused(r))
+            if [
+                codes::TIME_INTERVAL_EMPTY,
+                codes::TIME_INVALID_DATE,
+                codes::TIME_ORIGIN_INVALID,
+            ]
+            .contains(&r.code) =>
+        {
+            Some(PlanError::Refused(r))
+        }
+        _ => None,
+    }
+}
+
 /// spec/plan.md §7.2: the caller's interval, else the run config's `time`,
 /// else the model's `solver.time_span` (read with EarthSciAST's
 /// `resolve_time_span`), the first that gives one giving all of it.
@@ -220,11 +245,12 @@ fn from_value(v: &Value, base: &str, info: &ModelInfo) -> Result<Interval> {
 /// `caller` has the run config's `time` form. Its refusals carry the empty
 /// pointer, since the caller's interval is not in the run config.
 pub fn resolve(rc: &RunConfig, info: &ModelInfo, caller: Option<&Value>) -> Result<Interval> {
+    let temporal = info.file.domain.as_ref().and_then(|d| d.temporal.as_ref());
     if let Some(v) = caller {
-        return from_value(v, "", info);
+        return from_value(v, "", false, temporal);
     }
     if let Some(v) = rc.at("/time") {
-        return from_value(v, "/time", info);
+        return from_value(v, "/time", true, temporal);
     }
     match earthsci_ast::resolve_time_span(&info.file, None) {
         Ok(Some((start, end))) => Ok(Interval { start, end }),
@@ -233,10 +259,70 @@ pub fn resolve(rc: &RunConfig, info: &ModelInfo, caller: Option<&Value>) -> Resu
             "/time",
             "no run interval: the caller, the run config's time and the model's solver.time_span give none",
         )),
-        Err(e) => Err(PlanError::Refused(crate::error::Refusal {
-            code: codes::MODEL_LOAD_FAILED,
-            pointer: "/model".into(),
-            message: e.to_string(),
-        })),
+        Err(e) => Err(serde_json::to_value(&info.file)
+            .ok()
+            .and_then(|doc| model_span_refusal(&doc))
+            .unwrap_or_else(|| refuse(codes::MODEL_LOAD_FAILED, "/model", e.to_string()))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn refusal(r: Result<Interval>) -> (&'static str, String) {
+        match r {
+            Err(PlanError::Refused(r)) => (r.code, r.pointer),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caller_refusals_carry_the_empty_pointer() {
+        let bad_day = json!({"start": "2021-02-30T00:00:00Z", "end": "2021-03-02T00:00:00Z"});
+        assert_eq!(
+            refusal(from_value(&bad_day, "", false, None)),
+            (codes::TIME_INVALID_DATE, String::new())
+        );
+        assert_eq!(
+            refusal(from_value(&bad_day, "/time", true, None)),
+            (codes::TIME_INVALID_DATE, "/time/start".into())
+        );
+        let bad_duration = json!({"start": 0, "duration": "ten s"});
+        assert_eq!(
+            refusal(from_value(&bad_duration, "", false, None)),
+            (codes::RUN_CONFIG_INVALID, String::new())
+        );
+    }
+
+    #[test]
+    fn model_span_refusals_take_their_cause() {
+        let code = |doc: Value| match model_span_refusal(&doc) {
+            Some(PlanError::Refused(r)) => Some((r.code, r.pointer)),
+            _ => None,
+        };
+        let at_model = |c| Some((c, "/model".to_string()));
+        assert_eq!(
+            code(json!({"solver": {"time_span": {"start": 100, "end": 50}}})),
+            at_model(codes::TIME_INTERVAL_EMPTY)
+        );
+        assert_eq!(
+            code(json!({"solver": {"time_span": {
+                "start": "2021-02-30T00:00:00Z", "end": "2021-03-02T00:00:00Z"}}})),
+            at_model(codes::TIME_INVALID_DATE)
+        );
+        assert_eq!(
+            code(json!({
+                "domain": {"temporal": {"reference_time": "yesterday"}},
+                "solver": {"time_span": {
+                    "start": "2021-03-01T00:00:00Z", "end": "2021-03-02T00:00:00Z"}}})),
+            at_model(codes::TIME_ORIGIN_INVALID)
+        );
+        assert_eq!(
+            code(json!({"solver": {"time_span": {"start": 0, "end": 1}}})),
+            None
+        );
+        assert_eq!(code(json!({"solver": {}})), None);
     }
 }

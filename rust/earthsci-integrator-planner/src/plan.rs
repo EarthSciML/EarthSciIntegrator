@@ -352,9 +352,6 @@ impl Planned {
         }
     }
 
-    /// The resolved schedule (§7.1) with every leaf's method resolved
-    /// (§5.5.3). Leaves that need stage-2 facts (`facts`) are
-    /// [`PlanError::NotYetImplemented`] without them.
     /// A leaf's resolved method (§5.5.3).
     pub fn leaf_strategy(&self, n: &Node, facts: Option<&StructureFacts>) -> Result<LeafStrategy> {
         strategy::resolve_leaf(
@@ -364,6 +361,9 @@ impl Planned {
         )
     }
 
+    /// The resolved schedule (§7.1) with every leaf's method resolved
+    /// (§5.5.3). Leaves that need stage-2 facts (`facts`) are
+    /// [`PlanError::NotYetImplemented`] without them.
     pub fn resolve_schedule(&self, facts: Option<&StructureFacts>) -> Result<Value> {
         let strategy = |n: &Node| self.leaf_strategy(n, facts);
         let resolved = schedule::write(&self.schedule, &self.model, &self.operators, &strategy)?;

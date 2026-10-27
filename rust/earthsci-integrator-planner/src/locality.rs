@@ -152,16 +152,10 @@ fn int_const(e: &Expr) -> Option<i64> {
 
 /// Whether `e` references any of `names`.
 fn references(e: &Expr, names: &BTreeSet<&str>) -> bool {
+    let mut found = false;
     let v = serde_json::to_value(e).unwrap_or_default();
-    fn walk(v: &serde_json::Value, names: &BTreeSet<&str>) -> bool {
-        match v {
-            serde_json::Value::String(s) => names.contains(s.as_str()),
-            serde_json::Value::Array(a) => a.iter().any(|x| walk(x, names)),
-            serde_json::Value::Object(m) => m.values().any(|x| walk(x, names)),
-            _ => false,
-        }
-    }
-    walk(&v, names)
+    crate::model::collect_strings(&v, &mut |s| found |= names.contains(s));
+    found
 }
 
 /// The raw offsets of a column index `c` against the row index `r` on one
