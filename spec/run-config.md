@@ -225,7 +225,7 @@ The math is in [`adjoint.md`](adjoint.md).
 
 ### 7.3 `output` and `restart`
 
-- `output.sinks`: EarthSciIO sinks by `path`, with `variables` and their own `saveat`; `output.saveat` is the default. Output times are tstops, so `saveat` never needs dense output in v1. `saveat` is a duration $d$, and the output times are its multiples $k\,d$ ($k$ an integer, each the binary64 product), counted from model time zero (the model's time origin, §1.1, D74) like `hit_multiples`, that lie in $(t_0, t_f]$; $t_f$ is not added when it is not a multiple (D83). With no `saveat` the output time is $t_f$ alone. The initial state is always reported, and a functional over `saveat` has no term at $t_0$.
+- `output.sinks`: EarthSciIO sinks by `path`, with `variables` and their own `saveat`; `output.saveat` is the default. Output times are tstops, so `saveat` never needs dense output in v1. `saveat` is a duration $d$, and the output times are its multiples $k\,d$ ($k$ an integer, each the binary64 product), counted from model time zero (the model's time origin, §1.1, D74) like `hit_multiples`, that lie in $(t_0, t_f]$, with the landing tolerance of §5 "Fixed boundaries" at both ends: a multiple within it of $t_f$ is the output time $t_f$, written as $t_f$, and a multiple within it of $t_0$ is excluded, like $t_0$. $t_f$ is not added when no multiple lands on it (D83). So $d = 0.1$ on $[0, 0.3]$ gives 0.1, 0.2 and 0.3, although $3 \times 0.1$ is 0.30000000000000004. With no `saveat` the output time is $t_f$ alone. The initial state is always reported, and a functional over `saveat` has no term at $t_0$.
 - `output.accumulators`: name → observed. The planner adds each as an integrated state (D26).
 - `restart`: `path`, cadence `every`, and `from`, a restart store to start from. Restart is bitwise for the same decomposition (architecture §11).
 
@@ -235,10 +235,10 @@ The schema checks structure. The planner additionally refuses, naming the offend
 
 1. a `model` that does not load, or a `solver.external` that does not name this file back (§1);
 2. a qualified name that does not resolve in the flattened model, or resolves to the wrong kind (a map target that is not a state variable or parameter, a limit that is not an observed, a `bind_dt` key that is not a parameter, a per-variable `abstol` key or `domain.nonnegative` entry that is not a state), or a `precision` key that is not `default`, an operator name or a node id;
-3. an operator name used in the schedule that is neither defined nor an existing default operator;
+3. an operator name used in the schedule (a `leaf` or `coupled` list, a `frozen` entry, or an `imex` entry) that is neither defined nor an existing default operator;
 4. a term selected by two operators, an operator whose selector matches nothing, or a term with no owner that no selector matches while some selector uses `components` (§3.1);
 5. an operator that the schedule never advances, or advances twice in one invocation outside `strang`: an operator named by two `leaf` or `coupled` nodes (a `strang` running a child twice is one place). A `frozen` entry counts as advancing for "never advances" but not for "twice" (spec/plan.md §7.1, D84);
-6. an `imex` partition that leaves a term in neither part or in both, or an `IMEXEuler` leaf with no `imex`;
+6. an `imex` partition that leaves a term in neither part or in both, or an `IMEXEuler` leaf with no `imex`; checked only on leaves whose written `alg` is `IMEXEuler`, and an `imex` key on any other leaf is ignored (spec/plan.md §7.1);
 7. duplicate node ids, or a path-form id on a node whose path it is not (§2.1);
 8. a `hold: "tendency"` `every` whose child is not a single leaf;
 9. a tstop that is not $t_0$ plus a multiple of a fixed `step.dt` (`every` firing times are not tstops then, §4.9), unless the schedule's root is a single `leaf` or `coupled` node with `dt` omitted or numeric, which lands on such tstops inside the macro step; a root leaf with `dt` `"step"` or `"accumulated"` takes one step per macro step and cannot;
