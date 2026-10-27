@@ -357,9 +357,21 @@ end
         # Rule 6 runs in §7.1's rule order, for leaves whose written alg is IMEXEuler.
         imexleaf(imex; kw...) = merge(Dict{String, Any}("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1, "imex" => imex),
             Dict{String, Any}(String(k) => v for (k, v) in kw))
+        # Rule 3 reads imex names (explicit before implicit; after frozen), before rule 6.
         @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => "ghost")), "step" => Dict("dt" => 1))) ==
-              ("imex_partition_invalid", "/schedule/imex")            # not operator_undefined: rule 3 does not read imex
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; imex = Dict("implicit" => "ghost")))) === nothing   # ignored
+              ("operator_undefined", "/schedule/imex/implicit")
+        @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => ["kinetics", "ghost"], "explicit" => ["kinetics"])),
+            "step" => Dict("dt" => 1))) == ("operator_undefined", "/schedule/imex/implicit/1")      # undefined name wins over a bad partition
+        @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => ["ghost1"], "explicit" => ["ghost2"])),
+            "step" => Dict("dt" => 1))) == ("operator_undefined", "/schedule/imex/explicit/0")      # explicit before implicit
+        @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => "ghost1"); frozen = ["ghost2"]),
+            "step" => Dict("dt" => 1))) == ("operator_undefined", "/schedule/frozen/0")             # frozen before imex
+        @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => "column")), "step" => Dict("dt" => 1))) ==
+              ("imex_partition_invalid", "/schedule/imex")            # a locality name is not an operator name
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; imex = Dict("implicit" => "ghost")))) ==
+              ("operator_undefined", "/schedule/imex/implicit")       # rule 3 checks every leaf
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; imex = Dict("implicit" => "kinetics", "explicit" => "kinetics")))) ===
+              nothing                                                 # rule 6 only on written IMEXEuler leaves
         # Earlier rules win: rule 5 (advanced twice) before rule 6, rule 3 before a missing imex.
         @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [imexleaf(Dict("implicit" => "stencil")),
             leaf("kinetics")]), "step" => Dict("dt" => 1))) == ("operator_advanced_twice", "/schedule/sequence/1/leaf")

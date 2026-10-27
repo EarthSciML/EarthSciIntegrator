@@ -2,7 +2,12 @@
 EarthSciAST = "c7bf5e87-b31b-4281-bdce-ffb8a46ec87c"
 EarthSciIntegrator = "32373ebd-92e7-4f26-b916-9b5db62dd90f"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+JSONSchema = "7d188eb4-7ad8-530c-ae41-71a32a6d4692"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
+# JSONSchema 1.6.0 breaks EarthSciAST 0.5.0's precompile workload (a
+# MethodError in JSONSchema._validate during schema validation), so the test
+# environment holds JSONSchema at 1.5 until EarthSciAST supports 1.6.
 [compat]
 EarthSciAST = "0.5"
+JSONSchema = "~1.5"
