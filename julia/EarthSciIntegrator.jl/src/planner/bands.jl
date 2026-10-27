@@ -2,7 +2,7 @@
 # band lists, and the interface through which the planner gets what needs
 # EarthSciASTDiff (term bands, structure, the Gershgorin bound, derived
 # documents and validation). Nothing here needs EarthSciAST; the passes over
-# the model are in ext/EarthSciIntegratorEarthSciASTExt.jl.
+# the model are in the other files of src/planner/.
 
 const LOCALITY_ORDER = (:pointwise, :column, :stencil, :global)
 locality_rank(c::Symbol) = findfirst(==(c), LOCALITY_ORDER)
@@ -283,13 +283,7 @@ gershgorin_bound(::PendingBackend, ctx, op) = nothing
 derived_and_validation(::PendingBackend, ctx) = nothing
 
 # ---------------------------------------------------------------------------
-# The planner's entry points. The passes read and flatten the model with
-# EarthSciAST, so they live in the package extension
-# EarthSciIntegratorEarthSciASTExt, loaded by `import EarthSciAST`.
-# EarthSciAST is a weak dependency because its compat pins SciMLBase to 2,
-# which in an environment with the M1 tests' OrdinaryDiffEq oracle holds
-# OrdinaryDiffEqSDIRK at 1.x, whose SDIRK2 differs from the 2.x the M1
-# tolerances are set against.
+# The planner's entry points; their methods are in planner/planner.jl.
 
 """
     plan(config_path; tspan=nothing, backend=PendingBackend()) -> draft
@@ -299,8 +293,7 @@ model, run passes 1–4, check and resolve the schedule and the settings, and
 resolve strategies. `tspan` is the caller's run interval (§7.2), a pair of
 numbers or of RFC 3339 UTC timestamps. A refusal is a
 [`PlannerRefusal`](@ref); a part of the plan that needs EarthSciASTDiff, with
-a backend that cannot give it, is a [`PlannerStageError`](@ref). Needs
-`import EarthSciAST` (the package extension).
+a backend that cannot give it, is a [`PlannerStageError`](@ref).
 """
 function plan end
 

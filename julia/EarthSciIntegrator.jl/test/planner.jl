@@ -1,18 +1,12 @@
 # The planner's passes, M2 stage 1 (spec/plan.md): terms and selection,
 # locality, the resolved settings, and the refusal fixtures that need no
-# EarthSciASTDiff. Runs in its own environment (Project.toml here), because
-# the EarthSciAST extension cannot share one with the M1 tests' OrdinaryDiffEq
-# (see src/planner/bands.jl); test/runtests.jl starts it.
+# EarthSciASTDiff. Uses REPO, CONF and PFIX from planner_pure.jl.
 
-using EarthSciIntegrator, JSON, Test
 using EarthSciIntegrator: PlannerRefusal, PlannerStageError, BandEntry, jcs, Axes, PlanBackend, PendingBackend
 import EarthSciAST
 
-# The extension's internals.
-const EI = Base.get_extension(EarthSciIntegrator, :EarthSciIntegratorEarthSciASTExt)
-const REPO = joinpath(@__DIR__, "..", "..", "..", "..")
-const CONF = joinpath(REPO, "tests", "conformance")
-const PFIX = joinpath(CONF, "plans", "fixtures")
+# The planner's internals.
+const EI = EarthSciIntegrator
 
 """Refusal fixtures that need term or operator bands, structure or stiffness from EarthSciASTDiff (stage 2)."""
 const STAGE2_REFUSALS = Dict(
@@ -112,8 +106,8 @@ end
             got == (want["code"], want["at"]) || @info "refusal fixture $name" got want
         end
         # Every code the planner raises is one spec/planner-errors.json lists.
-        dirs = [joinpath(@__DIR__, "..", "..", d, "planner") for d in ("src", "ext")]
-        src = join((read(joinpath(d, f), String) for d in dirs for f in readdir(d)), "\n")
+        srcdir = joinpath(@__DIR__, "..", "src", "planner")
+        src = join((read(joinpath(srcdir, f), String) for f in readdir(srcdir)), "\n")
         raised = Set(m.captures[1] for m in eachmatch(r"refuse\(\s*\"([a-z_]+)\"", src))
         @test !isempty(raised) && issubset(raised, codes)
     end

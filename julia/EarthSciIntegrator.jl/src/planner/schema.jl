@@ -1,6 +1,6 @@
 # A JSON Schema (draft 2020-12) validator for the keywords spec/schemas use,
 # so the planner can refuse a run config the schema rejects (spec/plan.md §4
-# step 1, `run_config_invalid`). JSONSchema.jl 1.5 skips
+# step 1, `run_config_invalid`). JSONSchema.jl (1.5 and 1.6) skips
 # `unevaluatedProperties`, on which the run-config schema's leaf and coupled
 # nodes rely, so this file implements the vocabulary itself: the applicators
 # (`$ref` within the document, `allOf`, `anyOf`, `oneOf`, `not`, `if`/`then`/

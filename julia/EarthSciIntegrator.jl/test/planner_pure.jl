@@ -1,7 +1,7 @@
 # The planner's parts that need no EarthSciAST (M2 stage 1): canonical JSON
 # (spec/plan.md §2.1), the run-config schema check (§4 step 1), and the band
 # calculus of pass 2 (§5.2.3–§5.2.4). The passes over a model are tested in
-# test/planner/ (the EarthSciAST extension), see runtests.jl.
+# planner.jl.
 
 using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config_schema, classify_bands, reduce_offset,
     raw_offsets, Axes
