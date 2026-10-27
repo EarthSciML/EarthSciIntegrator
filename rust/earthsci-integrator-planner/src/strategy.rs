@@ -238,6 +238,10 @@ pub fn resolve_leaf(given: &Value, facts: &LeafFacts, pointer: &str) -> Result<L
     let unavailable = |m: String| refuse(codes::AUTO_STRATEGY_UNAVAILABLE, pointer, m);
 
     let mut imex_implicit = None;
+    // The pointwise stiff row's linsolve. The row needs block_diagonal
+    // storage even when the leaf gives linsolve (§5.5.3), so it is resolved,
+    // and refused, either way.
+    let mut row_linsolve = None;
     let alg = match given_str("alg") {
         Some(alg) => alg,
         None => {
@@ -248,6 +252,7 @@ pub fn resolve_leaf(given: &Value, facts: &LeafFacts, pointer: &str) -> Result<L
                 })?;
             match (facts.class, stiff) {
                 (Class::Pointwise, true) => {
+                    row_linsolve = Some(table_linsolve(facts, pointer)?);
                     if facts.reltol >= 1e-3 {
                         "Rosenbrock23".into()
                     } else {
@@ -280,10 +285,10 @@ pub fn resolve_leaf(given: &Value, facts: &LeafFacts, pointer: &str) -> Result<L
     };
     let (jacobian, linsolve) = if forms_jacobian(&alg) {
         let jacobian = given_str("jacobian").unwrap_or_else(|| "symbolic".into());
-        let linsolve = match given_linsolve {
-            Some(l) => l,
-            None if imex_implicit.is_some() => json!({"banded": {}}),
-            None => table_linsolve(facts, pointer)?,
+        let linsolve = match (given_linsolve, row_linsolve) {
+            (Some(l), _) | (None, Some(l)) => l,
+            (None, None) if imex_implicit.is_some() => json!({"banded": {}}),
+            (None, None) => table_linsolve(facts, pointer)?,
         };
         (Some(jacobian), Some(linsolve))
     } else {
@@ -464,6 +469,18 @@ mod tests {
                 .unwrap()
                 .alg,
             "SSPRK43"
+        );
+        // A given linsolve does not lift the row's block_diagonal condition.
+        let given = json!({"leaf": "op", "alg": "auto", "linsolve": "dense_lu"});
+        let mut f = facts(Class::Pointwise, true);
+        assert_eq!(
+            resolve_leaf(&given, &f, "/s").unwrap().linsolve,
+            Some(json!({"dense_lu": {}}))
+        );
+        f.uniform_shapes = false;
+        assert_eq!(
+            code(resolve_leaf(&given, &f, "/s")),
+            codes::AUTO_STRATEGY_UNAVAILABLE
         );
         // Unknown stiffness is not a refusal.
         let mut f = facts(Class::Pointwise, true);
