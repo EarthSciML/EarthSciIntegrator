@@ -14,7 +14,7 @@ repository.workspace = true
 # is not gated on it), so `solve` stays on; the command-line tool (`cli`) is
 # left out.
 earthsci-ast = { version = "0.6.0", default-features = false, features = ["solve"] }
-earthsci-integrator-solvers = { path = "../earthsci-integrator-solvers" }
+earthsci-integrator-solvers.workspace = true
 indexmap = "2"
 jsonschema = { version = "0.33", default-features = false }
 serde_json = { version = "1", features = ["float_roundtrip"] }

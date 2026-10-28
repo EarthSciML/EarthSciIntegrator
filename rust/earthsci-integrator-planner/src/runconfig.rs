@@ -12,7 +12,9 @@ use std::sync::OnceLock;
 /// The version of the integrator spec this planner implements.
 pub const SPEC_VERSION: &str = "0.1.0";
 
-const RUN_CONFIG_SCHEMA: &str = include_str!("../../../spec/schemas/run-config.schema.json");
+/// spec/schemas/run-config.schema.json, embedded from the crate's own copy (a
+/// published crate cannot reach spec/; `tools/sync-package-data.sh` refreshes it).
+const RUN_CONFIG_SCHEMA: &str = include_str!("../data/schemas/run-config.schema.json");
 
 /// A run config as read from its file.
 #[derive(Debug, Clone)]

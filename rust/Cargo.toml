@@ -13,3 +13,10 @@ edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
 repository = "https://github.com/EarthSciML/EarthSciIntegrator"
+
+# Crates inside this workspace that depend on each other. crates.io needs a
+# `version` beside every `path`, and for a 0.0.x version that requirement is
+# exact, so bump it with `[workspace.package] version` above (a mismatch fails
+# every build, so it cannot go unnoticed).
+[workspace.dependencies]
+earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.0.1" }

@@ -11,7 +11,7 @@ One spec, implemented natively in Julia ([`../julia/EarthSciIntegrator.jl`](../j
 | [`planner-errors.json`](planner-errors.json) | The planner's refusal codes, one per rule (D79) | M2 |
 | [`adjoint.md`](adjoint.md) | The discrete adjoint: functional, tape, primitives, the adjoint step of every method family and combinator, accumulation, verification identities | M0 draft |
 | [`methods.md`](methods.md) | Methods and controllers: the method catalogue, forward step forms, error estimates and norms, step-size control, first step, return codes | M1 draft |
-| [`tableaus/`](tableaus/) | Method coefficients and controller constants as data, extracted from OrdinaryDiffEq (D54) | M1 |
+| [`tableaus/`](tableaus/) | Method coefficients and controller constants as data, extracted from OrdinaryDiffEq (D54). The Julia package and the Rust solvers crate read copies in their own `data/` (a released package cannot reach `spec/`); refresh them with `tools/sync-package-data.sh` | M1 |
 | [`operator-interface.md`](operator-interface.md) | What a leaf calls on an operator: right-hand side, derivative products, Jacobian storage, maps; operators a plan supplies | M1 draft, M2 §8 |
 | [`tape.md`](tape.md) | The tape, replay, checkpoints, and a serialized form for tests | M1 draft |
 | [`toy-problems.md`](toy-problems.md) | The hand-written toy problems, the M1 conformance cases and checks, and result files; their `.esm` versions and the M2 end-to-end cases | M1 draft, M2 §4 |

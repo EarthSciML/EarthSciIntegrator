@@ -268,10 +268,10 @@ end
 
 const _RUN_CONFIG_SCHEMA = Ref{Any}(nothing)
 
-"""The run-config schema, spec/schemas/run-config.schema.json (read once)."""
+"""The run-config schema, spec/schemas/run-config.schema.json (read once, from the package's `data/` copy)."""
 function run_config_schema()
     if _RUN_CONFIG_SCHEMA[] === nothing
-        path = joinpath(@__DIR__, "..", "..", "..", "..", "spec", "schemas", "run-config.schema.json")
+        path = joinpath(@__DIR__, "..", "..", "data", "schemas", "run-config.schema.json")
         _RUN_CONFIG_SCHEMA[] = JSON.parsefile(path)
     end
     return _RUN_CONFIG_SCHEMA[]

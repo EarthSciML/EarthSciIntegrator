@@ -1,0 +1,475 @@
+{
+  "$schema_note": "Manifest for the generated API reference (see tools/api_docs/README.md in EarthSciML/earthsci.dev). Julia and Rust implement one spec (spec/) natively, so most names are per-language; rows that share a canonical name are the same operation.",
+  "version": 1,
+  "symbols": [
+    {
+      "name": "spec_version",
+      "kind": "constant",
+      "tier": "stable",
+      "bindings": {
+        "julia": "SPEC_VERSION",
+        "rust": "SPEC_VERSION"
+      }
+    },
+    {
+      "name": "toy_problem",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "toy_problem",
+        "rust": "toy::toy_problem"
+      }
+    },
+    {
+      "name": "toy_problem",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "toy::ToyProblem"
+      }
+    },
+    {
+      "name": "run_config",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "config::RunConfig"
+      }
+    },
+    {
+      "name": "build_run",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "build_run"
+      }
+    },
+    {
+      "name": "run_spec",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "schedule::RunSpec"
+      }
+    },
+    {
+      "name": "forward",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "forward!"
+      }
+    },
+    {
+      "name": "forward_run",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "schedule::ForwardRun"
+      }
+    },
+    {
+      "name": "replay",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "replay"
+      }
+    },
+    {
+      "name": "gradient",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "gradient"
+      }
+    },
+    {
+      "name": "gradient_result",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "adjoint::Gradient"
+      }
+    },
+    {
+      "name": "tape",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "tape::Tape"
+      }
+    },
+    {
+      "name": "odefunction",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "odefunction"
+      }
+    },
+    {
+      "name": "tableaus",
+      "kind": "constant",
+      "tier": "stable",
+      "bindings": {
+        "julia": "TABLEAUS"
+      }
+    },
+    {
+      "name": "operator",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "operator::Operator"
+      }
+    },
+    {
+      "name": "map_operator",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "operator::MapOperator"
+      }
+    },
+    {
+      "name": "rhs",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "rhs!"
+      }
+    },
+    {
+      "name": "jvp_u",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jvp_u!"
+      }
+    },
+    {
+      "name": "vjp_u",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp_u!"
+      }
+    },
+    {
+      "name": "vjp_p",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp_p!"
+      }
+    },
+    {
+      "name": "jac",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jac!"
+      }
+    },
+    {
+      "name": "ft",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ft!"
+      }
+    },
+    {
+      "name": "hess_u",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "hess_u!"
+      }
+    },
+    {
+      "name": "hess_p",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "hess_p!"
+      }
+    },
+    {
+      "name": "ft_vjp_u",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ft_vjp_u!"
+      }
+    },
+    {
+      "name": "ft_vjp_p",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ft_vjp_p!"
+      }
+    },
+    {
+      "name": "apply",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "apply!"
+      }
+    },
+    {
+      "name": "map_vjp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "map_vjp!"
+      }
+    },
+    {
+      "name": "map_jvp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "map_jvp!"
+      }
+    },
+    {
+      "name": "error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "rust": "Error"
+      }
+    },
+    {
+      "name": "config_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ConfigError"
+      }
+    },
+    {
+      "name": "unsupported_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "UnsupportedError"
+      }
+    },
+    {
+      "name": "replay_mismatch_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ReplayMismatchError"
+      }
+    },
+    {
+      "name": "plan",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "plan",
+        "rust": "earthsci_integrator_planner::plan"
+      }
+    },
+    {
+      "name": "plan_dict",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "plan_dict"
+      }
+    },
+    {
+      "name": "plan_json",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "plan_json"
+      }
+    },
+    {
+      "name": "jcs",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jcs",
+        "rust": "earthsci_integrator_planner::jcs::to_string"
+      }
+    },
+    {
+      "name": "planner_refusal",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PlannerRefusal",
+        "rust": "earthsci_integrator_planner::Refusal"
+      }
+    },
+    {
+      "name": "planner_stage_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PlannerStageError"
+      }
+    },
+    {
+      "name": "plan_backend",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PlanBackend"
+      }
+    },
+    {
+      "name": "pending_backend",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PendingBackend"
+      }
+    },
+    {
+      "name": "band_entry",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "BandEntry"
+      }
+    },
+    {
+      "name": "plan_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::PlanError"
+      }
+    },
+    {
+      "name": "plan_options",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::Options"
+      }
+    },
+    {
+      "name": "planned",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::Planned"
+      }
+    },
+    {
+      "name": "read_run_config",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::runconfig::read"
+      }
+    },
+    {
+      "name": "planner_run_config",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_planner::runconfig::RunConfig"
+      }
+    },
+    {
+      "name": "tableau",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::tableau::Tableau"
+      }
+    },
+    {
+      "name": "tableau",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::tableau::tableau"
+      }
+    },
+    {
+      "name": "all_tableaus",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::tableau::all_tableaus"
+      }
+    },
+    {
+      "name": "explicit_rk",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::erk::ExplicitRk"
+      }
+    },
+    {
+      "name": "erk_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::erk::ErkError"
+      }
+    },
+    {
+      "name": "rosenbrock",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::rosenbrock::Rosenbrock"
+      }
+    },
+    {
+      "name": "implicit",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::implicit::Implicit"
+      }
+    },
+    {
+      "name": "controller",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::controller::Controller"
+      }
+    },
+    {
+      "name": "initial_dt",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::initdt::initial_dt"
+      }
+    },
+    {
+      "name": "scalar",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::Scalar"
+      }
+    },
+    {
+      "name": "rhs_fn",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "earthsci_integrator_solvers::RhsFn"
+      }
+    }
+  ]
+}

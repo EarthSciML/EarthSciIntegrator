@@ -1,0 +1,62 @@
+name: Release 3 - Publish
+
+# Step 3 of 3 (see release-register.yml). TagBot's push of `v<version>` starts
+# this run, which publishes to crates.io from that tag. The jobs live in
+# EarthSciML/.github (RELEASING.md there).
+#
+# Every publish step treats "already published" as success, so a run that
+# failed partway is finished by running this workflow by hand on the same tag.
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to (re-)publish, e.g. v0.4.0. Steps already done are skipped.'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # The tag must be the commit General accepted.
+  resolve:
+    uses: EarthSciML/.github/.github/workflows/release-resolve.yml@main
+    with:
+      julia-package: EarthSciIntegrator
+      julia-subdir: julia/EarthSciIntegrator.jl
+      tag: ${{ inputs.tag || github.ref_name }}
+      version-files: rust/Cargo.toml
+
+  publish:
+    needs: resolve
+    permissions:
+      contents: write
+    uses: EarthSciML/.github/.github/workflows/release-publish.yml@main
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      version: ${{ needs.resolve.outputs.version }}
+      # In dependency order: the other three depend on -solvers.
+      crates: >-
+        rust/earthsci-integrator-solvers
+        rust/earthsci-integrator
+        rust/earthsci-integrator-planner
+        rust/earthsci-integrator-mpi
+      install-notes: |
+        ```
+        using Pkg; Pkg.add("EarthSciIntegrator")   # Julia
+        ```
+    secrets: inherit
+
+  report:
+    needs: [ resolve, publish ]
+    if: always() && needs.resolve.result == 'success'
+    permissions:
+      issues: write
+    uses: EarthSciML/.github/.github/workflows/release-report.yml@main
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      results: ${{ toJSON(needs) }}
