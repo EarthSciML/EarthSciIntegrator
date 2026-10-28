@@ -22,8 +22,8 @@ jobs:
     name: Schemas and fixtures (conformance tier 0)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # earthsci-ast is EarthSciAST's Python binding, pinned to the release the
@@ -55,14 +55,14 @@ jobs:
       matrix:
         version: ["1.10", "1"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       # The tests validate the result files they write against
       # spec/schemas/result.schema.json with Python's jsonschema.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install "jsonschema>=4.18"
@@ -72,7 +72,7 @@ jobs:
         run: julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.test()'
       - name: Upload conformance result files
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: julia-m1-results-${{ matrix.version }}
           path: julia/EarthSciIntegrator.jl/test/results/
@@ -82,7 +82,7 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -96,7 +96,7 @@ jobs:
           EARTHSCI_RESULTS_DIR: ${{ github.workspace }}/rust-results
       - name: Upload conformance result files
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rust-m1-results
           path: rust-results/
@@ -113,18 +113,18 @@ jobs:
       matrix:
         version: ["1.10", "1"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         # A suite that wrote no result files uploaded none; the comparison
         # below then names the missing directory.
         continue-on-error: true
         with:
           name: julia-m1-results-${{ matrix.version }}
           path: julia-results
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         # A suite that wrote no result files uploaded none; the comparison
         # below then names the missing directory.
         continue-on-error: true
