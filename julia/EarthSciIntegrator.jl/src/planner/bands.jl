@@ -281,32 +281,3 @@ term_bands(::PendingBackend, ctx, t) = all(s -> !haskey(ctx.model.shapes, s), ct
 operator_structure(::PendingBackend, ctx, op) = nothing
 gershgorin_bound(::PendingBackend, ctx, op) = nothing
 derived_and_validation(::PendingBackend, ctx) = nothing
-
-# ---------------------------------------------------------------------------
-# The planner's entry points; their methods are in planner/planner.jl.
-
-"""
-    plan(config_path; tspan=nothing, backend=PendingBackend()) -> draft
-
-Plan the run config at `config_path` (spec/plan.md): read and flatten its
-model, run passes 1–4, check and resolve the schedule and the settings, and
-resolve strategies. `tspan` is the caller's run interval (§7.2), a pair of
-numbers or of RFC 3339 UTC timestamps. A refusal is a
-[`PlannerRefusal`](@ref); a part of the plan that needs EarthSciASTDiff, with
-a backend that cannot give it, is a [`PlannerStageError`](@ref).
-"""
-function plan end
-
-"""
-    plan_dict(draft) -> Dict
-
-The whole `plan.json` object (spec/plan.md §3) of a [`plan`](@ref) draft.
-"""
-function plan_dict end
-
-"""
-    plan_json(draft) -> String
-
-`plan.json`'s bytes: [`plan_dict`](@ref) as RFC 8785 canonical JSON (§2.1).
-"""
-function plan_json end

@@ -1,4 +1,4 @@
-# The planner's parts that need no EarthSciAST (M2 stage 1): canonical JSON
+# The planner's parts that need no model (M2 stage 1): canonical JSON
 # (spec/plan.md §2.1), the run-config schema check (§4 step 1), and the band
 # calculus of pass 2 (§5.2.3–§5.2.4). The passes over a model are tested in
 # planner.jl.
@@ -6,11 +6,9 @@
 using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config_schema, classify_bands, reduce_offset,
     raw_offsets, Axes
 
-const REPO = joinpath(@__DIR__, "..", "..", "..")
-const CONF = joinpath(REPO, "tests", "conformance")
-const PFIX = joinpath(CONF, "plans", "fixtures")
+@isdefined(REPO) || include("paths.jl")
 
-@testset "planner, without EarthSciAST (M2 stage 1)" begin
+@testset "planner, without a model (M2 stage 1)" begin
     @testset "RFC 8785 numbers" begin
         # RFC 8785 Appendix B, by bit pattern.
         for (bits, s) in [
