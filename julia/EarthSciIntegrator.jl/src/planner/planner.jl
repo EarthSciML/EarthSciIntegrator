@@ -37,7 +37,16 @@ struct PlanDraft
     derived::Union{Nothing, Tuple{AbstractDict, AbstractVector}}
 end
 
-# `EarthSciIntegrator.plan` (documented with its stub in src/planner/bands.jl).
+"""
+    plan(config_path; tspan=nothing, backend=PendingBackend()) -> draft
+
+Plan the run config at `config_path` (spec/plan.md): read and flatten its
+model, run passes 1–4, check and resolve the schedule and the settings, and
+resolve strategies. `tspan` is the caller's run interval (§7.2), a pair of
+numbers or of RFC 3339 UTC timestamps. A refusal is a
+[`PlannerRefusal`](@ref); a part of the plan that needs EarthSciASTDiff, with
+a backend that cannot give it, is a [`PlannerStageError`](@ref).
+"""
 function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend = PendingBackend())
     inp = read_inputs(config_path)                       # §4 steps 1–5
     check_scope(inp.flat)                                # step 6
@@ -124,6 +133,11 @@ function operator_json(op::PlanOperator, stiff)
         "stiffness" => Dict{String, Any}("class" => String(stiff[1]), "source" => stiff[2]))
 end
 
+"""
+    plan_dict(draft) -> Dict
+
+The whole `plan.json` object (spec/plan.md §3) of a [`plan`](@ref) draft.
+"""
 function plan_dict(d::PlanDraft)
     ctx = d.ctx
     d.derived === nothing && throw(PlannerStageError("the derived documents (§6) and validation (§8) need EarthSciASTDiff"))
@@ -143,4 +157,9 @@ function plan_dict(d::PlanDraft)
     return out
 end
 
+"""
+    plan_json(draft) -> String
+
+`plan.json`'s bytes: [`plan_dict`](@ref) as RFC 8785 canonical JSON (§2.1).
+"""
 plan_json(d::PlanDraft) = jcs(plan_dict(d))

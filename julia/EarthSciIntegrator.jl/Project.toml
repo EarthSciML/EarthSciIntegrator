@@ -4,23 +4,22 @@ version = "0.0.1"
 authors = ["EarthSciML"]
 
 [deps]
+EarthSciAST = "c7bf5e87-b31b-4281-bdce-ffb8a46ec87c"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 
 [weakdeps]
-EarthSciAST = "c7bf5e87-b31b-4281-bdce-ffb8a46ec87c"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 
 [extensions]
-EarthSciIntegratorEarthSciASTExt = "EarthSciAST"
 EarthSciIntegratorForwardDiffExt = "ForwardDiff"
 EarthSciIntegratorSciMLBaseExt = "SciMLBase"
 
 [compat]
-EarthSciAST = "0.5"
+EarthSciAST = "0.6"
 ForwardDiff = "0.10, 1"
 JSON = "0.21, 1"
 LinearAlgebra = "1"

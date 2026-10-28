@@ -35,7 +35,7 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 | U10 | Merged on EarthSciASTDiff `main`, closing EarthSciASTDiff#4: catch-up (W0, #5), trimmed evaluation document (W1, #8), scatter plans (W3, #10), Rust production assembly (W2, W4, W5, #12). To be released with EarthSciASTDiff 0.2. |
 | U16 | Done: released in EarthSciAST v0.4.0 (esm 1.3.0), esm-spec §2.2.7, with `resolve_time_span` in every binding. |
 | U17 | Done on EarthSciASTDiff `main` (EarthSciASTDiff#13, closing #11): `esm-jacobian-spec.md` §4.2 specifies `wrt: "time"` bands, §8 their evaluation document, and the `tgrad_photolysis` goldens gate them in Julia, Rust and Python. To be released with EarthSciASTDiff 0.2. |
-| others | Open. EarthSciASTDiff 0.2 (on EarthSciAST 0.5, both languages; today its Julia package is 0.1.0 with EarthSciAST compat "0.4, 0.5", and its Rust crate is unpublished and depends on EarthSciAST by path) is expected before M2's stage 2; spec/plan.md is written against its `main`. |
+| others | Open. EarthSciASTDiff 0.2 (its Rust crate is on EarthSciAST 0.6; its Julia package is 0.1.0 with compat EarthSciAST "0.4, 0.5" and SciMLBase "2", so it cannot yet share an environment with EarthSciIntegrator.jl, spec/plan.md §10 item 12) is expected before M2's stage 2; spec/plan.md is written against its `main`. |
 
 **Cross-cutting prerequisites** (architecture §13):
 - esm 1.3.0 for the three model repos.

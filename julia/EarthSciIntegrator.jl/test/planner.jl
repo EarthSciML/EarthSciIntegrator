@@ -1,18 +1,11 @@
 # The planner's passes, M2 stage 1 (spec/plan.md): terms and selection,
 # locality, the resolved settings, and the refusal fixtures that need no
-# EarthSciASTDiff. Runs in its own environment (Project.toml here), because
-# the EarthSciAST extension cannot share one with the M1 tests' OrdinaryDiffEq
-# (see src/planner/bands.jl); test/runtests.jl starts it.
+# EarthSciASTDiff.
 
-using EarthSciIntegrator, JSON, Test
 using EarthSciIntegrator: PlannerRefusal, PlannerStageError, BandEntry, jcs, Axes, PlanBackend, PendingBackend
 import EarthSciAST
 
-# The extension's internals.
-const EI = Base.get_extension(EarthSciIntegrator, :EarthSciIntegratorEarthSciASTExt)
-const REPO = joinpath(@__DIR__, "..", "..", "..", "..")
-const CONF = joinpath(REPO, "tests", "conformance")
-const PFIX = joinpath(CONF, "plans", "fixtures")
+@isdefined(REPO) || include("paths.jl")
 
 """Refusal fixtures that need term or operator bands, structure or stiffness from EarthSciASTDiff (stage 2)."""
 const STAGE2_REFUSALS = Dict(
@@ -58,41 +51,41 @@ end
         E(x) = EarthSciAST.expression_from_json(x)
         S(e) = EarthSciAST.serialize_expression(e)
         a, b, c = "a", Dict("op" => "*", "args" => ["k", "b"]), "c"
-        @test S.(EI.additive_terms(E(Dict("op" => "+", "args" => [a, b, c])))) == [a, b, c]
-        @test S.(EI.additive_terms(E(Dict("op" => "-", "args" => [a, Dict("op" => "+", "args" => [b, c])])))) ==
+        @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "+", "args" => [a, b, c])))) == [a, b, c]
+        @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "-", "args" => [a, Dict("op" => "+", "args" => [b, c])])))) ==
               [a, Dict("op" => "-", "args" => [b]), Dict("op" => "-", "args" => [c])]
-        @test S.(EI.additive_terms(E(Dict("op" => "-", "args" => [Dict("op" => "-", "args" => [a, b])])))) ==
+        @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "-", "args" => [Dict("op" => "-", "args" => [a, b])])))) ==
               [Dict("op" => "-", "args" => [a]), Dict("op" => "-", "args" => [Dict("op" => "-", "args" => [b])])]
-        @test S.(EI.additive_terms(E(Dict("op" => "*", "args" => [a, Dict("op" => "+", "args" => [b, c])])))) ==
+        @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "*", "args" => [a, Dict("op" => "+", "args" => [b, c])])))) ==
               [Dict("op" => "*", "args" => [a, Dict("op" => "+", "args" => [b, c])])]
         # A three-argument `-` is "anything else".
-        @test length(EI.additive_terms(E(Dict("op" => "-", "args" => [a, b, c])))) == 1
+        @test length(EarthSciIntegrator.additive_terms(E(Dict("op" => "-", "args" => [a, b, c])))) == 1
         # a - 0 keeps its second summand, -(0): an operation, not a literal (§5.1.1).
-        @test S.(EI.additive_terms(E(Dict("op" => "-", "args" => [a, 0])))) == [a, Dict("op" => "-", "args" => [0])]
-        @test !EI.is_zero_literal(EI.additive_terms(E(Dict("op" => "-", "args" => [a, 0])))[2])
-        @test EI.is_zero_literal(E(0)) && EI.is_zero_literal(E(0.0)) && !EI.is_zero_literal(E(Dict("op" => "-", "args" => [0])))
+        @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "-", "args" => [a, 0])))) == [a, Dict("op" => "-", "args" => [0])]
+        @test !EarthSciIntegrator.is_zero_literal(EarthSciIntegrator.additive_terms(E(Dict("op" => "-", "args" => [a, 0])))[2])
+        @test EarthSciIntegrator.is_zero_literal(E(0)) && EarthSciIntegrator.is_zero_literal(E(0.0)) && !EarthSciIntegrator.is_zero_literal(E(Dict("op" => "-", "args" => [0])))
     end
 
     @testset "operator class and radius (§5.2.4)" begin
         ax = Axes(["lon", "lat"], nothing)
         # Operators: the coarsest class; a stencil radius lists every horizontal axis.
-        mk(loc, rad) = (t = EI.Term("q", 0, 0, EarthSciAST.expression_from_json(0), EarthSciAST.TermOrigin[], "P", "P", false, 1,
+        mk(loc, rad) = (t = EarthSciIntegrator.Term("q", 0, 0, EarthSciAST.expression_from_json(0), EarthSciAST.TermOrigin[], "P", "P", false, 1,
                                  String[], loc, rad); t)
-        o = EI.PlanOperator("o", [mk(:pointwise, nothing), mk(:stencil, Dict("lon" => (1, 0), "lat" => (0, 0))),
+        o = EarthSciIntegrator.PlanOperator("o", [mk(:pointwise, nothing), mk(:stencil, Dict("lon" => (1, 0), "lat" => (0, 0))),
                               mk(:stencil, Dict("lon" => (0, 2), "lat" => (0, 0)))], nothing, "", nothing, nothing,
                          String[], String[], nothing)
-        EI.operator_locality!(o, ax)
+        EarthSciIntegrator.operator_locality!(o, ax)
         @test o.locality === :stencil && o.radius == Dict("lon" => (1, 2), "lat" => (0, 0))
-        @test EI.locality_json(o) == Dict("class" => "stencil", "radius" => Dict("lon" => [1, 2], "lat" => [0, 0]))
-        o2 = EI.PlanOperator("o2", [mk(:column, nothing), mk(:pointwise, nothing)], nothing, "", nothing, nothing, String[], String[], nothing)
-        @test EI.operator_locality!(o2, ax).locality === :column && o2.radius === nothing
-        o3 = EI.PlanOperator("o3", [mk(:stencil, Dict("lon" => (1, 0), "lat" => (0, 0))), mk(:global, nothing)], nothing, "",
+        @test EarthSciIntegrator.locality_json(o) == Dict("class" => "stencil", "radius" => Dict("lon" => [1, 2], "lat" => [0, 0]))
+        o2 = EarthSciIntegrator.PlanOperator("o2", [mk(:column, nothing), mk(:pointwise, nothing)], nothing, "", nothing, nothing, String[], String[], nothing)
+        @test EarthSciIntegrator.operator_locality!(o2, ax).locality === :column && o2.radius === nothing
+        o3 = EarthSciIntegrator.PlanOperator("o3", [mk(:stencil, Dict("lon" => (1, 0), "lat" => (0, 0))), mk(:global, nothing)], nothing, "",
                           nothing, nothing, String[], String[], nothing)
-        @test EI.operator_locality!(o3, ax).locality === :global
+        @test EarthSciIntegrator.operator_locality!(o3, ax).locality === :global
         # Pending terms leave the operator pending.
-        o4 = EI.PlanOperator("o4", [mk(nothing, nothing)], nothing, "", nothing, nothing, String[], String[], nothing)
-        @test EI.operator_locality!(o4, ax).locality === nothing
-        @test_throws PlannerStageError EI.need_locality(o4)
+        o4 = EarthSciIntegrator.PlanOperator("o4", [mk(nothing, nothing)], nothing, "", nothing, nothing, String[], String[], nothing)
+        @test EarthSciIntegrator.operator_locality!(o4, ax).locality === nothing
+        @test_throws PlannerStageError EarthSciIntegrator.need_locality(o4)
     end
 
     @testset "refusal fixtures" begin
@@ -112,8 +105,8 @@ end
             got == (want["code"], want["at"]) || @info "refusal fixture $name" got want
         end
         # Every code the planner raises is one spec/planner-errors.json lists.
-        dirs = [joinpath(@__DIR__, "..", "..", d, "planner") for d in ("src", "ext")]
-        src = join((read(joinpath(d, f), String) for d in dirs for f in readdir(d)), "\n")
+        srcdir = joinpath(@__DIR__, "..", "src", "planner")
+        src = join((read(joinpath(srcdir, f), String) for f in readdir(srcdir)), "\n")
         raised = Set(m.captures[1] for m in eachmatch(r"refuse\(\s*\"([a-z_]+)\"", src))
         @test !isempty(raised) && issubset(raised, codes)
     end
@@ -170,8 +163,8 @@ end
         @test jcs(d.step) == """{"dt":40,"hit":[]}"""
         @test jcs(d.precision) == """{"root":{"factors":"f64","jacobian":"f64","rhs":"f64","state":"f64","tables":"f64"}}"""
         @test d.ctx.time == (0.0, 40.0)
-        @test EI.inputs_json(d.ctx.inputs)["model"]["path"] == "../../../toys/robertson.esm"
-        @test EI.inputs_json(d.ctx.inputs)["run_config"]["path"] == "rodas4.run.json"
+        @test EarthSciIntegrator.inputs_json(d.ctx.inputs)["model"]["path"] == "../../../toys/robertson.esm"
+        @test EarthSciIntegrator.inputs_json(d.ctx.inputs)["run_config"]["path"] == "rodas4.run.json"
         # The caller's interval wins (§7.2).
         @test EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"); backend, tspan = (5, 10)).ctx.time == (5.0, 10.0)
     end
@@ -193,7 +186,7 @@ end
         @test [(t.variable, t.contribution, t.summand, t.provenance, t.locality) for t in d.ctx.terms] ==
               [("Reaction.A", 0, 0, "Reaction", :pointwise), ("Reaction.A", 1, 0, "Transport", :stencil),
                ("Reaction.B", 0, 0, "Reaction", :pointwise)]
-        @test EI.locality_json(ops["transport"]) == Dict("class" => "stencil", "radius" => Dict("cell" => [1, 0]))
+        @test EarthSciIntegrator.locality_json(ops["transport"]) == Dict("class" => "stencil", "radius" => Dict("cell" => [1, 0]))
         @test ops["transport"].reads == ["Reaction.A", "Transport.dx", "Transport.v"]
         @test ops["reaction"].reads == ["Reaction.A", "Reaction.B", "Reaction.k1", "Reaction.k2"]
         @test jcs(d.schedule) == jcs(JSON.parse("""{"id": "root", "strang": [
@@ -254,7 +247,7 @@ end
         d = EarthSciIntegrator.plan(joinpath(PFIX, "periodic_stencil", "partitioned.run.json");
             backend = HandBackend(bands = Dict(("Transport.q", 0, 0) => bands)))
         op = d.ctx.ops["transport"]
-        @test EI.locality_json(op) == Dict("class" => "stencil", "radius" => Dict("lat" => [0, 0], "lon" => [3, 2]))
+        @test EarthSciIntegrator.locality_json(op) == Dict("class" => "stencil", "radius" => Dict("lat" => [0, 0], "lon" => [3, 2]))
         @test op.reads == ["Transport.c", "Transport.dx", "Transport.q"]
         @test d.stiffness["transport"] == (:nonstiff, "run_config")
         @test jcs(d.schedule) == jcs(JSON.parse("""{"alg": "SSPRK33", "control": {"abstol": 0.000001, "dt_scope": "global", "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "dt": 0.01, "id": "root", "leaf": ["transport"]}"""))
@@ -438,15 +431,15 @@ end
         @test try_plan(sv(15)) == ("tstop_off_fixed_step", "/adjoint/functional/over")
         @test try_plan(sv(15; over = "time")) === nothing
         @test try_plan(sv(15; over = "final")) === nothing
-        @test EI.multiples_in(15.0, 0.0, 40.0) == [15.0, 30.0]
-        @test EI.multiples_in(15.0, 20.0, 40.0) == [30.0]
+        @test EarthSciIntegrator.multiples_in(15.0, 0.0, 40.0) == [15.0, 30.0]
+        @test EarthSciIntegrator.multiples_in(15.0, 20.0, 40.0) == [30.0]
         # hit_multiples: plain products in (t₀, t_f].
-        @test EI.multiples_in(0.1, 0.0, 0.3) == [0.1, 0.2]
+        @test EarthSciIntegrator.multiples_in(0.1, 0.0, 0.3) == [0.1, 0.2]
         # Output times: a product within the landing tolerance of t_f is t_f; one near t₀ is excluded.
-        @test EI.output_times(0.1, 0.0, 0.3) == [0.1, 0.2, 0.3]
-        @test EI.output_times(15.0, 0.0, 40.0) == [15.0, 30.0]
-        @test EI.output_times(0.1, 3 * 0.1, 0.5) == [0.4, 0.5]     # 0.30000000000000004 ≈ t₀, excluded
-        @test EI.output_times(0.1, 0.0, 0.7) == [0.1, 0.2, 3 * 0.1, 0.4, 0.5, 0.6000000000000001, 0.7]
+        @test EarthSciIntegrator.output_times(0.1, 0.0, 0.3) == [0.1, 0.2, 0.3]
+        @test EarthSciIntegrator.output_times(15.0, 0.0, 40.0) == [15.0, 30.0]
+        @test EarthSciIntegrator.output_times(0.1, 3 * 0.1, 0.5) == [0.4, 0.5]     # 0.30000000000000004 ≈ t₀, excluded
+        @test EarthSciIntegrator.output_times(0.1, 0.0, 0.7) == [0.1, 0.2, 3 * 0.1, 0.4, 0.5, 0.6000000000000001, 0.7]
         # Mixed declared element types in one leaf.
         mixed = joinpath(tmp, "mixed.esm")
         decay(x) = Dict("lhs" => Dict("op" => "D", "args" => [x], "wrt" => "t"), "rhs" => Dict("op" => "*", "args" => [-0.5, x]))
@@ -501,36 +494,36 @@ end
         @test d.stiffness["default_pointwise"] == (:stiff, "solver_hint")
         @test d.schedule["alg"] == "Rosenbrock23" && d.schedule["id"] == "root" && d.schedule["control"]["dt_scope"] == "cell"
         @test d.step == Dict("hit" => String[])
-        @test EI.reference_steps(d.ctx, EI.build_snode(Dict("leaf" => "default_pointwise"), "root", "/schedule", false)) ==
+        @test EarthSciIntegrator.reference_steps(d.ctx, EarthSciIntegrator.build_snode(Dict("leaf" => "default_pointwise"), "root", "/schedule", false)) ==
               Dict("root" => 40.0)
     end
 
     @testset "time (§7.2, D74)" begin
-        m = EI.plan_model(EI.read_inputs(joinpath(PFIX, "toy_robertson", "rodas4.run.json")))
-        @test EI.time_seconds(m, "1970-01-02T00:00:00Z", "/x") == 86400.0
-        @test EI.time_seconds(m, "2019-07-01T00:00:00.25Z", "/x") == 1561939200.25
-        @test refusal(() -> EI.time_seconds(m, "2019-02-29T00:00:00Z", "/time/end")) == ("time_invalid_date", "/time/end")
-        @test EI.time_seconds(m, "2020-02-29T00:00:00Z", "/x") == 1582934400.0
-        @test EI.resolve_time(m, Dict("time" => Dict("start" => 10, "duration" => "1.5 min"))) == (10.0, 100.0)
-        @test EI.resolve_time(m, Dict("time" => Dict("start" => 0.1, "duration" => 0.2)))[2] === 0.1 + 0.2
-        @test EI.resolve_time(m, Dict{String, Any}()) == (0.0, 40.0)
-        @test EI.plan_duration(m, "2 day", "/x") == 172800.0
-        @test EI.plan_duration(m, "1.1 h", "/x") === 3960.0000000000005      # §7.1: one rounding, 1.1 × 3600
-        @test EI.plan_duration(m, "Kinetics.k2", "/x") == 3.0e7
-        @test refusal(() -> EI.plan_duration(m, "Kinetics.y1", "/x")) == ("name_wrong_kind", "/x")
-        @test refusal(() -> EI.plan_duration(m, "Nope.x", "/x")) == ("name_unresolved", "/x")
+        m = EarthSciIntegrator.plan_model(EarthSciIntegrator.read_inputs(joinpath(PFIX, "toy_robertson", "rodas4.run.json")))
+        @test EarthSciIntegrator.time_seconds(m, "1970-01-02T00:00:00Z", "/x") == 86400.0
+        @test EarthSciIntegrator.time_seconds(m, "2019-07-01T00:00:00.25Z", "/x") == 1561939200.25
+        @test refusal(() -> EarthSciIntegrator.time_seconds(m, "2019-02-29T00:00:00Z", "/time/end")) == ("time_invalid_date", "/time/end")
+        @test EarthSciIntegrator.time_seconds(m, "2020-02-29T00:00:00Z", "/x") == 1582934400.0
+        @test EarthSciIntegrator.resolve_time(m, Dict("time" => Dict("start" => 10, "duration" => "1.5 min"))) == (10.0, 100.0)
+        @test EarthSciIntegrator.resolve_time(m, Dict("time" => Dict("start" => 0.1, "duration" => 0.2)))[2] === 0.1 + 0.2
+        @test EarthSciIntegrator.resolve_time(m, Dict{String, Any}()) == (0.0, 40.0)
+        @test EarthSciIntegrator.plan_duration(m, "2 day", "/x") == 172800.0
+        @test EarthSciIntegrator.plan_duration(m, "1.1 h", "/x") === 3960.0000000000005      # §7.1: one rounding, 1.1 × 3600
+        @test EarthSciIntegrator.plan_duration(m, "Kinetics.k2", "/x") == 3.0e7
+        @test refusal(() -> EarthSciIntegrator.plan_duration(m, "Kinetics.y1", "/x")) == ("name_wrong_kind", "/x")
+        @test refusal(() -> EarthSciIntegrator.plan_duration(m, "Nope.x", "/x")) == ("name_unresolved", "/x")
         # A duration parameter must default to a positive number of seconds.
         v = m.flat.parameters["Kinetics.k2"]
         kw = (f => getfield(v, f) for f in fieldnames(typeof(v)) if !(f in (:type, :default)))
         for d in (0.0, -1.0)
             m.flat.parameters["Kinetics.k2"] = EarthSciAST.ModelVariable(v.type; default = d, kw...)
-            @test refusal(() -> EI.plan_duration(m, "Kinetics.k2", "/x")) == ("run_config_invalid", "/x")
+            @test refusal(() -> EarthSciIntegrator.plan_duration(m, "Kinetics.k2", "/x")) == ("run_config_invalid", "/x")
         end
         m.flat.parameters["Kinetics.k2"] = v
     end
 
     @testset "the model's solver.time_span refusals (§7.2 rule 14)" begin
-        code(doc) = (r = EI.model_span_refusal(doc); r === nothing ? nothing : (r.code, r.at))
+        code(doc) = (r = EarthSciIntegrator.model_span_refusal(doc); r === nothing ? nothing : (r.code, r.at))
         @test code(Dict("solver" => Dict("time_span" => Dict("start" => 100, "end" => 50)))) == ("time_interval_empty", "/model")
         @test code(Dict("solver" => Dict("time_span" => Dict("start" => "2021-02-30T00:00:00Z", "end" => "2021-03-02T00:00:00Z")))) ==
               ("time_invalid_date", "/model")
@@ -542,15 +535,15 @@ end
     end
 
     @testset "tstops on a fixed step.dt (rule 9)" begin
-        @test EI.on_fixed_step(0.0, 1.0e7, 1.0e-3, 3600.0)
-        @test !EI.on_fixed_step(0.0, 1.0e7, 7.0, 3600.0)
-        @test EI.on_fixed_step(0.0, 1.0, 0.1, 0.3)              # 0.1 + 0.1 + 0.1 ≠ 0.3, within tolerance
-        @test EI.on_fixed_step(0.0, 1.05, 0.1, 1.05)            # t_f always is one
-        @test EI.on_fixed_step(0.0, 1.05, 0.1, 1.0)
-        @test !EI.on_fixed_step(0.5, 2.0, 1.0, 0.75)
+        @test EarthSciIntegrator.on_fixed_step(0.0, 1.0e7, 1.0e-3, 3600.0)
+        @test !EarthSciIntegrator.on_fixed_step(0.0, 1.0e7, 7.0, 3600.0)
+        @test EarthSciIntegrator.on_fixed_step(0.0, 1.0, 0.1, 0.3)              # 0.1 + 0.1 + 0.1 ≠ 0.3, within tolerance
+        @test EarthSciIntegrator.on_fixed_step(0.0, 1.05, 0.1, 1.05)            # t_f always is one
+        @test EarthSciIntegrator.on_fixed_step(0.0, 1.05, 0.1, 1.0)
+        @test !EarthSciIntegrator.on_fixed_step(0.5, 2.0, 1.0, 0.75)
         for (t0, tf, dt, τ) in ((0.0, 1.0, 0.1, 0.3), (0.0, 1.05, 0.1, 1.0), (0.25, 3.0, 0.5, 1.75), (0.0, 1.0, 0.25, 0.6))
             bounds, _ = EarthSciIntegrator.macro_bounds(t0, tf, dt, [τ])
-            @test EI.on_fixed_step(t0, tf, dt, τ) == (τ in bounds)
+            @test EarthSciIntegrator.on_fixed_step(t0, tf, dt, τ) == (τ in bounds)
         end
     end
 
@@ -579,35 +572,35 @@ end
                model = (sizes = Dict("lon" => 8, "lat" => 3, "lev" => 4, "spc" => 5),
                         shapes = Dict("A" => ["lon", "lat", "lev"], "B" => ["lon", "lat", "spc"])),
                ops = Dict("o" => (writes = ["A", "B"],)))
-        @test EI.leaf_cells(ctx, ["o"], :column) == 24
-        @test EI.leaf_cells(ctx, ["o"], :pointwise) == 96
+        @test EarthSciIntegrator.leaf_cells(ctx, ["o"], :column) == 24
+        @test EarthSciIntegrator.leaf_cells(ctx, ["o"], :pointwise) == 96
         # The lifted faq's ranges are built from the state's shape (§6.1.2).
         m = d.ctx.model
         ei, var, lifted = m.state_eqs[1]
-        @test lifted && EI.lifted_ranges(m, ei, var) == (["i"], Dict("i" => Dict("from" => "cell")))
+        @test lifted && EarthSciIntegrator.lifted_ranges(m, ei, var) == (["i"], Dict("i" => Dict("from" => "cell")))
     end
 
     @testset "schedule helpers" begin
         # Every node of an "auto" schedule is reported at /schedule.
-        auto = EI.build_snode(Dict("sequence" => Any[Dict("leaf" => ["a"], "alg" => "auto"), Dict("leaf" => ["b"], "alg" => "auto")]),
+        auto = EarthSciIntegrator.build_snode(Dict("sequence" => Any[Dict("leaf" => ["a"], "alg" => "auto"), Dict("leaf" => ["b"], "alg" => "auto")]),
             "root", "/schedule", true)
-        @test all(n -> EI.nptr(n) == "/schedule" && EI.nptr(n, "alg") == "/schedule", EI.allnodes(auto))
-        mkop(name, loc) = (o = EI.PlanOperator(name, EI.Term[], nothing, "", loc, nothing, String[], String[], nothing); o)
+        @test all(n -> EarthSciIntegrator.nptr(n) == "/schedule" && EarthSciIntegrator.nptr(n, "alg") == "/schedule", EarthSciIntegrator.allnodes(auto))
+        mkop(name, loc) = (o = EarthSciIntegrator.PlanOperator(name, EarthSciIntegrator.Term[], nothing, "", loc, nothing, String[], String[], nothing); o)
         ops = Dict("a" => mkop("a", :pointwise), "b" => mkop("b", :stencil), "c" => mkop("c", :pointwise))
-        @test EI.auto_schedule(ops, nothing) == Dict("sequence" => Any[
+        @test EarthSciIntegrator.auto_schedule(ops, nothing) == Dict("sequence" => Any[
             Dict("leaf" => ["b"], "alg" => "auto"), Dict("leaf" => ["a", "c"], "alg" => "auto")])
-        @test haskey(EI.auto_schedule(ops, "strang"), "strang")
-        @test EI.auto_schedule(Dict("a" => ops["a"]), "strang") == Dict("leaf" => ["a"], "alg" => "auto")
-        @test EI.linsolve_object("block_lu") == Dict("block_lu" => Dict("pivot" => true, "refine" => 0))
-        @test EI.linsolve_object(Dict("sparse_block_lu" => Dict())) == Dict("sparse_block_lu" => Dict("refine" => 0))
-        @test EI.linsolve_object("gmres") == Dict("gmres" => Dict())
-        @test EI.glob_match("Chem.*", "Chem.a.b") && !EI.glob_match("Chem.*", "Dep.k") && EI.glob_match("k", "k")
+        @test haskey(EarthSciIntegrator.auto_schedule(ops, "strang"), "strang")
+        @test EarthSciIntegrator.auto_schedule(Dict("a" => ops["a"]), "strang") == Dict("leaf" => ["a"], "alg" => "auto")
+        @test EarthSciIntegrator.linsolve_object("block_lu") == Dict("block_lu" => Dict("pivot" => true, "refine" => 0))
+        @test EarthSciIntegrator.linsolve_object(Dict("sparse_block_lu" => Dict())) == Dict("sparse_block_lu" => Dict("refine" => 0))
+        @test EarthSciIntegrator.linsolve_object("gmres") == Dict("gmres" => Dict())
+        @test EarthSciIntegrator.glob_match("Chem.*", "Chem.a.b") && !EarthSciIntegrator.glob_match("Chem.*", "Dep.k") && EarthSciIntegrator.glob_match("k", "k")
         # Node paths and pointers.
         spec = Dict("sequence" => Any[Dict("id" => "t", "strang" => Any[Dict("subcycle" => Dict("leaf" => "x"), "n" => 2),
                                                                          Dict("leaf" => "y")]),
                                       Dict("every" => Dict("leaf" => "z"), "period" => 5)])
-        root = EI.build_snode(spec, "root", "/schedule", false)
-        @test [(n.id, n.path, n.ptr) for n in EI.allnodes(root)] == [
+        root = EarthSciIntegrator.build_snode(spec, "root", "/schedule", false)
+        @test [(n.id, n.path, n.ptr) for n in EarthSciIntegrator.allnodes(root)] == [
             ("root", "root", "/schedule"), ("t", "root.0", "/schedule/sequence/0"),
             ("root.0.0", "root.0.0", "/schedule/sequence/0/strang/0"),
             ("root.0.0.subcycle", "root.0.0.subcycle", "/schedule/sequence/0/strang/0/subcycle"),

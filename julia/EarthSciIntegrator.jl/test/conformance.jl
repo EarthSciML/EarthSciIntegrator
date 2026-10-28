@@ -10,7 +10,7 @@ using EarthSciIntegrator: Run, LeafNode, LeafRecord, MapRecord, leaf_replay, lea
     macro_adjoint, replay_macro, rerun_macro, functional_value, write_tape, read_tape, tape_string, stop_rule,
     next_stop, result_json, map_jvp!, map_vjp!
 
-const REPO = normpath(joinpath(@__DIR__, "..", "..", ".."))
+@isdefined(REPO) || include("paths.jl")
 const CASES_FILE = joinpath(REPO, "tests", "conformance", "m1", "cases.json")
 const REFERENCE_DIR = joinpath(REPO, "tests", "conformance", "m1", "reference")
 const RESULTS_DIR = get(ENV, "EARTHSCIINTEGRATOR_RESULTS", joinpath(@__DIR__, "results"))

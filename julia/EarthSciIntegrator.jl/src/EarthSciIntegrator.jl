@@ -16,19 +16,22 @@ functionals at the final time, at output times and integrated over time
 (spec/adjoint.md §4.1–§4.5, §5, §6).
 
 M2 stage 1: the planner (spec/plan.md) up to what needs EarthSciASTDiff.
-Here: the RFC 8785 writer of plan.json, the run-config schema check, the
-band calculus of pass 2 and the [`PlanBackend`](@ref) interface. With
-`import EarthSciAST`, the extension EarthSciIntegratorEarthSciASTExt adds
-[`plan`](@ref): reading and flattening the model, terms, owners and
-selection, locality, DOF sets, the resolved schedule, time, step, partition,
-precision, checkpoint placeholder and refusals. Bands, structure, Gershgorin
-stiffness, derived documents and validation come through `PlanBackend` in
+Here: [`plan`](@ref), which reads and flattens the model with EarthSciAST,
+and its parts: the RFC 8785 writer of plan.json, the run-config schema check,
+terms, owners and selection, the band calculus of pass 2 and locality, DOF
+sets, the resolved schedule, time, step, partition, precision, checkpoint
+placeholder and refusals. Bands, structure, Gershgorin stiffness, derived
+documents and validation come through the [`PlanBackend`](@ref) interface in
 stage 2.
 """
 module EarthSciIntegrator
 
 using JSON
 using LinearAlgebra: dot
+using OrderedCollections: OrderedDict
+using SHA: sha256
+import EarthSciAST
+using EarthSciAST: ASTExpr, NumExpr, IntExpr, VarExpr, OpExpr, Equation, TermOrigin, Contribution
 
 """Version of the integrator spec (the run config's `esm_integrator` key) this package implements."""
 const SPEC_VERSION = v"0.1.0"
@@ -84,13 +87,21 @@ include("interpreter.jl")
 include("adjoint.jl")
 include("results.jl")
 
-# The planner (spec/plan.md), M2 stage 1: the parts that need no EarthSciAST.
-# The passes are in ext/EarthSciIntegratorEarthSciASTExt.jl; what needs
-# EarthSciASTDiff plugs in through `PlanBackend` (planner/bands.jl).
+# The planner (spec/plan.md), M2 stage 1. What needs EarthSciASTDiff plugs
+# in through `PlanBackend` (planner/bands.jl).
 include("planner/jcs.jl")
 include("planner/refusal.jl")
 include("planner/schema.jl")
 include("planner/bands.jl")
+include("planner/inputs.jl")
+include("planner/model.jl")
+include("planner/terms.jl")
+include("planner/passes.jl")
+include("planner/dofsets.jl")
+include("planner/time.jl")
+include("planner/schedule_plan.jl")
+include("planner/settings.jl")
+include("planner/planner.jl")
 
 """
     odefunction(ops::OperatorSum; inplace=true)

@@ -3,8 +3,6 @@
 # index-set name, the index-set sizes, its state equations and observed
 # definitions.
 
-using EarthSciAST: ASTExpr, NumExpr, IntExpr, VarExpr, OpExpr, Equation, TermOrigin, Contribution
-
 """
     PlanModel
 
