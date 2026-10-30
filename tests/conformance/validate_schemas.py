@@ -24,8 +24,8 @@ Needs jsonschema >= 4.18 (for the `referencing` registry).
 """
 
 import json
-from decimal import Decimal
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -247,7 +247,7 @@ def check_esm_documents(failures, require):
                 )
                 continue
             earthsci_ast.flatten(earthsci_ast.load_path(str(path)))
-        except Exception as e:  # noqa: BLE001 - report every load failure
+        except Exception as e:  # report every load failure
             failures.append(f"{rel}: {type(e).__name__}: {str(e)[:300]}")
     return len(paths)
 
@@ -268,7 +268,7 @@ def main():
     for name, schema in schemas.items():
         try:
             Draft202012Validator.check_schema(schema)
-        except Exception as e:  # noqa: BLE001 - report every schema error
+        except Exception as e:  # report every schema error
             failures.append(f"{name}: not a valid 2020-12 schema: {e}")
 
     for suite, schema_name in SUITES.items():

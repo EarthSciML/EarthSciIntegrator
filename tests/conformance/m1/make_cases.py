@@ -192,7 +192,8 @@ for alg in ["Rosenbrock23", "Rodas4", "Rodas5P", "TRBDF2", "Kvaerno4"]:
     checks = [
         {"check": "oracle", "rtol": oracle_rtol(alg, 1e-10, 1e-6)},
         {"check": "reference", "rtol": 1e-4},
-    ] + GRAD
+        *GRAD,
+    ]
     checks += [
         {"check": "reverse_diff", "rtol": oracle_rtol(alg, 1e-8, 1e-6)},
         xl_adaptive(alg, 1e-6),
@@ -219,7 +220,7 @@ for alg in ["Rosenbrock23", "Rodas4", "Rodas5P", "TRBDF2", "Kvaerno4"]:
         {"check": "reference", "rtol": 1e-4},
     ]
     if alg == "Rodas4":
-        checks += GRAD + [{"check": "reverse_diff", "rtol": 1e-8}]
+        checks += [*GRAD, {"check": "reverse_diff", "rtol": 1e-8}]
     checks.append(xl_adaptive(alg, 1e-6))
     cases.append(
         {
@@ -243,7 +244,7 @@ for alg in ["Rosenbrock23", "Rodas4", "Kvaerno4"]:
     if alg not in NO_ORACLE_NONAUTONOMOUS:
         checks.insert(1, {"check": "oracle", "rtol": oracle_rtol(alg, 1e-10, 1e-6)})
     if alg == "Rosenbrock23":
-        checks += GRAD + [{"check": "reverse_diff", "rtol": 1e-8}]
+        checks += [*GRAD, {"check": "reverse_diff", "rtol": 1e-8}]
     checks.append(xl_adaptive(alg, 1e-6))
     node = leaf(
         "photochemistry", alg, linsolve={"block_lu": {"pivot": False}}, **adaptive(1e-6, 1e-6)
@@ -295,7 +296,7 @@ for name, node, order in [
             "id": f"advection_reaction.{name}.gradient",
             "run_config": cfg("toy:advection_reaction", node, {"dt": 0.025}, grad("B", "final")),
             "tspan": [0, 0.5],
-            "checks": GRAD + [xl_adaptive("Rodas4", 1e-10)],
+            "checks": [*GRAD, xl_adaptive("Rodas4", 1e-10)],
         }
     )
 sub = {
@@ -309,7 +310,7 @@ cases.append(
         "id": "advection_reaction.subcycle.fixed",
         "run_config": cfg("toy:advection_reaction", sub, {"dt": 0.01}, grad("B", "final")),
         "tspan": [0, 0.5],
-        "checks": [{"check": "invariant", "rtol": 1e-12}] + GRAD + [XL],
+        "checks": [{"check": "invariant", "rtol": 1e-12}, *GRAD, XL],
     }
 )
 
@@ -329,7 +330,7 @@ cases.append(
             grad("u", "final"),
         ),
         "tspan": [0, 4],
-        "checks": [{"check": "exact_discrete", "rtol": 1e-14}] + GRAD + [XL],
+        "checks": [{"check": "exact_discrete", "rtol": 1e-14}, *GRAD, XL],
     }
 )
 

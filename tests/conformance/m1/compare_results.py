@@ -64,7 +64,7 @@ def compare_states(jl, rs, rtol):
     """Output states per component, relative to the component's largest
     magnitude over the run in either result, as the `reference` check."""
     errs = []
-    if len(jl["t"]) != len(rs["t"]) or any(a != b for a, b in zip(jl["t"], rs["t"])):
+    if len(jl["t"]) != len(rs["t"]) or any(a != b for a, b in zip(jl["t"], rs["t"], strict=False)):
         return [f"output times differ: julia {jl['t']}, rust {rs['t']}"], float("nan")
     ncomp = len(jl["u"][0])
     if any(len(x) != ncomp for x in jl["u"] + rs["u"]):
@@ -72,7 +72,7 @@ def compare_states(jl, rs, rtol):
     worst = (0.0, None)
     for j in range(ncomp):
         scale = max(max(abs(x[j]) for x in jl["u"]), max(abs(x[j]) for x in rs["u"]))
-        for k, (x, y) in enumerate(zip(jl["u"], rs["u"])):
+        for k, (x, y) in enumerate(zip(jl["u"], rs["u"], strict=False)):
             d = abs(x[j] - y[j]) / scale if scale > 0 else abs(x[j] - y[j])
             if d > worst[0]:
                 worst = (d, (k, j))
@@ -107,7 +107,7 @@ def compare_gradient(jl, rs, rtol):
             errs.append(f"gradient.{key}: present or sized differently")
             continue
         scale = max((abs(x) for x in ga + gb), default=0.0)
-        for i, (x, y) in enumerate(zip(ga, gb)):
+        for i, (x, y) in enumerate(zip(ga, gb, strict=False)):
             d = abs(x - y) / scale if scale > 0 else abs(x - y)
             worst = max(worst, d)
             if d > rtol:
@@ -124,7 +124,7 @@ def compare_tapes(jt, rt):
         return [f"tape missing from {'julia' if jt is None else 'rust'}"]
     if len(jt) != len(rt):
         return [f"tapes have {len(jt)} (julia) and {len(rt)} (rust) records"]
-    for a, b in zip(jt, rt):
+    for a, b in zip(jt, rt, strict=False):
         if (a["path"], a["node"]) != (b["path"], b["node"]):
             return [
                 f"tape record differs: julia {a['path']} {a['node']}, rust {b['path']} {b['node']}"
