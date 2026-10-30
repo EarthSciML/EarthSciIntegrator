@@ -1,0 +1,34 @@
+{
+  "id": "integrator",
+  "title": "EarthSciIntegrator",
+  "description": "One specification for integrating EarthSciML models \u2014 explicit, implicit and IMEX methods, operator splitting, a planner, and discrete adjoints \u2014 implemented natively in Julia and Rust and checked against each other.",
+  "repo": "EarthSciML/EarthSciIntegrator",
+  "nav": [
+    {
+      "title": "Specification",
+      "path": "spec/"
+    },
+    {
+      "title": "Architecture",
+      "path": "architecture/"
+    },
+    {
+      "title": "Decisions",
+      "path": "decisions/"
+    },
+    {
+      "title": "Survey",
+      "path": "survey/"
+    },
+    {
+      "title": "RFCs",
+      "path": "rfcs/"
+    },
+    {
+      "title": "API",
+      "path": "generated/api/"
+    }
+  ],
+  "sha": "c4b80d912f4c4a30c93aa38491a417343a023c98",
+  "version": "dev"
+}
