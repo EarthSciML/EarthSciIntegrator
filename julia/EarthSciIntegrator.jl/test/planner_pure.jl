@@ -12,23 +12,26 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
     @testset "RFC 8785 numbers" begin
         # RFC 8785 Appendix B, by bit pattern.
         for (bits, s) in [
-            0x0000000000000000 => "0", 0x8000000000000000 => "0", 0x0000000000000001 => "5e-324",
-            0x8000000000000001 => "-5e-324", 0x7fefffffffffffff => "1.7976931348623157e+308",
-            0xffefffffffffffff => "-1.7976931348623157e+308", 0x4340000000000000 => "9007199254740992",
-            0xc340000000000000 => "-9007199254740992", 0x4430000000000000 => "295147905179352830000",
-            0x44b52d02c7e14af5 => "9.999999999999997e+22", 0x44b52d02c7e14af6 => "1e+23",
-            0x44b52d02c7e14af7 => "1.0000000000000001e+23", 0x444b1ae4d6e2ef4e => "999999999999999700000",
-            0x444b1ae4d6e2ef4f => "999999999999999900000", 0x444b1ae4d6e2ef50 => "1e+21",
-            0x3eb0c6f7a0b5ed8c => "9.999999999999997e-7", 0x3eb0c6f7a0b5ed8d => "0.000001",
-            0x41b3de4355555553 => "333333333.3333332", 0x41b3de4355555554 => "333333333.33333325",
-            0x41b3de4355555555 => "333333333.3333333", 0x41b3de4355555556 => "333333333.3333334",
-            0x41b3de4355555557 => "333333333.33333343", 0xbecbf647612f3696 => "-0.0000033333333333333333",
-            0x43143ff3c1cb0959 => "1424953923781206.2"]
+                0x0000000000000000 => "0", 0x8000000000000000 => "0", 0x0000000000000001 => "5e-324",
+                0x8000000000000001 => "-5e-324", 0x7fefffffffffffff => "1.7976931348623157e+308",
+                0xffefffffffffffff => "-1.7976931348623157e+308", 0x4340000000000000 => "9007199254740992",
+                0xc340000000000000 => "-9007199254740992", 0x4430000000000000 => "295147905179352830000",
+                0x44b52d02c7e14af5 => "9.999999999999997e+22", 0x44b52d02c7e14af6 => "1e+23",
+                0x44b52d02c7e14af7 => "1.0000000000000001e+23", 0x444b1ae4d6e2ef4e => "999999999999999700000",
+                0x444b1ae4d6e2ef4f => "999999999999999900000", 0x444b1ae4d6e2ef50 => "1e+21",
+                0x3eb0c6f7a0b5ed8c => "9.999999999999997e-7", 0x3eb0c6f7a0b5ed8d => "0.000001",
+                0x41b3de4355555553 => "333333333.3333332", 0x41b3de4355555554 => "333333333.33333325",
+                0x41b3de4355555555 => "333333333.3333333", 0x41b3de4355555556 => "333333333.3333334",
+                0x41b3de4355555557 => "333333333.33333343", 0xbecbf647612f3696 => "-0.0000033333333333333333",
+                0x43143ff3c1cb0959 => "1424953923781206.2",
+            ]
             @test ecma_number(reinterpret(Float64, bits)) == s
         end
         # spec/plan.md §2.1's check values, and integers.
-        for (x, s) in [(300.0, "300"), (0.1, "0.1"), (1e-6, "0.000001"), (1e-7, "1e-7"), (1.5e21, "1.5e+21"),
-                       (-0.0, "0"), (300, "300"), (0, "0"), (-7, "-7"), (1e-9, "1e-9"), (600.5, "600.5")]
+        for (x, s) in [
+                (300.0, "300"), (0.1, "0.1"), (1.0e-6, "0.000001"), (1.0e-7, "1e-7"), (1.5e21, "1.5e+21"),
+                (-0.0, "0"), (300, "300"), (0, "0"), (-7, "-7"), (1.0e-9, "1e-9"), (600.5, "600.5"),
+            ]
             @test ecma_number(x) == s
         end
         @test_throws ArgumentError ecma_number(NaN)
@@ -43,7 +46,7 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
         @test jcs(d) == "{\"\\r\":2,\"1\":4,\"\u0080\":5,\"\u00f6\":7,\"\u20ac\":1,\"\U0001f600\":6,\"\ufb33\":3}"
         @test jcs(["\"\\\b\f\n\r\t\u0001\u001f\u007f\u2028"]) == "[\"\\\"\\\\\\b\\f\\n\\r\\t\\u0001\\u001f\u007f\u2028\"]"
         @test jcs(Dict("a" => nothing, "b" => true, "c" => false, "d" => Any[], "e" => Dict())) ==
-              "{\"a\":null,\"b\":true,\"c\":false,\"d\":[],\"e\":{}}"
+            "{\"a\":null,\"b\":true,\"c\":false,\"d\":[],\"e\":{}}"
     end
 
     @testset "the hand-written expected plan is canonical" begin
@@ -56,15 +59,19 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
 
     @testset "run-config schema" begin
         S = run_config_schema()
-        valid = vcat(filter(endswith(".json"), readdir(joinpath(CONF, "run-configs", "valid"); join = true)),
+        valid = vcat(
+            filter(endswith(".json"), readdir(joinpath(CONF, "run-configs", "valid"); join = true)),
             [joinpath(d, f) for d in readdir(PFIX; join = true) for f in readdir(d) if endswith(f, ".run.json")],
-            [joinpath(d, "run.json") for d in readdir(joinpath(CONF, "plans", "refusals"); join = true) if isdir(d)])
+            [joinpath(d, "run.json") for d in readdir(joinpath(CONF, "plans", "refusals"); join = true) if isdir(d)]
+        )
         @test length(valid) > 40
         for f in valid
             @test schema_errors(S, JSON.parsefile(f)) === nothing
         end
-        invalid = filter(f -> endswith(f, ".json") && !endswith(f, "expected-errors.json"),
-            readdir(joinpath(CONF, "run-configs", "invalid"); join = true))
+        invalid = filter(
+            f -> endswith(f, ".json") && !endswith(f, "expected-errors.json"),
+            readdir(joinpath(CONF, "run-configs", "invalid"); join = true)
+        )
         @test length(invalid) == length(JSON.parsefile(joinpath(CONF, "run-configs", "invalid", "expected-errors.json")))
         for f in invalid
             @test schema_errors(S, JSON.parsefile(f)) !== nothing
@@ -140,14 +147,22 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
         @test cls(BandEntry("c", "q", [(1, 8), (1, 4)], Union{String, Int}["i", "k"], Any["i", "j", "k"]))[1] === :global
         @test cls(BandEntry("q", "c", rows3, idx3, Any["i", "k"])) == (:pointwise, nothing)
         shapes2 = merge(shapes, Dict("h" => ["lon", "lat"]))
-        @test classify_bands([BandEntry("h", "q", [(1, 8), (1, 3)], Union{String, Int}["i", "j"], Any["i", "j", "kk"],
-            [("kk", 1, 4)])], shapes2, ax, sizes) == (:column, nothing)
-        @test classify_bands([BandEntry("h", "q", [(1, 8), (1, 3)], Union{String, Int}["i", "j"], Any["i", "j", 1])],
-            shapes2, ax, sizes) == (:column, nothing)
+        @test classify_bands(
+            [
+                BandEntry(
+                    "h", "q", [(1, 8), (1, 3)], Union{String, Int}["i", "j"], Any["i", "j", "kk"],
+                    [("kk", 1, 4)]
+                ),
+            ], shapes2, ax, sizes
+        ) == (:column, nothing)
+        @test classify_bands(
+            [BandEntry("h", "q", [(1, 8), (1, 3)], Union{String, Int}["i", "j"], Any["i", "j", 1])],
+            shapes2, ax, sizes
+        ) == (:column, nothing)
         # An "other" axis (neither horizontal nor vertical) covered: global.
         @test cls(BandEntry("w", "s", [(1, 8), (1, 3), (1, 4), (1, 5)], Union{String, Int}["i", "j", "k", "m"], Any["n"]))[1] === :global
         @test cls(BandEntry("w", "s", [(1, 8), (1, 3), (1, 4), (1, 5)], Union{String, Int}["i", "j", "k", "m"], Any["m"])) ==
-              (:pointwise, nothing)
+            (:pointwise, nothing)
     end
 
     @testset "periodic reduction (§5.2.3, D66)" begin
@@ -176,22 +191,30 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
         @test length(bands) == 36
         @test classify_bands(bands, shapes, ax, sizes) == (:stencil, Dict("lon" => (3, 2), "lat" => (0, 0)))
         # Not reduced on the vertical axis: a wrapped vertical read is a column reach of N − 1.
-        @test classify_bands([BandEntry("q", "q", [(1, 8), (1, 2), (1, 1)], Union{String, Int}["i", "j", 1], Any["i", "j", 2])],
-            shapes, ax, sizes) == (:column, nothing)
+        @test classify_bands(
+            [BandEntry("q", "q", [(1, 8), (1, 2), (1, 1)], Union{String, Int}["i", "j", 1], Any["i", "j", 2])],
+            shapes, ax, sizes
+        ) == (:column, nothing)
     end
 
     @testset "locality of EarthSciASTDiff's own band lists" begin
         real = JSON.parsefile(joinpath(@__DIR__, "planner_bands.json"))
         bl(k) = BandEntry[BandEntry(d) for d in real[k]]
-        @test classify_bands(bl("periodic_stencil"), Dict("Transport.q" => ["lon", "lat", "lev"]), Axes(["lon", "lat"], "lev"),
-            Dict("lon" => 8, "lat" => 2, "lev" => 2)) == (:stencil, Dict("lon" => (3, 2), "lat" => (0, 0)))
+        @test classify_bands(
+            bl("periodic_stencil"), Dict("Transport.q" => ["lon", "lat", "lev"]), Axes(["lon", "lat"], "lev"),
+            Dict("lon" => 8, "lat" => 2, "lev" => 2)
+        ) == (:stencil, Dict("lon" => (3, 2), "lat" => (0, 0)))
         col = bl("column_contraction")
         @test col[2].contracted == [("kk_j", 1, 5)]
-        @test classify_bands(col, Dict("Mix.q" => ["lon", "lat", "lev"]), Axes(["lon", "lat"], "lev"),
-            Dict("lon" => 3, "lat" => 2, "lev" => 5)) == (:column, nothing)
+        @test classify_bands(
+            col, Dict("Mix.q" => ["lon", "lat", "lev"]), Axes(["lon", "lat"], "lev"),
+            Dict("lon" => 3, "lat" => 2, "lev" => 5)
+        ) == (:column, nothing)
         # Without axes, lev is horizontal and the contraction is global (refusal fixture auto-stiff-global).
-        @test classify_bands(col, Dict("Mix.q" => ["lon", "lat", "lev"]), Axes(["lev", "lon"], nothing),
-            Dict("lon" => 3, "lat" => 2, "lev" => 5))[1] === :global
+        @test classify_bands(
+            col, Dict("Mix.q" => ["lon", "lat", "lev"]), Axes(["lev", "lon"], nothing),
+            Dict("lon" => 3, "lat" => 2, "lev" => 5)
+        )[1] === :global
         adv = bl("advection_reaction")
         shapes = Dict("Reaction.A" => ["cell"], "Reaction.B" => ["cell"])
         @test classify_bands(adv[2:5], shapes, Axes(["cell"], nothing), Dict("cell" => 64)) == (:stencil, Dict("cell" => (1, 0)))
@@ -207,14 +230,18 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
         # A term with no bands is pointwise.
         @test classify_bands(BandEntry[], shapes, ax, sizes) == (:pointwise, nothing)
         @test classify_bands([b(op("-", "i", 2), "j"), b(op("+", "i", 2), "j")], shapes, ax, sizes) ==
-              (:stencil, Dict("lon" => (2, 2), "lat" => (0, 0)))
-        @test classify_bands([b(op("-", "i", 2), "j"), b(op("+", "i", 2), "j"), b("i", op("+", "j", 1)),
-                              b("i", op("-", "j", 1))], shapes, ax, sizes) ==
-              (:stencil, Dict("lon" => (2, 2), "lat" => (1, 1)))
+            (:stencil, Dict("lon" => (2, 2), "lat" => (0, 0)))
+        @test classify_bands(
+            [
+                b(op("-", "i", 2), "j"), b(op("+", "i", 2), "j"), b("i", op("+", "j", 1)),
+                b("i", op("-", "j", 1)),
+            ], shapes, ax, sizes
+        ) ==
+            (:stencil, Dict("lon" => (2, 2), "lat" => (1, 1)))
         # The widest reach reduction allows, 3 + 2 + 1 = 6 on 6 cells, is still a stencil:
         # reduced offsets lie in [−⌊N/2⌋, ⌈N/2⌉ − 1], so lower + upper + 1 never exceeds N.
         @test classify_bands([b(op("+", "i", 2), "j"), b(op("-", "i", 3), "j")], shapes, ax, sizes) ==
-              (:stencil, Dict("lon" => (3, 2), "lat" => (0, 0)))
+            (:stencil, Dict("lon" => (3, 2), "lat" => (0, 0)))
         # Without a vertical axis, a model has no column terms.
         @test classify_bands([b("i", "j")], shapes, ax, sizes) == (:pointwise, nothing)
     end

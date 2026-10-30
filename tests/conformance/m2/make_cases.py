@@ -17,31 +17,55 @@ HERE = Path(__file__).resolve().parent
 
 # toy model -> (.esm file relative to this directory, operators, layout, depends on t)
 PROBLEMS = {
-    "toy:forced_decay": ("../toys/forced_decay.esm",
-                         {"decay": {"select": {"components": "Decay"}}},
-                         ["Decay.u"], True),
-    "toy:van_der_pol/nonstiff": ("../toys/van_der_pol_nonstiff.esm",
-                                 {"oscillator": {"select": {"components": "Oscillator"}}},
-                                 ["Oscillator.y", "Oscillator.z"], False),
-    "toy:van_der_pol/stiff": ("../toys/van_der_pol_stiff.esm",
-                              {"oscillator": {"select": {"components": "Oscillator"}}},
-                              ["Oscillator.y", "Oscillator.z"], False),
-    "toy:robertson": ("../toys/robertson.esm",
-                      {"kinetics": {"select": {"components": "Kinetics"}}},
-                      ["Kinetics.y1", "Kinetics.y2", "Kinetics.y3"], False),
-    "toy:photostationary_cells": ("../toys/photostationary_cells.esm",
-                                  {"photochemistry": {"select": {"components": "Photo"}}},
-                                  ["Photo.NO2", "Photo.NO", "Photo.O3"], True),
-    "toy:advection_reaction": ("../toys/advection_reaction.esm",
-                               {"transport": {"select": {"components": "Transport"}},
-                                "reaction": {"select": {"components": "Reaction"}}},
-                               ["Reaction.A", "Reaction.B"], False),
+    "toy:forced_decay": (
+        "../toys/forced_decay.esm",
+        {"decay": {"select": {"components": "Decay"}}},
+        ["Decay.u"],
+        True,
+    ),
+    "toy:van_der_pol/nonstiff": (
+        "../toys/van_der_pol_nonstiff.esm",
+        {"oscillator": {"select": {"components": "Oscillator"}}},
+        ["Oscillator.y", "Oscillator.z"],
+        False,
+    ),
+    "toy:van_der_pol/stiff": (
+        "../toys/van_der_pol_stiff.esm",
+        {"oscillator": {"select": {"components": "Oscillator"}}},
+        ["Oscillator.y", "Oscillator.z"],
+        False,
+    ),
+    "toy:robertson": (
+        "../toys/robertson.esm",
+        {"kinetics": {"select": {"components": "Kinetics"}}},
+        ["Kinetics.y1", "Kinetics.y2", "Kinetics.y3"],
+        False,
+    ),
+    "toy:photostationary_cells": (
+        "../toys/photostationary_cells.esm",
+        {"photochemistry": {"select": {"components": "Photo"}}},
+        ["Photo.NO2", "Photo.NO", "Photo.O3"],
+        True,
+    ),
+    "toy:advection_reaction": (
+        "../toys/advection_reaction.esm",
+        {
+            "transport": {"select": {"components": "Transport"}},
+            "reaction": {"select": {"components": "Reaction"}},
+        },
+        ["Reaction.A", "Reaction.B"],
+        False,
+    ),
 }
 # A Rosenbrock leaf needs f_t on a time-dependent problem, which planned
 # operators do not provide at M2 (spec/operator-interface.md §8.3).
-ROSENBROCK = {t["name"] for t in (json.loads(f.read_text())
-                                  for f in (HERE.parents[2] / "spec" / "tableaus").glob("*.json"))
-              if t["family"] == "rosenbrock"}
+ROSENBROCK = {
+    t["name"]
+    for t in (
+        json.loads(f.read_text()) for f in (HERE.parents[2] / "spec" / "tableaus").glob("*.json")
+    )
+    if t["family"] == "rosenbrock"
+}
 
 
 def leaves(node):
@@ -87,9 +111,11 @@ def m2_case(m1):
 def main():
     m1 = json.loads((HERE.parent / "m1" / "cases.json").read_text())
     cases = [c for c in (m2_case(c) for c in m1["cases"]) if c is not None]
-    doc = {"esm_integrator": m1["esm_integrator"],
-           "generated_by": "tests/conformance/m2/make_cases.py",
-           "cases": cases}
+    doc = {
+        "esm_integrator": m1["esm_integrator"],
+        "generated_by": "tests/conformance/m2/make_cases.py",
+        "cases": cases,
+    }
     (HERE / "cases.json").write_text(json.dumps(doc, indent=1) + "\n")
 
 

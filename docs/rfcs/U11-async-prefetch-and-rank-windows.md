@@ -202,12 +202,13 @@ PrefetchGroup(members: {key: Provider}, *, depth=2, max_bytes=None, fetch_ahead=
 **Python** (`earthsciio.prefetch`; threads by default):
 
 ```python
-w = Window({"lat": (120, 218), "lon": (300, 497)})          # -> {"dims": {...: {"slice": [a, b]}}}
+w = Window({"lat": (120, 218), "lon": (300, 497)})  # -> {"dims": {...: {"slice": [a, b]}}}
 prov = {s: providers[s].with_window(w) for s in discrete}
 with PrefetchGroup(prov, depth=2, max_bytes=8 << 30, workers=2, executor="thread") as g:
-    B = g.boundaries()                                       # list[datetime]
+    B = g.boundaries()  # list[datetime]
     g.start("forward")
-    for k in range(len(B)): ep = g.take(k)                   # ep["U"].data, ep["U"].changed
+    for k in range(len(B)):
+        ep = g.take(k)  # ep["U"].data, ep["U"].changed
     g.start("reverse")
 ```
 

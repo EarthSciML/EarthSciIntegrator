@@ -86,21 +86,29 @@ _jbool(b::Bool) = b ? "true" : "false"
 
 function _jline(io::IO, r::LeafRecord)
     steps = join(("[" * _jnum(t) * ", " * _jnum(h) * "]" for (t, h) in r.steps), ", ")
-    print(io, "{\"path\": ", _jstr(r.path), ", \"node\": \"leaf\", \"t\": ", _jnum(r.t), ", \"dt\": ", _jnum(r.dt),
+    print(
+        io, "{\"path\": ", _jstr(r.path), ", \"node\": \"leaf\", \"t\": ", _jnum(r.t), ", \"dt\": ", _jnum(r.dt),
         ", \"steps\": [", steps, "], \"accepted\": ", r.accepted, ", \"rejected\": ", r.rejected,
-        ", \"retcode\": ", _jstr(r.retcode))
+        ", \"retcode\": ", _jstr(r.retcode)
+    )
     if !isempty(r.clips)
         clips = join(("[" * string(k) * ", [" * join(string.(idx), ", ") * "]]" for (k, idx) in r.clips), ", ")
         print(io, ", \"clips\": [", clips, "]")
     end
-    print(io, "}")
+    return print(io, "}")
 end
-_jline(io::IO, r::MapRecord) = print(io, "{\"path\": ", _jstr(r.path), ", \"node\": \"map\", \"t\": ", _jnum(r.t),
-    ", \"dt\": ", _jnum(r.dt), ", \"mask\": [", join(map(_jbool, r.mask), ", "), "]}")
-_jline(io::IO, r::SubcycleRecord) = print(io, "{\"path\": ", _jstr(r.path), ", \"node\": \"subcycle\", \"t\": ",
-    _jnum(r.t), ", \"dt\": ", _jnum(r.dt), ", \"n\": ", r.n, "}")
-_jline(io::IO, r::MacroRecord) = print(io, "{\"path\": ", _jstr(r.path), ", \"node\": \"macro\", \"t\": ", _jnum(r.t),
-    ", \"dt\": ", _jnum(r.dt), ", \"reason\": ", _jstr(r.reason), "}")
+_jline(io::IO, r::MapRecord) = print(
+    io, "{\"path\": ", _jstr(r.path), ", \"node\": \"map\", \"t\": ", _jnum(r.t),
+    ", \"dt\": ", _jnum(r.dt), ", \"mask\": [", join(map(_jbool, r.mask), ", "), "]}"
+)
+_jline(io::IO, r::SubcycleRecord) = print(
+    io, "{\"path\": ", _jstr(r.path), ", \"node\": \"subcycle\", \"t\": ",
+    _jnum(r.t), ", \"dt\": ", _jnum(r.dt), ", \"n\": ", r.n, "}"
+)
+_jline(io::IO, r::MacroRecord) = print(
+    io, "{\"path\": ", _jstr(r.path), ", \"node\": \"macro\", \"t\": ", _jnum(r.t),
+    ", \"dt\": ", _jnum(r.dt), ", \"reason\": ", _jstr(r.reason), "}"
+)
 
 """Write a tape as JSON Lines, one object per invocation in execution order."""
 function write_tape(io::IO, tape::Tape)
@@ -108,6 +116,7 @@ function write_tape(io::IO, tape::Tape)
         _jline(io, r)
         print(io, "\n")
     end
+    return
 end
 write_tape(path::AbstractString, tape::Tape) = open(io -> write_tape(io, tape), path, "w")
 tape_string(tape::Tape) = sprint(write_tape, tape)
@@ -124,8 +133,12 @@ function read_tape(io::IO)
         if node == "leaf"
             steps = NTuple{2, Float64}[(_f(s[1]), _f(s[2])) for s in d["steps"]]
             clips = Pair{Int, Vector{Int}}[Int(c[1]) => Int.(c[2]) for c in get(d, "clips", [])]
-            push!(tape, LeafRecord(d["path"], _f(d["t"]), _f(d["dt"]), steps, Int(d["accepted"]), Int(d["rejected"]),
-                d["retcode"], clips))
+            push!(
+                tape, LeafRecord(
+                    d["path"], _f(d["t"]), _f(d["dt"]), steps, Int(d["accepted"]), Int(d["rejected"]),
+                    d["retcode"], clips
+                )
+            )
         elseif node == "map"
             push!(tape, MapRecord(d["path"], _f(d["t"]), _f(d["dt"]), Bool.(d["mask"])))
         elseif node == "subcycle"

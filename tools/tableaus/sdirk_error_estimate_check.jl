@@ -7,9 +7,11 @@
 using OrdinaryDiffEqSDIRK, OrdinaryDiffEqRosenbrock, JSON
 # Both problems are u' = λu + g(t) with exact solutions: forced decay (non-stiff)
 # and a stiff Prothero-Robinson problem.
-A(t) = (2sin(3t) - 3cos(3t))/13
-probs = [("forced_decay", -2.0, t -> sin(3t), 1.0, 2.0, (1 - A(0))*exp(-4.0) + A(2.0)),
-         ("prothero_robinson", -1e4, t -> 1e4cos(t) - sin(t), 1.0, 10.0, cos(10.0))]
+A(t) = (2sin(3t) - 3cos(3t)) / 13
+probs = [
+    ("forced_decay", -2.0, t -> sin(3t), 1.0, 2.0, (1 - A(0)) * exp(-4.0) + A(2.0)),
+    ("prothero_robinson", -1.0e4, t -> 1.0e4cos(t) - sin(t), 1.0, 10.0, cos(10.0)),
+]
 
 # The spec's SDIRK step (spec/methods.md §5.1, §5.4) and PI controller (§8.2,
 # §8.6) for scalar u' = λu + g(t). The stage equations are linear, so each is
@@ -22,14 +24,14 @@ function spec_solve(name, λ, g, u0, tf, tol)
     γ = Am[s, s]
     k = d["controller"]
     β1, β2, safety, qmin = k["beta1"], k["beta2"], k["gamma"], k["qmin"]
-    t, u, h, Eold, accepted, prev_accepted = 0.0, u0, 1e-6, k["qoldinit"], 0, false
+    t, u, h, Eold, accepted, prev_accepted = 0.0, u0, 1.0e-6, k["qoldinit"], 0, false
     while t < tf
         hh = min(h, tf - t)
         z = zeros(s)
         for i in 1:s
             τ = u + sum(Am[i, j] * z[j] for j in 1:(i - 1); init = 0.0)
             z[i] = i == 1 && d["explicit_first_stage"] ? hh * (λ * u + g(t)) :
-                   hh * (λ * τ + g(t + c[i] * hh)) / (1 - hh * γ * λ)
+                hh * (λ * τ + g(t + c[i] * hh)) / (1 - hh * γ * λ)
         end
         unew = u + sum(b .* z)
         e = sum(bt .* z) / (1 - hh * γ * λ)
@@ -54,7 +56,7 @@ end
 println(rpad("problem", 18), rpad("alg", 10), rpad("tol", 8), rpad("estimate", 22), rpad("err/tol", 12), "steps")
 row(name, alg, tol, est, err, n) =
     println(rpad(name, 18), rpad(alg, 10), rpad(tol, 8), rpad(est, 22), rpad(round(err / tol, sigdigits = 3), 12), n)
-for (name, λ, g, u0, tf, ex) in probs, alg in (TRBDF2, SDIRK2, Kvaerno3, Kvaerno4), tol in (1e-4, 1e-6, 1e-8)
+for (name, λ, g, u0, tf, ex) in probs, alg in (TRBDF2, SDIRK2, Kvaerno3, Kvaerno4), tol in (1.0e-4, 1.0e-6, 1.0e-8)
     prob = ODEProblem((u, p, t) -> λ * u + g(t), u0, (0.0, tf))
     for smooth in (true, false)
         sol = solve(prob, alg(smooth_est = smooth); reltol = tol, abstol = tol, save_everystep = false)

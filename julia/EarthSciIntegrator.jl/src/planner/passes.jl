@@ -30,8 +30,10 @@ function resolve_axes(m::PlanModel, config::AbstractDict)
         end
         [k for k in keys(m.sizes) if k in used && k != vertical]
     end
-    length(horizontal) > 2 && refuse("axes_unresolved", "/axes",
-        "$(length(horizontal)) horizontal axes ($(join(horizontal, ", "))); at most two (give axes in the run config)")
+    length(horizontal) > 2 && refuse(
+        "axes_unresolved", "/axes",
+        "$(length(horizontal)) horizontal axes ($(join(horizontal, ", "))); at most two (give axes in the run config)"
+    )
     return Axes(horizontal, vertical)
 end
 
@@ -47,6 +49,7 @@ function term_localities!(ctx, terms::Vector{Term})
         bands === nothing && continue
         t.locality, t.radius = classify_bands(bands, ctx.model.shapes, ctx.axes, ctx.model.sizes)
     end
+    return
 end
 
 """

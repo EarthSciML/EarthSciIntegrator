@@ -20,8 +20,8 @@ using LinearAlgebra: I
             F = lu_factor(copy(W), pivot)
             @test issuccess_lu(F)
             b = randn(rng, N)
-            @test lu_solve(F, b) ≈ W \ b rtol = 1e-12
-            @test lu_solve_transpose(F, b) ≈ W' \ b rtol = 1e-12
+            @test lu_solve(F, b) ≈ W \ b rtol = 1.0e-12
+            @test lu_solve_transpose(F, b) ≈ W' \ b rtol = 1.0e-12
         end
         # Julia's generic_lufact! with RowMaximum gives the same factors bitwise
         # (LAPACK's blocked getrf, which `lu` calls for Float64, does not).
@@ -50,8 +50,8 @@ using LinearAlgebra: I
             Fb = lu_factor(Wb, pivot)
             @test issuccess_lu(Fb)
             b = randn(rng, nc * n)
-            @test lu_solve(Fb, b) ≈ D \ b rtol = 1e-12
-            @test lu_solve_transpose(Fb, b) ≈ D' \ b rtol = 1e-12
+            @test lu_solve(Fb, b) ≈ D \ b rtol = 1.0e-12
+            @test lu_solve_transpose(Fb, b) ≈ D' \ b rtol = 1.0e-12
             # The same arithmetic per cell as the dense LU of that cell's block, bitwise.
             Fd = lu_factor(form_W(DenseJacobian(todense(B)), α), pivot)
             @test lu_solve(Fb, b) == lu_solve(Fd, b)
@@ -64,8 +64,10 @@ using LinearAlgebra: I
         @test !issuccess_lu(lu_factor(form_W(BlockJacobian{Float64}(nc, n, data), 0.0), false))
     end
 
-    base(alg; kw...) = Dict{String, Any}("esm_integrator" => "0.1.0", "model" => "toy:forced_decay",
-        "schedule" => Dict{String, Any}("leaf" => "decay", "alg" => alg, (String(k) => v for (k, v) in kw)...), "step" => Dict("dt" => 2))
+    base(alg; kw...) = Dict{String, Any}(
+        "esm_integrator" => "0.1.0", "model" => "toy:forced_decay",
+        "schedule" => Dict{String, Any}("leaf" => "decay", "alg" => alg, (String(k) => v for (k, v) in kw)...), "step" => Dict("dt" => 2)
+    )
 
     @testset "KPP methods: order and adjoint on forced_decay" begin
         prob = toy_problem("toy:forced_decay")
@@ -77,13 +79,13 @@ using LinearAlgebra: I
             slope = sum((x .- mean(x)) .* (y .- mean(y))) / sum((x .- mean(x)) .^ 2)
             @test slope >= p - 0.3
             # Adaptive with a gradient: the adjoint against ForwardDiff on the frozen tape.
-            cfg = base(alg; control = Dict("reltol" => 1e-6, "abstol" => 1e-8))
+            cfg = base(alg; control = Dict("reltol" => 1.0e-6, "abstol" => 1.0e-8))
             cfg["adjoint"] = Dict("functional" => Dict("sum" => "u", "over" => "final"), "wrt" => ["u0", "params:numeric"])
             run = forward!(build_run(cfg; tspan = (0, 2)))
             @test run.retcode == "Success"
             J, ū0, p̄ = gradient(run)
             g = ForwardDiff.gradient(x -> replay(run, x[1:1], x[2:3])[1][1], vcat(run.u0, run.p))
-            @test isapprox(vcat(ū0, p̄), g; rtol = 1e-12)
+            @test isapprox(vcat(ū0, p̄), g; rtol = 1.0e-12)
         end
     end
 
@@ -101,13 +103,17 @@ using LinearAlgebra: I
     end
 
     @testset "block_lu and dense_lu give the same run" begin
-        cfg(ls) = Dict("esm_integrator" => "0.1.0", "model" => "toy:photostationary_cells",
-            "schedule" => Dict("leaf" => "photochemistry", "alg" => "Rodas4", "linsolve" => ls,
-                "control" => Dict("reltol" => 1e-6, "abstol" => 1e-6)), "step" => Dict("dt" => 600))
+        cfg(ls) = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:photostationary_cells",
+            "schedule" => Dict(
+                "leaf" => "photochemistry", "alg" => "Rodas4", "linsolve" => ls,
+                "control" => Dict("reltol" => 1.0e-6, "abstol" => 1.0e-6)
+            ), "step" => Dict("dt" => 600)
+        )
         rb = forward!(build_run(cfg(Dict("block_lu" => Dict("pivot" => false))); tspan = (0, 1200)))
         rd = forward!(build_run(cfg("dense_lu"); tspan = (0, 1200)))
         @test rb.accepted == rd.accepted
-        @test isapprox(rb.u, rd.u; rtol = 1e-12)
+        @test isapprox(rb.u, rd.u; rtol = 1.0e-12)
     end
 
     @testset "singular W" begin
@@ -119,7 +125,7 @@ using LinearAlgebra: I
         run = forward!(build_run(base("Rodas4"; dt = h); tspan = (0, 2), p))
         @test run.retcode == "Unstable"
         # Adaptive: the step is rejected and the controller shrinks it.
-        cfg = base("Rodas4"; control = Dict("dt0" => h, "reltol" => 1e-3))
+        cfg = base("Rodas4"; control = Dict("dt0" => h, "reltol" => 1.0e-3))
         run = forward!(build_run(cfg; tspan = (0, 0.5), p))
         @test run.rejected >= 1
         @test first(r for r in run.tape.records if r isa LeafRecord).steps[1][2] < h
@@ -137,9 +143,11 @@ using LinearAlgebra: I
         @test refused(base("Rodas4"; dt = 0.1, jacobian = "symbolic", linsolve = "dense_lu")) === nothing
         @test refused(base("Tsit5"; dt = 0.1, domain = Dict("check_stages" => true))) isa UnsupportedError
         # A functional over time needs a single-leaf schedule.
-        smap = Dict("esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
+        smap = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
             "schedule" => Dict("sequence" => [Dict("leaf" => "source", "alg" => "RK4", "dt" => "step"), Dict("map" => "decay")]),
-            "step" => Dict("dt" => 0.5), "adjoint" => Dict("functional" => Dict("sum" => "u", "over" => "time"), "wrt" => ["u0"]))
+            "step" => Dict("dt" => 0.5), "adjoint" => Dict("functional" => Dict("sum" => "u", "over" => "time"), "wrt" => ["u0"])
+        )
         @test refused(smap) isa UnsupportedError
     end
 
@@ -157,12 +165,12 @@ using LinearAlgebra: I
             cfg["adjoint"] = Dict("functional" => Dict("sum" => "u", "over" => "time"), "wrt" => ["u0", "params:numeric"])
             run = forward!(build_run(cfg; tspan = (0, 2)))
             # Second order for Rosenbrock23, whose state error at dt 0.01 is about 1e-5.
-            @test isapprox(run.q, exact; rtol = alg == "Rosenbrock23" ? 1e-4 : 1e-6)
+            @test isapprox(run.q, exact; rtol = alg == "Rosenbrock23" ? 1.0e-4 : 1.0e-6)
             J, ū0, p̄ = gradient(run)
             @test J == run.q
             @test replay(run)[3] == run.q
             g = ForwardDiff.gradient(x -> replay(run, x[1:1], x[2:3])[3], vcat(run.u0, run.p))
-            @test isapprox(vcat(ū0, p̄), g; rtol = 1e-12)
+            @test isapprox(vcat(ū0, p̄), g; rtol = 1.0e-12)
         end
     end
 end

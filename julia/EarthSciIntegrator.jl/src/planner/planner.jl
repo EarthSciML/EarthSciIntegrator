@@ -115,9 +115,12 @@ end
 """§4 step 7 (§6.1.4): a top-level component named `_jacobian` is refused, since the Jacobian document uses that name."""
 function check_reserved_names(file::EarthSciAST.EsmFile)
     for d in (file.models, file.reaction_systems)
-        d !== nothing && haskey(d, "_jacobian") && refuse("reserved_component_name", "/model",
-            "the model has a top-level component named _jacobian, which the Jacobian document reserves (spec/plan.md §6.1.4)")
+        d !== nothing && haskey(d, "_jacobian") && refuse(
+            "reserved_component_name", "/model",
+            "the model has a top-level component named _jacobian, which the Jacobian document reserves (spec/plan.md §6.1.4)"
+        )
     end
+    return
 end
 
 """The plan's object for an operator (§3, §5)."""
@@ -130,7 +133,8 @@ function operator_json(op::PlanOperator, stiff)
         "reads" => op.reads,
         "terms" => Any[term_json(t) for t in op.terms],
         "structure" => op.structure,
-        "stiffness" => Dict{String, Any}("class" => String(stiff[1]), "source" => stiff[2]))
+        "stiffness" => Dict{String, Any}("class" => String(stiff[1]), "source" => stiff[2])
+    )
 end
 
 """
@@ -152,7 +156,8 @@ function plan_dict(d::PlanDraft)
         "partition" => d.partition,
         "precision" => d.precision,
         "derived" => derived,
-        "validation" => validation)
+        "validation" => validation
+    )
     haskey(ctx.config, "adjoint") && (out["checkpoint_schedule"] = Dict{String, Any}("kind" => "all", "macro_steps" => 0))
     return out
 end

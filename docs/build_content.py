@@ -12,6 +12,7 @@ Relative links between these files become site paths, links to other
 repository files become GitHub links, and each page gets front matter from its
 first heading.
 """
+
 from __future__ import annotations
 
 import posixpath
@@ -90,7 +91,8 @@ def rewrite_links(src: str, text: str, data: set[str]) -> str:
             continue
         if fenced is None:
             line = LINK.sub(
-                lambda mm: f"[{mm.group(1)}]({rewrite_target(src, mm.group(2), data)})", line)
+                lambda mm: f"[{mm.group(1)}]({rewrite_target(src, mm.group(2), data)})", line
+            )
         out.append(line)
     return "\n".join(out)
 

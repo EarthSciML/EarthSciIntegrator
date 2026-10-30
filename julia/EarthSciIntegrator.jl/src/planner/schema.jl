@@ -13,11 +13,15 @@
 # needs more is noticed rather than silently ignored.
 
 const _SCHEMA_ANNOTATIONS = Set(["\$schema", "\$id", "title", "description", "\$defs", "\$comment", "examples", "default"])
-const _SCHEMA_KEYWORDS = Set(["\$ref", "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "properties",
-    "patternProperties", "additionalProperties", "propertyNames", "items", "prefixItems", "unevaluatedProperties",
-    "type", "enum", "const", "pattern", "minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum",
-    "exclusiveMaximum", "minItems", "maxItems", "uniqueItems", "required", "minProperties", "maxProperties",
-    "dependentRequired"])
+const _SCHEMA_KEYWORDS = Set(
+    [
+        "\$ref", "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "properties",
+        "patternProperties", "additionalProperties", "propertyNames", "items", "prefixItems", "unevaluatedProperties",
+        "type", "enum", "const", "pattern", "minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum",
+        "exclusiveMaximum", "minItems", "maxItems", "uniqueItems", "required", "minProperties", "maxProperties",
+        "dependentRequired",
+    ]
+)
 
 struct SchemaValidator
     root::Any
@@ -33,8 +37,10 @@ _json_equal(a, b) = _isnum(a) && _isnum(b) ? a == b :
     (a isa Bool && b isa Bool) ? a == b :
     (a === nothing && b === nothing) ? true :
     (a isa AbstractVector && b isa AbstractVector) ? (length(a) == length(b) && all(_json_equal(x, y) for (x, y) in zip(a, b))) :
-    (a isa AbstractDict && b isa AbstractDict) ? (length(a) == length(b) &&
-        all(k -> haskey(b, k) && _json_equal(a[k], b[k]), keys(a))) : false
+    (a isa AbstractDict && b isa AbstractDict) ? (
+        length(a) == length(b) &&
+        all(k -> haskey(b, k) && _json_equal(a[k], b[k]), keys(a))
+    ) : false
 
 function _json_type_ok(x, t::AbstractString)
     t == "object" && return x isa AbstractDict
@@ -48,7 +54,7 @@ function _json_type_ok(x, t::AbstractString)
 end
 
 function _regex(v::SchemaValidator, p::AbstractString)
-    get!(v.regexes, p) do
+    return get!(v.regexes, p) do
         # ECMA-262 semantics for the anchors the schemas use: `$` matches only
         # at the very end (PCRE would also match before a final newline).
         Regex(p, Base.DEFAULT_COMPILER_OPTS | Base.PCRE.DOLLAR_ENDONLY | Base.PCRE.UCP, Base.DEFAULT_MATCH_OPTS)
@@ -60,7 +66,7 @@ function _resolve_ref(v::SchemaValidator, ref::AbstractString)
     node = v.root
     for tok in split(ref[2:end], '/'; keepempty = false)
         tok = replace(tok, "~1" => "/", "~0" => "~")
-        node = node isa AbstractVector ? node[parse(Int, tok)+1] : node[tok]
+        node = node isa AbstractVector ? node[parse(Int, tok) + 1] : node[tok]
     end
     return node
 end
@@ -169,7 +175,7 @@ function _sv(v::SchemaValidator, x, schema, path::String)
         haskey(schema, "minItems") && n < schema["minItems"] && return fail("minItems")
         haskey(schema, "maxItems") && n > schema["maxItems"] && return fail("maxItems")
         if get(schema, "uniqueItems", false) === true
-            for i in 1:n, j in i+1:n
+            for i in 1:n, j in (i + 1):n
                 _json_equal(x[i], x[j]) && return fail("uniqueItems")
             end
         end
@@ -177,14 +183,14 @@ function _sv(v::SchemaValidator, x, schema, path::String)
         if haskey(schema, "prefixItems")
             for (i, s) in enumerate(schema["prefixItems"])
                 i > n && break
-                ok, _, err = _sv(v, x[i], s, "$path[$(i-1)]")
+                ok, _, err = _sv(v, x[i], s, "$path[$(i - 1)]")
                 ok || return (false, E, err)
                 np = i
             end
         end
         if haskey(schema, "items")
-            for i in (np+1):n
-                ok, _, err = _sv(v, x[i], schema["items"], "$path[$(i-1)]")
+            for i in (np + 1):n
+                ok, _, err = _sv(v, x[i], schema["items"], "$path[$(i - 1)]")
                 ok || return (false, E, err)
             end
         end
@@ -236,8 +242,12 @@ function _sv(v::SchemaValidator, x, schema, path::String)
                 k in local_ev && continue
                 (props !== nothing && haskey(props, k)) && continue
                 ok, _, err = _sv(v, x[k], schema["additionalProperties"], "$path.$k")
-                ok || return (false, E, (schema["additionalProperties"] === false ?
-                    "$path: additionalProperties: '$k' is not allowed" : err))
+                ok || return (
+                    false, E, (
+                        schema["additionalProperties"] === false ?
+                            "$path: additionalProperties: '$k' is not allowed" : err
+                    ),
+                )
                 push!(local_ev, k)
             end
         end
@@ -246,8 +256,12 @@ function _sv(v::SchemaValidator, x, schema, path::String)
             for k in keys(x)
                 k in E && continue
                 ok, _, err = _sv(v, x[k], schema["unevaluatedProperties"], "$path.$k")
-                ok || return (false, E, (schema["unevaluatedProperties"] === false ?
-                    "$path: unevaluatedProperties: '$k' is not allowed" : err))
+                ok || return (
+                    false, E, (
+                        schema["unevaluatedProperties"] === false ?
+                            "$path: unevaluatedProperties: '$k' is not allowed" : err
+                    ),
+                )
                 push!(E, k)
             end
         end

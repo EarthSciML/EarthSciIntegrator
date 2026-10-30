@@ -54,10 +54,12 @@ BandEntry(row, col, rows, row_idx, col_idx) = BandEntry(row, col, rows, row_idx,
 
 """A `BandEntry` from `serialize_band`'s dictionary (its `coef`, if present, is ignored)."""
 function BandEntry(d::AbstractDict)
-    BandEntry(String(d["row"]), String(d["col"]), Tuple{Int, Int}[(Int(r[1]), Int(r[2])) for r in d["rows"]],
+    return BandEntry(
+        String(d["row"]), String(d["col"]), Tuple{Int, Int}[(Int(r[1]), Int(r[2])) for r in d["rows"]],
         Union{String, Int}[x isa AbstractString ? String(x) : Int(x) for x in d["row_idx"]], Any[d["col_idx"]...],
         haskey(d, "contracted") ? Tuple{String, Int, Int}[(String(c[1]), Int(c[2]), Int(c[3])) for c in d["contracted"]] :
-        Tuple{String, Int, Int}[])
+            Tuple{String, Int, Int}[]
+    )
 end
 
 """An integer literal (§5.2.3): a number the flattened model holds as an integer (serialized as a JSON integer), within 64-bit signed range. A float such as `1.0` is not one."""
@@ -66,7 +68,7 @@ _is_int_literal(x) = x isa Integer && !(x isa Bool) && typemin(Int) <= x <= type
 """Whether a serialized index expression mentions `name`."""
 _mentions(x, name) = x isa AbstractString ? x == name :
     x isa AbstractDict ? any(a -> _mentions(a, name), get(x, "args", Any[])) ||
-                         any(v -> _mentions(v, name), (v for (k, v) in x if k != "args" && k != "op")) :
+    any(v -> _mentions(v, name), (v for (k, v) in x if k != "args" && k != "op")) :
     x isa AbstractVector ? any(a -> _mentions(a, name), x) : false
 
 """
@@ -112,7 +114,7 @@ function raw_offsets(c, r, lo::Int, hi::Int)
     c isa AbstractString && r isa AbstractString && c == r && return [0]
     _is_int_literal(c) && _is_int_literal(r) && c == r && return [0]
     if r isa AbstractString && c isa AbstractDict && get(c, "op", nothing) in ("+", "-") &&
-       length(keys(c)) == 2 && length(c["args"]) == 2
+            length(keys(c)) == 2 && length(c["args"]) == 2
         a, b = c["args"]
         if c["op"] == "+" && a == r && _is_int_literal(b)
             return [Int(b)]                  # r + δ

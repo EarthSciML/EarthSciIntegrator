@@ -94,8 +94,10 @@ persistent across invocations). `stops` are the stops inside the interval,
 sorted, ending with `tb` (spec/methods.md §10). `p` already has the `node` and
 `macro` bindings applied; the `leaf` binding is applied per step.
 """
-function leaf_forward(leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, p, ta::Float64, tb::Float64,
-        path::String, Δmacro::Float64, stops::Vector{Float64})
+function leaf_forward(
+        leaf::LeafNode, cs::ControllerState, u0::Vector{Float64}, p, ta::Float64, tb::Float64,
+        path::String, Δmacro::Float64, stops::Vector{Float64}
+    )
     tab = leaf.tab
     adaptive = is_adaptive(leaf)
     cc = tab.controller
@@ -271,8 +273,10 @@ with a `bind_dt: "leaf"` parameter only when `hₙ = hₙ₋₁`, as in
 [`leaf_forward`](@ref)); `visit(tₙ₊₁, uₙ₊₁)` is called
 after every step. The record's clips are checked first ([`check_clips`](@ref)).
 """
-function leaf_replay(leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float64}; states = nothing, visit = nothing,
-        qacc = nothing)
+function leaf_replay(
+        leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float64}; states = nothing, visit = nothing,
+        qacc = nothing
+    )
     check_clips(leaf, rec)
     u = copy(u0)
     clipmap = Dict(rec.clips)

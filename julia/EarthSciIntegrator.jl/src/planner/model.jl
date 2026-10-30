@@ -78,6 +78,7 @@ function reaction_system_paths(file::EarthSciAST.EsmFile)
         for (k, s) in rs.subsystems
             rs!(path * "." * k, s)
         end
+        return
     end
     function model!(path, m)
         for (k, s) in m.subsystems
@@ -87,6 +88,7 @@ function reaction_system_paths(file::EarthSciAST.EsmFile)
                 model!(path * "." * k, s)
             end
         end
+        return
     end
     file.reaction_systems === nothing || foreach(((k, s),) -> rs!(k, s), file.reaction_systems)
     file.models === nothing || foreach(((k, m),) -> model!(k, m), file.models)
@@ -111,8 +113,10 @@ function lifted_shape(flat, name, extents::Vector{Int}, sizes)
         (sh === nothing || length(sh) != length(extents)) && continue
         all(i -> get(sizes, sh[i], -1) == extents[i], eachindex(sh)) && return String.(sh)
     end
-    refuse("lift_shape_unresolved", "/model",
-        "no declared shape has the extents $extents of the lifted state $name (spec/plan.md §6.1.3, §10 item 1)")
+    return refuse(
+        "lift_shape_unresolved", "/model",
+        "no declared shape has the extents $extents of the lifted state $name (spec/plan.md §6.1.3, §10 item 1)"
+    )
 end
 
 """
@@ -150,9 +154,11 @@ function plan_model(inp::PlanInputs)
     for (k, ext) in flat.lifted_shapes
         shapes[k] = lifted_shape(flat, k, ext, sizes)
     end
-    return PlanModel(inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
+    return PlanModel(
+        inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
         collect(keys(flat.observed_variables)), shapes, sizes, Set(keys(flat.lifted_shapes)), state_eqs,
-        observed_defs, reaction_system_paths(inp.file))
+        observed_defs, reaction_system_paths(inp.file)
+    )
 end
 
 """

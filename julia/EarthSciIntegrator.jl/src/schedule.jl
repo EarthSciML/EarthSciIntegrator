@@ -37,8 +37,10 @@ end
 is_adaptive(l::LeafNode) = l.dt === nothing
 
 """The [`RosenbrockContext`](@ref) of a Rosenbrock leaf."""
-rosenbrock_context(l::LeafNode) = RosenbrockContext(l.ops, l.linsolve, structure(l.ops), depends_on_t(l.ops),
-    l.check_stages ? l.nonnegative : Int[])
+rosenbrock_context(l::LeafNode) = RosenbrockContext(
+    l.ops, l.linsolve, structure(l.ops), depends_on_t(l.ops),
+    l.check_stages ? l.nonnegative : Int[]
+)
 
 """The [`ImplicitContext`](@ref) of an SDIRK, θ-method or IMEX Euler leaf."""
 implicit_context(l::LeafNode) = l.imex === nothing ?
@@ -127,8 +129,12 @@ end
 # ---------------------------------------------------------------------------
 # Building nodes
 
-const _LEAF_KEYS = Set(["leaf", "id", "alg", "theta", "implicit_solve", "dt", "control", "jacobian", "linsolve",
-    "imex", "domain", "frozen", "partition", "bind_dt"])
+const _LEAF_KEYS = Set(
+    [
+        "leaf", "id", "alg", "theta", "implicit_solve", "dt", "control", "jacobian", "linsolve",
+        "imex", "domain", "frozen", "partition", "bind_dt",
+    ]
+)
 const _COMBINATORS = ("leaf", "coupled", "sequence", "strang", "subcycle", "every", "split_explicit", "map", "solve")
 
 function _bindings(spec, prob)
@@ -241,8 +247,12 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         for n in vcat(impl, something(expl, String[]))
             # Entries may also be locality names (spec/run-config.md §4.5); the toy
             # operators declare no locality, so M1 accepts operator names only.
-            n in names || throw(ConfigError("leaf $id: imex names '$n', which is not an operator of the leaf; " *
-                                            "locality names are not supported at M1"))
+            n in names || throw(
+                ConfigError(
+                    "leaf $id: imex names '$n', which is not an operator of the leaf; " *
+                        "locality names are not supported at M1"
+                )
+            )
         end
         expl === nothing && (expl = [n for n in names if !(n in impl)])
         # Every term in exactly one part (spec/run-config.md §8 rule 6).
@@ -315,7 +325,11 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         end
         tol = Tolerances(reltol, abstol, writes(opsum, prob.N))
     end
-    controller = controller_kind(let c = get(ctrl, "controller", "auto"); c == "auto" ? "PI" : c end)
+    controller = controller_kind(
+        let c = get(ctrl, "controller", "auto")
+            c == "auto" ? "PI" : c
+        end
+    )
     maxiters = haskey(ctrl, "maxiters") ? Int(ctrl["maxiters"]) : (dt === nothing ? 1_000_000 : typemax(Int))
     dom = get(spec, "domain", nothing)
     nonneg = Int[]
@@ -337,18 +351,26 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     # spec/methods.md §9: the first-step algorithm evaluates f before there is a
     # step whose size a "leaf" binding could give (run-config §8 rule 15).
     if dt === nothing && dt0 === nothing && any(b -> b.second === :leaf, bindings)
-        throw(ConfigError("leaf $id: an adaptive leaf with a bind_dt \"leaf\" parameter needs control.dt0, " *
-            "because the first-step algorithm evaluates f before any step size exists " *
-            "(spec/methods.md §9, run-config §8 rule 15)"))
+        throw(
+            ConfigError(
+                "leaf $id: an adaptive leaf with a bind_dt \"leaf\" parameter needs control.dt0, " *
+                    "because the first-step algorithm evaluates f before any step size exists " *
+                    "(spec/methods.md §9, run-config §8 rule 15)"
+            )
+        )
     end
-    return LeafNode(id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
-        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex)
+    return LeafNode(
+        id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
+        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex
+    )
 end
 
 """The same leaf integrating the functional's integrand `ψ` (spec/adjoint.md §2.1)."""
-with_integrand(l::LeafNode, ψ::Integrand) = LeafNode(l.id, l.opnames, l.ops, l.tab, l.method, l.dt, l.tol, l.dt0,
+with_integrand(l::LeafNode, ψ::Integrand) = LeafNode(
+    l.id, l.opnames, l.ops, l.tab, l.method, l.dt, l.tol, l.dt0,
     l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, ψ,
-    l.imex)
+    l.imex
+)
 
 """
     apply_bindings(p, bindings, Δleaf, Δnode, Δmacro) -> p′

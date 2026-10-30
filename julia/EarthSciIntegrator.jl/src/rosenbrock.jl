@@ -56,16 +56,20 @@ end
 function RosenbrockMethod(tab::Tableau)
     if tab.form === :rosenbrock23
         d = something(tab.d)::Float64
-        return RosenbrockMethod(tab, :rosenbrock23, 2, zeros(0, 0), zeros(0, 0), Float64[], Float64[],
-            [0.0, 0.5], [d], d, something(tab.c32), [false, false], d != 0)
+        return RosenbrockMethod(
+            tab, :rosenbrock23, 2, zeros(0, 0), zeros(0, 0), Float64[], Float64[],
+            [0.0, 0.5], [d], d, something(tab.c32), [false, false], d != 0
+        )
     end
     A, C, b, c = something(tab.A), something(tab.C), something(tab.b), something(tab.c)
     d = something(tab.d)::Vector{Float64}
     bt = tab.btilde === nothing ? zeros(length(b)) : tab.btilde
     s = length(b)
     reuse = [i > 2 && c[i] == c[i - 1] && all(j -> A[i, j] == A[i - 1, j], 1:(i - 1)) for i in 1:s]
-    return RosenbrockMethod(tab, :transformed, s, A, C, b, bt, c, d, something(tab.gamma), NaN, reuse,
-        any(!iszero, d))
+    return RosenbrockMethod(
+        tab, :transformed, s, A, C, b, bt, c, d, something(tab.gamma), NaN, reuse,
+        any(!iszero, d)
+    )
 end
 
 # `acc .= acc + coef * x` with the coefficient converted to the element type.
@@ -149,8 +153,10 @@ function rosenbrock_stages(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t,
         end
         u1 = convert(Vector{T}, copy(u))
         _addto!(u1, h, kk2)
-        return (; singular = false, violation, nf, J, ft, F, U = [convert(Vector{T}, u), U2], fv = [f0, f1],
-            k = [kk1, kk2], u1)
+        return (;
+            singular = false, violation, nf, J, ft, F, U = [convert(Vector{T}, u), U2], fv = [f0, f1],
+            k = [kk1, kk2], u1,
+        )
     end
     s = m.s
     U = Vector{Vector{T}}(undef, s)
@@ -195,8 +201,10 @@ end
 One forward step attempt. A singular W gives `E = 2` (spec/methods.md §4.2)
 and the unchanged state; the caller distinguishes it by `singular`.
 """
-function rosenbrock_step(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h, k1, adaptive::Bool, tol; tk1 = t,
-        ψ = nothing)
+function rosenbrock_step(
+        m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t, h, k1, adaptive::Bool, tol; tk1 = t,
+        ψ = nothing
+    )
     st = rosenbrock_stages(m, ctx, u, p, t, h, k1; tk1)
     if st.singular
         return StepResult(u, 2.0, nothing, st.nf, true, false)

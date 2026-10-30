@@ -87,15 +87,21 @@ function build_terms(m::PlanModel)
     terms = Term[]
     for (ei, var, lifted) in m.state_eqs
         for (c, contrib) in enumerate(m.contributions[ei])
-            isempty(contrib.origins) && refuse("term_origin_unknown", "/model",
-                "contribution $(c - 1) of the equation for $var has no origins (only a caller's edit of a flattened system produces one)")
+            isempty(contrib.origins) && refuse(
+                "term_origin_unknown", "/model",
+                "contribution $(c - 1) of the equation for $var has no origins (only a caller's edit of a flattened system produces one)"
+            )
             label = provenance_label(contrib.origins)
             s = 0
             for t in additive_terms(contrib.expr)
                 is_zero_literal(t) && continue
                 refs = referenced_names(m, t)
-                push!(terms, Term(var, c - 1, s, t, contrib.origins, label, term_owner(m, var, contrib.origins, refs),
-                    lifted, ei, refs, nothing, nothing))
+                push!(
+                    terms, Term(
+                        var, c - 1, s, t, contrib.origins, label, term_owner(m, var, contrib.origins, refs),
+                        lifted, ei, refs, nothing, nothing
+                    )
+                )
                 s += 1
             end
         end
@@ -137,8 +143,11 @@ end
 
 """The term's locality class, or a [`PlannerStageError`](@ref) when stage 1 cannot compute it."""
 function need_locality(t::Term)
-    t.locality === nothing && throw(PlannerStageError(
-        "the locality of term ($(t.variable), $(t.contribution), $(t.summand)) needs its EarthSciASTDiff bands"))
+    t.locality === nothing && throw(
+        PlannerStageError(
+            "the locality of term ($(t.variable), $(t.contribution), $(t.summand)) needs its EarthSciASTDiff bands"
+        )
+    )
     return t.locality
 end
 
@@ -180,8 +189,10 @@ function select_operators(m::PlanModel, terms::Vector{Term}, config::AbstractDic
     opdefs = get(config, "operators", Dict{String, Any}())
     names = sort!(String.(collect(keys(opdefs))))
     for n in names
-        haskey(opdefs[n], "map") && refuse("unsupported_map_operator", jptr("/operators", n),
-            "operator $n is a map operator; map operators need U6 (M4b)")
+        haskey(opdefs[n], "map") && refuse(
+            "unsupported_map_operator", jptr("/operators", n),
+            "operator $n is a map operator; map operators need U6 (M4b)"
+        )
     end
     for n in names
         sel = opdefs[n]["select"]
@@ -189,7 +200,7 @@ function select_operators(m::PlanModel, terms::Vector{Term}, config::AbstractDic
         vs = sel["variables"]
         for (i, v) in enumerate(_as_list(vs))
             at = vs isa AbstractString ? jptr("/operators", n, "select", "variables") :
-                 jptr("/operators", n, "select", "variables", i - 1)
+                jptr("/operators", n, "select", "variables", i - 1)
             k = name_kind(m, v)
             k === nothing && refuse("name_unresolved", at, "selector variable $v is not a name of the flattened model")
             k === :state || refuse("name_wrong_kind", at, "selector variable $v is a $k, not a state")
@@ -200,34 +211,44 @@ function select_operators(m::PlanModel, terms::Vector{Term}, config::AbstractDic
     for t in terms
         matched = [n for n in names if selector_matches(opdefs[n]["select"], t)]
         if length(matched) >= 2
-            refuse("term_selected_twice", jptr("/operators", matched[1]),
-                "term ($(t.variable), $(t.contribution), $(t.summand)) is matched by operators $(matched[1]) and $(matched[2])")
+            refuse(
+                "term_selected_twice", jptr("/operators", matched[1]),
+                "term ($(t.variable), $(t.contribution), $(t.summand)) is matched by operators $(matched[1]) and $(matched[2])"
+            )
         elseif length(matched) == 1
             push!(get!(assigned, matched[1], Term[]), t)
         elseif t.owner === nothing && uses_components
             others = sort!(unique!([component_of(r) for r in t.refs if component_of(r) != component_of(t.variable)]))
-            refuse("ambiguous_term_owner", "/operators",
+            refuse(
+                "ambiguous_term_owner", "/operators",
                 "term ($(t.variable), $(t.contribution), $(t.summand)), provenance $(t.provenance), reads components " *
-                "$(join(others, ", ")) and so has no owner; no selector matches it while some selector uses components. " *
-                "Select it with a terms or variables selector (D65)")
+                    "$(join(others, ", ")) and so has no owner; no selector matches it while some selector uses components. " *
+                    "Select it with a terms or variables selector (D65)"
+            )
         else
             push!(get!(assigned, "default_" * String(need_locality(t)), Term[]), t)
         end
     end
     for n in names
-        haskey(assigned, n) || refuse("selector_matches_nothing", jptr("/operators", n, "select"),
-            "operator $n's selector matches no term")
+        haskey(assigned, n) || refuse(
+            "selector_matches_nothing", jptr("/operators", n, "select"),
+            "operator $n's selector matches no term"
+        )
     end
     ops = Dict{String, PlanOperator}()
     for (n, ts) in assigned
         def = get(opdefs, n, nothing)
         bind = def === nothing ? nothing : get(def, "bind_dt", nothing)
-        ops[n] = PlanOperator(n, ts, bind, def === nothing ? "" : jptr("/operators", n), nothing, nothing,
-            String[], String[], nothing)
+        ops[n] = PlanOperator(
+            n, ts, bind, def === nothing ? "" : jptr("/operators", n), nothing, nothing,
+            String[], String[], nothing
+        )
     end
     return ops
 end
 
 """The plan's object for a term (§5.1.4)."""
-term_json(t::Term) = Dict{String, Any}("variable" => t.variable, "contribution" => t.contribution,
-    "summand" => t.summand, "provenance" => t.provenance, "locality" => String(need_locality(t)))
+term_json(t::Term) = Dict{String, Any}(
+    "variable" => t.variable, "contribution" => t.contribution,
+    "summand" => t.summand, "provenance" => t.provenance, "locality" => String(need_locality(t))
+)

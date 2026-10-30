@@ -39,14 +39,14 @@ function ecma_number(x::AbstractFloat)
     digits = ip * fp
     point = length(ip) + e10                  # value = 0.digits × 10^point
     nlead = something(findfirst(!=('0'), digits), length(digits) + 1) - 1
-    digits = digits[nlead+1:end]
+    digits = digits[(nlead + 1):end]
     point -= nlead
     digits = rstrip(digits, '0')
     k, n = length(digits), point              # ECMA-262: s × 10^(n−k), k digits
     out = if k <= n <= 21
         digits * "0"^(n - k)
     elseif 0 < n <= 21
-        digits[1:n] * "." * digits[n+1:end]
+        digits[1:n] * "." * digits[(n + 1):end]
     elseif -6 < n <= 0
         "0." * "0"^(-n) * digits
     else
@@ -90,7 +90,7 @@ function jcs_string_literal(io::IO, s::AbstractString)
             print(io, c)
         end
     end
-    print(io, '"')
+    return print(io, '"')
 end
 
 """
@@ -116,7 +116,7 @@ function jcs_write(io::IO, v::Union{AbstractVector, Tuple})
         first = false
         jcs_write(io, x)
     end
-    print(io, ']')
+    return print(io, ']')
 end
 
 function jcs_write(io::IO, d::AbstractDict)
@@ -130,7 +130,7 @@ function jcs_write(io::IO, d::AbstractDict)
         print(io, ':')
         jcs_write(io, haskey(d, k) ? d[k] : d[Symbol(k)])
     end
-    print(io, '}')
+    return print(io, '}')
 end
 
 """

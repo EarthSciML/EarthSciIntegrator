@@ -245,10 +245,12 @@ for `external` too.
 
 ```python
 @dataclass
-class Solver:                                # esm_types.py:624
+class Solver:  # esm_types.py:624
     ...
     external: str | None = None
-def reject_solver_external_pre_v13(view: Any) -> None: ...      # solver.py
+
+
+def reject_solver_external_pre_v13(view: Any) -> None: ...  # solver.py
 def solver_external_location(esm_file: EsmFile, base: str | None = None) -> str | None: ...
 ```
 

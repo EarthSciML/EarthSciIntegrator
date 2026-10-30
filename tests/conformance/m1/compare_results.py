@@ -50,8 +50,11 @@ def malformed(res):
         values += [("functional", [res["functional"]])]
         values += [(f"gradient.{k}", v) for k, v in res["gradient"].items()]
     for name, xs in values:
-        bad = [x for x in xs if isinstance(x, bool) or not isinstance(x, (int, float))
-               or not math.isfinite(x)]
+        bad = [
+            x
+            for x in xs
+            if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x)
+        ]
         if bad:
             return f"{name} has a value that is not a finite number: {bad[0]!r}"
     return None
@@ -75,8 +78,10 @@ def compare_states(jl, rs, rtol):
                 worst = (d, (k, j))
     if worst[0] > rtol:
         k, j = worst[1]
-        errs.append(f"state component {j} at t = {jl['t'][k]}: relative difference "
-                    f"{worst[0]:.3g} > rtol {rtol:g}")
+        errs.append(
+            f"state component {j} at t = {jl['t'][k]}: relative difference "
+            f"{worst[0]:.3g} > rtol {rtol:g}"
+        )
     return errs, worst[0]
 
 
@@ -93,7 +98,9 @@ def compare_gradient(jl, rs, rtol):
     d = abs(a - b) / scale if scale > 0 else abs(a - b)
     worst = max(worst, d)
     if d > rtol:
-        errs.append(f"functional: julia {a!r}, rust {b!r}, relative difference {d:.3g} > rtol {rtol:g}")
+        errs.append(
+            f"functional: julia {a!r}, rust {b!r}, relative difference {d:.3g} > rtol {rtol:g}"
+        )
     for key in sorted(set(jl["gradient"]) | set(rs["gradient"])):
         ga, gb = jl["gradient"].get(key), rs["gradient"].get(key)
         if ga is None or gb is None or len(ga) != len(gb):
@@ -104,8 +111,10 @@ def compare_gradient(jl, rs, rtol):
             d = abs(x - y) / scale if scale > 0 else abs(x - y)
             worst = max(worst, d)
             if d > rtol:
-                errs.append(f"gradient.{key}[{i}]: julia {x!r}, rust {y!r}, relative difference "
-                            f"{d:.3g} > rtol {rtol:g}")
+                errs.append(
+                    f"gradient.{key}[{i}]: julia {x!r}, rust {y!r}, relative difference "
+                    f"{d:.3g} > rtol {rtol:g}"
+                )
     return errs, worst
 
 
@@ -117,7 +126,9 @@ def compare_tapes(jt, rt):
         return [f"tapes have {len(jt)} (julia) and {len(rt)} (rust) records"]
     for a, b in zip(jt, rt):
         if (a["path"], a["node"]) != (b["path"], b["node"]):
-            return [f"tape record differs: julia {a['path']} {a['node']}, rust {b['path']} {b['node']}"]
+            return [
+                f"tape record differs: julia {a['path']} {a['node']}, rust {b['path']} {b['node']}"
+            ]
         for key in ("accepted", "retcode"):
             if a.get(key) != b.get(key):
                 return [f"tape record {a['path']}: {key} julia {a.get(key)!r}, rust {b.get(key)!r}"]
@@ -135,8 +146,9 @@ def compare_case(case_id, chk, jdir, rdir):
         return "skipped", "neither implementation ran it"
     if jl is None or rs is None:
         return "one-sided", f"only {'rust' if jl is None else 'julia'} ran it"
-    bad = [f"{who} result: {m}" for who, res in (("julia", jl), ("rust", rs))
-           if (m := malformed(res))]
+    bad = [
+        f"{who} result: {m}" for who, res in (("julia", jl), ("rust", rs)) if (m := malformed(res))
+    ]
     if bad:
         return "fail", "; ".join(bad)
     rtol = chk["rtol"]
@@ -146,8 +158,11 @@ def compare_case(case_id, chk, jdir, rdir):
     same_count = jl["stats"]["accepted"] == rs["stats"]["accepted"]
     if same_count:
         errs += compare_tapes(jt, rt)
-    note = (f"accepted {jl['stats']['accepted']}" if same_count else
-            f"accepted julia {jl['stats']['accepted']}, rust {rs['stats']['accepted']}")
+    note = (
+        f"accepted {jl['stats']['accepted']}"
+        if same_count
+        else f"accepted julia {jl['stats']['accepted']}, rust {rs['stats']['accepted']}"
+    )
     # The step sequences differ when the counts do, or when any step's
     # (t, h) does: libm functions may differ in the last bit (spec/adjoint.md
     # §7.5), and an adaptive controller can turn that into different sizes.
@@ -173,13 +188,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("julia_dir", type=Path)
     ap.add_argument("rust_dir", type=Path)
-    ap.add_argument("--require-both", action="store_true",
-                    help="fail a case that either implementation did not run")
+    ap.add_argument(
+        "--require-both",
+        action="store_true",
+        help="fail a case that either implementation did not run",
+    )
     args = ap.parse_args()
     # A suite that wrote no result files uploads no artifact, so CI's
     # download leaves the directory absent; say so rather than skip every case.
-    absent = [f"{who} ({d})" for who, d in (("julia", args.julia_dir), ("rust", args.rust_dir))
-              if not d.is_dir()]
+    absent = [
+        f"{who} ({d})"
+        for who, d in (("julia", args.julia_dir), ("rust", args.rust_dir))
+        if not d.is_dir()
+    ]
     if absent:
         print(f"no result files from {' or '.join(absent)}: did that test job run?")
         return 1
@@ -195,8 +216,10 @@ def main():
         if status == "fail" or (status != "pass" and args.require_both):
             failed = True
         print(f"{status.upper():9} {case['id']}: {msg}")
-    print(f"\ncross_language: {counts['pass']} passed, {counts['fail']} failed, "
-          f"{counts['one-sided']} run by one implementation only, {counts['skipped']} skipped")
+    print(
+        f"\ncross_language: {counts['pass']} passed, {counts['fail']} failed, "
+        f"{counts['one-sided']} run by one implementation only, {counts['skipped']} skipped"
+    )
     return 1 if failed else 0
 
 
