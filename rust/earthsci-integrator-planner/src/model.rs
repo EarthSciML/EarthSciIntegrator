@@ -158,7 +158,7 @@ pub fn differentiated(lhs: &Expr) -> Option<&str> {
 
 /// The observed an observed definition defines: a bare name, or a `faq`
 /// over `index(name, …)`.
-fn defined_observed(lhs: &Expr) -> Option<&str> {
+pub(crate) fn defined_observed(lhs: &Expr) -> Option<&str> {
     match lhs {
         Expr::Variable(x) => Some(x),
         Expr::Operator(n) if n.op == "faq" => defined_observed(n.expr.as_deref()?),

@@ -1,12 +1,11 @@
 //! Pass 5, stiffness and strategy (spec/plan.md §5.5, D70, D71).
 //!
-//! Stage 1 implements every rule that needs no EarthSciASTDiff: stiffness
-//! rules 1–3 of §5.5.2, the method table of §5.5.3 as a pure function of
-//! the leaf's facts, and the reference step of §5.5.4. Stiffness rule 4
-//! (the Gershgorin bound) and the facts that come from structure (the
-//! block size and whether every operator has `structure.block`) arrive with
-//! stage 2; until then they are `None` and a leaf that needs them is
-//! [`PlanError::NotYetImplemented`].
+//! Stiffness rules 1–3 of §5.5.2 and the method table of §5.5.3 as a pure
+//! function of the leaf's facts. Stiffness rule 4 (the Gershgorin bound,
+//! [`crate::validation::gershgorin`]) and the facts that come from structure
+//! (the block size and whether every operator has `structure.block`) are
+//! computed by the pipeline ([`crate::plan`]); a leaf resolved without them
+//! is [`PlanError::NotYetImplemented`].
 
 use crate::error::{codes, refuse, PlanError, Result};
 use crate::locality::Class;
@@ -71,7 +70,7 @@ impl Stiffness {
 }
 
 /// Stiffness rules 1–3 of §5.5.2, in order. `None` means rule 4, the
-/// Gershgorin bound, decides (stage 2).
+/// Gershgorin bound, decides.
 ///
 /// - `leaf_alg`: the `alg` of the leaf that advances the operator, as given.
 /// - `reaction_system_term`: some term has a single component origin that
@@ -109,7 +108,7 @@ pub struct LeafFacts {
     /// The coarsest locality of its operators.
     pub class: Class,
     /// Whether any of its operators is stiff; `None` when a stiffness is
-    /// not known yet (rule 4, stage 2).
+    /// not known (rule 4 not computed).
     pub stiff: Option<bool>,
     /// Its operators that are column operators and stiff, in leaf order;
     /// `None` when a column operator's stiffness is not known yet.
@@ -125,7 +124,7 @@ pub struct LeafFacts {
     pub uniform_shapes: bool,
     /// The size of the union of its operators' `structure.block` variables
     /// when every operator has `structure.block`, `Some(None)` when one has
-    /// none; `None` until structure is known (stage 2).
+    /// none; `None` when structure is not known.
     pub block_vars: Option<Option<usize>>,
 }
 
@@ -169,7 +168,9 @@ pub fn linsolve_object(given: &Value) -> Value {
 }
 
 fn not_known(what: &str) -> PlanError {
-    PlanError::NotYetImplemented(format!("{what} needs EarthSciASTDiff (stage 2 of M2)"))
+    PlanError::NotYetImplemented(format!(
+        "{what} needs the operators' structure and Gershgorin bounds"
+    ))
 }
 
 /// The table row's `linsolve` for a leaf's class, when the leaf forms a

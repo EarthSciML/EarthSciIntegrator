@@ -3,18 +3,13 @@
 
 mod common;
 
-use common::{conformance, HandBands};
+use common::conformance;
+use earthsci_integrator_planner::astdiff::AstDiffBands;
 use earthsci_integrator_planner::error::codes;
 use earthsci_integrator_planner::locality::NoBands;
 use earthsci_integrator_planner::{plan, Options, PlanError};
 use serde_json::Value;
 use std::collections::BTreeSet;
-
-/// Fixtures whose refusal needs what stage 2 brings, with the reason.
-const DEFERRED: &[(&str, &str)] = &[(
-    "auto-stiff-global",
-    "the global operator's stiffness comes from its Gershgorin bound (§5.5.2 rule 4)",
-)];
 
 /// Fixtures decided before pass 2, so they pass with no bands at all.
 const BEFORE_BANDS: &[&str] = &[
@@ -40,11 +35,8 @@ fn refusal_fixtures() {
     let mut failures = Vec::new();
     let mut passed = 0;
     for (name, want) in expected.as_object().unwrap() {
-        if DEFERRED.iter().any(|(d, _)| d == name) {
-            continue;
-        }
         let path = dir.join(name).join("run.json");
-        let got = plan(&path, &Options::default(), &HandBands);
+        let got = plan(&path, &Options::default(), &AstDiffBands);
         let (code, at) = (want["code"].as_str().unwrap(), want["at"].as_str().unwrap());
         match got {
             Err(PlanError::Refused(r)) if r.code == code && r.pointer == at => passed += 1,
@@ -59,7 +51,7 @@ fn refusal_fixtures() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!(passed + DEFERRED.len(), expected.as_object().unwrap().len());
+    assert_eq!(passed, expected.as_object().unwrap().len());
 }
 
 /// Every code the planner raises is in spec/planner-errors.json.

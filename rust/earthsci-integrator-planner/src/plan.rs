@@ -1,23 +1,25 @@
 //! The planner's pipeline (spec/plan.md §4 "Order of refusals").
 //!
-//! Stage 1 of M2 runs §4, passes 1–3, the checks and resolutions of §7, and
-//! the parts of pass 5 that need no EarthSciASTDiff. What needs it (term
-//! bands come in through a [`BandSource`]; structure, stiffness by the
-//! Gershgorin bound, derived documents and validation do not exist yet) is
-//! left out, and [`Planned::plan_json`] says so rather than writing a plan
-//! with those fields made up.
+//! [`plan`] runs §4, passes 1–8 and the resolutions of §7 and returns a
+//! [`Planned`], whose [`Planned::write`] writes the plan directory:
+//! `plan.json`, `derived/*.esm` and `plan.report.json` (§1).
 
+use crate::astdiff;
 use crate::axes::{self, Axes};
+use crate::derived;
 use crate::error::{codes, refuse, PlanError, Result};
 use crate::locality::{self, BandSource, Class, Locality};
 use crate::model::{self, ModelInfo};
+use crate::numeric::{self, Dofs, Program, Sample, Sparse};
 use crate::operators::{self, Operator};
 use crate::runconfig::{self, RunConfig};
 use crate::schedule::{self, CheckContext, Kind, Node};
 use crate::settings;
-use crate::strategy::{self, LeafFacts, LeafStrategy, Stiffness};
+use crate::strategy::{self, LeafFacts, LeafStrategy, Stiffness, StiffnessSource};
+use crate::structure::{self, Structure};
 use crate::terms::{self, Term};
 use crate::time::{self, Interval};
+use crate::validation;
 use earthsci_ast::TermOrigin;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,7 +33,16 @@ pub struct Options {
     pub time: Option<Value>,
 }
 
-/// Everything stage 1 computes for a run config.
+/// An operator's derived documents (§6), as written.
+#[derive(Debug, Clone)]
+pub struct Documents {
+    /// `<op>.rhs.esm`'s bytes.
+    pub rhs: Vec<u8>,
+    /// `<op>.jacobian.esm`'s bytes.
+    pub jacobian: Vec<u8>,
+}
+
+/// Everything the planner computes for a run config.
 #[derive(Debug, Clone)]
 pub struct Planned {
     pub run_config: RunConfig,
@@ -44,6 +55,8 @@ pub struct Planned {
     pub term_localities: Vec<Locality>,
     /// The operators by name (passes 1–3).
     pub operators: BTreeMap<String, Operator>,
+    /// Pass 4: each operator's structure.
+    pub structures: BTreeMap<String, Structure>,
     /// The schedule tree (ids assigned, checks passed).
     pub schedule: Node,
     /// §7.3.
@@ -58,12 +71,21 @@ pub struct Planned {
     pub inputs: Value,
     /// §5.5.4: each leaf's reference step, by node id.
     pub reference_steps: BTreeMap<String, f64>,
-    /// §5.5.2 rules 1–3 per operator; `None` where rule 4 decides.
-    pub stiffness: BTreeMap<String, Option<Stiffness>>,
+    /// §5.5.2: every operator's stiffness.
+    pub stiffness: BTreeMap<String, Stiffness>,
+    /// What §5.5.3 reads from structure and stiffness.
+    pub facts: StructureFacts,
+    /// The resolved schedule (§7.1, §5.5.3).
+    pub resolved_schedule: Value,
+    /// Pass 6: each operator's documents.
+    pub documents: BTreeMap<String, Documents>,
+    /// Pass 8: the checks that ran, in the plan's order (§8.1).
+    pub validation: Vec<Value>,
+    /// `plan.report.json` (§1): what differs between implementations.
+    pub report: Value,
 }
 
-/// Facts that come from EarthSciASTDiff (stage 2) and that resolving the
-/// schedule can need.
+/// Facts from structure and stiffness that resolving the schedule needs.
 #[derive(Debug, Clone, Default)]
 pub struct StructureFacts {
     /// Stiffness by the Gershgorin bound (§5.5.2 rule 4), by operator.
@@ -73,7 +95,101 @@ pub struct StructureFacts {
     pub block_vars: BTreeMap<String, Option<Vec<String>>>,
 }
 
-/// Plans the run config at `path` as far as stage 1 goes.
+/// The numbers passes 5 and 8 evaluate, built on first use.
+struct Numbers<'a> {
+    info: &'a ModelInfo,
+    interval: Interval,
+    dofs: Dofs,
+    names: Vec<String>,
+    /// `u_0`, the sampling base and the sampled states (§5.5.1).
+    states: Option<(Vec<f64>, Vec<f64>, Vec<Sample>)>,
+    /// Per operator: its programs, band pattern, rows and band Jacobians.
+    ops: BTreeMap<String, OperatorNumbers>,
+}
+
+struct OperatorNumbers {
+    rhs: Program,
+    pattern: Sparse,
+    /// Whether each DOF is a row of the operator's `writes`.
+    rows: Vec<bool>,
+    /// The band Jacobian at each sampled state.
+    jb: Vec<Sparse>,
+}
+
+fn internal(m: impl std::fmt::Display) -> PlanError {
+    PlanError::Internal(m.to_string())
+}
+
+impl<'a> Numbers<'a> {
+    fn new(info: &'a ModelInfo, interval: Interval) -> Self {
+        let dofs = Dofs::new(info);
+        let names = dofs.element_names();
+        Numbers {
+            info,
+            interval,
+            dofs,
+            names,
+            states: None,
+            ops: BTreeMap::new(),
+        }
+    }
+
+    fn tspan(&self) -> (f64, f64) {
+        (self.interval.start, self.interval.end)
+    }
+
+    fn states(&mut self) -> Result<&(Vec<f64>, Vec<f64>, Vec<Sample>)> {
+        if self.states.is_none() {
+            let u0 = numeric::initial_state(self.info, &self.dofs, self.interval.start)
+                .map_err(internal)?;
+            let base = numeric::sampling_base(&u0);
+            let samples = numeric::samples(&u0, self.interval.start, self.interval.end);
+            self.states = Some((u0, base, samples));
+        }
+        Ok(self.states.as_ref().expect("set above"))
+    }
+
+    /// The operator's numbers: `rhs` and `jacobian` are its documents.
+    fn op(
+        &mut self,
+        name: &str,
+        op: &Operator,
+        st: &Structure,
+        rhs: &Value,
+        jacobian: &Value,
+    ) -> Result<&OperatorNumbers> {
+        if !self.ops.contains_key(name) {
+            let samples = self.states()?.2.clone();
+            let tspan = self.tspan();
+            let rhs_prog = Program::new(rhs, tspan).map_err(internal)?;
+            let jac_prog = Program::new(jacobian, tspan).map_err(internal)?;
+            let pattern = numeric::pattern(&self.dofs, &st.bands).map_err(internal)?;
+            let owners = self.dofs.owners();
+            let rows = owners
+                .iter()
+                .map(|s| op.writes.iter().any(|w| w == s))
+                .collect();
+            let jb = samples
+                .iter()
+                .map(|s| numeric::band_jacobian(&jac_prog, &self.dofs, &st.bands, &s.u, s.t))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(internal)?;
+            self.ops.insert(
+                name.to_string(),
+                OperatorNumbers {
+                    rhs: rhs_prog,
+                    pattern,
+                    rows,
+                    jb,
+                },
+            );
+        }
+        Ok(&self.ops[name])
+    }
+}
+
+/// Plans the run config at `path`. `bands` gives each term's band list
+/// (§5.2.2); [`astdiff::AstDiffBands`] is EarthSciASTDiff's.
 pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Planned> {
     // §4 steps 1–7.
     let rc = runconfig::read(path)?;
@@ -93,7 +209,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         Ok(Some(b)) => b,
         Ok(None) => {
             return Err(PlanError::NotYetImplemented(
-                "term bands (spec/plan.md §5.2.2) need EarthSciASTDiff's jacobian_bands".into(),
+                "this band source gives no term bands (spec/plan.md §5.2.2)".into(),
             ))
         }
         Err(f) => {
@@ -123,7 +239,26 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             locality::operator_locality(op.terms.iter().map(|&i| &term_localities[i]), &axes);
     }
 
-    // Pass 4 (structure) arrives with stage 2.
+    // Pass 4: each operator's band list, from its right-hand-side document,
+    // and its structure.
+    let mut rhs_docs = BTreeMap::new();
+    let mut views = BTreeMap::new();
+    let mut structures = BTreeMap::new();
+    for (name, op) in &ops {
+        let ts: Vec<&Term> = op.terms.iter().map(|&i| &terms[i]).collect();
+        let doc = derived::rhs_document(&info, name, &ts);
+        let (view, band_list) = astdiff::document_bands(&doc).map_err(|m| {
+            refuse(
+                codes::BAND_MODEL_FAILED,
+                "/model",
+                format!("operator {name}: {m}"),
+            )
+        })?;
+        let st = structure::structure(&info, &axes, op, &terms, &view, band_list)?;
+        rhs_docs.insert(name.clone(), doc);
+        views.insert(name.clone(), view);
+        structures.insert(name.clone(), st);
+    }
 
     // §7.1–§7.6 checks.
     let root = schedule::tree(&rc, &info, &ops);
@@ -145,7 +280,17 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let precision = settings::precision(&rc, &info, &ops, &root, &given_algs)?;
     let checkpoint_schedule = settings::checkpoint(&rc, &info, &root)?;
 
-    // Pass 5, what needs no bands.
+    // The Jacobian documents (§6.2): built here, since the Gershgorin bound
+    // evaluates them; written with the other derived documents.
+    let mut jac_docs = BTreeMap::new();
+    for (name, st) in &structures {
+        jac_docs.insert(
+            name.clone(),
+            derived::jacobian_document(&info, name, &views[name], &st.bands)?,
+        );
+    }
+
+    // Pass 5: stiffness, rules 1–3, then rule 4.
     let reference_steps = schedule::reference_steps(&root, &rc, &info, interval)?;
     let reaction_systems: BTreeSet<&str> = info
         .file
@@ -159,37 +304,76 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         .solver
         .as_ref()
         .and_then(|s| s.stiffness.as_deref());
+    let mut numbers = Numbers::new(&info, interval);
     let mut stiffness = BTreeMap::new();
+    let mut gershgorin_report = Map::new();
+    let mut facts = StructureFacts::default();
     for (name, op) in &ops {
-        let leaf_alg = root
+        let leaf = root
             .leaves()
             .into_iter()
-            .find(|n| matches!(&n.kind, Kind::Leaf { ops, .. } if ops.contains(name)))
-            .and_then(|n| n.value.get("alg").and_then(Value::as_str));
+            .find(|n| matches!(&n.kind, Kind::Leaf { ops, .. } if ops.contains(name)));
+        let leaf_alg = leaf.and_then(|n| n.value.get("alg").and_then(Value::as_str));
         let rs_term = op.terms.iter().any(|&i| {
             matches!(terms[i].origins.as_slice(),
                 [TermOrigin::Component { component }] if reaction_systems.contains(component.as_str()))
         });
-        stiffness.insert(
-            name.clone(),
-            strategy::stiffness_rules_1_to_3(
-                leaf_alg,
-                rs_term,
-                op.locality.class,
-                solver_stiffness,
-            ),
-        );
+        let s = match strategy::stiffness_rules_1_to_3(
+            leaf_alg,
+            rs_term,
+            op.locality.class,
+            solver_stiffness,
+        ) {
+            Some(s) => s,
+            None => {
+                // Rule 4: max_s ρ(u_s, p, t_s) · Δ ≥ 10.
+                let delta = leaf
+                    .and_then(|n| reference_steps.get(n.id()).copied())
+                    .ok_or_else(|| internal(format!("no leaf advances {name}")))?;
+                let on = numbers.op(
+                    name,
+                    op,
+                    &structures[name],
+                    &rhs_docs[name],
+                    &jac_docs[name],
+                )?;
+                let rhos: Vec<f64> = on
+                    .jb
+                    .iter()
+                    .map(|jb| validation::gershgorin(jb, &on.rows))
+                    .collect();
+                let rho = rhos.iter().copied().fold(0.0, f64::max);
+                gershgorin_report.insert(
+                    name.clone(),
+                    json!({"rho": rhos, "delta": delta, "rho_delta": rho * delta}),
+                );
+                facts
+                    .gershgorin_stiff
+                    .insert(name.clone(), rho * delta >= 10.0);
+                Stiffness {
+                    stiff: rho * delta >= 10.0,
+                    source: StiffnessSource::Gershgorin,
+                }
+            }
+        };
+        stiffness.insert(name.clone(), s);
+    }
+    for (name, st) in &structures {
+        facts
+            .block_vars
+            .insert(name.clone(), st.block.as_ref().map(|b| b.vars.clone()));
     }
     let inputs = settings::inputs(&rc, &info);
 
-    let planned = Planned {
+    let mut planned = Planned {
         run_config: rc,
-        model: info,
+        model: info.clone(),
         axes,
         interval,
         terms,
         term_localities,
         operators: ops,
+        structures,
         schedule: root,
         step,
         partition,
@@ -198,18 +382,18 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         inputs,
         reference_steps,
         stiffness,
+        facts,
+        resolved_schedule: Value::Null,
+        documents: BTreeMap::new(),
+        validation: Vec::new(),
+        report: Value::Null,
     };
-    // §5.5.3 for every leaf, in tree order, as far as stage 1 can: a refusal
-    // ends planning; a leaf that needs stage-2 facts is resolved later.
+    // §5.5.3 for every leaf, in tree order, then §7.5's check for the
+    // methods it resolved (§4 "Order of refusals" item 6).
     let mut algs = BTreeMap::new();
     for n in planned.schedule.leaves() {
-        match planned.leaf_strategy(n, None) {
-            Ok(s) => {
-                algs.insert(n.id().to_string(), s.alg);
-            }
-            Err(PlanError::NotYetImplemented(_)) => {}
-            Err(e) => return Err(e),
-        }
+        let s = planned.leaf_strategy(n, Some(&planned.facts))?;
+        algs.insert(n.id().to_string(), s.alg);
     }
     settings::precision(
         &planned.run_config,
@@ -218,6 +402,112 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         &planned.schedule,
         &algs,
     )?;
+    planned.resolved_schedule = planned.resolve_schedule(Some(&planned.facts))?;
+
+    // Pass 6: the derived documents.
+    for (name, doc) in &rhs_docs {
+        planned.documents.insert(
+            name.clone(),
+            Documents {
+                rhs: derived::to_bytes(doc),
+                jacobian: derived::to_bytes(&jac_docs[name]),
+            },
+        );
+    }
+
+    // Pass 8: validation.
+    let mut report = Map::new();
+    let (_, base, samples) = numbers.states()?.clone();
+    let model_prog = Program::new(info.path.as_path(), numbers.tspan()).map_err(internal)?;
+    for (name, op) in &planned.operators {
+        numbers.op(
+            name,
+            op,
+            &planned.structures[name],
+            &rhs_docs[name],
+            &jac_docs[name],
+        )?;
+    }
+    let mut rhs_sum = Vec::new();
+    for s in &samples {
+        let f = model_prog
+            .eval(&numbers.dofs, &s.u, s.t)
+            .map_err(internal)?;
+        let parts = numbers
+            .ops
+            .values()
+            .map(|o| o.rhs.eval(&numbers.dofs, &s.u, s.t))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(internal)?;
+        let worst = validation::rhs_sum(&f, &parts, &numbers.names).map_err(|m| {
+            refuse(
+                codes::VALIDATION_RHS_SUM_FAILED,
+                "/model",
+                format!("at t = {}: {m}", s.t),
+            )
+        })?;
+        rhs_sum.push(worst);
+    }
+    report.insert("rhs_sum".into(), json!({"worst_relative_error": rhs_sum}));
+    planned
+        .validation
+        .push(json!({"check": "rhs_sum", "passed": true}));
+    let mut per_op = Map::new();
+    for (name, op) in &planned.operators {
+        let on = &numbers.ops[name];
+        let mut measured = Vec::new();
+        for (s, jb) in samples.iter().zip(&on.jb) {
+            let at = validation::At {
+                dofs: &numbers.dofs,
+                sample: s,
+                base: &base,
+                names: &numbers.names,
+            };
+            let r =
+                validation::band_model(&on.rhs, &at, jb, &on.pattern, &on.rows).map_err(|m| {
+                    refuse(
+                        codes::VALIDATION_BAND_MODEL_FAILED,
+                        "/model",
+                        format!("operator {name} at t = {}: {m}", s.t),
+                    )
+                })?;
+            measured.push(r.to_json());
+        }
+        planned
+            .validation
+            .push(json!({"check": "band_model", "operator": name, "passed": true}));
+        // non_empty: a term, and a band when some term reads a state.
+        let reads_state = op
+            .terms
+            .iter()
+            .any(|&i| planned.terms[i].names.iter().any(|n| info.is_state(n)));
+        if op.terms.is_empty() || (reads_state && planned.structures[name].bands.is_empty()) {
+            return Err(refuse(
+                codes::VALIDATION_EMPTY_OPERATOR,
+                "/model",
+                format!(
+                    "operator {name} has {} terms and {} bands",
+                    op.terms.len(),
+                    planned.structures[name].bands.len()
+                ),
+            ));
+        }
+        planned
+            .validation
+            .push(json!({"check": "non_empty", "operator": name, "passed": true}));
+        per_op.insert(name.clone(), json!({"band_model": measured}));
+    }
+    report.insert("operators".into(), Value::Object(per_op));
+    report.insert("gershgorin".into(), Value::Object(gershgorin_report));
+    planned.report = json!({
+        "planner": "earthsci-integrator-planner (Rust)",
+        "version": env!("CARGO_PKG_VERSION"),
+        "upstream": {
+            "earthsci-ast": "0.6.0",
+            "earthsci-astdiff": "0.1.0 (743d1404f7573e91c6789a62f0cad88fd93fc0ad)",
+        },
+        "validation": Value::Object(report),
+    });
     Ok(planned)
 }
 
@@ -274,10 +564,9 @@ impl Planned {
         Value::Object(out)
     }
 
-    /// The parts of an operator's entry stage 1 computes: `kind`,
-    /// `locality`, `writes`, `reads`, `terms`, and `stiffness` where rules
-    /// 1–3 decide it. `structure` needs EarthSciASTDiff.
-    pub fn operator_json_stage1(&self, name: &str) -> Value {
+    /// An operator's entry in `operators` (§3): `kind`, `locality`,
+    /// `writes`, `reads`, `terms`, `structure` and `stiffness`.
+    pub fn operator_json(&self, name: &str) -> Value {
         let op = &self.operators[name];
         let mut out = Map::new();
         out.insert("kind".into(), json!("rhs"));
@@ -285,9 +574,8 @@ impl Planned {
         out.insert("writes".into(), json!(op.writes));
         out.insert("reads".into(), json!(op.reads));
         out.insert("terms".into(), self.terms_json(op));
-        if let Some(Some(s)) = self.stiffness.get(name) {
-            out.insert("stiffness".into(), s.to_json());
-        }
+        out.insert("structure".into(), self.structures[name].to_json());
+        out.insert("stiffness".into(), self.stiffness[name].to_json());
         Value::Object(out)
     }
 
@@ -295,7 +583,7 @@ impl Planned {
     /// `facts`.
     fn stiffness_of(&self, name: &str, facts: Option<&StructureFacts>) -> Option<bool> {
         match self.stiffness.get(name) {
-            Some(Some(s)) => Some(s.stiff),
+            Some(s) if s.source != StiffnessSource::Gershgorin => Some(s.stiff),
             _ => facts.and_then(|f| f.gershgorin_stiff.get(name).copied()),
         }
     }
@@ -352,8 +640,7 @@ impl Planned {
     }
 
     /// The resolved schedule (§7.1) with every leaf's method resolved
-    /// (§5.5.3). Leaves that need stage-2 facts (`facts`) are
-    /// [`PlanError::NotYetImplemented`] without them.
+    /// (§5.5.3) from `facts`.
     pub fn resolve_schedule(&self, facts: Option<&StructureFacts>) -> Result<Value> {
         let strategy = |n: &Node| self.leaf_strategy(n, facts);
         let resolved = schedule::write(&self.schedule, &self.model, &self.operators, &strategy)?;
@@ -372,12 +659,115 @@ impl Planned {
         Ok(resolved)
     }
 
-    /// The whole `plan.json`. Not available in stage 1: `structure`,
-    /// `stiffness` by the Gershgorin bound, `derived` and `validation` need
-    /// EarthSciASTDiff (stage 2 of M2).
-    pub fn plan_json(&self) -> Result<Value> {
-        Err(PlanError::NotYetImplemented(
-            "plan.json needs operators.*.structure, stiffness by the Gershgorin bound, derived documents and validation, which need EarthSciASTDiff (stage 2 of M2)".into(),
-        ))
+    /// The canonical DOF order of the flattened model (§4).
+    pub fn dofs(&self) -> Dofs {
+        Dofs::new(&self.model)
+    }
+
+    /// Operator `op`'s band Jacobian at `(u, t)`, `u` in canonical order:
+    /// its Jacobian document evaluated and scattered with
+    /// `structure.bands`, keyed by EarthSciAST's element names (`X[i,j]`).
+    /// Every band point is a key, whatever its value: the keys are the band
+    /// pattern. For the conformance harness's comparison with the Julia
+    /// planner's band values (§8.2).
+    pub fn band_jacobian_at(
+        &self,
+        op: &str,
+        u: &[f64],
+        t: f64,
+    ) -> Result<BTreeMap<(String, String), f64>> {
+        let docs = self
+            .documents
+            .get(op)
+            .ok_or_else(|| internal(format!("no operator {op}")))?;
+        let doc: Value = serde_json::from_slice(&docs.jacobian).map_err(internal)?;
+        let prog =
+            Program::new(&doc, (self.interval.start, self.interval.end)).map_err(internal)?;
+        let dofs = self.dofs();
+        let names = dofs.element_names();
+        let bands = &self.structures[op].bands;
+        let mut out: BTreeMap<(String, String), f64> = numeric::pattern(&dofs, bands)
+            .map_err(internal)?
+            .keys()
+            .map(|(r, c)| ((names[*r].clone(), names[*c].clone()), 0.0))
+            .collect();
+        let jb = numeric::band_jacobian(&prog, &dofs, bands, u, t).map_err(internal)?;
+        for ((r, c), v) in jb {
+            out.insert((names[r].clone(), names[c].clone()), v);
+        }
+        Ok(out)
+    }
+
+    /// The path of a derived document relative to the plan directory.
+    pub fn derived_path(op: &str, kind: &str) -> String {
+        format!("derived/{op}.{kind}.esm")
+    }
+
+    /// `derived` (§7.7): every document by path, with its kind, operator
+    /// and the hash of the bytes written.
+    pub fn derived_json(&self) -> Value {
+        let mut out = Map::new();
+        for (op, d) in &self.documents {
+            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+                out.insert(
+                    Self::derived_path(op, kind),
+                    json!({"kind": kind, "operator": op, "sha256": settings::sha256_hex(bytes)}),
+                );
+            }
+        }
+        Value::Object(out)
+    }
+
+    /// The whole `plan.json` (§3).
+    pub fn plan_json(&self) -> Value {
+        let mut out = Map::new();
+        out.insert(
+            "esm_integrator".into(),
+            self.run_config
+                .at("/esm_integrator")
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
+        out.insert("inputs".into(), self.inputs.clone());
+        out.insert("time".into(), self.time_json());
+        let ops: Map<String, Value> = self
+            .operators
+            .keys()
+            .map(|n| (n.clone(), self.operator_json(n)))
+            .collect();
+        out.insert("operators".into(), Value::Object(ops));
+        out.insert("schedule".into(), self.resolved_schedule.clone());
+        out.insert("step".into(), self.step.clone());
+        out.insert("partition".into(), self.partition.clone());
+        out.insert("precision".into(), self.precision.clone());
+        if let Some(c) = &self.checkpoint_schedule {
+            out.insert("checkpoint_schedule".into(), c.clone());
+        }
+        out.insert("derived".into(), self.derived_json());
+        out.insert("validation".into(), Value::Array(self.validation.clone()));
+        Value::Object(out)
+    }
+
+    /// `plan.json`'s bytes: RFC 8785 (§2.1).
+    pub fn plan_bytes(&self) -> Result<Vec<u8>> {
+        crate::jcs::to_string(&self.plan_json())
+            .map(String::into_bytes)
+            .map_err(PlanError::Internal)
+    }
+
+    /// Writes the plan directory `dir` (§1): `plan.json`, `derived/*.esm`
+    /// and `plan.report.json`.
+    pub fn write(&self, dir: &Path) -> Result<()> {
+        let io = |e: std::io::Error| PlanError::Io(format!("{}: {e}", dir.display()));
+        std::fs::create_dir_all(dir.join("derived")).map_err(io)?;
+        std::fs::write(dir.join("plan.json"), self.plan_bytes()?).map_err(io)?;
+        for (op, d) in &self.documents {
+            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+                std::fs::write(dir.join(Self::derived_path(op, kind)), bytes).map_err(io)?;
+            }
+        }
+        let report = serde_json::to_vec_pretty(&self.report).map_err(internal)?;
+        std::fs::write(dir.join("plan.report.json"), report).map_err(io)?;
+        Ok(())
     }
 }
