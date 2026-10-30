@@ -84,13 +84,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - run: cargo fmt --manifest-path rust/Cargo.toml --all --check
-      - run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
+      # rustfmt and clippy run in lint.yml, on a pinned toolchain.
       - run: cargo test --manifest-path rust/Cargo.toml --workspace
         env:
           EARTHSCI_RESULTS_DIR: ${{ github.workspace }}/rust-results
