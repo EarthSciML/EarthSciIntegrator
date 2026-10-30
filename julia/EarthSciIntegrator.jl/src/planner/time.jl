@@ -57,8 +57,10 @@ function _bound_seconds(T, domain, at::AbstractString)
     parts === nothing && refuse("time_invalid_date", at, "timestamp $(repr(T)) names no calendar day")
     origin = EarthSciAST._time_origin(domain)
     # §7.2: time_origin_invalid is at the key of the timestamp that needs the origin.
-    origin isa Tuple || refuse("time_origin_invalid", at,
-        "timestamp $(repr(T)) needs the model's time origin, and its domain.temporal field is not an RFC 3339 date-time")
+    origin isa Tuple || refuse(
+        "time_origin_invalid", at,
+        "timestamp $(repr(T)) needs the model's time origin, and its domain.temporal field is not an RFC 3339 date-time"
+    )
     (w, f), (w0, f0) = parts, origin
     return Float64(w - w0) + (f - f0)
 end
@@ -127,8 +129,10 @@ function resolve_time(m::PlanModel, config::AbstractDict; tspan = nothing)
             r === nothing || throw(r)
             refuse("model_load_failed", "/model", "EarthSciAST refused the model's solver.time_span: " * sprint(showerror, e))
         end
-        r === nothing && refuse("time_interval_missing", "/time",
-            "no run interval: the caller gives none, the run config has no time, the model no solver.time_span")
+        r === nothing && refuse(
+            "time_interval_missing", "/time",
+            "no run interval: the caller gives none, the run config has no time, the model no solver.time_span"
+        )
         (Float64(r[1]), Float64(r[2]))
     end
     tf > t0 || refuse("time_interval_empty", at, "the interval's end ($tf s) is not after its start ($t0 s)")

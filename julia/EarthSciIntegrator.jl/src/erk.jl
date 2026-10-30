@@ -271,8 +271,10 @@ function rk4_residual_error(m::ButcherERK, f!, un, u1, t, h, k1, tol)
             pσ[j] = (1 - σ) * un[j] + σ * u1[j] +
                 σ * (σ - 1) * ((1 - 2σ) * (u1[j] - un[j]) + (σ - 1) * h * k1[j] + σ * h * k5[j])
             ppσ[j] = k1[j] +
-                σ * (-4 * h * k1[j] - 2 * h * k5[j] - 6 * un[j] +
-                 σ * (3 * h * k1[j] + 3 * h * k5[j] + 6 * un[j] - 6 * u1[j]) + 6 * u1[j]) / h
+                σ * (
+                -4 * h * k1[j] - 2 * h * k5[j] - 6 * un[j] +
+                    σ * (3 * h * k1[j] + 3 * h * k5[j] + 6 * un[j] - 6 * u1[j]) + 6 * u1[j]
+            ) / h
         end
         fp = similar(un)
         f!(fp, pσ, t + σ * h)
@@ -369,7 +371,7 @@ function shu_osher_combine(u, us, F, α, β, h)
     acc = nothing
     function add!(coef, x)
         ct = convert(T, coef)
-        if acc === nothing
+        return if acc === nothing
             acc = similar(u)
             @inbounds for k in eachindex(acc)
                 acc[k] = ct * x[k]

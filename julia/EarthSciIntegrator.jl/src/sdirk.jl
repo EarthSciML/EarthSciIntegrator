@@ -153,8 +153,10 @@ stage's explicit part, `z0` the initial guess, `θ` a `Ref` holding θ_prev
 (updated). Under [`NEWTON_TIGHT`](@ref) the converged stage is then polished
 with `refactor(Z)`, the factors of `σI - J(Z)`.
 """
-function newton_stage(fI, F, σ, τ::Vector{Float64}, γ, h, ti, z0::Vector{Float64}, un, tol::Tolerances,
-        θ::Base.RefValue{Float64}, adaptive::Bool; refactor = nothing)
+function newton_stage(
+        fI, F, σ, τ::Vector{Float64}, γ, h, ti, z0::Vector{Float64}, un, tol::Tolerances,
+        θ::Base.RefValue{Float64}, adaptive::Bool; refactor = nothing
+    )
     z, ok, nf = _newton(fI, F, σ, τ, γ, h, ti, z0, un, tol, θ, adaptive)
     (ok && NEWTON_TIGHT[] && refactor !== nothing) || return z, ok, nf
     # Full Newton from the converged stage until the increment stops shrinking.
@@ -178,8 +180,10 @@ function newton_stage(fI, F, σ, τ::Vector{Float64}, γ, h, ti, z0::Vector{Floa
     return z, true, nf
 end
 
-function _newton(fI, F, σ, τ::Vector{Float64}, γ, h, ti, z0::Vector{Float64}, un, tol::Tolerances,
-        θ::Base.RefValue{Float64}, adaptive::Bool)
+function _newton(
+        fI, F, σ, τ::Vector{Float64}, γ, h, ti, z0::Vector{Float64}, un, tol::Tolerances,
+        θ::Base.RefValue{Float64}, adaptive::Bool
+    )
     N = length(τ)
     z = copy(z0)
     Z = similar(z)
@@ -290,8 +294,10 @@ function sdirk_stages(m::SDIRKMethod, ctx::ImplicitContext, u, p, t, h, adaptive
             continue
         end
         z0 = zprev === nothing ? zeros(N) : zprev
-        zp, ok, n = newton_stage(fI, F, σ, map(_f64, τi), γ, h, ti, z0, up, ctx.tol, θ, adaptive;
-            refactor = Z -> _factor_at(ctx, ctx.ops, Z, pp, ti, σ))
+        zp, ok, n = newton_stage(
+            fI, F, σ, map(_f64, τi), γ, h, ti, z0, up, ctx.tol, θ, adaptive;
+            refactor = Z -> _factor_at(ctx, ctx.ops, Z, pp, ti, σ)
+        )
         nf += n
         ok || return fail(false)
         zprev = zp
@@ -463,8 +469,10 @@ function one_stage(m::Union{ThetaMethod, IMEXEulerMethod}, ctx::ImplicitContext,
     issuccess_lu(F) || return (; nothing_out..., singular = true, u1 = nothing)
     pp = map(_f64, p)
     fI = (x, τ) -> _feval(opsI, x, pp, τ, Float64)
-    zp, ok, n = newton_stage(fI, F, σ, map(_f64, τ), γ, h, t + h, zeros(N), map(_f64, u), ctx.tol, Ref(1.0), adaptive;
-        refactor = Z -> _factor_at(ctx, opsI, Z, pp, t + h, σ))
+    zp, ok, n = newton_stage(
+        fI, F, σ, map(_f64, τ), γ, h, t + h, zeros(N), map(_f64, u), ctx.tol, Ref(1.0), adaptive;
+        refactor = Z -> _factor_at(ctx, opsI, Z, pp, t + h, σ)
+    )
     nf += n
     ok || return (; nothing_out..., newton_fail = true, nf, u1 = nothing)
     z = stage_tangent(ctx, opsI, τ, zp, γ, h, t + h, p)

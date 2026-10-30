@@ -58,12 +58,16 @@ function resolve_partition(ctx, root::SNode)
     tiles = Int.(get(p, "tiles", [1, 1]))
     for a in 1:2
         if a > length(axes.horizontal)
-            (ranks[a] == 1 && tiles[a] == 1) || refuse("partition_axis_missing", "/partition",
-                "ranks or tiles divide horizontal axis $a, which the model does not have")
+            (ranks[a] == 1 && tiles[a] == 1) || refuse(
+                "partition_axis_missing", "/partition",
+                "ranks or tiles divide horizontal axis $a, which the model does not have"
+            )
         else
             X = axes.horizontal[a]
-            ranks[a] * tiles[a] > m.sizes[X] && refuse("partition_too_fine", "/partition",
-                "ranks × tiles = $(ranks[a] * tiles[a]) exceeds axis $X's size $(m.sizes[X])")
+            ranks[a] * tiles[a] > m.sizes[X] && refuse(
+                "partition_too_fine", "/partition",
+                "ranks × tiles = $(ranks[a] * tiles[a]) exceeds axis $X's size $(m.sizes[X])"
+            )
         end
     end
     out = Dict{String, Any}("ranks" => ranks, "tiles" => tiles)
@@ -81,8 +85,10 @@ function resolve_partition(ctx, root::SNode)
     coupled = [n for n in allnodes(root) if n.kind == "coupled"]
     coupled_keys = union(Set(n.id for n in coupled), Set(o for n in coupled for o in leaf_ops(n)))
     for k in sort!(String.(collect(keys(rshards))))
-        k in coupled_keys && refuse("run_config_invalid", jptr("/partition/shards", k),
-            "partition.shards entry $k names a coupled node or an operator of one, which is not sharded at M2")
+        k in coupled_keys && refuse(
+            "run_config_invalid", jptr("/partition/shards", k),
+            "partition.shards entry $k names a coupled node or an operator of one, which is not sharded at M2"
+        )
     end
     shards = Dict{String, Any}()
     for n in allnodes(root)
@@ -100,8 +106,10 @@ function resolve_partition(ctx, root::SNode)
         else
             entries = [(o, rshards[o]) for o in names if haskey(rshards, o)]
             for (o, s) in entries
-                s == entries[1][2] || refuse("partition_conflict", jptr("/partition/shards", o),
-                    "partition.shards gives operators $(entries[1][1]) and $o of leaf $(n.id) different counts")
+                s == entries[1][2] || refuse(
+                    "partition_conflict", jptr("/partition/shards", o),
+                    "partition.shards gives operators $(entries[1][1]) and $o of leaf $(n.id) different counts"
+                )
             end
             isempty(entries) ? 1 : entries[1][2]
         end
@@ -156,8 +164,10 @@ function resolve_precision(ctx, root::SNode)
             # Reported at the first entry, in the leaf's operator order, that
             # disagrees with the first entry setting the role (as partition_conflict).
             for (o, v) in ents
-                v == ents[1][2] || refuse("precision_conflict", jptr("/precision", o),
-                    "precision entries for operators $(ents[1][1]) and $o of leaf $(n.id) disagree on $r")
+                v == ents[1][2] || refuse(
+                    "precision_conflict", jptr("/precision", o),
+                    "precision entries for operators $(ents[1][1]) and $o of leaf $(n.id) disagree on $r"
+                )
             end
             if !isempty(ents)
                 roles[r] = ents[1][2]; src[r] = ents[1][1]
@@ -167,9 +177,11 @@ function resolve_precision(ctx, root::SNode)
         end
         written = sort!(unique!(reduce(vcat, (ctx.ops[o].writes for o in names); init = String[])))
         decl = filter(!isnothing, [declared_precision(ctx.model, s) for s in written])
-        length(unique(decl)) > 1 && refuse("precision_contradicts_declaration",
+        length(unique(decl)) > 1 && refuse(
+            "precision_contradicts_declaration",
             haskey(src, "state") ? jptr("/precision", src["state"]) : nptr(n),
-            "the states of leaf $(n.id) declare different element_types ($(join(unique(decl), ", "))), so no state role satisfies them all")
+            "the states of leaf $(n.id) declare different element_types ($(join(unique(decl), ", "))), so no state role satisfies them all"
+        )
         haskey(roles, "state") || (roles["state"] = isempty(decl) ? "f64" : decl[1])
         haskey(roles, "rhs") || (roles["rhs"] = roles["state"])
         haskey(roles, "jacobian") || (roles["jacobian"] = roles["rhs"])
@@ -177,12 +189,16 @@ function resolve_precision(ctx, root::SNode)
         haskey(roles, "tables") || (roles["tables"] = "f64")
         for r in ("state", "rhs")
             haskey(src, r) || continue
-            any(!=(roles[r]), decl) && refuse("precision_contradicts_declaration", jptr("/precision", src[r]),
-                "precision $r = $(roles[r]) on leaf $(n.id) contradicts a declared element_type ($(join(unique(decl), ", ")))")
+            any(!=(roles[r]), decl) && refuse(
+                "precision_contradicts_declaration", jptr("/precision", src[r]),
+                "precision $r = $(roles[r]) on leaf $(n.id) contradicts a declared element_type ($(join(unique(decl), ", ")))"
+            )
         end
-        _below(roles["rhs"], roles["state"]) && refuse("precision_rhs_below_state",
+        _below(roles["rhs"], roles["state"]) && refuse(
+            "precision_rhs_below_state",
             jptr("/precision", role_source(src, "rhs")),
-            "precision rhs = $(roles["rhs"]) is below state = $(roles["state"]) on leaf $(n.id)")
+            "precision rhs = $(roles["rhs"]) is below state = $(roles["state"]) on leaf $(n.id)"
+        )
         alg = get(n.spec, "alg", "auto")
         alg == "auto" || check_rosenbrock_precision(n, alg, roles, src)
         out[n.id] = Dict{String, Any}(roles)
@@ -199,10 +215,13 @@ role_source(src, r) = haskey(src, r) ? src[r] : r in ("jacobian", "factors") ? r
 function check_rosenbrock_precision(n::SNode, alg, roles, src)
     (TABLEAUS[alg].family === :rosenbrock && alg != "Rosenbrock23") || return
     for r in ("jacobian", "factors")
-        _below(roles[r], roles["rhs"]) && refuse("precision_low_with_classical_rosenbrock",
+        _below(roles[r], roles["rhs"]) && refuse(
+            "precision_low_with_classical_rosenbrock",
             jptr("/precision", role_source(src, r)),
-            "precision $r = $(roles[r]) is below rhs = $(roles["rhs"]) on $alg, a classical Rosenbrock method (leaf $(n.id))")
+            "precision $r = $(roles[r]) is below rhs = $(roles["rhs"]) on $alg, a classical Rosenbrock method (leaf $(n.id))"
+        )
     end
+    return
 end
 
 """Glob over qualified names: `*` matches any characters, dots included (spec/run-config.md §7.2)."""
@@ -244,8 +263,10 @@ function check_adjoint(ctx, root::SNode)
         if prefix == "params" && pat == "numeric"
             matched = [p for p in pool if m.flat.parameters[p].default isa Real]
         else
-            !occursin('*', pat) && pat in bound && refuse("wrt_bound_parameter", at,
-                "$w names a parameter bound by bind_dt, a constant of the adjoint's tape (spec/adjoint.md §5.8)")
+            !occursin('*', pat) && pat in bound && refuse(
+                "wrt_bound_parameter", at,
+                "$w names a parameter bound by bind_dt, a constant of the adjoint's tape (spec/adjoint.md §5.8)"
+            )
             matched = [p for p in pool if glob_match(pat, p)]
         end
         isempty(setdiff(matched, bound)) && refuse("wrt_matches_nothing", at, "$w matches nothing (bound parameters are left out)")
@@ -255,7 +276,8 @@ end
 
 """spec/plan.md §7.7: the model by the run config's `model` string as written and the run config by its file name, each with the SHA-256 of its bytes."""
 function inputs_json(inp::PlanInputs)
-    Dict{String, Any}(
+    return Dict{String, Any}(
         "model" => Dict{String, Any}("path" => String(inp.config["model"]), "sha256" => bytes2hex(sha256(inp.model_bytes))),
-        "run_config" => Dict{String, Any}("path" => basename(inp.config_path), "sha256" => bytes2hex(sha256(inp.config_bytes))))
+        "run_config" => Dict{String, Any}("path" => basename(inp.config_path), "sha256" => bytes2hex(sha256(inp.config_bytes)))
+    )
 end

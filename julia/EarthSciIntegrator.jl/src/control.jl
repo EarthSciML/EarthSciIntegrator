@@ -200,7 +200,11 @@ function initial_step(f!, u0, t0::Float64, order::Integer, tol::Tolerances, dtmi
     for j in D
         sk[j] = tol.abstol[j] + abs(_f64(u0[j])) * tol.reltol
     end
-    rms(x) = (s = 0.0; for v in x; s = s + v * v; end; sqrt(s / length(x)))
+    rms(x) = (
+        s = 0.0; for v in x
+            s = s + v * v
+        end; sqrt(s / length(x))
+    )
     d0 = rms([_f64(u0[j]) / sk[j] for j in D])
     f0 = similar(u0)
     f!(f0, u0, t0)

@@ -82,9 +82,11 @@ function forced_decay()
         A(s) = (k * sin(ω * s) - ω * cos(ω * s)) / (k^2 + ω^2)
         return [(u0[1] - A(0.0)) * exp(-k * t) + A(t)]
     end
-    return ToyProblem("forced_decay", 1, u0, p, ["k", "omega"], (0.0, 2.0),
+    return ToyProblem(
+        "forced_decay", 1, u0, p, ["k", "omega"], (0.0, 2.0),
         Dict{String, AbstractOperator}("decay" => ForcedDecay()), Dict{String, AbstractMapOperator}(),
-        ["u" => [1]], Function[], exact, false)
+        ["u" => [1]], Function[], exact, false
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -159,9 +161,11 @@ function van_der_pol(variant::AbstractString)
     else
         throw(ConfigError("van_der_pol has variants 'nonstiff' and 'stiff', not '$variant'"))
     end
-    return ToyProblem("van_der_pol/$variant", 2, [2.0, 0.0], [μ], ["mu"], (0.0, tf),
+    return ToyProblem(
+        "van_der_pol/$variant", 2, [2.0, 0.0], [μ], ["mu"], (0.0, tf),
         Dict{String, AbstractOperator}("oscillator" => Oscillator()), Dict{String, AbstractMapOperator}(),
-        ["y" => [1], "z" => [2]], Function[], nothing, stiff)
+        ["y" => [1], "z" => [2]], Function[], nothing, stiff
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -239,9 +243,11 @@ ft_vjp_u!(::Kinetics, out, u, p, t, ν) = out
 ft_vjp_p!(::Kinetics, out, u, p, t, ν) = out
 
 function robertson()
-    return ToyProblem("robertson", 3, [1.0, 0.0, 0.0], [0.04, 3.0e7, 1.0e4], ["k1", "k2", "k3"], (0.0, 40.0),
+    return ToyProblem(
+        "robertson", 3, [1.0, 0.0, 0.0], [0.04, 3.0e7, 1.0e4], ["k1", "k2", "k3"], (0.0, 40.0),
         Dict{String, AbstractOperator}("kinetics" => Kinetics()), Dict{String, AbstractMapOperator}(),
-        ["y1" => [1], "y2" => [2], "y3" => [3]], Function[u -> [u[1] + u[2] + u[3]]], nothing, true)
+        ["y1" => [1], "y2" => [2], "y3" => [3]], Function[u -> [u[1] + u[2] + u[3]]], nothing, true
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -377,10 +383,12 @@ function photostationary_cells()
     op = Photochemistry(ncells)
     u0 = vcat(fill(10.0, ncells), fill(5.0, ncells), fill(40.0, ncells))
     inv = u -> vcat([u[c] + u[ncells + c] for c in 1:ncells], [u[c] + u[2ncells + c] for c in 1:ncells])
-    return ToyProblem("photostationary_cells", 3ncells, u0, [1.0e-2, 4.4e-4, 2π / 3600], ["j0", "k", "omega"],
+    return ToyProblem(
+        "photostationary_cells", 3ncells, u0, [1.0e-2, 4.4e-4, 2π / 3600], ["j0", "k", "omega"],
         (0.0, 3600.0), Dict{String, AbstractOperator}("photochemistry" => op), Dict{String, AbstractMapOperator}(),
         ["NO2" => collect(1:ncells), "NO" => collect((ncells + 1):(2ncells)), "O3" => collect((2ncells + 1):(3ncells))],
-        Function[inv], nothing, true)
+        Function[inv], nothing, true
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -523,10 +531,12 @@ function advection_reaction()
     n = 64
     x = [(c + 0.5) / n for c in 0:(n - 1)]
     u0 = vcat(1 .+ sin.(2π .* x) ./ 2, zeros(n))
-    return ToyProblem("advection_reaction", 2n, u0, [1.0, 50.0, 25.0], ["v", "k1", "k2"], (0.0, 0.5),
+    return ToyProblem(
+        "advection_reaction", 2n, u0, [1.0, 50.0, 25.0], ["v", "k1", "k2"], (0.0, 0.5),
         Dict{String, AbstractOperator}("transport" => Transport(n), "reaction" => Reaction(n)),
         Dict{String, AbstractMapOperator}(), ["A" => collect(1:n), "B" => collect((n + 1):(2n))],
-        Function[u -> [sum(u)]], nothing, false)
+        Function[u -> [sum(u)]], nothing, false
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -571,9 +581,11 @@ function map_jvp!(::DecayMap, out, u, p, t, Δ, mask, v_u, v_p)
 end
 
 function source_decay_map()
-    return ToyProblem("source_decay_map", 1, [0.0], [1.0, 0.5], ["a", "r"], (0.0, 4.0),
+    return ToyProblem(
+        "source_decay_map", 1, [0.0], [1.0, 0.5], ["a", "r"], (0.0, 4.0),
         Dict{String, AbstractOperator}("source" => Source()),
-        Dict{String, AbstractMapOperator}("decay" => DecayMap()), ["u" => [1]], Function[], nothing, false)
+        Dict{String, AbstractMapOperator}("decay" => DecayMap()), ["u" => [1]], Function[], nothing, false
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -602,5 +614,7 @@ function toy_problem(model::AbstractString)
 end
 
 """The names of every toy problem and variant (toy-problems.md §1)."""
-const TOY_MODELS = ["toy:forced_decay", "toy:van_der_pol/nonstiff", "toy:van_der_pol/stiff", "toy:robertson",
-    "toy:photostationary_cells", "toy:advection_reaction", "toy:source_decay_map"]
+const TOY_MODELS = [
+    "toy:forced_decay", "toy:van_der_pol/nonstiff", "toy:van_der_pol/stiff", "toy:robertson",
+    "toy:photostationary_cells", "toy:advection_reaction", "toy:source_decay_map",
+]

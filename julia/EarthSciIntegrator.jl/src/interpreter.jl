@@ -70,8 +70,12 @@ mutable struct Run
     q::Float64                        # the integrated functional q(t_f) of a functional over time
 end
 
-const _TOP_KEYS = Set(["esm_integrator", "model", "operators", "schedule", "step", "partition", "precision",
-    "adjoint", "output", "restart"])
+const _TOP_KEYS = Set(
+    [
+        "esm_integrator", "model", "operators", "schedule", "step", "partition", "precision",
+        "adjoint", "output", "restart",
+    ]
+)
 
 """
     build_run(config; tspan, saveat=nothing, prob=toy_problem(config["model"]), p=prob.p, u0=prob.u0) -> Run
@@ -81,8 +85,10 @@ come from the conformance case (spec/toy-problems.md §2). Raises
 [`UnsupportedError`](@ref) for constructs not implemented in this stage, and
 [`ConfigError`](@ref) for invalid ones.
 """
-function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProblem = toy_problem(config["model"]),
-        p::AbstractVector = prob.p, u0::AbstractVector = prob.u0)
+function build_run(
+        config::AbstractDict; tspan, saveat = nothing, prob::ToyProblem = toy_problem(config["model"]),
+        p::AbstractVector = prob.p, u0::AbstractVector = prob.u0
+    )
     for k in keys(config)
         k in _TOP_KEYS || throw(ConfigError("unknown top-level key '$k'"))
     end
@@ -161,7 +167,7 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
             elseif startswith(w, "params:")
                 pat = w[8:end]
                 sel = pat == "numeric" ? collect(1:length(prob.pnames)) :
-                      findall(n -> occursin(_glob(pat), n), prob.pnames)
+                    findall(n -> occursin(_glob(pat), n), prob.pnames)
                 # A name refers to one parameter, refused when bound by bind_dt
                 # (run-config §8 rule 11); a pattern skips bound ones and is
                 # refused when it then matches nothing, as in the Rust implementation.
@@ -201,9 +207,11 @@ function build_run(config::AbstractDict; tspan, saveat = nothing, prob::ToyProbl
             end
         end
     end
-    return Run(prob, collect(Float64, p), collect(Float64, u0), root, leaves, (t0, tf), dt, bounds, reasons, outs,
+    return Run(
+        prob, collect(Float64, p), collect(Float64, u0), root, leaves, (t0, tf), dt, bounds, reasons, outs,
         functional, wrt_u0, wrt_p, bound, Dict{String, ControllerState}(), Tape(), Checkpoint[],
-        Tuple{Float64, Vector{Float64}}[], Float64[], 0, 0, 0, "Default", "", 0.0)
+        Tuple{Float64, Vector{Float64}}[], Float64[], 0, 0, 0, "Default", "", 0.0
+    )
 end
 
 _glob(pat) = Regex("^" * replace(pat, "." => "\\.", "*" => ".*") * "\$")

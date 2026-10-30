@@ -91,7 +91,7 @@ function frozen_refs(n::SNode)
     haskey(n.spec, "frozen") || return refs
     for (i, f) in enumerate(n.spec["frozen"])
         f isa AbstractString ? push!(refs, (String(f), nptr(n, "frozen", i - 1))) :
-                               push!(refs, (String(f["every"]), nptr(n, "frozen", i - 1, "every")))
+            push!(refs, (String(f["every"]), nptr(n, "frozen", i - 1, "every")))
     end
     return refs
 end
@@ -108,7 +108,7 @@ function imex_refs(n::SNode)
         haskey(n.spec["imex"], part) || continue
         v = n.spec["imex"][part]
         items = v isa AbstractString ? [(String(v), nptr(n, "imex", part))] :
-                [(String(x), nptr(n, "imex", part, i - 1)) for (i, x) in enumerate(v)]
+            [(String(x), nptr(n, "imex", part, i - 1)) for (i, x) in enumerate(v)]
         for (x, p) in items
             Symbol(x) in LOCALITY_ORDER || push!(refs, (x, p))
         end
@@ -377,8 +377,10 @@ function check_names(ctx, nodes)
     end
     ids = Set(n.id for n in nodes)
     for k in sort!(String.(collect(keys(get(config, "precision", Dict{String, Any}())))))
-        (k == "default" || haskey(ops, k) || k in ids) || refuse("name_unresolved", jptr("/precision", k),
-            "precision key $k names no operator, node or default")
+        (k == "default" || haskey(ops, k) || k in ids) || refuse(
+            "name_unresolved", jptr("/precision", k),
+            "precision key $k names no operator, node or default"
+        )
     end
     return nothing
 end
@@ -395,7 +397,7 @@ function check_schedule(ctx, root::SNode)
     nodes = allnodes(root)
     function observed_limit(l, at)
         need_kind(m, l, :observed, at, "step limit")
-        refuse("unsupported_step_limit", at, "observed step limits need limit operators, U6 (M4b)")
+        return refuse("unsupported_step_limit", at, "observed step limits need limit operators, U6 (M4b)")
     end
     # Unsupported constructs, tree order (§0.1).
     for n in nodes
@@ -418,8 +420,10 @@ function check_schedule(ctx, root::SNode)
     # Rule 3: operator names, per node its leaf list, frozen entries, then imex
     # entries (every leaf, whatever its alg; §7.1).
     for n in nodes, (o, p) in vcat(operator_refs(n), frozen_refs(n), imex_refs(n))
-        haskey(ops, o) || refuse("operator_undefined", p,
-            "the schedule names operator $o, which is neither defined in the run config nor an existing default operator")
+        haskey(ops, o) || refuse(
+            "operator_undefined", p,
+            "the schedule names operator $o, which is neither defined in the run config nor an existing default operator"
+        )
     end
     # Rule 5 (§7.1, D84): advanced somewhere (a frozen entry counts), and named by
     # at most one leaf or coupled node (a frozen entry does not count).
@@ -428,8 +432,10 @@ function check_schedule(ctx, root::SNode)
         push!(advanced, o)
     end
     for o in sort!(collect(keys(ops)))
-        o in advanced || refuse("operator_not_advanced", isempty(ops[o].pointer) ? "/schedule" : ops[o].pointer,
-            "operator $o is advanced by no node of the schedule")
+        o in advanced || refuse(
+            "operator_not_advanced", isempty(ops[o].pointer) ? "/schedule" : ops[o].pointer,
+            "operator $o is advanced by no node of the schedule"
+        )
     end
     named = Set{String}()
     for n in nodes, (o, p) in operator_refs(n)
@@ -443,8 +449,10 @@ function check_schedule(ctx, root::SNode)
     # that its operator names are defined.
     for n in nodes
         is_leaflike(n) && get(n.spec, "alg", "auto") == "IMEXEuler" || continue
-        haskey(n.spec, "imex") || refuse("imex_partition_invalid", nptr(n),
-            "an IMEXEuler leaf needs imex; there is no default partition")
+        haskey(n.spec, "imex") || refuse(
+            "imex_partition_invalid", nptr(n),
+            "an IMEXEuler leaf needs imex; there is no default partition"
+        )
         expand_imex(n, ops)
     end
     # Rule 7: node ids.
@@ -452,8 +460,10 @@ function check_schedule(ctx, root::SNode)
     for n in nodes
         if haskey(n.spec, "id")
             id = String(n.spec["id"])
-            occursin(_NODE_PATH_RE, id) && id != n.path && refuse("node_id_reserved", nptr(n, "id"),
-                "id $id has the form of a node path, and this node's path is $(n.path)")
+            occursin(_NODE_PATH_RE, id) && id != n.path && refuse(
+                "node_id_reserved", nptr(n, "id"),
+                "id $id has the form of a node path, and this node's path is $(n.path)"
+            )
             id in seen && refuse("duplicate_node_id", nptr(n, "id"), "two nodes have the id $id")
         end
         push!(seen, n.id)
@@ -470,31 +480,39 @@ function check_schedule(ctx, root::SNode)
         if !lands_inside
             t0, tf = ctx.time
             for (τ, at) in tstops_known(ctx)
-                on_fixed_step(t0, tf, dt, τ) || refuse("tstop_off_fixed_step", at,
-                    "tstop $τ s is not t₀ plus a multiple of step.dt = $dt s, and the schedule root cannot land on it")
+                on_fixed_step(t0, tf, dt, τ) || refuse(
+                    "tstop_off_fixed_step", at,
+                    "tstop $τ s is not t₀ plus a multiple of step.dt = $dt s, and the schedule root cannot land on it"
+                )
             end
         end
     end
     # Rule 12: step control.
     if !haskey(step, "dt") && !haskey(step, "limits")
-        (is_leaflike(root) && !haskey(root.spec, "dt")) || refuse("step_control_missing", "/step",
-            "step has neither dt nor limits, and the schedule root is not a single adaptive leaf or coupled node")
+        (is_leaflike(root) && !haskey(root.spec, "dt")) || refuse(
+            "step_control_missing", "/step",
+            "step has neither dt nor limits, and the schedule root is not a single adaptive leaf or coupled node"
+        )
     end
     # Rule 13: adaptive leaves need an error estimate.
     for n in nodes
         is_leaflike(n) || continue
         alg = get(n.spec, "alg", "auto")
         (alg == "auto" || haskey(n.spec, "dt")) && continue
-        has_error_estimate(TABLEAUS[alg]) || refuse("adaptive_without_error_estimate", nptr(n, "alg"),
-            "$alg has no embedded error estimate, so the leaf must give dt (D52)")
+        has_error_estimate(TABLEAUS[alg]) || refuse(
+            "adaptive_without_error_estimate", nptr(n, "alg"),
+            "$alg has no embedded error estimate, so the leaf must give dt (D52)"
+        )
     end
     # Rule 15: a "leaf" binding on an adaptive leaf needs control.dt0.
     for n in nodes
         is_leaflike(n) && !haskey(n.spec, "dt") || continue
         haskey(get(n.spec, "control", Dict{String, Any}()), "dt0") && continue
         for (p, k, at) in leaf_bindings(n, ops)
-            k == "leaf" && refuse("bind_dt_leaf_without_dt0", at,
-                "parameter $p is bound to the leaf step on an adaptive leaf without control.dt0 (spec/methods.md §9)")
+            k == "leaf" && refuse(
+                "bind_dt_leaf_without_dt0", at,
+                "parameter $p is bound to the leaf step on an adaptive leaf without control.dt0 (spec/methods.md §9)"
+            )
         end
     end
     return nothing
@@ -527,7 +545,7 @@ function reference_steps(ctx, root::SNode)
     end
     out = Dict{String, Float64}()
     function walk(n::SNode, Δ)
-        if is_leaflike(n)
+        return if is_leaflike(n)
             dt = get(n.spec, "dt", nothing)
             out[n.id] = (dt === nothing || dt in ("step", "accumulated")) ? Δ : plan_duration(m, dt, nptr(n, "dt"))
         elseif n.kind == "sequence"
@@ -590,8 +608,10 @@ function operator_stiffness!(ctx, root::SNode, Δ::Dict{String, Float64})
         alg = get(n.spec, "alg", "auto")
         stiff[o] = if alg != "auto"
             (forms_jacobian(alg) ? :stiff : :nonstiff, "run_config")
-        elseif any(t -> length(t.origins) == 1 && t.origins[1].component !== nothing &&
-                        t.origins[1].component in ctx.model.reaction_systems, op.terms)
+        elseif any(
+                t -> length(t.origins) == 1 && t.origins[1].component !== nothing &&
+                    t.origins[1].component in ctx.model.reaction_systems, op.terms
+            )
             (:stiff, "reaction_systems")
         elseif need_locality(op) === :pointwise && hint == "high"
             (:stiff, "solver_hint")
@@ -617,14 +637,18 @@ function leaf_block_size(ctx, n::SNode, at)
     for o in leaf_ops(n)
         s = ctx.ops[o].structure
         s === nothing && throw(PlannerStageError("the block size of leaf $(n.id) needs operator $o's structure (EarthSciASTDiff)"))
-        haskey(s, "block") || refuse("auto_strategy_unavailable", at,
-            "operator $o has no structure.block, so leaf $(n.id) has no block_diagonal storage for block_lu")
+        haskey(s, "block") || refuse(
+            "auto_strategy_unavailable", at,
+            "operator $o has no structure.block, so leaf $(n.id) has no block_diagonal storage for block_lu"
+        )
         union!(vars, String.(s["block"]["vars"]))
     end
     written = sort!(unique!(reduce(vcat, (ctx.ops[o].writes for o in leaf_ops(n)); init = String[])))
     shapes = unique([get(ctx.model.shapes, s, String[]) for s in written])
-    length(shapes) == 1 || refuse("auto_strategy_unavailable", at,
-        "leaf $(n.id)'s states are neither all scalars nor all arrays of one shape, so it has no block_diagonal storage for block_lu")
+    length(shapes) == 1 || refuse(
+        "auto_strategy_unavailable", at,
+        "leaf $(n.id)'s states are neither all scalars nor all arrays of one shape, so it has no block_diagonal storage for block_lu"
+    )
     return length(vars)
 end
 
@@ -668,7 +692,7 @@ function resolve_leaf(ctx, n::SNode, stiff)
     if alg == "auto"
         if cls === :pointwise
             if isstiff
-                alg = reltol >= 1e-3 ? "Rosenbrock23" : "Rodas4"
+                alg = reltol >= 1.0e-3 ? "Rosenbrock23" : "Rodas4"
                 jac === nothing && (jac = "symbolic")
                 # The row needs block_diagonal storage even when linsolve is given.
                 bsize = leaf_block_size(ctx, n, at)
@@ -694,8 +718,10 @@ function resolve_leaf(ctx, n::SNode, stiff)
                 jac === nothing && (jac = "symbolic")
                 ls === nothing && (ls = Dict{String, Any}("banded" => Dict{String, Any}()))
             else
-                refuse("auto_strategy_unavailable", at,
-                    "a stencil leaf with a stiff column operator and no dt has no M2 method (D71)")
+                refuse(
+                    "auto_strategy_unavailable", at,
+                    "a stencil leaf with a stiff column operator and no dt has no M2 method (D71)"
+                )
             end
         else
             isstiff && refuse("auto_strategy_unavailable", at, "a stiff global leaf has no M2 method (D71)")
@@ -707,9 +733,11 @@ function resolve_leaf(ctx, n::SNode, stiff)
         jac === nothing && (jac = "symbolic")
         if ls === nothing
             ls = cls === :pointwise ? _pointwise_linsolve(leaf_block_size(ctx, n, at)) :
-                 cls === :column ? Dict{String, Any}("banded" => Dict{String, Any}()) :
-                 refuse("auto_strategy_unavailable", at,
-                     "an implicit method on a $cls leaf with linsolve omitted has no M2 linear solver (D71)")
+                cls === :column ? Dict{String, Any}("banded" => Dict{String, Any}()) :
+                refuse(
+                    "auto_strategy_unavailable", at,
+                    "an implicit method on a $cls leaf with linsolve omitted has no M2 linear solver (D71)"
+                )
         end
     end
     adaptive = !haskey(spec, "dt")
@@ -748,8 +776,10 @@ function resolve_leaf(ctx, n::SNode, stiff)
     end
     alg == "Theta" && (out["theta"] = spec["theta"])
     if haskey(spec, "frozen")
-        out["frozen"] = Any[f isa AbstractString ? f : _frozen_entry(m, f, nptr(n, "frozen", i - 1))
-                            for (i, f) in enumerate(spec["frozen"])]
+        out["frozen"] = Any[
+            f isa AbstractString ? f : _frozen_entry(m, f, nptr(n, "frozen", i - 1))
+                for (i, f) in enumerate(spec["frozen"])
+        ]
     end
     haskey(spec, "bind_dt") && (out["bind_dt"] = Dict{String, Any}(String(k) => v for (k, v) in spec["bind_dt"]))
     return out
@@ -781,8 +811,10 @@ function resolve_tree(ctx, n::SNode, stiff)
         if haskey(n.spec, "n")
             out["n"] = n.spec["n"]
         else
-            out["limits"] = Any[Dict{String, Any}("max" => plan_duration(ctx.model, l["max"], nptr(n, "limits", i - 1, "max")))
-                                for (i, l) in enumerate(n.spec["limits"])]
+            out["limits"] = Any[
+                Dict{String, Any}("max" => plan_duration(ctx.model, l["max"], nptr(n, "limits", i - 1, "max")))
+                    for (i, l) in enumerate(n.spec["limits"])
+            ]
         end
     elseif n.kind == "every"
         out["every"] = resolve_tree(ctx, n.children[1], stiff)

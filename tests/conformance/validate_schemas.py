@@ -24,8 +24,8 @@ Needs jsonschema >= 4.18 (for the `referencing` registry).
 """
 
 import json
-from decimal import Decimal
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -93,8 +93,13 @@ def check_invalid(errors, expected):
     def explained(e, in_branch):
         return any(within(e.json_path, a) or (in_branch and within(a, e.json_path)) for a in at)
 
-    stray = sorted({f"{e.json_path} ({e.validator}): {e.message}"
-                    for e, in_branch in leaves if not explained(e, in_branch)})
+    stray = sorted(
+        {
+            f"{e.json_path} ({e.validator}): {e.message}"
+            for e, in_branch in leaves
+            if not explained(e, in_branch)
+        }
+    )
     if stray:
         return "fails for a second reason: " + "; ".join(stray)
     return None
@@ -104,7 +109,11 @@ def jcs(value):
     """RFC 8785 canonical JSON (spec/plan.md §2.1)."""
     if isinstance(value, dict):
         keys = sorted(value, key=lambda k: k.encode("utf-16-be"))
-        return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + jcs(value[k]) for k in keys) + "}"
+        return (
+            "{"
+            + ",".join(json.dumps(k, ensure_ascii=False) + ":" + jcs(value[k]) for k in keys)
+            + "}"
+        )
     if isinstance(value, list):
         return "[" + ",".join(jcs(v) for v in value) + "]"
     if isinstance(value, bool) or value is None or isinstance(value, str):
@@ -189,12 +198,18 @@ def check_planner_fixtures(failures):
         checked += 1
         run = REFUSALS / name / "run.json"
         if name not in dirs or not run.is_file():
-            failures.append(f"tests/conformance/plans/refusals/expected-codes.json: '{name}' has no run.json")
+            failures.append(
+                f"tests/conformance/plans/refusals/expected-codes.json: '{name}' has no run.json"
+            )
             continue
         if entry["code"] not in codes:
-            failures.append(f"{run.relative_to(ROOT)}: code '{entry['code']}' is not in spec/planner-errors.json")
+            failures.append(
+                f"{run.relative_to(ROOT)}: code '{entry['code']}' is not in spec/planner-errors.json"
+            )
         if not pointer_parent_resolves(load(run), entry["at"]):
-            failures.append(f"{run.relative_to(ROOT)}: pointer '{entry['at']}' does not lead into the run config")
+            failures.append(
+                f"{run.relative_to(ROOT)}: pointer '{entry['at']}' does not lead into the run config"
+            )
         model = load(run)["model"]
         if not model.startswith("toy:") and not (run.parent / model).is_file():
             failures.append(f"{run.relative_to(ROOT)}: model '{model}' does not exist")
@@ -208,7 +223,9 @@ def check_esm_documents(failures, require):
         import earthsci_ast
     except ImportError:
         if require:
-            failures.append(f"earthsci_ast is not installed (pip install earthsci-ast=={ESM_VERSION})")
+            failures.append(
+                f"earthsci_ast is not installed (pip install earthsci-ast=={ESM_VERSION})"
+            )
         else:
             print(f"SKIP {len(paths)} .esm documents: earthsci_ast is not installed")
         return 0
@@ -225,10 +242,12 @@ def check_esm_documents(failures, require):
         try:
             result = earthsci_ast.validate_path(str(path))
             if not result.is_valid:
-                failures.append(f"{rel}: invalid: {result.schema_errors or result.structural_errors}")
+                failures.append(
+                    f"{rel}: invalid: {result.schema_errors or result.structural_errors}"
+                )
                 continue
             earthsci_ast.flatten(earthsci_ast.load_path(str(path)))
-        except Exception as e:  # noqa: BLE001 - report every load failure
+        except Exception as e:  # report every load failure
             failures.append(f"{rel}: {type(e).__name__}: {str(e)[:300]}")
     return len(paths)
 
@@ -249,7 +268,7 @@ def main():
     for name, schema in schemas.items():
         try:
             Draft202012Validator.check_schema(schema)
-        except Exception as e:  # noqa: BLE001 - report every schema error
+        except Exception as e:  # report every schema error
             failures.append(f"{name}: not a valid 2020-12 schema: {e}")
 
     for suite, schema_name in SUITES.items():
@@ -265,7 +284,9 @@ def main():
             expected = {} if expect_valid else load(folder / EXPECTED)
             if not expect_valid:
                 for name in sorted(set(expected) - {p.name for p in paths}):
-                    failures.append(f"{(folder / EXPECTED).relative_to(ROOT)}: entry '{name}' has no fixture")
+                    failures.append(
+                        f"{(folder / EXPECTED).relative_to(ROOT)}: entry '{name}' has no fixture"
+                    )
             for path in paths:
                 checked += 1
                 errors = list(validator.iter_errors(load(path)))
@@ -273,7 +294,9 @@ def main():
                 if expect_valid:
                     if errors:
                         best = min(errors, key=lambda e: len(list(e.absolute_path)))
-                        failures.append(f"{rel}: should validate, but {best.json_path}: {best.message}")
+                        failures.append(
+                            f"{rel}: should validate, but {best.json_path}: {best.message}"
+                        )
                 elif path.name not in expected:
                     failures.append(f"{rel}: no entry in {EXPECTED}")
                 else:
@@ -296,7 +319,9 @@ def main():
             errors = list(validator.iter_errors(load(path)))
             if errors:
                 best = min(errors, key=lambda e: len(list(e.absolute_path)))
-                failures.append(f"{path.relative_to(ROOT)}: should validate, but {best.json_path}: {best.message}")
+                failures.append(
+                    f"{path.relative_to(ROOT)}: should validate, but {best.json_path}: {best.message}"
+                )
 
     checked += check_planner_fixtures(failures)
     checked += check_esm_documents(failures, require_esm)

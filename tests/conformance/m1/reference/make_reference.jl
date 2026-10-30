@@ -40,8 +40,10 @@ function operator_names(node, acc = String[])
     return acc
 end
 
-needs_reference(case) = any(c -> c["check"] == "reference" || (c["check"] == "order" && c["against"] == "reference"),
-    case["checks"])
+needs_reference(case) = any(
+    c -> c["check"] == "reference" || (c["check"] == "order" && c["against"] == "reference"),
+    case["checks"]
+)
 
 function reference(case)
     prob = toy_problem(case["run_config"]["model"])
@@ -52,12 +54,14 @@ function reference(case)
     f = odefunction(ops)
     odeprob = ODEProblem(f, copy(prob.u0), (t0, tf), copy(prob.p))
     alg = prob.stiff ? Rodas5P() : Vern9()
-    sol = solve(odeprob, alg; reltol = 1e-13, abstol = 1e-13, saveat, tstops = saveat, save_start = false, maxiters = 10^8)
+    sol = solve(odeprob, alg; reltol = 1.0e-13, abstol = 1.0e-13, saveat, tstops = saveat, save_start = false, maxiters = 10^8)
     sol.retcode == ReturnCode.Success || error("$(case["id"]): reference solve ended with $(sol.retcode)")
     t = vcat(t0, sol.t)
     u = vcat([copy(prob.u0)], [copy(x) for x in sol.u])
-    return result_json(case["id"], "reference", t, u; accepted = sol.stats.naccept, rejected = sol.stats.nreject,
-        rhs_calls = sol.stats.nf)
+    return result_json(
+        case["id"], "reference", t, u; accepted = sol.stats.naccept, rejected = sol.stats.nreject,
+        rhs_calls = sol.stats.nf
+    )
 end
 
 function main()
@@ -70,7 +74,7 @@ function main()
         println("wrote ", basename(path))
         n += 1
     end
-    println("$n reference results")
+    return println("$n reference results")
 end
 
 main()

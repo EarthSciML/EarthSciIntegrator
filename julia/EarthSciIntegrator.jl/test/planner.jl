@@ -17,7 +17,8 @@ const STAGE2_REFUSALS = Dict(
     "split-explicit" => "default operators need the reseact-shaped terms' localities",
     "step-control-missing" => "the auto schedule needs the reseact-shaped terms' localities",
     "term-selected-twice" => "the locality selector needs the reseact-shaped terms' localities",
-    "tstop-off-fixed-step" => "the auto schedule needs the reseact-shaped terms' localities")
+    "tstop-off-fixed-step" => "the auto schedule needs the reseact-shaped terms' localities"
+)
 
 """
     HandBackend(bands, structures, derived)
@@ -53,11 +54,11 @@ end
         a, b, c = "a", Dict("op" => "*", "args" => ["k", "b"]), "c"
         @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "+", "args" => [a, b, c])))) == [a, b, c]
         @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "-", "args" => [a, Dict("op" => "+", "args" => [b, c])])))) ==
-              [a, Dict("op" => "-", "args" => [b]), Dict("op" => "-", "args" => [c])]
+            [a, Dict("op" => "-", "args" => [b]), Dict("op" => "-", "args" => [c])]
         @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "-", "args" => [Dict("op" => "-", "args" => [a, b])])))) ==
-              [Dict("op" => "-", "args" => [a]), Dict("op" => "-", "args" => [Dict("op" => "-", "args" => [b])])]
+            [Dict("op" => "-", "args" => [a]), Dict("op" => "-", "args" => [Dict("op" => "-", "args" => [b])])]
         @test S.(EarthSciIntegrator.additive_terms(E(Dict("op" => "*", "args" => [a, Dict("op" => "+", "args" => [b, c])])))) ==
-              [Dict("op" => "*", "args" => [a, Dict("op" => "+", "args" => [b, c])])]
+            [Dict("op" => "*", "args" => [a, Dict("op" => "+", "args" => [b, c])])]
         # A three-argument `-` is "anything else".
         @test length(EarthSciIntegrator.additive_terms(E(Dict("op" => "-", "args" => [a, b, c])))) == 1
         # a - 0 keeps its second summand, -(0): an operation, not a literal (§5.1.1).
@@ -69,18 +70,28 @@ end
     @testset "operator class and radius (§5.2.4)" begin
         ax = Axes(["lon", "lat"], nothing)
         # Operators: the coarsest class; a stencil radius lists every horizontal axis.
-        mk(loc, rad) = (t = EarthSciIntegrator.Term("q", 0, 0, EarthSciAST.expression_from_json(0), EarthSciAST.TermOrigin[], "P", "P", false, 1,
-                                 String[], loc, rad); t)
-        o = EarthSciIntegrator.PlanOperator("o", [mk(:pointwise, nothing), mk(:stencil, Dict("lon" => (1, 0), "lat" => (0, 0))),
-                              mk(:stencil, Dict("lon" => (0, 2), "lat" => (0, 0)))], nothing, "", nothing, nothing,
-                         String[], String[], nothing)
+        mk(loc, rad) = (
+            t = EarthSciIntegrator.Term(
+                "q", 0, 0, EarthSciAST.expression_from_json(0), EarthSciAST.TermOrigin[], "P", "P", false, 1,
+                String[], loc, rad
+            ); t
+        )
+        o = EarthSciIntegrator.PlanOperator(
+            "o", [
+                mk(:pointwise, nothing), mk(:stencil, Dict("lon" => (1, 0), "lat" => (0, 0))),
+                mk(:stencil, Dict("lon" => (0, 2), "lat" => (0, 0))),
+            ], nothing, "", nothing, nothing,
+            String[], String[], nothing
+        )
         EarthSciIntegrator.operator_locality!(o, ax)
         @test o.locality === :stencil && o.radius == Dict("lon" => (1, 2), "lat" => (0, 0))
         @test EarthSciIntegrator.locality_json(o) == Dict("class" => "stencil", "radius" => Dict("lon" => [1, 2], "lat" => [0, 0]))
         o2 = EarthSciIntegrator.PlanOperator("o2", [mk(:column, nothing), mk(:pointwise, nothing)], nothing, "", nothing, nothing, String[], String[], nothing)
         @test EarthSciIntegrator.operator_locality!(o2, ax).locality === :column && o2.radius === nothing
-        o3 = EarthSciIntegrator.PlanOperator("o3", [mk(:stencil, Dict("lon" => (1, 0), "lat" => (0, 0))), mk(:global, nothing)], nothing, "",
-                          nothing, nothing, String[], String[], nothing)
+        o3 = EarthSciIntegrator.PlanOperator(
+            "o3", [mk(:stencil, Dict("lon" => (1, 0), "lat" => (0, 0))), mk(:global, nothing)], nothing, "",
+            nothing, nothing, String[], String[], nothing
+        )
         @test EarthSciIntegrator.operator_locality!(o3, ax).locality === :global
         # Pending terms leave the operator pending.
         o4 = EarthSciIntegrator.PlanOperator("o4", [mk(nothing, nothing)], nothing, "", nothing, nothing, String[], String[], nothing)
@@ -117,8 +128,10 @@ end
         dir = joinpath(PFIX, "cross_component_term")
         text = read(joinpath(dir, "by-label.expected-plan.json"), String)
         exp = JSON.parse(text)
-        backend = HandBackend(structures = Dict{String, Any}(k => v["structure"] for (k, v) in exp["operators"]),
-            derived = (exp["derived"], exp["validation"]))
+        backend = HandBackend(
+            structures = Dict{String, Any}(k => v["structure"] for (k, v) in exp["operators"]),
+            derived = (exp["derived"], exp["validation"])
+        )
         d = EarthSciIntegrator.plan(joinpath(dir, "by-label.run.json"); backend)
         @test EarthSciIntegrator.plan_json(d) == text
         # With the stage-1 backend, the plan stops where structure is needed (the
@@ -129,13 +142,17 @@ end
     @testset "cross_component_term by-owner" begin
         dir = joinpath(PFIX, "cross_component_term")
         blk(vars) = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => vars))
-        backend = HandBackend(structures = Dict{String, Any}("chemistry" => blk(["Chem.NO", "Chem.O3"]),
-            "deposition" => blk(["Chem.NO"]), "scavenging" => blk(["Chem.O3"])))
+        backend = HandBackend(
+            structures = Dict{String, Any}(
+                "chemistry" => blk(["Chem.NO", "Chem.O3"]),
+                "deposition" => blk(["Chem.NO"]), "scavenging" => blk(["Chem.O3"])
+            )
+        )
         d = EarthSciIntegrator.plan(joinpath(dir, "by-owner.run.json"); backend)
         ops = d.ctx.ops
         @test sort(collect(keys(ops))) == ["chemistry", "deposition", "scavenging"]
         @test [(t.variable, t.contribution, t.summand, t.provenance) for t in ops["chemistry"].terms] ==
-              [("Chem.O3", 0, 0, "Chem"), ("Chem.NO", 0, 0, "Chem"), ("Chem.NO", 0, 1, "Chem")]
+            [("Chem.O3", 0, 0, "Chem"), ("Chem.NO", 0, 0, "Chem"), ("Chem.NO", 0, 1, "Chem")]
         @test [t.owner for t in d.ctx.terms] == ["Chem", nothing, "Chem", "Chem", "Dep"]
         @test ops["deposition"].writes == ["Chem.NO"] && ops["deposition"].reads == ["Chem.NO", "Dep.kNO"]
         @test ops["scavenging"].writes == ["Chem.O3"] && ops["scavenging"].reads == ["Chem.O3", "Dep.vd", "Met.h"]
@@ -153,10 +170,12 @@ end
         d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"); backend)
         op = d.ctx.ops["kinetics"]
         @test [(t.variable, t.contribution, t.summand) for t in op.terms] ==
-              [("Kinetics.y1", 0, 0), ("Kinetics.y1", 0, 1), ("Kinetics.y2", 0, 0), ("Kinetics.y2", 0, 1),
-               ("Kinetics.y2", 0, 2), ("Kinetics.y3", 0, 0)]
+            [
+            ("Kinetics.y1", 0, 0), ("Kinetics.y1", 0, 1), ("Kinetics.y2", 0, 0), ("Kinetics.y2", 0, 1),
+            ("Kinetics.y2", 0, 2), ("Kinetics.y3", 0, 0),
+        ]
         @test EarthSciAST.serialize_expression(op.terms[4].expr) ==
-              Dict("op" => "-", "args" => [Dict("op" => "*", "args" => ["Kinetics.k3", "Kinetics.y2", "Kinetics.y3"])])
+            Dict("op" => "-", "args" => [Dict("op" => "*", "args" => ["Kinetics.k3", "Kinetics.y2", "Kinetics.y3"])])
         @test op.reads == ["Kinetics.k1", "Kinetics.k2", "Kinetics.k3", "Kinetics.y1", "Kinetics.y2", "Kinetics.y3"]
         @test jcs(d.schedule) == jcs(JSON.parse("""{"alg": "Rodas4", "control": {"abstol": 1e-10, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["kinetics"], "linsolve": {"dense_lu": {}}}"""))
         @test jcs(d.partition) == """{"ranks":[1,1],"shards":{"root":1},"tiles":[1,1]}"""
@@ -174,24 +193,36 @@ end
 
     @testset "toy_advection_reaction strang" begin
         A = "Reaction.A"
-        tbands = [BandEntry(A, A, [(2, 64)], Union{String, Int}["i"], Any["i"]),
+        tbands = [
+            BandEntry(A, A, [(2, 64)], Union{String, Int}["i"], Any["i"]),
             BandEntry(A, A, [(2, 64)], Union{String, Int}["i"], Any[Dict{String, Any}("op" => "-", "args" => Any["i", 1])]),
             BandEntry(A, A, [(1, 1)], Union{String, Int}[1], Any[1]),
-            BandEntry(A, A, [(1, 1)], Union{String, Int}[1], Any[64])]
+            BandEntry(A, A, [(1, 1)], Union{String, Int}[1], Any[64]),
+        ]
         pw = [diag1(A, A; n = 64), diag1(A, "Reaction.B"; n = 64)]
-        backend = HandBackend(bands = Dict(("Reaction.A", 0, 0) => pw, ("Reaction.A", 1, 0) => tbands,
-            ("Reaction.B", 0, 0) => pw))
+        backend = HandBackend(
+            bands = Dict(
+                ("Reaction.A", 0, 0) => pw, ("Reaction.A", 1, 0) => tbands,
+                ("Reaction.B", 0, 0) => pw
+            )
+        )
         d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_advection_reaction", "strang.run.json"); backend)
         ops = d.ctx.ops
         @test [(t.variable, t.contribution, t.summand, t.provenance, t.locality) for t in d.ctx.terms] ==
-              [("Reaction.A", 0, 0, "Reaction", :pointwise), ("Reaction.A", 1, 0, "Transport", :stencil),
-               ("Reaction.B", 0, 0, "Reaction", :pointwise)]
+            [
+            ("Reaction.A", 0, 0, "Reaction", :pointwise), ("Reaction.A", 1, 0, "Transport", :stencil),
+            ("Reaction.B", 0, 0, "Reaction", :pointwise),
+        ]
         @test EarthSciIntegrator.locality_json(ops["transport"]) == Dict("class" => "stencil", "radius" => Dict("cell" => [1, 0]))
         @test ops["transport"].reads == ["Reaction.A", "Transport.dx", "Transport.v"]
         @test ops["reaction"].reads == ["Reaction.A", "Reaction.B", "Reaction.k1", "Reaction.k2"]
-        @test jcs(d.schedule) == jcs(JSON.parse("""{"id": "root", "strang": [
-          {"alg": "SSPRK43", "control": {"abstol": 1e-12, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 1e-10}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "leaf": ["transport"]},
-          {"alg": "Rodas4", "control": {"abstol": 1e-12, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 1e-10}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.1", "jacobian": "symbolic", "leaf": ["reaction"], "linsolve": {"block_lu": {"pivot": false, "refine": 0}}}]}"""))
+        @test jcs(d.schedule) == jcs(
+            JSON.parse(
+                """{"id": "root", "strang": [
+                {"alg": "SSPRK43", "control": {"abstol": 1e-12, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 1e-10}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "leaf": ["transport"]},
+                {"alg": "Rodas4", "control": {"abstol": 1e-12, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 1e-10}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.1", "jacobian": "symbolic", "leaf": ["reaction"], "linsolve": {"block_lu": {"pivot": false, "refine": 0}}}]}"""
+            )
+        )
         @test jcs(d.partition) == """{"halo":{"cell":1},"ranks":[1,1],"shards":{"root.1":1},"tiles":[1,1]}"""
         @test jcs(d.step) == """{"dt":0.05,"hit":[]}"""
         @test d.ctx.time == (0.0, 0.5)
@@ -202,8 +233,10 @@ end
         sp = ["Photo.NO", "Photo.NO2", "Photo.O3"]
         bands = Dict((s, 0, 0) => [diag1(s, c; n = 16) for c in sp] for s in sp)
         blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => sp))
-        d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_photostationary_cells", "kvaerno4.run.json");
-            backend = HandBackend(bands = bands, structures = Dict{String, Any}("photochemistry" => blk)))
+        d = EarthSciIntegrator.plan(
+            joinpath(PFIX, "toy_photostationary_cells", "kvaerno4.run.json");
+            backend = HandBackend(bands = bands, structures = Dict{String, Any}("photochemistry" => blk))
+        )
         @test jcs(d.schedule) == jcs(JSON.parse("""{"alg": "Kvaerno4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["photochemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}"""))
         @test jcs(d.partition) == """{"halo":{"cell":0},"ranks":[1,1],"shards":{"root":1},"tiles":[1,1]}"""
         @test d.ctx.ops["photochemistry"].reads == ["Photo.NO", "Photo.NO2", "Photo.O3", "Photo.j0", "Photo.k", "Photo.omega"]
@@ -214,14 +247,17 @@ end
         bands = Dict((s, c, k) => [diag1(s, x; n = 4) for x in sp] for s in sp, c in 0:1, k in 0:1)
         blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => sp))
         for (case, opname, json) in [
-            ("auto", "default_pointwise", """{"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}"""),
-            ("named", "chemistry", """{"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}""")]
-            d = EarthSciIntegrator.plan(joinpath(PFIX, "pointwise_chemistry", "$case.run.json");
-                backend = HandBackend(bands = bands, structures = Dict{String, Any}(opname => blk)))
+                ("auto", "default_pointwise", """{"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}"""),
+                ("named", "chemistry", """{"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}"""),
+            ]
+            d = EarthSciIntegrator.plan(
+                joinpath(PFIX, "pointwise_chemistry", "$case.run.json");
+                backend = HandBackend(bands = bands, structures = Dict{String, Any}(opname => blk))
+            )
             @test collect(keys(d.ctx.ops)) == [opname]
             op = d.ctx.ops[opname]
             @test [(t.variable, t.contribution, t.summand, t.provenance) for t in op.terms] ==
-                  [(v, c, s, c == 0 ? "Chem" : "Dep") for v in ["Chem.NO2", "Chem.NO", "Chem.O3"] for (c, s) in ((0, 0), (0, 1), (1, 0))]
+                [(v, c, s, c == 0 ? "Chem" : "Dep") for v in ["Chem.NO2", "Chem.NO", "Chem.O3"] for (c, s) in ((0, 0), (0, 1), (1, 0))]
             @test op.writes == sp
             @test op.reads == ["Chem.NO", "Chem.NO2", "Chem.O3", "Chem.j", "Chem.k", "Dep.cellw", "Dep.kd"]
             @test d.ctx.model.shapes["Chem.NO"] == ["cell"]
@@ -241,11 +277,17 @@ end
             push!(bands, BandEntry("Transport.q", "Transport.q", [(4, 6), (1, 2), (1, 2)], Union{String, Int}["i", jk...], Any[c, jk...]))
         end
         for r in (1, 2, 3, 7, 8), d in -3:2
-            push!(bands, BandEntry("Transport.q", "Transport.q", [(r, r), (1, 2), (1, 2)], Union{String, Int}[r, jk...],
-                Any[mod1(r + d, 8), jk...]))
+            push!(
+                bands, BandEntry(
+                    "Transport.q", "Transport.q", [(r, r), (1, 2), (1, 2)], Union{String, Int}[r, jk...],
+                    Any[mod1(r + d, 8), jk...]
+                )
+            )
         end
-        d = EarthSciIntegrator.plan(joinpath(PFIX, "periodic_stencil", "partitioned.run.json");
-            backend = HandBackend(bands = Dict(("Transport.q", 0, 0) => bands)))
+        d = EarthSciIntegrator.plan(
+            joinpath(PFIX, "periodic_stencil", "partitioned.run.json");
+            backend = HandBackend(bands = Dict(("Transport.q", 0, 0) => bands))
+        )
         op = d.ctx.ops["transport"]
         @test EarthSciIntegrator.locality_json(op) == Dict("class" => "stencil", "radius" => Dict("lat" => [0, 0], "lon" => [3, 2]))
         @test op.reads == ["Transport.c", "Transport.dx", "Transport.q"]
@@ -265,9 +307,16 @@ end
         function try_plan(cfg; kw...)
             path = joinpath(tmp, "run.json")
             write(path, JSON.json(merge(Dict{String, Any}("esm_integrator" => "0.1.0", "model" => rob), cfg)))
-            return refusal(() -> EarthSciIntegrator.plan(path; backend = HandBackend(structures = Dict{String, Any}(
-                "kinetics" => Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => ["Kinetics.y1"])),
-                "default_pointwise" => Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => ["Kinetics.y1"])))), kw...))
+            return refusal(
+                () -> EarthSciIntegrator.plan(
+                    path; backend = HandBackend(
+                        structures = Dict{String, Any}(
+                            "kinetics" => Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => ["Kinetics.y1"])),
+                            "default_pointwise" => Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => ["Kinetics.y1"]))
+                        )
+                    ), kw...
+                )
+            )
         end
         kin = Dict("kinetics" => Dict("select" => Dict("components" => "Kinetics")))
         @test try_plan(Dict("schedule" => Dict("leaf" => 3))) == ("run_config_invalid", "")
@@ -276,55 +325,105 @@ end
         @test try_plan(Dict("schedule" => leaf("x"))) == ("operator_undefined", "/schedule/leaf")
         @test try_plan(Dict("schedule" => leaf(["default_pointwise", "x"]))) == ("operator_undefined", "/schedule/leaf/1")
         @test try_plan(Dict("operators" => Dict("a" => Dict("select" => Dict("variables" => "Kinetics.k1"))), "schedule" => leaf("a"))) ==
-              ("name_wrong_kind", "/operators/a/select/variables")
+            ("name_wrong_kind", "/operators/a/select/variables")
         @test try_plan(Dict("operators" => Dict("a" => Dict("select" => Dict("variables" => ["Kinetics.y1", "Nope.x"]))), "schedule" => leaf("a"))) ==
-              ("name_unresolved", "/operators/a/select/variables/1")
-        @test try_plan(Dict("operators" => Dict("b" => Dict("select" => Dict("components" => "Kinetics")),
-                                                "a" => Dict("select" => Dict("variables" => "Kinetics.y1"))), "schedule" => leaf(["a", "b"]))) ==
-              ("term_selected_twice", "/operators/a")
+            ("name_unresolved", "/operators/a/select/variables/1")
+        @test try_plan(
+            Dict(
+                "operators" => Dict(
+                    "b" => Dict("select" => Dict("components" => "Kinetics")),
+                    "a" => Dict("select" => Dict("variables" => "Kinetics.y1"))
+                ), "schedule" => leaf(["a", "b"])
+            )
+        ) ==
+            ("term_selected_twice", "/operators/a")
         @test try_plan(Dict("operators" => Dict("a" => Dict("select" => Dict("components" => "Other"))), "schedule" => leaf("a"))) ==
-              ("selector_matches_nothing", "/operators/a/select")
-        @test try_plan(Dict("operators" => Dict("a" => Dict("select" => Dict("terms" => ["Kinetics"]), "bind_dt" => Dict("Kinetics.k1" => "leaf"))),
-            "schedule" => leaf("a"))) == ("bind_dt_leaf_without_dt0", "/operators/a/bind_dt")
+            ("selector_matches_nothing", "/operators/a/select")
+        @test try_plan(
+            Dict(
+                "operators" => Dict("a" => Dict("select" => Dict("terms" => ["Kinetics"]), "bind_dt" => Dict("Kinetics.k1" => "leaf"))),
+                "schedule" => leaf("a")
+            )
+        ) == ("bind_dt_leaf_without_dt0", "/operators/a/bind_dt")
         @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [leaf("kinetics"), leaf("kinetics")]), "step" => Dict("dt" => 1))) ==
-              ("operator_advanced_twice", "/schedule/sequence/1/leaf")
-        @test try_plan(Dict("operators" => kin, "schedule" => Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1,
-            "imex" => Dict("implicit" => "stencil")), "step" => Dict("dt" => 1))) == ("imex_partition_invalid", "/schedule/imex")
-        @test try_plan(Dict("operators" => kin, "schedule" => Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1,
-            "imex" => Dict("implicit" => "kinetics", "explicit" => "kinetics")), "step" => Dict("dt" => 1))) == ("imex_partition_invalid", "/schedule/imex")
-        @test try_plan(Dict("operators" => kin, "schedule" => Dict("every" => Dict("sequence" => [leaf("kinetics")]), "period" => 1,
-            "hold" => "tendency"), "step" => Dict("dt" => 1))) == ("hold_tendency_child_not_leaf", "/schedule/every")
+            ("operator_advanced_twice", "/schedule/sequence/1/leaf")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => Dict(
+                    "leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1,
+                    "imex" => Dict("implicit" => "stencil")
+                ), "step" => Dict("dt" => 1)
+            )
+        ) == ("imex_partition_invalid", "/schedule/imex")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => Dict(
+                    "leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1,
+                    "imex" => Dict("implicit" => "kinetics", "explicit" => "kinetics")
+                ), "step" => Dict("dt" => 1)
+            )
+        ) == ("imex_partition_invalid", "/schedule/imex")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => Dict(
+                    "every" => Dict("sequence" => [leaf("kinetics")]), "period" => 1,
+                    "hold" => "tendency"
+                ), "step" => Dict("dt" => 1)
+            )
+        ) == ("hold_tendency_child_not_leaf", "/schedule/every")
         seqroot = Dict("sequence" => [leaf("kinetics")])
         @test try_plan(Dict("operators" => kin, "schedule" => seqroot)) == ("step_control_missing", "/step")
         @test try_plan(Dict("operators" => kin, "schedule" => seqroot, "step" => Dict("dt" => 10, "hit_multiples" => "3 s"))) ==
-              ("tstop_off_fixed_step", "/step/hit_multiples")
+            ("tstop_off_fixed_step", "/step/hit_multiples")
         @test try_plan(Dict("operators" => kin, "schedule" => seqroot, "step" => Dict("dt" => 10, "hit_multiples" => "20 s"))) === nothing
         # A root leaf with a numeric or omitted dt lands on tstops inside the macro step.
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"), "step" => Dict("dt" => 10, "hit_multiples" => "3 s"))) === nothing
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "step"), "step" => Dict("dt" => 10, "hit_multiples" => "3 s"))) ==
-              ("tstop_off_fixed_step", "/step/hit_multiples")
+            ("tstop_off_fixed_step", "/step/hit_multiples")
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"), "partition" => Dict("ranks" => [2, 1]))) ==
-              ("partition_axis_missing", "/partition")
+            ("partition_axis_missing", "/partition")
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"), "precision" => Dict("default" => Dict("factors" => "bf16")))) ==
-              ("precision_low_with_classical_rosenbrock", "/precision/default")
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; alg = "Rosenbrock23"),
-            "precision" => Dict("root" => Dict("factors" => "f32")))) === nothing
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; alg = "auto"),
-            "precision" => Dict("kinetics" => Dict("jacobian" => "f32")))) === nothing             # auto → Rosenbrock23
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; alg = "auto", control = Dict("reltol" => 1e-6)),
-            "precision" => Dict("kinetics" => Dict("jacobian" => "f32")))) == ("precision_low_with_classical_rosenbrock", "/precision/kinetics")
-        adj(w) = Dict("operators" => Dict("kinetics" => Dict("select" => Dict("components" => "Kinetics"), "bind_dt" => Dict("Kinetics.k1" => "node"))),
-            "schedule" => leaf("kinetics"), "adjoint" => Dict("functional" => Dict("sum" => "Kinetics.y3", "over" => "final"), "wrt" => w))
+            ("precision_low_with_classical_rosenbrock", "/precision/default")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => leaf("kinetics"; alg = "Rosenbrock23"),
+                "precision" => Dict("root" => Dict("factors" => "f32"))
+            )
+        ) === nothing
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => leaf("kinetics"; alg = "auto"),
+                "precision" => Dict("kinetics" => Dict("jacobian" => "f32"))
+            )
+        ) === nothing             # auto → Rosenbrock23
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => leaf("kinetics"; alg = "auto", control = Dict("reltol" => 1.0e-6)),
+                "precision" => Dict("kinetics" => Dict("jacobian" => "f32"))
+            )
+        ) == ("precision_low_with_classical_rosenbrock", "/precision/kinetics")
+        adj(w) = Dict(
+            "operators" => Dict("kinetics" => Dict("select" => Dict("components" => "Kinetics"), "bind_dt" => Dict("Kinetics.k1" => "node"))),
+            "schedule" => leaf("kinetics"), "adjoint" => Dict("functional" => Dict("sum" => "Kinetics.y3", "over" => "final"), "wrt" => w)
+        )
         @test try_plan(adj(["params:Kinetics.k1"])) == ("wrt_bound_parameter", "/adjoint/wrt/0")
         @test try_plan(adj(["u0", "params:Kinetics.k1*"])) == ("wrt_matches_nothing", "/adjoint/wrt/1")
         @test try_plan(adj(["params:*", "params:numeric", "u0"])) === nothing
         @test try_plan(adj(["fields:*"])) == ("wrt_matches_nothing", "/adjoint/wrt/0")
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"), "time" => Dict("start" => "2019-07-01T00:00:00Z",
-            "end" => "2019-07-01T01:00:00Z"))) === nothing
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => leaf("kinetics"), "time" => Dict(
+                    "start" => "2019-07-01T00:00:00Z",
+                    "end" => "2019-07-01T01:00:00Z"
+                )
+            )
+        ) === nothing
         # The caller's interval is not in the run config: its refusals are at "".
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics")); tspan = (3, 3)) == ("time_interval_empty", "")
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"));
-            tspan = ("2021-02-30T00:00:00Z", "2021-03-02T00:00:00Z")) == ("time_invalid_date", "")
+        @test try_plan(
+            Dict("operators" => kin, "schedule" => leaf("kinetics"));
+            tspan = ("2021-02-30T00:00:00Z", "2021-03-02T00:00:00Z")
+        ) == ("time_invalid_date", "")
         # A model solver.time_span EarthSciAST rejects takes its cause's code, at /model.
         backwards = joinpath(tmp, "backwards.esm")
         doc = JSON.parsefile(rob)
@@ -333,100 +432,195 @@ end
         @test try_plan(Dict("model" => backwards, "operators" => kin, "schedule" => leaf("kinetics"))) == ("time_interval_empty", "/model")
         # The cross-component model: a schedule naming a default operator that does not exist.
         @test try_plan(Dict("model" => cross, "schedule" => leaf("default_column"), "step" => Dict("dt" => 60))) ==
-              ("operator_undefined", "/schedule/leaf")
-        @test try_plan(Dict("model" => cross, "schedule" => Dict("sequence" => [leaf("default_pointwise"),
-            Dict("map" => "x")]), "step" => Dict("dt" => 60))) == ("unsupported_map_operator", "/schedule/sequence/1")
+            ("operator_undefined", "/schedule/leaf")
+        @test try_plan(
+            Dict(
+                "model" => cross, "schedule" => Dict(
+                    "sequence" => [
+                        leaf("default_pointwise"),
+                        Dict("map" => "x"),
+                    ]
+                ), "step" => Dict("dt" => 60)
+            )
+        ) == ("unsupported_map_operator", "/schedule/sequence/1")
 
         # Rule 5 (D84): a frozen entry advances its operator, but does not count toward "twice".
         two = Dict("a" => Dict("select" => Dict("variables" => "Kinetics.y1")), "b" => Dict("select" => Dict("variables" => ["Kinetics.y2", "Kinetics.y3"])))
-        @test try_plan(Dict("operators" => two, "schedule" => Dict("sequence" => [leaf("a"; dt = 0.1, frozen = ["b"], linsolve = "dense_lu"), leaf("b"; dt = 0.1, linsolve = "dense_lu")]),
-            "step" => Dict("dt" => 1))) === nothing
+        @test try_plan(
+            Dict(
+                "operators" => two, "schedule" => Dict("sequence" => [leaf("a"; dt = 0.1, frozen = ["b"], linsolve = "dense_lu"), leaf("b"; dt = 0.1, linsolve = "dense_lu")]),
+                "step" => Dict("dt" => 1)
+            )
+        ) === nothing
         @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; dt = 0.1, frozen = ["b"], linsolve = "dense_lu"), "step" => Dict("dt" => 1))) === nothing
         @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; dt = 0.1), "step" => Dict("dt" => 1))) ==
-              ("operator_not_advanced", "/operators/b")
+            ("operator_not_advanced", "/operators/b")
         # An IMEXEuler leaf without imex is refused at the leaf's pointer.
-        @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1)]),
-            "step" => Dict("dt" => 1))) == ("imex_partition_invalid", "/schedule/sequence/0")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => Dict("sequence" => [Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1)]),
+                "step" => Dict("dt" => 1)
+            )
+        ) == ("imex_partition_invalid", "/schedule/sequence/0")
         # Rule 6 runs in §7.1's rule order, for leaves whose written alg is IMEXEuler.
-        imexleaf(imex; kw...) = merge(Dict{String, Any}("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1, "imex" => imex),
-            Dict{String, Any}(String(k) => v for (k, v) in kw))
+        imexleaf(imex; kw...) = merge(
+            Dict{String, Any}("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1, "imex" => imex),
+            Dict{String, Any}(String(k) => v for (k, v) in kw)
+        )
         # Rule 3 reads imex names (explicit before implicit; after frozen), before rule 6.
         @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => "ghost")), "step" => Dict("dt" => 1))) ==
-              ("operator_undefined", "/schedule/imex/implicit")
-        @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => ["kinetics", "ghost"], "explicit" => ["kinetics"])),
-            "step" => Dict("dt" => 1))) == ("operator_undefined", "/schedule/imex/implicit/1")      # undefined name wins over a bad partition
-        @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => ["ghost1"], "explicit" => ["ghost2"])),
-            "step" => Dict("dt" => 1))) == ("operator_undefined", "/schedule/imex/explicit/0")      # explicit before implicit
-        @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => "ghost1"); frozen = ["ghost2"]),
-            "step" => Dict("dt" => 1))) == ("operator_undefined", "/schedule/frozen/0")             # frozen before imex
+            ("operator_undefined", "/schedule/imex/implicit")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => imexleaf(Dict("implicit" => ["kinetics", "ghost"], "explicit" => ["kinetics"])),
+                "step" => Dict("dt" => 1)
+            )
+        ) == ("operator_undefined", "/schedule/imex/implicit/1")      # undefined name wins over a bad partition
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => imexleaf(Dict("implicit" => ["ghost1"], "explicit" => ["ghost2"])),
+                "step" => Dict("dt" => 1)
+            )
+        ) == ("operator_undefined", "/schedule/imex/explicit/0")      # explicit before implicit
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => imexleaf(Dict("implicit" => "ghost1"); frozen = ["ghost2"]),
+                "step" => Dict("dt" => 1)
+            )
+        ) == ("operator_undefined", "/schedule/frozen/0")             # frozen before imex
         @test try_plan(Dict("operators" => kin, "schedule" => imexleaf(Dict("implicit" => "column")), "step" => Dict("dt" => 1))) ==
-              ("imex_partition_invalid", "/schedule/imex")            # a locality name is not an operator name
+            ("imex_partition_invalid", "/schedule/imex")            # a locality name is not an operator name
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; imex = Dict("implicit" => "ghost")))) ==
-              ("operator_undefined", "/schedule/imex/implicit")       # rule 3 checks every leaf
+            ("operator_undefined", "/schedule/imex/implicit")       # rule 3 checks every leaf
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; imex = Dict("implicit" => "kinetics", "explicit" => "kinetics")))) ===
-              nothing                                                 # rule 6 only on written IMEXEuler leaves
+            nothing                                                 # rule 6 only on written IMEXEuler leaves
         # Earlier rules win: rule 5 (advanced twice) before rule 6, rule 3 before a missing imex.
-        @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [imexleaf(Dict("implicit" => "stencil")),
-            leaf("kinetics")]), "step" => Dict("dt" => 1))) == ("operator_advanced_twice", "/schedule/sequence/1/leaf")
-        @test try_plan(Dict("operators" => kin, "schedule" => Dict("sequence" => [Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1),
-            leaf("ghost")]), "step" => Dict("dt" => 1))) == ("operator_undefined", "/schedule/sequence/1/leaf")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => Dict(
+                    "sequence" => [
+                        imexleaf(Dict("implicit" => "stencil")),
+                        leaf("kinetics"),
+                    ]
+                ), "step" => Dict("dt" => 1)
+            )
+        ) == ("operator_advanced_twice", "/schedule/sequence/1/leaf")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => Dict(
+                    "sequence" => [
+                        Dict("leaf" => "kinetics", "alg" => "IMEXEuler", "dt" => 0.1),
+                        leaf("ghost"),
+                    ]
+                ), "step" => Dict("dt" => 1)
+            )
+        ) == ("operator_undefined", "/schedule/sequence/1/leaf")
         # ... and rule 6 before rule 7 (duplicate ids).
-        @test try_plan(Dict("operators" => two, "schedule" => Dict("sequence" => [
-            Dict("id" => "x", "leaf" => "a", "alg" => "IMEXEuler", "dt" => 0.1), Dict("id" => "x", "leaf" => "b", "alg" => "Rodas4", "linsolve" => "dense_lu")]),
-            "step" => Dict("dt" => 1))) == ("imex_partition_invalid", "/schedule/sequence/0")
+        @test try_plan(
+            Dict(
+                "operators" => two, "schedule" => Dict(
+                    "sequence" => [
+                        Dict("id" => "x", "leaf" => "a", "alg" => "IMEXEuler", "dt" => 0.1), Dict("id" => "x", "leaf" => "b", "alg" => "Rodas4", "linsolve" => "dense_lu"),
+                    ]
+                ),
+                "step" => Dict("dt" => 1)
+            )
+        ) == ("imex_partition_invalid", "/schedule/sequence/0")
         # Rule 2 (§7.1), in its order.
         bound(k) = Dict("kinetics" => Dict("select" => Dict("components" => "Kinetics"), "bind_dt" => Dict(k => "node")))
         @test try_plan(Dict("operators" => bound("Nope.k"), "schedule" => leaf("kinetics"))) ==
-              ("name_unresolved", "/operators/kinetics/bind_dt/Nope.k")
+            ("name_unresolved", "/operators/kinetics/bind_dt/Nope.k")
         @test try_plan(Dict("operators" => bound("Kinetics.y1"), "schedule" => leaf("kinetics"))) ==
-              ("name_wrong_kind", "/operators/kinetics/bind_dt/Kinetics.y1")
+            ("name_wrong_kind", "/operators/kinetics/bind_dt/Kinetics.y1")
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; bind_dt = Dict("Kinetics.y2" => "node")))) ==
-              ("name_wrong_kind", "/schedule/bind_dt/Kinetics.y2")
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; control = Dict("abstol" => Dict("Kinetics.k1" => 1e-9))))) ==
-              ("name_wrong_kind", "/schedule/control/abstol/Kinetics.k1")
+            ("name_wrong_kind", "/schedule/bind_dt/Kinetics.y2")
+        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; control = Dict("abstol" => Dict("Kinetics.k1" => 1.0e-9))))) ==
+            ("name_wrong_kind", "/schedule/control/abstol/Kinetics.k1")
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; domain = Dict("nonnegative" => ["Kinetics.y1", "Nope.y"])))) ==
-              ("name_unresolved", "/schedule/domain/nonnegative/1")
+            ("name_unresolved", "/schedule/domain/nonnegative/1")
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => 40))) ==
-              ("name_unresolved", "/schedule/dt")
+            ("name_unresolved", "/schedule/dt")
         # One node's durations: dt, control.dt0/dtmin/dtmax, ..., then frozen entries.
-        @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; control = Dict("dtmax" => "Nope.c"), linsolve = "dense_lu",
-            frozen = [Dict("every" => "b", "period" => "Nope.b")]), "step" => Dict("dt" => 40))) == ("name_unresolved", "/schedule/control/dtmax")
-        @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; dt = "Nope.a", control = Dict("dt0" => "Nope.c"), linsolve = "dense_lu",
-            frozen = [Dict("every" => "b", "period" => "Nope.b")]), "step" => Dict("dt" => 40))) == ("name_unresolved", "/schedule/dt")
-        @test try_plan(Dict("operators" => two, "schedule" => leaf("a"; linsolve = "dense_lu",
-            frozen = [Dict("every" => "b", "period" => "Nope.b")]), "step" => Dict("dt" => 40))) == ("name_unresolved", "/schedule/frozen/0/period")
-        sub = Dict("every" => Dict("subcycle" => leaf("kinetics"; linsolve = "dense_lu"), "limits" => [Dict("max" => "Nope.m")]),
-            "period" => 40, "phase" => "Nope.p")
+        @test try_plan(
+            Dict(
+                "operators" => two, "schedule" => leaf(
+                    "a"; control = Dict("dtmax" => "Nope.c"), linsolve = "dense_lu",
+                    frozen = [Dict("every" => "b", "period" => "Nope.b")]
+                ), "step" => Dict("dt" => 40)
+            )
+        ) == ("name_unresolved", "/schedule/control/dtmax")
+        @test try_plan(
+            Dict(
+                "operators" => two, "schedule" => leaf(
+                    "a"; dt = "Nope.a", control = Dict("dt0" => "Nope.c"), linsolve = "dense_lu",
+                    frozen = [Dict("every" => "b", "period" => "Nope.b")]
+                ), "step" => Dict("dt" => 40)
+            )
+        ) == ("name_unresolved", "/schedule/dt")
+        @test try_plan(
+            Dict(
+                "operators" => two, "schedule" => leaf(
+                    "a"; linsolve = "dense_lu",
+                    frozen = [Dict("every" => "b", "period" => "Nope.b")]
+                ), "step" => Dict("dt" => 40)
+            )
+        ) == ("name_unresolved", "/schedule/frozen/0/period")
+        sub = Dict(
+            "every" => Dict("subcycle" => leaf("kinetics"; linsolve = "dense_lu"), "limits" => [Dict("max" => "Nope.m")]),
+            "period" => 40, "phase" => "Nope.p"
+        )
         @test try_plan(Dict("operators" => kin, "schedule" => sub, "step" => Dict("dt" => 40))) == ("name_unresolved", "/schedule/phase")
         sub["phase"] = 0
         @test try_plan(Dict("operators" => kin, "schedule" => sub, "step" => Dict("dt" => 40))) ==
-              ("name_unresolved", "/schedule/every/limits/0/max")
+            ("name_unresolved", "/schedule/every/limits/0/max")
         # step's durations come before the schedule's; output's too.
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => "Kinetics.y1"))) ==
-              ("name_wrong_kind", "/step/dt")
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => 40),
-            "output" => Dict("saveat" => "Nope.s"))) == ("name_unresolved", "/output/saveat")
+            ("name_wrong_kind", "/step/dt")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => leaf("kinetics"; dt = "Nope.dt"), "step" => Dict("dt" => 40),
+                "output" => Dict("saveat" => "Nope.s")
+            )
+        ) == ("name_unresolved", "/output/saveat")
         # A parameter-name duration must default to a positive number.
         zero = joinpath(tmp, "zero.esm")
         zdoc = JSON.parsefile(rob)
         zdoc["models"]["Kinetics"]["variables"]["dtz"] = Dict("type" => "parameter", "default" => 0)
         write(zero, JSON.json(zdoc))
         @test try_plan(Dict("model" => zero, "operators" => kin, "schedule" => leaf("kinetics"), "step" => Dict("dt" => "Kinetics.dtz"))) ==
-              ("run_config_invalid", "/step/dt")
+            ("run_config_invalid", "/step/dt")
         # Precision keys: default, an operator (named or default) or a node id.
         @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"), "precision" => Dict("chem" => Dict("state" => "f64")))) ==
-              ("name_unresolved", "/precision/chem")
-        @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; id = "chem"), "precision" => Dict("chem" => Dict("state" => "f64"),
-            "kinetics" => Dict("rhs" => "f64"), "default" => Dict("tables" => "f64")))) === nothing
+            ("name_unresolved", "/precision/chem")
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => leaf("kinetics"; id = "chem"), "precision" => Dict(
+                    "chem" => Dict("state" => "f64"),
+                    "kinetics" => Dict("rhs" => "f64"), "default" => Dict("tables" => "f64")
+                )
+            )
+        ) === nothing
         # Observed step.limits come after the schedule's unsupported constructs.
-        @test try_plan(Dict("model" => cross, "schedule" => Dict("sequence" => [Dict("solve" => "default_pointwise",
-            "unknowns" => ["Chem.O3"], "method" => Dict("newton" => Dict()))]), "step" => Dict("limits" => ["Chem.ratio"]))) ==
-              ("unsupported_solve_node", "/schedule/sequence/0")
+        @test try_plan(
+            Dict(
+                "model" => cross, "schedule" => Dict(
+                    "sequence" => [
+                        Dict(
+                            "solve" => "default_pointwise",
+                            "unknowns" => ["Chem.O3"], "method" => Dict("newton" => Dict())
+                        ),
+                    ]
+                ), "step" => Dict("limits" => ["Chem.ratio"])
+            )
+        ) ==
+            ("unsupported_solve_node", "/schedule/sequence/0")
         @test try_plan(Dict("model" => cross, "schedule" => leaf("default_pointwise"), "step" => Dict("limits" => [Dict("max" => 60), "Chem.k"]))) ==
-              ("name_wrong_kind", "/step/limits/1")
+            ("name_wrong_kind", "/step/limits/1")
         # Rule 9 for the adjoint's observation times (D83): output.saveat multiples from time zero.
-        sv(save; over = "saveat") = Dict("operators" => kin, "schedule" => seqroot, "step" => Dict("dt" => 10),
-            "output" => Dict("saveat" => save), "adjoint" => Dict("functional" => Dict("sum" => "Kinetics.y3", "over" => over), "wrt" => ["u0"]))
+        sv(save; over = "saveat") = Dict(
+            "operators" => kin, "schedule" => seqroot, "step" => Dict("dt" => 10),
+            "output" => Dict("saveat" => save), "adjoint" => Dict("functional" => Dict("sum" => "Kinetics.y3", "over" => over), "wrt" => ["u0"])
+        )
         @test try_plan(sv(20)) === nothing
         @test try_plan(sv(15)) == ("tstop_off_fixed_step", "/adjoint/functional/over")
         @test try_plan(sv(15; over = "time")) === nothing
@@ -443,28 +637,57 @@ end
         # Mixed declared element types in one leaf.
         mixed = joinpath(tmp, "mixed.esm")
         decay(x) = Dict("lhs" => Dict("op" => "D", "args" => [x], "wrt" => "t"), "rhs" => Dict("op" => "*", "args" => [-0.5, x]))
-        write(mixed, JSON.json(Dict("esm" => "1.3.0", "metadata" => Dict("name" => "mixed"),
-            "models" => Dict("Kinetics" => Dict("variables" => Dict(
-                "u" => Dict("type" => "unknown", "default" => 1.5, "element_type" => "Float32"),
-                "v" => Dict("type" => "unknown", "default" => 1.5, "element_type" => "Float64")),
-                "equations" => [decay("u"), decay("v")])),
-            "solver" => Dict("time_span" => Dict("start" => 0, "end" => 40)))))
+        write(
+            mixed, JSON.json(
+                Dict(
+                    "esm" => "1.3.0", "metadata" => Dict("name" => "mixed"),
+                    "models" => Dict(
+                        "Kinetics" => Dict(
+                            "variables" => Dict(
+                                "u" => Dict("type" => "unknown", "default" => 1.5, "element_type" => "Float32"),
+                                "v" => Dict("type" => "unknown", "default" => 1.5, "element_type" => "Float64")
+                            ),
+                            "equations" => [decay("u"), decay("v")]
+                        )
+                    ),
+                    "solver" => Dict("time_span" => Dict("start" => 0, "end" => 40))
+                )
+            )
+        )
         @test try_plan(Dict("model" => mixed, "operators" => kin, "schedule" => Dict("sequence" => [leaf("kinetics")]), "step" => Dict("dt" => 40))) ==
-              ("precision_contradicts_declaration", "/schedule/sequence/0")
-        @test try_plan(Dict("model" => mixed, "operators" => kin, "schedule" => leaf("kinetics"),
-            "precision" => Dict("default" => Dict("state" => "f32")))) == ("precision_contradicts_declaration", "/precision/default")
+            ("precision_contradicts_declaration", "/schedule/sequence/0")
+        @test try_plan(
+            Dict(
+                "model" => mixed, "operators" => kin, "schedule" => leaf("kinetics"),
+                "precision" => Dict("default" => Dict("state" => "f32"))
+            )
+        ) == ("precision_contradicts_declaration", "/precision/default")
         # precision_conflict: the first entry in the leaf's operator order that disagrees with the first.
-        three = Dict("a" => Dict("select" => Dict("variables" => "Kinetics.y1")), "b" => Dict("select" => Dict("variables" => "Kinetics.y2")),
-            "c" => Dict("select" => Dict("variables" => "Kinetics.y3")))
-        @test try_plan(Dict("operators" => three, "schedule" => leaf(["a", "b", "c"]; linsolve = "dense_lu"),
-            "precision" => Dict("a" => Dict("factors" => "f64"), "b" => Dict("factors" => "f64"), "c" => Dict("factors" => "f32")))) ==
-              ("precision_conflict", "/precision/c")
-        @test try_plan(Dict("operators" => three, "schedule" => leaf(["c", "a", "b"]; linsolve = "dense_lu"),
-            "precision" => Dict("a" => Dict("factors" => "f64"), "b" => Dict("factors" => "f32"), "c" => Dict("rhs" => "f64")))) ==
-              ("precision_conflict", "/precision/b")
+        three = Dict(
+            "a" => Dict("select" => Dict("variables" => "Kinetics.y1")), "b" => Dict("select" => Dict("variables" => "Kinetics.y2")),
+            "c" => Dict("select" => Dict("variables" => "Kinetics.y3"))
+        )
+        @test try_plan(
+            Dict(
+                "operators" => three, "schedule" => leaf(["a", "b", "c"]; linsolve = "dense_lu"),
+                "precision" => Dict("a" => Dict("factors" => "f64"), "b" => Dict("factors" => "f64"), "c" => Dict("factors" => "f32"))
+            )
+        ) ==
+            ("precision_conflict", "/precision/c")
+        @test try_plan(
+            Dict(
+                "operators" => three, "schedule" => leaf(["c", "a", "b"]; linsolve = "dense_lu"),
+                "precision" => Dict("a" => Dict("factors" => "f64"), "b" => Dict("factors" => "f32"), "c" => Dict("rhs" => "f64"))
+            )
+        ) ==
+            ("precision_conflict", "/precision/b")
         # Rule 9 with output times near t_f (D83): saveat 0.1 on [0, 0.3] with step.dt 0.1 is on the step.
-        @test try_plan(Dict("operators" => kin, "schedule" => seqroot, "step" => Dict("dt" => 0.1), "time" => Dict("start" => 0, "end" => 0.3),
-            "output" => Dict("saveat" => 0.1), "adjoint" => Dict("functional" => Dict("sum" => "Kinetics.y3", "over" => "saveat"), "wrt" => ["u0"]))) === nothing
+        @test try_plan(
+            Dict(
+                "operators" => kin, "schedule" => seqroot, "step" => Dict("dt" => 0.1), "time" => Dict("start" => 0, "end" => 0.3),
+                "output" => Dict("saveat" => 0.1), "adjoint" => Dict("functional" => Dict("sum" => "Kinetics.y3", "over" => "saveat"), "wrt" => ["u0"])
+            )
+        ) === nothing
         # Model-scope order (§4 step 6): events before parameter updates, crossing replacing the general code.
         evdoc = JSON.parsefile(joinpath(CONF, "plans", "refusals", "discrete-event", "model.esm"))
         evdoc["models"]["Box"]["variables"]["k"]["shape"] = []
@@ -474,28 +697,46 @@ end
         @test try_plan(Dict("model" => evpath, "schedule" => leaf("default_pointwise"))) == ("unsupported_event", "/model")
         # Reserved component name at load, without bands.
         @test refusal(() -> EarthSciIntegrator.plan(joinpath(CONF, "plans", "refusals", "reserved-component-name", "run.json"))) ==
-              ("reserved_component_name", "/model")
+            ("reserved_component_name", "/model")
     end
 
     @testset "the auto schedule on a scalar model" begin
         tmp = mktempdir()
         path = joinpath(tmp, "run.json")
-        write(path, JSON.json(Dict("esm_integrator" => "0.1.0", "model" => abspath(joinpath(PFIX, "cross_component_term", "model.esm")),
-            "schedule" => "auto")))
+        write(
+            path, JSON.json(
+                Dict(
+                    "esm_integrator" => "0.1.0", "model" => abspath(joinpath(PFIX, "cross_component_term", "model.esm")),
+                    "schedule" => "auto"
+                )
+            )
+        )
         blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => ["Chem.NO", "Chem.O3"]))
         # cross_component_term has no reaction system and no stiffness hint: the
         # Gershgorin bound decides, which stage 1 cannot compute.
         @test_throws PlannerStageError EarthSciIntegrator.plan(path; backend = HandBackend(structures = Dict{String, Any}("default_pointwise" => blk)))
         rob = joinpath(tmp, "rob.json")
-        write(rob, JSON.json(Dict("esm_integrator" => "0.1.0", "model" => abspath(joinpath(CONF, "toys", "robertson.esm")),
-            "schedule" => "auto")))
-        d = EarthSciIntegrator.plan(rob; backend = HandBackend(structures = Dict{String, Any}("default_pointwise" =>
-            Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => ["Kinetics.y1", "Kinetics.y2", "Kinetics.y3"])))))
+        write(
+            rob, JSON.json(
+                Dict(
+                    "esm_integrator" => "0.1.0", "model" => abspath(joinpath(CONF, "toys", "robertson.esm")),
+                    "schedule" => "auto"
+                )
+            )
+        )
+        d = EarthSciIntegrator.plan(
+            rob; backend = HandBackend(
+                structures = Dict{String, Any}(
+                    "default_pointwise" =>
+                        Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => ["Kinetics.y1", "Kinetics.y2", "Kinetics.y3"]))
+                )
+            )
+        )
         @test d.stiffness["default_pointwise"] == (:stiff, "solver_hint")
         @test d.schedule["alg"] == "Rosenbrock23" && d.schedule["id"] == "root" && d.schedule["control"]["dt_scope"] == "cell"
         @test d.step == Dict("hit" => String[])
         @test EarthSciIntegrator.reference_steps(d.ctx, EarthSciIntegrator.build_snode(Dict("leaf" => "default_pointwise"), "root", "/schedule", false)) ==
-              Dict("root" => 40.0)
+            Dict("root" => 40.0)
     end
 
     @testset "time (§7.2, D74)" begin
@@ -526,10 +767,14 @@ end
         code(doc) = (r = EarthSciIntegrator.model_span_refusal(doc); r === nothing ? nothing : (r.code, r.at))
         @test code(Dict("solver" => Dict("time_span" => Dict("start" => 100, "end" => 50)))) == ("time_interval_empty", "/model")
         @test code(Dict("solver" => Dict("time_span" => Dict("start" => "2021-02-30T00:00:00Z", "end" => "2021-03-02T00:00:00Z")))) ==
-              ("time_invalid_date", "/model")
-        @test code(Dict("domain" => Dict("temporal" => Dict("reference_time" => "yesterday")),
-            "solver" => Dict("time_span" => Dict("start" => "2021-03-01T00:00:00Z", "end" => "2021-03-02T00:00:00Z")))) ==
-              ("time_origin_invalid", "/model")
+            ("time_invalid_date", "/model")
+        @test code(
+            Dict(
+                "domain" => Dict("temporal" => Dict("reference_time" => "yesterday")),
+                "solver" => Dict("time_span" => Dict("start" => "2021-03-01T00:00:00Z", "end" => "2021-03-02T00:00:00Z"))
+            )
+        ) ==
+            ("time_origin_invalid", "/model")
         @test code(Dict("solver" => Dict("time_span" => Dict("start" => 0, "end" => 1)))) === nothing
         @test code(Dict("solver" => Dict())) === nothing
     end
@@ -555,8 +800,14 @@ end
         model = abspath(joinpath(PFIX, "pointwise_chemistry", "model.esm"))
         function draft(sched; partition = Dict{String, Any}())
             path = joinpath(tmp, "run.json")
-            write(path, JSON.json(Dict("esm_integrator" => "0.1.0", "model" => model, "schedule" => sched, "partition" => partition,
-                "operators" => Dict("chem" => Dict("select" => Dict("components" => ["Chem", "Dep"]))))))
+            write(
+                path, JSON.json(
+                    Dict(
+                        "esm_integrator" => "0.1.0", "model" => model, "schedule" => sched, "partition" => partition,
+                        "operators" => Dict("chem" => Dict("select" => Dict("components" => ["Chem", "Dep"])))
+                    )
+                )
+            )
             return EarthSciIntegrator.plan(path; backend = HandBackend(bands = bands, structures = Dict{String, Any}("chem" => blk)))
         end
         # 4 cells, 3 per shard: 2 shards.
@@ -566,12 +817,16 @@ end
         d = draft(Dict("coupled" => "chem", "alg" => "Rodas4"))
         @test d.partition["shards"] == Dict()
         @test refusal(() -> draft(Dict("coupled" => "chem", "alg" => "Rodas4", "id" => "c"); partition = Dict("shards" => Dict("chem" => 2, "c" => 3)))) ==
-              ("run_config_invalid", "/partition/shards/c")
+            ("run_config_invalid", "/partition/shards/c")
         # leaf_cells: horizontal dimensions, and the vertical one for a pointwise leaf only.
-        ctx = (axes = Axes(["lon", "lat"], "lev"),
-               model = (sizes = Dict("lon" => 8, "lat" => 3, "lev" => 4, "spc" => 5),
-                        shapes = Dict("A" => ["lon", "lat", "lev"], "B" => ["lon", "lat", "spc"])),
-               ops = Dict("o" => (writes = ["A", "B"],)))
+        ctx = (
+            axes = Axes(["lon", "lat"], "lev"),
+            model = (
+                sizes = Dict("lon" => 8, "lat" => 3, "lev" => 4, "spc" => 5),
+                shapes = Dict("A" => ["lon", "lat", "lev"], "B" => ["lon", "lat", "spc"]),
+            ),
+            ops = Dict("o" => (writes = ["A", "B"],)),
+        )
         @test EarthSciIntegrator.leaf_cells(ctx, ["o"], :column) == 24
         @test EarthSciIntegrator.leaf_cells(ctx, ["o"], :pointwise) == 96
         # The lifted faq's ranges are built from the state's shape (§6.1.2).
@@ -582,13 +837,18 @@ end
 
     @testset "schedule helpers" begin
         # Every node of an "auto" schedule is reported at /schedule.
-        auto = EarthSciIntegrator.build_snode(Dict("sequence" => Any[Dict("leaf" => ["a"], "alg" => "auto"), Dict("leaf" => ["b"], "alg" => "auto")]),
-            "root", "/schedule", true)
+        auto = EarthSciIntegrator.build_snode(
+            Dict("sequence" => Any[Dict("leaf" => ["a"], "alg" => "auto"), Dict("leaf" => ["b"], "alg" => "auto")]),
+            "root", "/schedule", true
+        )
         @test all(n -> EarthSciIntegrator.nptr(n) == "/schedule" && EarthSciIntegrator.nptr(n, "alg") == "/schedule", EarthSciIntegrator.allnodes(auto))
         mkop(name, loc) = (o = EarthSciIntegrator.PlanOperator(name, EarthSciIntegrator.Term[], nothing, "", loc, nothing, String[], String[], nothing); o)
         ops = Dict("a" => mkop("a", :pointwise), "b" => mkop("b", :stencil), "c" => mkop("c", :pointwise))
-        @test EarthSciIntegrator.auto_schedule(ops, nothing) == Dict("sequence" => Any[
-            Dict("leaf" => ["b"], "alg" => "auto"), Dict("leaf" => ["a", "c"], "alg" => "auto")])
+        @test EarthSciIntegrator.auto_schedule(ops, nothing) == Dict(
+            "sequence" => Any[
+                Dict("leaf" => ["b"], "alg" => "auto"), Dict("leaf" => ["a", "c"], "alg" => "auto"),
+            ]
+        )
         @test haskey(EarthSciIntegrator.auto_schedule(ops, "strang"), "strang")
         @test EarthSciIntegrator.auto_schedule(Dict("a" => ops["a"]), "strang") == Dict("leaf" => ["a"], "alg" => "auto")
         @test EarthSciIntegrator.linsolve_object("block_lu") == Dict("block_lu" => Dict("pivot" => true, "refine" => 0))
@@ -596,15 +856,24 @@ end
         @test EarthSciIntegrator.linsolve_object("gmres") == Dict("gmres" => Dict())
         @test EarthSciIntegrator.glob_match("Chem.*", "Chem.a.b") && !EarthSciIntegrator.glob_match("Chem.*", "Dep.k") && EarthSciIntegrator.glob_match("k", "k")
         # Node paths and pointers.
-        spec = Dict("sequence" => Any[Dict("id" => "t", "strang" => Any[Dict("subcycle" => Dict("leaf" => "x"), "n" => 2),
-                                                                         Dict("leaf" => "y")]),
-                                      Dict("every" => Dict("leaf" => "z"), "period" => 5)])
+        spec = Dict(
+            "sequence" => Any[
+                Dict(
+                    "id" => "t", "strang" => Any[
+                        Dict("subcycle" => Dict("leaf" => "x"), "n" => 2),
+                        Dict("leaf" => "y"),
+                    ]
+                ),
+                Dict("every" => Dict("leaf" => "z"), "period" => 5),
+            ]
+        )
         root = EarthSciIntegrator.build_snode(spec, "root", "/schedule", false)
         @test [(n.id, n.path, n.ptr) for n in EarthSciIntegrator.allnodes(root)] == [
             ("root", "root", "/schedule"), ("t", "root.0", "/schedule/sequence/0"),
             ("root.0.0", "root.0.0", "/schedule/sequence/0/strang/0"),
             ("root.0.0.subcycle", "root.0.0.subcycle", "/schedule/sequence/0/strang/0/subcycle"),
             ("root.0.1", "root.0.1", "/schedule/sequence/0/strang/1"), ("root.1", "root.1", "/schedule/sequence/1"),
-            ("root.1.every", "root.1.every", "/schedule/sequence/1/every")]
+            ("root.1.every", "root.1.every", "/schedule/sequence/1/every"),
+        ]
     end
 end

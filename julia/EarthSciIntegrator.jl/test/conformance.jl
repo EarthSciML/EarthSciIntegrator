@@ -28,7 +28,7 @@ const SKIPPED = Tuple{String, String}[]
 function record!(case, check, passed, detail)
     push!(OUTCOMES, CheckOutcome(case, check, passed, detail))
     passed || @error "check $check of $case failed: $detail"
-    @test passed
+    return @test passed
 end
 
 maxabs(x) = maximum(abs, x; init = 0.0)
@@ -61,7 +61,11 @@ function check_order(case, run, chk)
     end
     for dt in dts
         modify = if chk["vary"] == "leaf"
-            cfg -> (for n in leaf_specs(cfg["schedule"]); haskey(n, "dt") && n["dt"] isa Real && (n["dt"] = dt); end; cfg)
+            cfg -> (
+                for n in leaf_specs(cfg["schedule"])
+                    haskey(n, "dt") && n["dt"] isa Real && (n["dt"] = dt)
+                end; cfg
+            )
         else
             cfg -> (cfg["step"]["dt"] = dt; cfg)
         end
@@ -71,8 +75,10 @@ function check_order(case, run, chk)
     end
     x, y = log.(dts), log.(errs)
     slope = sum((x .- mean(x)) .* (y .- mean(y))) / sum((x .- mean(x)) .^ 2)
-    record!(id, "order", slope >= chk["expected"] - 0.3,
-        "observed order $(round(slope; digits = 3)) (errors $(errs)), expected ≥ $(chk["expected"] - 0.3)")
+    return record!(
+        id, "order", slope >= chk["expected"] - 0.3,
+        "observed order $(round(slope; digits = 3)) (errors $(errs)), expected ≥ $(chk["expected"] - 0.3)"
+    )
 end
 
 mean(x) = sum(x) / length(x)
@@ -94,7 +100,7 @@ function check_oracle(case, run, chk)
     SciMLBase.successful_retcode(sol) ||
         return record!(id, "oracle", false, "OrdinaryDiffEq's solve with the imposed steps ended with $(sol.retcode)")
     err = relerr(run.u, sol.u[end])
-    record!(id, "oracle", err <= chk["rtol"], "end-state relative difference $err, rtol $(chk["rtol"])")
+    return record!(id, "oracle", err <= chk["rtol"], "end-state relative difference $err, rtol $(chk["rtol"])")
 end
 
 function check_invariant(case, run, chk)
@@ -106,7 +112,7 @@ function check_invariant(case, run, chk)
             worst = max(worst, relerr(inv(u), I0))
         end
     end
-    record!(id, "invariant", worst <= chk["rtol"], "largest relative invariant drift $worst, rtol $(chk["rtol"])")
+    return record!(id, "invariant", worst <= chk["rtol"], "largest relative invariant drift $worst, rtol $(chk["rtol"])")
 end
 
 function check_exact_discrete(case, run, chk)
@@ -119,7 +125,7 @@ function check_exact_discrete(case, run, chk)
         u = (u + a * Δ) * exp(-r * Δ)
     end
     err = abs(run.u[1] - u) / abs(u)
-    record!(id, "exact_discrete", err <= chk["rtol"], "relative difference from the exact discrete solution $err, rtol $(chk["rtol"])")
+    return record!(id, "exact_discrete", err <= chk["rtol"], "relative difference from the exact discrete solution $err, rtol $(chk["rtol"])")
 end
 
 function check_reference(case, run, chk)
@@ -135,7 +141,7 @@ function check_reference(case, run, chk)
         i === nothing && return record!(id, "reference", false, "reference has no output at t = $t")
         worst = max(worst, maximum(abs(u[j] - ru[i][j]) / max(scale[j], floatmin()) for j in eachindex(u)))
     end
-    record!(id, "reference", worst <= chk["rtol"], "largest scaled difference from the reference $worst, rtol $(chk["rtol"])")
+    return record!(id, "reference", worst <= chk["rtol"], "largest scaled difference from the reference $worst, rtol $(chk["rtol"])")
 end
 
 """Random direction for (u, p): normal entries scaled by each value's magnitude (1 where it is zero)."""
@@ -180,7 +186,7 @@ function check_dot_product(case, run, chk)
                     else
                         # The integrating leaf's step also maps to Δq, with q̄ = 1.
                         u1, dq = skipped ? (dual(u, δu), 0.0) :
-                                 leaf_step(leaf, dual(u, δu), dual(pp, δp), t, h, mask, tk1; withq = true)
+                            leaf_step(leaf, dual(u, δu), dual(pp, δp), t, h, mask, tk1; withq = true)
                         δdq = dq isa ForwardDiff.Dual ? ForwardDiff.partials(dq)[1] : 0.0
                         r = dot_mismatch(vcat(λ, 1.0), vcat(partials(u1), δdq), λn, δu, p̄, δp)
                     end
@@ -233,8 +239,10 @@ function check_dot_product(case, run, chk)
     end
     whole = dot_mismatch(λ1, δu1, ū0, δu, p̄, δp)
     worst = max(worst_step, worst_macro, whole)
-    record!(id, "dot_product", worst <= chk["rtol"],
-        "largest relative mismatch $worst over $nsteps steps (per step $worst_step, per macro step $worst_macro, whole run $whole; $worst_info), rtol $(chk["rtol"])")
+    return record!(
+        id, "dot_product", worst <= chk["rtol"],
+        "largest relative mismatch $worst over $nsteps steps (per step $worst_step, per macro step $worst_macro, whole run $whole; $worst_info), rtol $(chk["rtol"])"
+    )
 end
 
 function check_fd_gradient(case, run, chk)
@@ -245,8 +253,10 @@ function check_fd_gradient(case, run, chk)
     # largest magnitude over the run's checkpoints and outputs, not 1 (as the
     # Rust harness does): robertson's y₂ peaks near 4e-5, and a unit
     # perturbation at ε = 1e-3 leaves the stable region of the frozen steps.
-    scale = [maximum(abs(x[j]) for x in vcat([c.u for c in run.checkpoints], [o[2] for o in run.outputs]))
-             for j in eachindex(run.u0)]
+    scale = [
+        maximum(abs(x[j]) for x in vcat([c.u for c in run.checkpoints], [o[2] for o in run.outputs]))
+            for j in eachindex(run.u0)
+    ]
     u0dir = [iszero(v) && !iszero(scale[j]) ? scale[j] : v for (j, v) in enumerate(run.u0)]
     δu = run.wrt_u0 ? direction(rng, u0dir) : zeros(length(run.u0))
     δp = zeros(length(run.p))
@@ -264,8 +274,10 @@ function check_fd_gradient(case, run, chk)
         push!(errs, abs(fd - D) / max(abs(D), floatmin()))
     end
     best = minimum(errs)
-    record!(id, "fd_gradient", best <= chk["rtol"],
-        "relative error of central differences at ε = $(chk["epsilons"]): $errs (directional derivative $D), rtol $(chk["rtol"])")
+    return record!(
+        id, "fd_gradient", best <= chk["rtol"],
+        "relative error of central differences at ε = $(chk["epsilons"]): $errs (directional derivative $D), rtol $(chk["rtol"])"
+    )
 end
 
 const REVERSEDIFF_BROKEN = Set(["Kvaerno4"])
@@ -303,8 +315,10 @@ function check_reverse_diff(case, run, chk)
                 J[N + 1, 1:N] .= ψ.w
                 return J
             end
-            fprob = remake(fprob; f = SciMLBase.ODEFunction{false}(faug; jac = jaug, tgrad = FtOf(run.root.ops, true)),
-                u0 = vcat(fprob.u0, 0.0))
+            fprob = remake(
+                fprob; f = SciMLBase.ODEFunction{false}(faug; jac = jaug, tgrad = FtOf(run.root.ops, true)),
+                u0 = vcat(fprob.u0, 0.0)
+            )
         end
         M = length(fprob.u0)
         lossx = x -> dot(w, solve(remake(fprob; u0 = x[1:M], p = x[(M + 1):end]), alg; kw...).u[end])
@@ -323,10 +337,12 @@ function check_reverse_diff(case, run, chk)
     ep = isempty(run.wrt_p) ? 0.0 : relerr(p̄[run.wrt_p], gp[run.wrt_p])
     err = max(eu, ep)
     how = too_large ? "ForwardDiff through the same OrdinaryDiffEq solve (too large for ReverseDiffAdjoint's tape)" :
-          untraceable ? "ForwardDiff through the same OrdinaryDiffEq solve (ReverseDiffAdjoint returns a zero gradient through OrdinaryDiffEq's $(run.root.tab.name))" :
-          "ReverseDiffAdjoint"
-    record!(id, "reverse_diff", err <= chk["rtol"],
-        "relative difference from $how: u0 $eu, p $ep; rtol $(chk["rtol"])")
+        untraceable ? "ForwardDiff through the same OrdinaryDiffEq solve (ReverseDiffAdjoint returns a zero gradient through OrdinaryDiffEq's $(run.root.tab.name))" :
+        "ReverseDiffAdjoint"
+    return record!(
+        id, "reverse_diff", err <= chk["rtol"],
+        "relative difference from $how: u0 $eu, p $ep; rtol $(chk["rtol"])"
+    )
 end
 
 bitwise_equal(a, b) = length(a) == length(b) && all(i -> reinterpret(UInt64, Float64(a[i])) == reinterpret(UInt64, Float64(b[i])), eachindex(a))
@@ -383,7 +399,7 @@ function check_replay(case, run, chk)
     tape_string(t2) == s || push!(problems, "tape does not round-trip through JSON Lines")
     u2, _ = replay(run; tape = t2)
     bitwise_equal(u2, run.u) || push!(problems, "replay from the serialized tape differs")
-    record!(id, "replay", isempty(problems), isempty(problems) ? "bitwise ($(run.accepted) accepted steps)" : join(problems, "; "))
+    return record!(id, "replay", isempty(problems), isempty(problems) ? "bitwise ($(run.accepted) accepted steps)" : join(problems, "; "))
 end
 
 # ---------------------------------------------------------------------------
@@ -406,7 +422,7 @@ function run_case(case)
         end
         return
     end
-    @testset "$id" begin
+    return @testset "$id" begin
         forward!(run)
         @test run.retcode == "Success"
         run.retcode == "Success" || return
@@ -436,8 +452,10 @@ end
         run_case(case)
     end
     ran = unique(o.case for o in OUTCOMES)
-    println("\nM1 conformance: $(length(ran)) cases run, $(length(SKIPPED)) skipped, ",
-        count(o -> o.passed, OUTCOMES), "/", length(OUTCOMES), " checks passed (cross_language is compared in CI)")
+    println(
+        "\nM1 conformance: $(length(ran)) cases run, $(length(SKIPPED)) skipped, ",
+        count(o -> o.passed, OUTCOMES), "/", length(OUTCOMES), " checks passed (cross_language is compared in CI)"
+    )
     for o in OUTCOMES
         println(rpad(o.passed ? "  pass" : "  FAIL", 7), rpad(o.case, 42), rpad(o.check, 15), o.detail)
     end
@@ -451,17 +469,17 @@ end
     files = filter(f -> endswith(f, ".json"), readdir(RESULTS_DIR; join = true))
     @test !isempty(files)
     validator = """
-import json, sys
-from jsonschema import Draft202012Validator
-schema = json.load(open(sys.argv[1]))
-bad = 0
-for path in sys.argv[2:]:
-    errs = list(Draft202012Validator(schema).iter_errors(json.load(open(path))))
-    if errs:
-        bad += 1
-        print(path, errs[0].message)
-sys.exit(1 if bad else 0)
-"""
+    import json, sys
+    from jsonschema import Draft202012Validator
+    schema = json.load(open(sys.argv[1]))
+    bad = 0
+    for path in sys.argv[2:]:
+        errs = list(Draft202012Validator(schema).iter_errors(json.load(open(path))))
+        if errs:
+            bad += 1
+            print(path, errs[0].message)
+    sys.exit(1 if bad else 0)
+    """
     python = Sys.which("python3")
     has_jsonschema = python !== nothing && success(`$python -c "import jsonschema"`)
     if has_jsonschema

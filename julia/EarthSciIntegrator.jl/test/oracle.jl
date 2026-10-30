@@ -19,7 +19,8 @@ const SDIRK_NEWTON = NLNewton(; κ = 1.0e-6)
 function ode_alg(alg::AbstractString)
     name = TABLEAUS[alg].ordinarydiffeq_algorithm
     name === nothing && error("$alg has no OrdinaryDiffEq counterpart")
-    return Dict("Euler" => Euler(), "Heun" => Heun(), "RK4" => RK4(), "BS3" => BS3(), "Tsit5" => Tsit5(),
+    return Dict(
+        "Euler" => Euler(), "Heun" => Heun(), "RK4" => RK4(), "BS3" => BS3(), "Tsit5" => Tsit5(),
         "SSPRK33" => SSPRK33(), "SSPRK43" => SSPRK43(), "SSPRK104" => SSPRK104(),
         # The ODEFunction carries `jac` and `tgrad` from the operators, which
         # OrdinaryDiffEq's Rosenbrock methods use instead of differentiating f.
@@ -33,7 +34,8 @@ function ode_alg(alg::AbstractString)
         # robertson.Kvaerno4.adaptive's imposed step sequence with ConvergenceFailure.
         "ImplicitEuler" => ImplicitEuler(; nlsolve = SDIRK_NEWTON), "TRBDF2" => TRBDF2(; nlsolve = SDIRK_NEWTON),
         "SDIRK2" => SDIRK2(; nlsolve = SDIRK_NEWTON), "Kvaerno3" => Kvaerno3(; nlsolve = SDIRK_NEWTON),
-        "Kvaerno4" => Kvaerno4(; nlsolve = SDIRK_NEWTON))[name]
+        "Kvaerno4" => Kvaerno4(; nlsolve = SDIRK_NEWTON)
+    )[name]
 end
 
 """
@@ -62,8 +64,10 @@ function oracle_problem(run; inplace = true)
     _, ends = step_sequence(run)
     f = odefunction(run.root; inplace)
     prob = ODEProblem(f, copy(run.u0), run.tspan, copy(run.p))
-    kw = (; adaptive = false, dt = run.tspan[2] - run.tspan[1], tstops = ends, saveat = copy(run.output_times),
-        save_start = false, save_end = true)
+    kw = (;
+        adaptive = false, dt = run.tspan[2] - run.tspan[1], tstops = ends, saveat = copy(run.output_times),
+        save_start = false, save_end = true,
+    )
     return prob, kw
 end
 
@@ -94,7 +98,7 @@ struct FtOf{O}
     aug::Bool
 end
 (g::FtOf)(u, p, t) = g.aug ? vcat(_ftvec(g.ops, u[1:(end - 1)], p, t), zero(promote_type(eltype(u), eltype(p)))) :
-                      _ftvec(g.ops, u, p, t)
+    _ftvec(g.ops, u, p, t)
 tracked_ft(g, u, p, t) = g(u, p, t)
 tracked_ft(g, u::ReverseDiff.TrackedArray, p::ReverseDiff.TrackedArray, t) = ReverseDiff.track(tracked_ft, g, u, p, t)
 ReverseDiff.@grad function tracked_ft(g, u, p, t)

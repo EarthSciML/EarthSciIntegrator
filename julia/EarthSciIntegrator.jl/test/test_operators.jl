@@ -22,7 +22,7 @@ function check_operator(prob::ToyProblem, name, op::AbstractOperator; rng)
     v, w = randn(rng, N), randn(rng, N)
     pairs = [(randn(rng, N), randn(rng, N)) for _ in 1:3]
     ν = randn(rng, N)
-    tol(x) = 1e-12 * max(1.0, maximum(abs, x))
+    tol(x) = 1.0e-12 * max(1.0, maximum(abs, x))
     for c in CALLS
         @test provides(op, c)
     end
@@ -55,7 +55,7 @@ function check_operator(prob::ToyProblem, name, op::AbstractOperator; rng)
     hp = ForwardDiff.gradient(q -> S2(u, q), p)
     @test isapprox(acc(hess_u!, base_u, u, p, t, pairs), hu; atol = tol(hu))
     @test isapprox(acc(hess_p!, base_p, u, p, t, pairs), hp; atol = tol(hp))
-    linear_in_u(op) && @test all(x -> abs(x) < 1e-14, hu)
+    linear_in_u(op) && @test all(x -> abs(x) < 1.0e-14, hu)
     FT(x, q) = dot(ν, ForwardDiff.derivative(τ -> f(x, q, τ), t))
     fu = ForwardDiff.gradient(x -> FT(x, p), u)
     fp = ForwardDiff.gradient(q -> FT(u, q), p)
@@ -65,7 +65,7 @@ function check_operator(prob::ToyProblem, name, op::AbstractOperator; rng)
     out32 = zeros(Float32, N)
     rhs!(op, out32, Float32.(u), p, t)
     @test eltype(out32) == Float32
-    @test isapprox(out32, f(u, p, t); rtol = 1e-4, atol = 1e-4 * maximum(abs, f(u, p, t)))
+    return @test isapprox(out32, f(u, p, t); rtol = 1.0e-4, atol = 1.0e-4 * maximum(abs, f(u, p, t)))
 end
 
 function check_map(prob::ToyProblem, name, op; rng)
@@ -89,7 +89,7 @@ function check_map(prob::ToyProblem, name, op; rng)
     bj = randn(rng, N)
     jv = copy(bj)
     map_jvp!(op, jv, u, p, t, Δ, mask, vu, vp)            # accumulates
-    @test jv .- bj ≈ Ju * vu + Jp * vp
+    return @test jv .- bj ≈ Ju * vu + Jp * vp
 end
 
 @testset "operators against ForwardDiff" begin

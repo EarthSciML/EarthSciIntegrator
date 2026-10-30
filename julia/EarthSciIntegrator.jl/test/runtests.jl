@@ -45,8 +45,8 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         # Numbers are parsed exactly (to the nearest double): every number of every
         # table file, as JSON parses it, is bitwise Base.parse(Float64, text).
         flat(x, acc) = x isa AbstractDict ? (foreach(v -> flat(v, acc), values(x)); acc) :
-                       x isa AbstractVector ? (foreach(v -> flat(v, acc), x); acc) :
-                       x isa Real && !(x isa Bool) ? push!(acc, Float64(x)) : acc
+            x isa AbstractVector ? (foreach(v -> flat(v, acc), x); acc) :
+            x isa Real && !(x isa Bool) ? push!(acc, Float64(x)) : acc
         for f in readdir(dir; join = true)
             endswith(f, ".json") || continue
             text = replace(read(f, String), r"\"(?:[^\"\\\\]|\\\\.)*\"" => "\"\"")
@@ -66,21 +66,21 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     end
 
     @testset "error norm, controllers and stops" begin
-        tol = Tolerances(1e-3, [1e-6, 1e-6])
-        e, u0, u1 = [1e-4, -2e-4], [1.0, -2.0], [1.5, 0.5]
-        sc = [1e-6 + 1e-3 * 1.5, 1e-6 + 1e-3 * 2.0]
+        tol = Tolerances(1.0e-3, [1.0e-6, 1.0e-6])
+        e, u0, u1 = [1.0e-4, -2.0e-4], [1.0, -2.0], [1.5, 0.5]
+        sc = [1.0e-6 + 1.0e-3 * 1.5, 1.0e-6 + 1.0e-3 * 2.0]
         @test error_norm(e, u0, u1, tol) == sqrt(((e[1] / sc[1])^2 + (e[2] / sc[2])^2) / 2)
         # The norm sums over the DOFs the leaf writes only.
-        sub = Tolerances(1e-3, [1e-6, 1e-6], [2])
+        sub = Tolerances(1.0e-3, [1.0e-6, 1.0e-6], [2])
         @test error_norm(e, u0, u1, sub) == sqrt((e[2] / sc[2])^2 / 1)
         # Dual numbers: the norm sees primal values only.
-        d = ForwardDiff.Dual(1e-4, 3.0)
-        @test error_norm([d, -2e-4], u0, u1, tol) == error_norm(e, u0, u1, tol)
+        d = ForwardDiff.Dual(1.0e-4, 3.0)
+        @test error_norm([d, -2.0e-4], u0, u1, tol) == error_norm(e, u0, u1, tol)
         cc = TABLEAUS["Tsit5"].controller
         tab = TABLEAUS["Tsit5"]
         cs = ControllerState(cc)
         q = controller_factor!(cs, PI_CONTROLLER, cc, 0.5, tab)
-        @test q == clamp(0.5^0.14 / 1e-4^0.08 / 0.9, 1 / 10000, 1 / 0.2)   # qmax_first_step before the first acceptance
+        @test q == clamp(0.5^0.14 / 1.0e-4^0.08 / 0.9, 1 / 10000, 1 / 0.2)   # qmax_first_step before the first acceptance
         @test accepts(PI_CONTROLLER, cc, 0.5, q)
         @test controller_accept!(cs, PI_CONTROLLER, cc, 0.5, q, 0.1) == 0.1 / q
         @test cs.Eold == 0.5
@@ -98,7 +98,7 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         # Landing on stops (spec/methods.md §10).
         @test stop_rule(0.0, 0.1, 1.0) == (0.1, false)
         @test stop_rule(0.9, 0.2, 1.0)[2] && stop_rule(0.9, 0.2, 1.0)[1] == 1.0 - 0.9
-        @test stop_rule(0.9, 0.1 - 1e-15, 1.0)[2]     # within 100 eps: a stop step
+        @test stop_rule(0.9, 0.1 - 1.0e-15, 1.0)[2]     # within 100 eps: a stop step
         b, r = macro_bounds(0.0, 4.0, 0.5)
         @test b == collect(0.0:0.5:4.0) && all(==("step.dt"), r)
         b, r = macro_bounds(0.0, 1.0, 0.3)
@@ -110,19 +110,25 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         prob = toy_problem("toy:van_der_pol/nonstiff")
         ops = EarthSciIntegrator.OperatorSum([prob.operators["oscillator"]])
         f! = (out, u, t) -> EarthSciIntegrator.eval_rhs!(out, ops, u, prob.p, t)
-        h, nf = EarthSciIntegrator.initial_step(f!, prob.u0, 0.0, 5, Tolerances(1e-8, fill(1e-10, 2)), 0.0, 6.3)
+        h, nf = EarthSciIntegrator.initial_step(f!, prob.u0, 0.0, 5, Tolerances(1.0e-8, fill(1.0e-10, 2)), 0.0, 6.3)
         @test nf == 2
-        @test 1e-6 < h < 1e-1
+        @test 1.0e-6 < h < 1.0e-1
     end
 
     @testset "run configs refused with clear errors" begin
-        base = Dict("esm_integrator" => "0.1.0", "model" => "toy:forced_decay",
-            "schedule" => Dict("leaf" => "decay", "alg" => "Tsit5", "dt" => 0.1), "step" => Dict("dt" => 2))
+        base = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:forced_decay",
+            "schedule" => Dict("leaf" => "decay", "alg" => "Tsit5", "dt" => 0.1), "step" => Dict("dt" => 2)
+        )
         @test build_run(base; tspan = (0, 2)) isa EarthSciIntegrator.Run
         bad = deepcopy(base); bad["esm_integrator"] = "0.2.0"
         @test_throws ConfigError build_run(bad; tspan = (0, 2))
         bad = deepcopy(base); bad["schedule"]["alg"] = "Theta"     # Theta needs the leaf option theta
-        err = try build_run(bad; tspan = (0, 2)); nothing; catch e; e; end
+        err = try
+            build_run(bad; tspan = (0, 2)); nothing
+        catch e
+            e
+        end
         @test err isa ConfigError && occursin("theta", err.msg)
         bad = deepcopy(base); bad["schedule"]["alg"] = "SSPRK33"; delete!(bad["schedule"], "dt")
         @test_throws ConfigError build_run(bad; tspan = (0, 2))      # no error estimate: dt required (D52)
@@ -173,8 +179,14 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         @test build_run(ok; tspan = (0, 2)) isa EarthSciIntegrator.Run
         # run-config §8 rule 11: a wrt naming a bound parameter is refused; a
         # pattern skips bound parameters, and is refused if it then matches nothing.
-        bound = merge(base, Dict("schedule" => Dict("leaf" => "decay", "alg" => "Heun", "dt" => 0.1,
-            "bind_dt" => Dict("omega" => "leaf"))))
+        bound = merge(
+            base, Dict(
+                "schedule" => Dict(
+                    "leaf" => "decay", "alg" => "Heun", "dt" => 0.1,
+                    "bind_dt" => Dict("omega" => "leaf")
+                )
+            )
+        )
         adj(w) = merge(bound, Dict("adjoint" => Dict("functional" => Dict("sum" => "u", "over" => "final"), "wrt" => w)))
         @test refused(adj(["params:omega"])) isa ConfigError
         @test refused(adj(["params:om*"])) isa ConfigError
@@ -193,9 +205,15 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     end
 
     @testset "tape: paths, JSON Lines" begin
-        cfg = Dict("esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
-            "schedule" => Dict("sequence" => [Dict("leaf" => "source", "alg" => "ForwardEuler", "dt" => "step"),
-                Dict("map" => "decay")]), "step" => Dict("dt" => 0.5))
+        cfg = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
+            "schedule" => Dict(
+                "sequence" => [
+                    Dict("leaf" => "source", "alg" => "ForwardEuler", "dt" => "step"),
+                    Dict("map" => "decay"),
+                ]
+            ), "step" => Dict("dt" => 0.5)
+        )
         run = forward!(build_run(cfg; tspan = (0, 4)))
         lines = split(strip(EarthSciIntegrator.tape_string(run.tape)), '\n')
         @test length(lines) == 3 * 8
@@ -204,13 +222,21 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         @test JSON.parse(lines[3]) == Dict("path" => "0", "node" => "macro", "t" => 0.0, "dt" => 0.5, "reason" => "step.dt")
         @test JSON.parse(lines[4])["steps"] == [[0.5, 0.5]]
         # strang and subcycle occurrences
-        cfg = Dict("esm_integrator" => "0.1.0", "model" => "toy:advection_reaction",
-            "schedule" => Dict("strang" => [Dict("subcycle" => Dict("leaf" => "transport", "alg" => "SSPRK33", "dt" => "step"), "n" => 2),
-                Dict("leaf" => "reaction", "alg" => "RK4", "dt" => 1e-3)]), "step" => Dict("dt" => 0.05))
+        cfg = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:advection_reaction",
+            "schedule" => Dict(
+                "strang" => [
+                    Dict("subcycle" => Dict("leaf" => "transport", "alg" => "SSPRK33", "dt" => "step"), "n" => 2),
+                    Dict("leaf" => "reaction", "alg" => "RK4", "dt" => 1.0e-3),
+                ]
+            ), "step" => Dict("dt" => 0.05)
+        )
         run = forward!(build_run(cfg; tspan = (0, 0.1)))
         paths = [r.path for r in run.tape.records]
-        @test paths[1:9] == ["0/root.0.subcycle", "0/root.0.subcycle#1", "0/root.0", "0/root.1",
-            "0/root.0.subcycle#2", "0/root.0.subcycle#3", "0/root.0#1", "0", "1/root.0.subcycle"]
+        @test paths[1:9] == [
+            "0/root.0.subcycle", "0/root.0.subcycle#1", "0/root.0", "0/root.1",
+            "0/root.0.subcycle#2", "0/root.0.subcycle#3", "0/root.0#1", "0", "1/root.0.subcycle",
+        ]
         u, _ = replay(run)
         @test u == run.u
     end
@@ -224,9 +250,11 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         b, r = macro_bounds(0.0, 1.0, 0.1, [0.3, 0.7, 1.0])
         @test b[4] === 0.3 && b[8] === 0.7 && b[end] === 1.0 && length(b) == 11 && all(==("step.dt"), r)
         @test b[5] == 4 * 0.1 && b[9] == 8 * 0.1      # the others are still multiplied
-        smap = Dict("esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
+        smap = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
             "schedule" => Dict("sequence" => [Dict("leaf" => "source", "alg" => "RK4", "dt" => "step"), Dict("map" => "decay")]),
-            "step" => Dict("dt" => 0.1))
+            "step" => Dict("dt" => 0.1)
+        )
         # A non-leaf root with an output at 0.3: accepted, the state reported at 0.3
         # exactly, and t_f not added to the list.
         run = forward!(build_run(smap; tspan = (0, 1), saveat = [0.3]))
@@ -265,7 +293,7 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
             Jx(x) = EarthSciIntegrator.functional_value(run, replay(run, x[1:1], x[2:3])...)
             g = ForwardDiff.gradient(Jx, vcat(run.u0, run.p))
             @test Jx(vcat(run.u0, run.p)) == J
-            @test isapprox(vcat(ū0, p̄), g; rtol = 1e-12)
+            @test isapprox(vcat(ū0, p̄), g; rtol = 1.0e-12)
         end
     end
 
@@ -273,11 +301,15 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
         # source_decay_map with a second variable v that neither the leaf nor
         # the map writes: v keeps its initial value, forward and on replay.
         sdm = toy_problem("toy:source_decay_map")
-        prob = EarthSciIntegrator.ToyProblem("source_decay_map_v", 2, [0.0, 7.0], sdm.p, sdm.pnames, sdm.tspan,
-            sdm.operators, sdm.maps, ["u" => [1], "v" => [2]], Function[], nothing, false)
-        cfg = Dict("esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
+        prob = EarthSciIntegrator.ToyProblem(
+            "source_decay_map_v", 2, [0.0, 7.0], sdm.p, sdm.pnames, sdm.tspan,
+            sdm.operators, sdm.maps, ["u" => [1], "v" => [2]], Function[], nothing, false
+        )
+        cfg = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:source_decay_map",
             "schedule" => Dict("sequence" => [Dict("leaf" => "source", "alg" => "RK4", "dt" => "step"), Dict("map" => "decay")]),
-            "step" => Dict("dt" => 0.5))
+            "step" => Dict("dt" => 0.5)
+        )
         run = forward!(build_run(cfg; tspan = (0, 2), prob))
         @test run.retcode == "Success"
         @test run.u[2] === 7.0 && all(o -> o[2][2] === 7.0, run.outputs)
@@ -289,24 +321,36 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     end
 
     @testset "node ids by position" begin
-        cfg = Dict("esm_integrator" => "0.1.0", "model" => "toy:advection_reaction",
-            "schedule" => Dict("sequence" => [
-                Dict("id" => "transport", "strang" => [
-                    Dict("subcycle" => Dict("leaf" => "transport", "alg" => "SSPRK33", "dt" => "step"), "n" => 2),
-                    Dict("leaf" => "reaction", "alg" => "RK4", "dt" => 1e-3)]),
-                Dict("id" => "chem", "leaf" => "reaction", "alg" => "RK4", "dt" => 1e-3)]),
-            "step" => Dict("dt" => 0.05))
+        cfg = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:advection_reaction",
+            "schedule" => Dict(
+                "sequence" => [
+                    Dict(
+                        "id" => "transport", "strang" => [
+                            Dict("subcycle" => Dict("leaf" => "transport", "alg" => "SSPRK33", "dt" => "step"), "n" => 2),
+                            Dict("leaf" => "reaction", "alg" => "RK4", "dt" => 1.0e-3),
+                        ]
+                    ),
+                    Dict("id" => "chem", "leaf" => "reaction", "alg" => "RK4", "dt" => 1.0e-3),
+                ]
+            ),
+            "step" => Dict("dt" => 0.05)
+        )
         run = build_run(cfg; tspan = (0, 0.1))
         @test [n.id for n in EarthSciIntegrator.allnodes(run.root)] ==
-              ["root", "transport", "root.0.0", "root.0.0.subcycle", "root.0.1", "chem"]
+            ["root", "transport", "root.0.0", "root.0.0.subcycle", "root.0.1", "chem"]
     end
 
     @testset "replay refuses a tape that does not fit the run" begin
         Mismatch = EarthSciIntegrator.ReplayMismatchError
         MacroRecord = EarthSciIntegrator.MacroRecord
-        clipcfg = Dict("esm_integrator" => "0.1.0", "model" => "toy:advection_reaction",
-            "schedule" => Dict("leaf" => ["transport", "reaction"], "alg" => "RK4", "dt" => 0.01,
-                "domain" => Dict("nonnegative" => ["A"], "on_violation" => "clip")), "step" => Dict("dt" => 0.05))
+        clipcfg = Dict(
+            "esm_integrator" => "0.1.0", "model" => "toy:advection_reaction",
+            "schedule" => Dict(
+                "leaf" => ["transport", "reaction"], "alg" => "RK4", "dt" => 0.01,
+                "domain" => Dict("nonnegative" => ["A"], "on_violation" => "clip")
+            ), "step" => Dict("dt" => 0.05)
+        )
         run = forward!(build_run(clipcfg; tspan = (0, 0.1)))
         @test run.retcode == "Success"
         @test replay(run)[1] == run.u

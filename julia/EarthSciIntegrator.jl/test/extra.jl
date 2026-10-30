@@ -11,14 +11,18 @@ xcase(id, model, schedule, step, tspan; adjoint = nothing, saveat = nothing, che
     saveat === nothing || (c["saveat"] = saveat)
     c
 end
-const XGRAD = [Dict{String, Any}("check" => "dot_product", "rtol" => 1e-12),
-    Dict{String, Any}("check" => "fd_gradient", "rtol" => 1e-6, "epsilons" => [1e-3, 1e-4, 1e-5]),
-    Dict{String, Any}("check" => "replay")]
-xgrad(q, over = "final", how = "sum") = Dict{String, Any}("functional" => Dict{String, Any}(how => q, "over" => over),
-    "wrt" => ["u0", "params:numeric"])
+const XGRAD = [
+    Dict{String, Any}("check" => "dot_product", "rtol" => 1.0e-12),
+    Dict{String, Any}("check" => "fd_gradient", "rtol" => 1.0e-6, "epsilons" => [1.0e-3, 1.0e-4, 1.0e-5]),
+    Dict{String, Any}("check" => "replay"),
+]
+xgrad(q, over = "final", how = "sum") = Dict{String, Any}(
+    "functional" => Dict{String, Any}(how => q, "over" => over),
+    "wrt" => ["u0", "params:numeric"]
+)
 
 function run_xcase(c)
-    @testset "$(c["id"])" begin
+    return @testset "$(c["id"])" begin
         run = forward!(build_case(c))
         @test run.retcode == "Success"
         for chk in c["checks"]
@@ -34,56 +38,98 @@ const ADAPTIVE_EXPLICIT = ["Heun", "RK4", "BS3", "Tsit5", "SSPRK43"]
     n0 = length(OUTCOMES)
     for alg in EXPLICIT
         # Nonlinear, autonomous; gradient of the final y and of y at every output time.
-        run_xcase(xcase("x.van_der_pol.$alg.fixed", "toy:van_der_pol/nonstiff",
-            Dict("leaf" => "oscillator", "alg" => alg, "dt" => 0.05), Dict("dt" => 0.5), [0, 2.0];
-            adjoint = xgrad("y", "saveat"), saveat = [1.0, 2.0], checks = XGRAD))
+        run_xcase(
+            xcase(
+                "x.van_der_pol.$alg.fixed", "toy:van_der_pol/nonstiff",
+                Dict("leaf" => "oscillator", "alg" => alg, "dt" => 0.05), Dict("dt" => 0.5), [0, 2.0];
+                adjoint = xgrad("y", "saveat"), saveat = [1.0, 2.0], checks = XGRAD
+            )
+        )
         # Block-diagonal, time-dependent; gradient of the mean O3.
-        run_xcase(xcase("x.photostationary.$alg.fixed", "toy:photostationary_cells",
-            Dict("leaf" => "photochemistry", "alg" => alg, "dt" => 10.0), Dict("dt" => 600), [0, 1200.0];
-            adjoint = xgrad("O3", "final", "mean"), checks = XGRAD))
+        run_xcase(
+            xcase(
+                "x.photostationary.$alg.fixed", "toy:photostationary_cells",
+                Dict("leaf" => "photochemistry", "alg" => alg, "dt" => 10.0), Dict("dt" => 600), [0, 1200.0];
+                adjoint = xgrad("O3", "final", "mean"), checks = XGRAD
+            )
+        )
     end
     for alg in ADAPTIVE_EXPLICIT
         # Adaptive, with interior output times as stops inside the root leaf.
-        tol = Dict("reltol" => 1e-7, "abstol" => 1e-9)
-        run_xcase(xcase("x.van_der_pol.$alg.adaptive", "toy:van_der_pol/nonstiff",
-            Dict("leaf" => "oscillator", "alg" => alg, "control" => tol), Dict("dt" => 6.3), [0, 6.3];
-            adjoint = xgrad("y", "saveat"), saveat = [1.0, 3.0, 6.3],
-            checks = vcat(XGRAD, [Dict{String, Any}("check" => "oracle", "rtol" => 1e-12)])))
+        tol = Dict("reltol" => 1.0e-7, "abstol" => 1.0e-9)
+        run_xcase(
+            xcase(
+                "x.van_der_pol.$alg.adaptive", "toy:van_der_pol/nonstiff",
+                Dict("leaf" => "oscillator", "alg" => alg, "control" => tol), Dict("dt" => 6.3), [0, 6.3];
+                adjoint = xgrad("y", "saveat"), saveat = [1.0, 3.0, 6.3],
+                checks = vcat(XGRAD, [Dict{String, Any}("check" => "oracle", "rtol" => 1.0e-12)])
+            )
+        )
     end
     for ctrl in ("I", "PID")
-        run_xcase(xcase("x.van_der_pol.Tsit5.$ctrl", "toy:van_der_pol/nonstiff",
-            Dict("leaf" => "oscillator", "alg" => "Tsit5", "control" => Dict("reltol" => 1e-8, "abstol" => 1e-10, "controller" => ctrl)),
-            Dict("dt" => 6.3), [0, 6.3]; saveat = [1.0, 3.0, 6.3],
-            checks = [Dict{String, Any}("check" => "oracle", "rtol" => 1e-12), Dict{String, Any}("check" => "replay")]))
+        run_xcase(
+            xcase(
+                "x.van_der_pol.Tsit5.$ctrl", "toy:van_der_pol/nonstiff",
+                Dict("leaf" => "oscillator", "alg" => "Tsit5", "control" => Dict("reltol" => 1.0e-8, "abstol" => 1.0e-10, "controller" => ctrl)),
+                Dict("dt" => 6.3), [0, 6.3]; saveat = [1.0, 3.0, 6.3],
+                checks = [Dict{String, Any}("check" => "oracle", "rtol" => 1.0e-12), Dict{String, Any}("check" => "replay")]
+            )
+        )
     end
     # Combinators with explicit leaves: sequence, strang, subcycle, adaptive leaves inside.
-    transport = Dict("leaf" => "transport", "alg" => "SSPRK43", "control" => Dict("reltol" => 1e-8, "abstol" => 1e-10))
-    reaction = Dict("leaf" => "reaction", "alg" => "Tsit5", "control" => Dict("reltol" => 1e-8, "abstol" => 1e-10))
-    for (name, node) in [("lie", Dict("sequence" => [transport, reaction])), ("strang", Dict("strang" => [transport, reaction])),
-        ("subcycle", Dict("sequence" => [Dict("subcycle" => Dict("leaf" => "transport", "alg" => "SSPRK33", "dt" => "step"), "n" => 4),
-            Dict("leaf" => "reaction", "alg" => "RK4", "dt" => 2e-3)]))]
-        run_xcase(xcase("x.advection_reaction.$name", "toy:advection_reaction", node, Dict("dt" => 0.025), [0, 0.1];
-            adjoint = xgrad("B"), checks = vcat(XGRAD, [Dict{String, Any}("check" => "invariant", "rtol" => 1e-12)])))
+    transport = Dict("leaf" => "transport", "alg" => "SSPRK43", "control" => Dict("reltol" => 1.0e-8, "abstol" => 1.0e-10))
+    reaction = Dict("leaf" => "reaction", "alg" => "Tsit5", "control" => Dict("reltol" => 1.0e-8, "abstol" => 1.0e-10))
+    for (name, node) in [
+            ("lie", Dict("sequence" => [transport, reaction])), ("strang", Dict("strang" => [transport, reaction])),
+            (
+                "subcycle", Dict(
+                    "sequence" => [
+                        Dict("subcycle" => Dict("leaf" => "transport", "alg" => "SSPRK33", "dt" => "step"), "n" => 4),
+                        Dict("leaf" => "reaction", "alg" => "RK4", "dt" => 2.0e-3),
+                    ]
+                ),
+            ),
+        ]
+        run_xcase(
+            xcase(
+                "x.advection_reaction.$name", "toy:advection_reaction", node, Dict("dt" => 0.025), [0, 0.1];
+                adjoint = xgrad("B"), checks = vcat(XGRAD, [Dict{String, Any}("check" => "invariant", "rtol" => 1.0e-12)])
+            )
+        )
     end
     # Splitting order with explicit leaves against the unsplit reference.
     for (name, node, order) in [("lie", Dict("sequence" => [transport, reaction]), 1), ("strang", Dict("strang" => [transport, reaction]), 2)]
-        c = xcase("advection_reaction.$name.order", "toy:advection_reaction", node, Dict("dt" => 0.05), [0, 0.5];
-            checks = [Dict{String, Any}("check" => "order", "vary" => "macro", "dts" => [0.05, 0.025, 0.0125, 0.00625],
-                "expected" => order, "against" => "reference")])
+        c = xcase(
+            "advection_reaction.$name.order", "toy:advection_reaction", node, Dict("dt" => 0.05), [0, 0.5];
+            checks = [
+                Dict{String, Any}(
+                    "check" => "order", "vary" => "macro", "dts" => [0.05, 0.025, 0.0125, 0.00625],
+                    "expected" => order, "against" => "reference"
+                ),
+            ]
+        )
         c["id"] = "advection_reaction.$name.order"       # reads that case's reference
         run_xcase(c)
     end
     # Domain clipping (forced_decay crosses zero) and its adjoint.
-    run_xcase(xcase("x.forced_decay.clip", "toy:forced_decay",
-        Dict("leaf" => "decay", "alg" => "SSPRK43", "control" => Dict("reltol" => 1e-6, "abstol" => 1e-8),
-            "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")), Dict("dt" => 2), [0, 2.0];
-        adjoint = xgrad("u"), checks = XGRAD))
+    run_xcase(
+        xcase(
+            "x.forced_decay.clip", "toy:forced_decay",
+            Dict(
+                "leaf" => "decay", "alg" => "SSPRK43", "control" => Dict("reltol" => 1.0e-6, "abstol" => 1.0e-8),
+                "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")
+            ), Dict("dt" => 2), [0, 2.0];
+            adjoint = xgrad("u"), checks = XGRAD
+        )
+    )
     # A leaf whose operators write a subset of the state: transport writes A only,
     # so its error norm and first step sum over A's 64 DOFs (spec/methods.md §7, §9).
-    tr = xcase("x.advection_reaction.transport_only", "toy:advection_reaction",
-        Dict("leaf" => "transport", "alg" => "Tsit5", "control" => Dict("reltol" => 1e-8, "abstol" => 1e-10)),
+    tr = xcase(
+        "x.advection_reaction.transport_only", "toy:advection_reaction",
+        Dict("leaf" => "transport", "alg" => "Tsit5", "control" => Dict("reltol" => 1.0e-8, "abstol" => 1.0e-10)),
         Dict("dt" => 0.1), [0, 0.1]; adjoint = xgrad("A"),
-        checks = vcat(XGRAD, [Dict{String, Any}("check" => "oracle", "rtol" => 1e-12)]))
+        checks = vcat(XGRAD, [Dict{String, Any}("check" => "oracle", "rtol" => 1.0e-12)])
+    )
     run_xcase(tr)
     let run = build_case(tr)
         @test run.root.tol.dofs == collect(1:64)
@@ -93,24 +139,32 @@ const ADAPTIVE_EXPLICIT = ["Heun", "RK4", "BS3", "Tsit5", "SSPRK43"]
         whole = EarthSciIntegrator.Tolerances(run.root.tol.reltol, run.root.tol.abstol)
         @test whole.dofs == collect(1:128)
         l = run.root
-        lw = EarthSciIntegrator.LeafNode(l.id, l.opnames, l.ops, l.tab, l.method, l.dt, whole, l.dt0, l.dtmin, l.dtmax,
-            l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, l.ψ, l.imex)
+        lw = EarthSciIntegrator.LeafNode(
+            l.id, l.opnames, l.ops, l.tab, l.method, l.dt, whole, l.dt0, l.dtmin, l.dtmax,
+            l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, l.ψ, l.imex
+        )
         cs = EarthSciIntegrator.ControllerState(l.tab.controller)
         ub = EarthSciIntegrator.leaf_forward(lw, cs, copy(run.u0), run.p, 0.0, 0.1, "0/root", 0.1, [0.1])
         @test ub.record.steps != [s for r in run.tape.records if r isa LeafRecord for s in r.steps]
     end
     # bind_dt: the leaf's step bound to a parameter, which gets no cotangent.
-    run_xcase(xcase("x.forced_decay.bind_dt", "toy:forced_decay",
-        Dict("leaf" => "decay", "alg" => "RK4", "dt" => 0.1, "bind_dt" => Dict("omega" => "node")), Dict("dt" => 0.5), [0, 2.0];
-        adjoint = xgrad("u"), checks = XGRAD))
+    run_xcase(
+        xcase(
+            "x.forced_decay.bind_dt", "toy:forced_decay",
+            Dict("leaf" => "decay", "alg" => "RK4", "dt" => 0.1, "bind_dt" => Dict("omega" => "node")), Dict("dt" => 0.5), [0, 2.0];
+            adjoint = xgrad("u"), checks = XGRAD
+        )
+    )
     # spec/methods.md §3.3: a first-same-as-last value evaluated with a
     # bind_dt "leaf" parameter is reused only by a step of the same size. Heun
     # with dt 0.3 over macro steps of 1 takes 0.3, 0.3, 0.3, 0.1; the last step
     # evaluates its first stage with ω = 0.1 (the Rust test
     # bind_dt_leaf_invalidates_first_same_as_last).
-    heun_bound = xcase("x.forced_decay.Heun.bind_dt_leaf", "toy:forced_decay",
+    heun_bound = xcase(
+        "x.forced_decay.Heun.bind_dt_leaf", "toy:forced_decay",
         Dict("leaf" => "decay", "alg" => "Heun", "dt" => 0.3, "bind_dt" => Dict("omega" => "leaf")), Dict("dt" => 1), [0, 2.0];
-        adjoint = xgrad("u"), checks = XGRAD)
+        adjoint = xgrad("u"), checks = XGRAD
+    )
     run_xcase(heun_bound)
     let run = forward!(build_case(heun_bound))
         k = 2.0
@@ -126,25 +180,37 @@ const ADAPTIVE_EXPLICIT = ["Heun", "RK4", "BS3", "Tsit5", "SSPRK43"]
                 t += h
             end
         end
-        @test abs(run.u[1] - u) < 1e-12
+        @test abs(run.u[1] - u) < 1.0e-12
         # Per macro step: 3 evaluations on the first step, 2 on the two steps of
         # the same size, 3 on the shortened last one.
         @test run.nf == 2 * (3 + 2 + 2 + 3)
         @test replay(run)[1] == run.u
     end
     # Adaptive: every step size differs, and rejections retry at new sizes.
-    let c = xcase("x.forced_decay.Tsit5.bind_dt_leaf", "toy:forced_decay",
-            Dict("leaf" => "decay", "alg" => "Tsit5", "bind_dt" => Dict("omega" => "leaf"),
-                "control" => Dict("reltol" => 1e-6, "abstol" => 1e-8, "dt0" => 0.5)), Dict("dt" => 1), [0, 2.0];
-            adjoint = xgrad("u", "saveat"), saveat = [1.0, 2.0], checks = XGRAD)
+    let c = xcase(
+            "x.forced_decay.Tsit5.bind_dt_leaf", "toy:forced_decay",
+            Dict(
+                "leaf" => "decay", "alg" => "Tsit5", "bind_dt" => Dict("omega" => "leaf"),
+                "control" => Dict("reltol" => 1.0e-6, "abstol" => 1.0e-8, "dt0" => 0.5)
+            ), Dict("dt" => 1), [0, 2.0];
+            adjoint = xgrad("u", "saveat"), saveat = [1.0, 2.0], checks = XGRAD
+        )
         run_xcase(c)
         @test forward!(build_case(c)).rejected > 0
     end
     # Clips on the tape (spec/tape.md §2): [[k, [i, ...]], ...], k the 0-based step
     # index within `steps`, i the 0-based clipped DOFs; absent when nothing clipped.
-    let run = forward!(build_case(xcase("x.forced_decay.clip", "toy:forced_decay",
-            Dict("leaf" => "decay", "alg" => "SSPRK43", "control" => Dict("reltol" => 1e-6, "abstol" => 1e-8),
-                "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")), Dict("dt" => 2), [0, 2.0])))
+    let run = forward!(
+            build_case(
+                xcase(
+                    "x.forced_decay.clip", "toy:forced_decay",
+                    Dict(
+                        "leaf" => "decay", "alg" => "SSPRK43", "control" => Dict("reltol" => 1.0e-6, "abstol" => 1.0e-8),
+                        "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")
+                    ), Dict("dt" => 2), [0, 2.0]
+                )
+            )
+        )
         line = first(split(EarthSciIntegrator.tape_string(run.tape), '\n'))
         d = JSON.parse(line)
         @test haskey(d, "clips") && !isempty(d["clips"])
@@ -152,8 +218,16 @@ const ADAPTIVE_EXPLICIT = ["Heun", "RK4", "BS3", "Tsit5", "SSPRK43"]
         rec = run.tape.records[1]
         @test all(k -> run.tape.records[1].steps[k + 1][1] >= 0, first.(rec.clips))
         # A run that clips nothing writes no clips key.
-        r2 = forward!(build_case(xcase("x.nc", "toy:forced_decay", Dict("leaf" => "decay", "alg" => "RK4", "dt" => 0.1,
-            "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")), Dict("dt" => 0.5), [0, 0.5])))
+        r2 = forward!(
+            build_case(
+                xcase(
+                    "x.nc", "toy:forced_decay", Dict(
+                        "leaf" => "decay", "alg" => "RK4", "dt" => 0.1,
+                        "domain" => Dict("nonnegative" => "all", "on_violation" => "clip")
+                    ), Dict("dt" => 0.5), [0, 0.5]
+                )
+            )
+        )
         @test !occursin("clips", EarthSciIntegrator.tape_string(r2.tape))
     end
     for o in OUTCOMES[(n0 + 1):end]
@@ -164,17 +238,43 @@ end
 @testset "return codes" begin
     base(leaf) = xcase("rc", "toy:forced_decay", leaf, Dict("dt" => 2), [0, 2.0])
     clipped = run -> any(r -> r isa LeafRecord && !isempty(r.clips), run.tape.records)
-    r = forward!(build_case(base(Dict("leaf" => "decay", "alg" => "Tsit5", "dt" => 0.1,
-        "domain" => Dict("nonnegative" => ["u"])))))
+    r = forward!(
+        build_case(
+            base(
+                Dict(
+                    "leaf" => "decay", "alg" => "Tsit5", "dt" => 0.1,
+                    "domain" => Dict("nonnegative" => ["u"])
+                )
+            )
+        )
+    )
     @test r.retcode == "DomainViolation"
     @test occursin("root", r.failure)
-    r = forward!(build_case(base(Dict("leaf" => "decay", "alg" => "Tsit5", "control" => Dict("reltol" => 1e-6, "abstol" => 1e-8),
-        "domain" => Dict("nonnegative" => "all")))))
+    r = forward!(
+        build_case(
+            base(
+                Dict(
+                    "leaf" => "decay", "alg" => "Tsit5", "control" => Dict("reltol" => 1.0e-6, "abstol" => 1.0e-8),
+                    "domain" => Dict("nonnegative" => "all")
+                )
+            )
+        )
+    )
     @test r.retcode in ("Unstable", "DtLessThanMin")
-    r = forward!(build_case(base(Dict("leaf" => "decay", "alg" => "Tsit5", "control" => Dict("reltol" => 1e-6, "abstol" => 1e-8,
-        "dtmin" => 1e-3), "domain" => Dict("nonnegative" => "all")))))
+    r = forward!(
+        build_case(
+            base(
+                Dict(
+                    "leaf" => "decay", "alg" => "Tsit5", "control" => Dict(
+                        "reltol" => 1.0e-6, "abstol" => 1.0e-8,
+                        "dtmin" => 1.0e-3
+                    ), "domain" => Dict("nonnegative" => "all")
+                )
+            )
+        )
+    )
     @test r.retcode == "DtLessThanMin"
-    r = forward!(build_case(base(Dict("leaf" => "decay", "alg" => "Tsit5", "control" => Dict("reltol" => 1e-10, "maxiters" => 5)))))
+    r = forward!(build_case(base(Dict("leaf" => "decay", "alg" => "Tsit5", "control" => Dict("reltol" => 1.0e-10, "maxiters" => 5)))))
     @test r.retcode == "MaxIters"
     r = forward!(build_case(base(Dict("leaf" => "decay", "alg" => "ForwardEuler", "dt" => 2.0))))
     @test r.retcode == "Success"
@@ -189,30 +289,45 @@ end
 # unshortened size (spec/methods.md §8.6, D61); without dt0 the automatic first
 # step is capped at the first stop (§9).
 @testset "proposal after a stop and the first-step cap" begin
-    vdp(control, saveat) = forward!(build_case(xcase("x.vdp.stops", "toy:van_der_pol/nonstiff",
-        Dict("leaf" => "oscillator", "alg" => "Tsit5", "control" => control), Dict("dt" => 6.3), [0, 6.3]; saveat)))
-    tol = Dict{String, Any}("reltol" => 1e-8, "abstol" => 1e-10)
+    vdp(control, saveat) = forward!(
+        build_case(
+            xcase(
+                "x.vdp.stops", "toy:van_der_pol/nonstiff",
+                Dict("leaf" => "oscillator", "alg" => "Tsit5", "control" => control), Dict("dt" => 6.3), [0, 6.3]; saveat
+            )
+        )
+    )
+    tol = Dict{String, Any}("reltol" => 1.0e-8, "abstol" => 1.0e-10)
     for (dt0, saveat, counts, ode) in [
             (0.1, [0.002, 1.0, 3.0, 6.3], (161, 6, 1003), [1.832135188412958, 1.161899074957998]),
             (0.05, [0.01, 1.0, 3.0, 6.3], (162, 4, 997), [1.8321351883177492, 1.161899075326617]),
             (0.5, [0.02, 1.0, 3.0, 6.3], (159, 5, 985), [1.832135188369107, 1.161899075127413]),
             (nothing, [0.002, 1.0, 3.0, 6.3], (165, 3, 1011), [1.8321351883562347, 1.1618990751839322]),
-            (nothing, [0.01, 1.0, 3.0, 6.3], (165, 2, 1005), [1.832135188414688, 1.1618990749463005])]
+            (nothing, [0.01, 1.0, 3.0, 6.3], (165, 2, 1005), [1.832135188414688, 1.1618990749463005]),
+        ]
         control = dt0 === nothing ? tol : merge(tol, Dict{String, Any}("dt0" => dt0))
         run = vdp(control, saveat)
         @test run.retcode == "Success"
         @test (run.accepted, run.rejected, run.nf) == counts
-        @test maximum(abs.(last(run.outputs)[2] .- ode)) < 1e-12
+        @test maximum(abs.(last(run.outputs)[2] .- ode)) < 1.0e-12
     end
     # spec/methods.md §12: a step at or below dtmin ends the leaf unless the
     # previous attempt was accepted and the step lands on a stop; the first
     # attempt of the run follows no accepted step (OrdinaryDiffEq: DtLessThanMin
     # with the stop at 1e-4, Success with 12 accepted steps with it at 0.1001).
-    decay(saveat) = forward!(build_case(xcase("x.decay.dtmin", "toy:forced_decay",
-        Dict("leaf" => "decay", "alg" => "Tsit5",
-            "control" => Dict("reltol" => 1e-3, "abstol" => 1e-6, "dt0" => 0.1, "dtmin" => 1e-3)),
-        Dict("dt" => 2.0), [0, 2.0]; saveat)))
-    @test decay([1e-4, 2.0]).retcode == "DtLessThanMin"
+    decay(saveat) = forward!(
+        build_case(
+            xcase(
+                "x.decay.dtmin", "toy:forced_decay",
+                Dict(
+                    "leaf" => "decay", "alg" => "Tsit5",
+                    "control" => Dict("reltol" => 1.0e-3, "abstol" => 1.0e-6, "dt0" => 0.1, "dtmin" => 1.0e-3)
+                ),
+                Dict("dt" => 2.0), [0, 2.0]; saveat
+            )
+        )
+    )
+    @test decay([1.0e-4, 2.0]).retcode == "DtLessThanMin"
     let run = decay([0.1001, 2.0])
         @test run.retcode == "Success"
         @test run.accepted == 12

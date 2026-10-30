@@ -95,15 +95,22 @@ _num(x) = x === nothing ? nothing : Float64(x)
 function Tableau(d::AbstractDict)
     ctrl = _get(d, "controller")
     cc = ctrl === nothing ? nothing :
-        ControllerConstants((Float64(ctrl[k]) for k in ("beta1", "beta2", "gamma", "qmin", "qmax", "qmax_first_step",
-        "qsteady_min", "qsteady_max", "failfactor", "qoldinit", "pid_beta3", "pid_accept_safety"))...)
+        ControllerConstants(
+            (
+                Float64(ctrl[k]) for k in (
+                    "beta1", "beta2", "gamma", "qmin", "qmax", "qmax_first_step",
+                    "qsteady_min", "qsteady_max", "failfactor", "qoldinit", "pid_beta3", "pid_accept_safety",
+                )
+            )...
+        )
     emb = _get(d, "embedded")
     rc = _get(d, "residual_control")
     dd = _get(d, "divided_difference")
     dval = _get(d, "d")
     dval = dval === nothing ? nothing : dval isa AbstractVector ? _vec(dval) : Float64(dval)
     eo = _get(d, "embedded_order")
-    return Tableau(String(d["name"]), Symbol(d["family"]), Symbol(d["form"]), Int(d["stages"]), Int(d["order"]),
+    return Tableau(
+        String(d["name"]), Symbol(d["family"]), Symbol(d["form"]), Int(d["stages"]), Int(d["order"]),
         eo === nothing ? nothing : Int(eo), Symbol(d["error_estimate"]), Bool(d["first_same_as_last"]),
         Bool(d["stiffly_accurate"]), _get(d, "explicit_first_stage"),
         _mat(_get(d, "A")), _mat(_get(d, "C")), _vec(_get(d, "b")), _vec(_get(d, "btilde")), _vec(_get(d, "c")),
@@ -113,7 +120,10 @@ function Tableau(d::AbstractDict)
         emb === nothing ? nothing : Float64(emb["scale"]),
         rc === nothing ? nothing : _vec(rc["sigma"]), rc === nothing ? nothing : Float64(rc["scale"]),
         dd === nothing ? nothing : Float64(dd["constant"]), cc,
-        let a = _get(d, "ordinarydiffeq_algorithm"); a === nothing ? nothing : String(a) end)
+        let a = _get(d, "ordinarydiffeq_algorithm")
+            a === nothing ? nothing : String(a)
+        end
+    )
 end
 
 const TABLEAU_DIR = normpath(joinpath(@__DIR__, "..", "data", "tableaus"))

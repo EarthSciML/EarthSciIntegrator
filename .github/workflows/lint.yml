@@ -1,0 +1,27 @@
+name: Lint
+
+# Format and lint gate from the shared workflow in EarthSciML/.github, which
+# pins the tool versions. This repository's rules live in ruff.toml and the
+# workspace Cargo.toml.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    uses: EarthSciML/.github/.github/workflows/lint.yml@main
+    with:
+      rust-dirs: '["rust"]'
+      rust-clippy: '[{"dir": "rust"}]'
+      python-dir: "."
+      julia-paths: "."
