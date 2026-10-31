@@ -14,10 +14,7 @@ repository.workspace = true
 # is not gated on it), so `solve` stays on; the command-line tool (`cli`) is
 # left out.
 earthsci-ast = { version = "0.6.0", default-features = false, features = ["solve"] }
-# EarthSciASTDiff 0.1.0 (its commit 743d140). Not on crates.io yet, so a git
-# dependency; switch to `earthsci-astdiff = "0.1"` from crates.io once it is
-# published.
-earthsci-astdiff = { git = "https://github.com/EarthSciML/EarthSciASTDiff", rev = "743d1404f7573e91c6789a62f0cad88fd93fc0ad" }
+earthsci-astdiff = "0.1"
 earthsci-integrator-solvers.workspace = true
 indexmap = "2"
 jsonschema = { version = "0.60", default-features = false }
