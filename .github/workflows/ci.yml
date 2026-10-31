@@ -66,12 +66,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install "jsonschema>=4.18"
-      # TEMPORARY: EarthSciASTDiff 0.1.0 (commit 743d140) is in the General
-      # registry's waiting period. Until it is registered, add it from its
-      # repository at that commit. Delete this step once
-      # `Pkg.add("EarthSciASTDiff")` finds 0.1.0.
-      - name: Add EarthSciASTDiff 0.1.0 from its repository (temporary)
-        run: julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.add(url = "https://github.com/EarthSciML/EarthSciASTDiff", rev = "743d1404f7573e91c6789a62f0cad88fd93fc0ad", subdir = "pkg/EarthSciASTDiff.jl")'
       - name: Test
         # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote)
         # live in julia/EarthSciIntegrator.jl/test/Project.toml.
