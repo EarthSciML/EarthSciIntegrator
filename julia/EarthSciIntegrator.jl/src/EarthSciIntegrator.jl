@@ -15,14 +15,14 @@ functionals at the final time, at output times and integrated over time
 (single-leaf schedules), and the discrete adjoint of all of these
 (spec/adjoint.md §4.1–§4.5, §5, §6).
 
-M2 stage 1: the planner (spec/plan.md) up to what needs EarthSciASTDiff.
-Here: [`plan`](@ref), which reads and flattens the model with EarthSciAST,
-and its parts: the RFC 8785 writer of plan.json, the run-config schema check,
-terms, owners and selection, the band calculus of pass 2 and locality, DOF
-sets, the resolved schedule, time, step, partition, precision, checkpoint
-placeholder and refusals. Bands, structure, Gershgorin stiffness, derived
-documents and validation come through the [`PlanBackend`](@ref) interface in
-stage 2.
+M2: the planner (spec/plan.md). [`plan`](@ref) reads and flattens the model
+with EarthSciAST and runs the passes: terms, owners and selection, locality
+from EarthSciASTDiff's bands, DOF sets, structure, the resolved schedule,
+time, step, partition, precision, the checkpoint placeholder, stiffness and
+strategies, the derived documents and validation; [`write_plan`](@ref)
+writes the plan directory. What needs EarthSciASTDiff goes through the
+[`PlanBackend`](@ref) interface, whose production form is
+[`DiffBackend`](@ref).
 """
 module EarthSciIntegrator
 
@@ -31,6 +31,8 @@ using LinearAlgebra: dot
 using OrderedCollections: OrderedDict
 using SHA: sha256
 import EarthSciAST
+import EarthSciASTDiff
+import ForwardDiff
 using EarthSciAST: ASTExpr, NumExpr, IntExpr, VarExpr, OpExpr, Equation, TermOrigin, Contribution
 
 """Version of the integrator spec (the run config's `esm_integrator` key) this package implements."""
@@ -87,8 +89,9 @@ include("interpreter.jl")
 include("adjoint.jl")
 include("results.jl")
 
-# The planner (spec/plan.md), M2 stage 1. What needs EarthSciASTDiff plugs
-# in through `PlanBackend` (planner/bands.jl).
+# The planner (spec/plan.md). What needs EarthSciASTDiff goes through
+# `PlanBackend` (planner/bands.jl), implemented by `DiffBackend`
+# (planner/backend.jl).
 include("planner/jcs.jl")
 include("planner/refusal.jl")
 include("planner/schema.jl")
@@ -98,6 +101,9 @@ include("planner/model.jl")
 include("planner/terms.jl")
 include("planner/passes.jl")
 include("planner/dofsets.jl")
+include("planner/derived.jl")
+include("planner/evaluate.jl")
+include("planner/backend.jl")
 include("planner/time.jl")
 include("planner/schedule_plan.jl")
 include("planner/settings.jl")
@@ -117,6 +123,6 @@ export SPEC_VERSION, UnsupportedError, ConfigError, ReplayMismatchError
 export rhs!, jvp_u!, vjp_u!, vjp_p!, jac!, ft!, hess_u!, hess_p!, ft_vjp_u!, ft_vjp_p!
 export apply!, map_vjp!, map_jvp!
 export toy_problem, TABLEAUS, build_run, forward!, replay, gradient, odefunction
-export plan, plan_dict, plan_json, PlannerRefusal, PlannerStageError, PlanBackend, PendingBackend, BandEntry, jcs
+export plan, plan_dict, plan_json, write_plan, PlannerRefusal, PlannerStageError, PlanBackend, PendingBackend, DiffBackend, BandEntry, jcs
 
 end

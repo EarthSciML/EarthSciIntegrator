@@ -1,5 +1,6 @@
 [deps]
 EarthSciAST = "c7bf5e87-b31b-4281-bdce-ffb8a46ec87c"
+EarthSciASTDiff = "8f0c9a34-6c1e-4f7b-9d2a-3e5b7c1d9f42"
 EarthSciIntegrator = "32373ebd-92e7-4f26-b916-9b5db62dd90f"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"

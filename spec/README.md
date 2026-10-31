@@ -28,7 +28,7 @@ The spec is written against these sibling releases; conformance tier 0 pins the 
 | Package | Version | Used for |
 |---|---|---|
 | EarthSciAST (Julia, Rust, Python bindings) | 0.6.0, esm format 1.3.0 | loading, flattening with per-term provenance (U2) and the reaction lowering of esm-libraries-spec §4.6.2, `solver.external` (U1), `solver.time_span` and `resolve_time_span` (U16), right-hand-side kernels, the public reentrant right-hand side `rhs_program` (U4) |
-| EarthSciASTDiff (Julia, Rust) | 0.2 (its current `main`: Rust on EarthSciAST 0.6, Julia still on 0.4 and 0.5, spec/plan.md §10 item 12) | band models, structure classes, the block factorization plan, `stable_json` (spec/plan.md §0.2) |
+| EarthSciASTDiff (Julia, Rust) | 0.1.0 (commit 743d140; on EarthSciAST 0.6 in both languages, spec/plan.md §10 item 12) | band models, structure classes, the block factorization plan, `stable_json` (spec/plan.md §0.2) |
 
 ## Conventions
 

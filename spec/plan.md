@@ -33,7 +33,7 @@ A run config whose `adjoint` key is present is planned; its checkpoint schedule 
 
 ### 0.2 Upstream versions
 
-M2 is specified against EarthSciAST **0.6.0** (esm format **1.3.0**: `solver.external`, `solver.time_span` and `resolve_time_span`, per-term provenance `equation_contributions`, and Rust's `equation_lifted`, all since 0.4.0; 0.5.0 adds the public reentrant right-hand side `rhs_program` in Julia and Rust, U4; 0.6.0 lowers reaction systems to one form in every binding, esm-libraries-spec §4.6.2, and its Julia binding accepts SciMLBase 3) and EarthSciASTDiff **0.2** (the release of its current `main`; its Rust crate is on EarthSciAST 0.6, its Julia package still on 0.4 and 0.5, §10 item 12). Conformance tier 0 runs on EarthSciAST's Python binding, 0.6.0. A planner reports the versions it was built against in `plan.report.json`, never in `plan.json`.
+M2 is specified against EarthSciAST **0.6.0** (esm format **1.3.0**: `solver.external`, `solver.time_span` and `resolve_time_span`, per-term provenance `equation_contributions`, and Rust's `equation_lifted`, all since 0.4.0; 0.5.0 adds the public reentrant right-hand side `rhs_program` in Julia and Rust, U4; 0.6.0 lowers reaction systems to one form in every binding, esm-libraries-spec §4.6.2, and its Julia binding accepts SciMLBase 3) and EarthSciASTDiff **0.1.0** (commit 743d140, its first registered release; on EarthSciAST 0.6 in both languages, its Julia package since EarthSciASTDiff#19, §10 item 12). Conformance tier 0 runs on EarthSciAST's Python binding, 0.6.0. A planner reports the versions it was built against in `plan.report.json`, never in `plan.json`.
 
 ## 1. Files
 

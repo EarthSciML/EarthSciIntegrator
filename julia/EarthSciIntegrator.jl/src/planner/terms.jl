@@ -38,8 +38,7 @@ One additive summand of one contribution of a state equation (§5.1.1),
 identified by `(variable, contribution, summand)`.
 
 `locality` and `radius` are pass 2's (§5.2); `nothing` until computed, and
-left `nothing` in M2 stage 1 when the band source cannot give the term's
-bands yet.
+left `nothing` when a test backend cannot give the term's bands.
 """
 mutable struct Term
     variable::String
@@ -121,8 +120,8 @@ covers(C::AbstractString, P::AbstractString) = P == C || startswith(P, C * ".")
     selector_matches(sel, term) -> Bool
 
 Every key present matches (§5.1.3). A `locality` key needs the term's
-locality, which pass 2 gives; in stage 1 it may be pending, and then this
-raises [`PlannerStageError`](@ref).
+locality, which pass 2 gives; with a test backend it may be pending, and
+then this raises [`PlannerStageError`](@ref).
 """
 function selector_matches(sel::AbstractDict, t::Term)
     if haskey(sel, "components")
@@ -141,7 +140,7 @@ function selector_matches(sel::AbstractDict, t::Term)
     return true
 end
 
-"""The term's locality class, or a [`PlannerStageError`](@ref) when stage 1 cannot compute it."""
+"""The term's locality class, or a [`PlannerStageError`](@ref) when the backend gave no bands for it."""
 function need_locality(t::Term)
     t.locality === nothing && throw(
         PlannerStageError(
@@ -166,7 +165,7 @@ mutable struct PlanOperator
     radius::Union{Dict{String, Tuple{Int, Int}}, Nothing}
     writes::Vector{String}
     reads::Vector{String}
-    structure::Any                      # pass 4 (stage 2); `nothing` while pending
+    structure::Any                      # pass 4 (§5.4); `nothing` while pending
 end
 
 is_default_operator(op::PlanOperator) = startswith(op.name, "default_")
