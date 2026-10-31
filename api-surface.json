@@ -336,6 +336,22 @@
       }
     },
     {
+      "name": "diff_backend",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "DiffBackend"
+      }
+    },
+    {
+      "name": "write_plan",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "write_plan"
+      }
+    },
+    {
       "name": "band_entry",
       "kind": "type",
       "tier": "stable",

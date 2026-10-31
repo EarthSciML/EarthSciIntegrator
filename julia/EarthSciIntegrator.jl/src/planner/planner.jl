@@ -23,8 +23,8 @@ end
     PlanDraft
 
 Everything a plan holds, as the planner computed it. `structure`, the
-derived documents and `validation` come from the backend; with
-[`PendingBackend`](@ref) (M2 stage 1) they are absent and
+derived documents and `validation` come from the backend; with a backend
+that cannot give them, such as [`PendingBackend`](@ref), they are absent and
 [`plan_dict`](@ref) raises [`PlannerStageError`](@ref).
 """
 struct PlanDraft
@@ -38,16 +38,18 @@ struct PlanDraft
 end
 
 """
-    plan(config_path; tspan=nothing, backend=PendingBackend()) -> draft
+    plan(config_path; tspan=nothing, backend=DiffBackend()) -> draft
 
 Plan the run config at `config_path` (spec/plan.md): read and flatten its
 model, run passes 1–4, check and resolve the schedule and the settings, and
-resolve strategies. `tspan` is the caller's run interval (§7.2), a pair of
-numbers or of RFC 3339 UTC timestamps. A refusal is a
-[`PlannerRefusal`](@ref); a part of the plan that needs EarthSciASTDiff, with
-a backend that cannot give it, is a [`PlannerStageError`](@ref).
+resolve strategies, then derive the documents and validate them.
+`tspan` is the caller's run interval (§7.2), a pair of numbers or of RFC
+3339 UTC timestamps. A refusal is a [`PlannerRefusal`](@ref); a part of the
+plan that needs EarthSciASTDiff, with a backend that cannot give it (a test
+backend), is a [`PlannerStageError`](@ref). Write the result with
+[`write_plan`](@ref).
 """
-function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend = PendingBackend())
+function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend = DiffBackend())
     inp = read_inputs(config_path)                       # §4 steps 1–5
     check_scope(inp.flat)                                # step 6
     check_reserved_names(inp.file)                       # step 7
@@ -93,7 +95,7 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
         is_leaflike(n) && get(n.spec, "alg", "auto") == "auto" || continue
         check_rosenbrock_precision(n, _resolved_alg(schedule, n.id), precision[n.id], psources[n.id])
     end
-    # §6: derived documents (stage 2), then §8 validation.
+    # §6: derived documents, then §8 validation.
     derived = derived_and_validation(backend, ctx)
     return PlanDraft(ctx, stiff, schedule, step, partition, precision, derived)
 end
@@ -168,3 +170,44 @@ end
 `plan.json`'s bytes: [`plan_dict`](@ref) as RFC 8785 canonical JSON (§2.1).
 """
 plan_json(d::PlanDraft) = jcs(plan_dict(d))
+
+"""
+    write_plan(draft, dir; bandvalues = false)
+
+Write the plan directory (spec/plan.md §1): `plan.json`, `derived/*.esm` and
+`plan.report.json`, and with `bandvalues = true` the conformance band-value
+files `validation/<operator>.bandvalues.json` (§8.2). Needs a
+[`DiffBackend`](@ref) draft. Files already in `dir` are left alone; the
+ones written are replaced.
+"""
+function write_plan(d::PlanDraft, dir::AbstractString; bandvalues::Bool = false)
+    b = d.ctx.backend
+    b isa DiffBackend || throw(PlannerStageError("writing a plan needs the derived documents' bytes (DiffBackend)"))
+    text = plan_json(d)
+    mkpath(joinpath(dir, "derived"))
+    write(joinpath(dir, "plan.json"), text)
+    for (path, bytes) in derived_files(b)
+        write(joinpath(dir, path), bytes)
+    end
+    write(joinpath(dir, "plan.report.json"), EarthSciASTDiff.stable_json(plan_report(b)))
+    if bandvalues
+        mkpath(joinpath(dir, "validation"))
+        for (o, v) in b.bandvalues
+            write(joinpath(dir, "validation", "$o.bandvalues.json"), EarthSciASTDiff.stable_json(v))
+        end
+    end
+    return dir
+end
+
+"""`plan.report.json` (§1): the planner, the upstream versions it was built with, and the measured errors behind the validation checks. Its format is not specified."""
+function plan_report(b::DiffBackend)
+    vers(m) = string(pkgversion(m))
+    return Dict{String, Any}(
+        "planner" => Dict{String, Any}("name" => "EarthSciIntegrator.jl", "version" => vers(@__MODULE__)),
+        "upstream" => Dict{String, Any}(
+            "EarthSciAST" => vers(EarthSciAST), "EarthSciASTDiff" => vers(EarthSciASTDiff),
+            "ForwardDiff" => vers(ForwardDiff)
+        ),
+        "measured" => b.report
+    )
+end

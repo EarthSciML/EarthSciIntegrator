@@ -2,7 +2,8 @@
 # band lists, and the interface through which the planner gets what needs
 # EarthSciASTDiff (term bands, structure, the Gershgorin bound, derived
 # documents and validation). Nothing here needs EarthSciAST; the passes over
-# the model are in the other files of src/planner/.
+# the model are in the other files of src/planner/, and the backend on
+# EarthSciASTDiff in backend.jl.
 
 const LOCALITY_ORDER = (:pointwise, :column, :stencil, :global)
 locality_rank(c::Symbol) = findfirst(==(c), LOCALITY_ORDER)
@@ -40,7 +41,7 @@ its `serialize_band` writes, without `coef`:
   `Dict` with `"op"` and `"args"`); empty for a scalar column;
 - `contracted`: free contracted dimensions `(name, lo, hi)`, possibly empty.
 
-Stage 2 builds these from `EarthSciASTDiff.serialize_band`'s output.
+[`DiffBackend`](@ref) builds these from `EarthSciASTDiff.serialize_band`'s output.
 """
 struct BandEntry
     row::String
@@ -253,11 +254,11 @@ end
 """
     PlanBackend
 
-What the planner needs from EarthSciASTDiff (M2 stage 2): a term's bands
-(§5.2.2), an operator's structure (§5.4), the Gershgorin bound (§5.5.2), and
-the derived documents with their validation (§6, §8). Each method may return
-`nothing` for "not available in this stage"; the planner raises
-[`PlannerStageError`](@ref) where it needs the value.
+What the planner needs from EarthSciASTDiff: a term's bands (§5.2.2), an
+operator's structure (§5.4), the Gershgorin bound (§5.5.2), and the derived
+documents with their validation (§6, §8). [`DiffBackend`](@ref) gives them
+all. A test backend may return `nothing` for "not available"; the planner
+raises [`PlannerStageError`](@ref) where it needs the value.
 
 Methods:
 - `term_bands(backend, ctx, term) -> Union{Vector{BandEntry}, Nothing}`
@@ -271,8 +272,8 @@ abstract type PlanBackend end
 """
     PendingBackend()
 
-M2 stage 1's backend: EarthSciASTDiff is not available, so nothing is
-derived. One case needs no bands: a model whose states are all scalars has
+A backend without EarthSciASTDiff, for tests of the passes that need
+none of it (M2 stage 1's): nothing is derived. One case needs no bands: a model whose states are all scalars has
 only scalar-row, scalar-column bands, which §5.2.3 gives no reach, so every
 term is pointwise whatever its band list; `term_bands` returns an empty list
 for it, which classifies identically. It returns `nothing` otherwise.

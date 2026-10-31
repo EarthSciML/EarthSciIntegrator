@@ -67,8 +67,8 @@ jobs:
           python-version: "3.12"
       - run: pip install "jsonschema>=4.18"
       - name: Test
-        # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote,
-        # ForwardDiff) live in julia/EarthSciIntegrator.jl/test/Project.toml.
+        # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote)
+        # live in julia/EarthSciIntegrator.jl/test/Project.toml.
         run: julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.test()'
       - name: Upload conformance result files
         if: always()

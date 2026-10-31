@@ -74,10 +74,13 @@ end
 """
     with_value(x, v)
 
-`x` with its primal value replaced by `v` and any tangent kept (the
-ForwardDiff extension handles `Dual`); for a plain number, `v`.
+`x` with its primal value replaced by `v` and any tangent kept (a
+`ForwardDiff.Dual` keeps its partials); for a plain number, `v`.
 """
 with_value(x::Real, v) = convert(typeof(x), v)
+# A converged implicit stage keeps its primal value bitwise and takes the
+# tangent of the exact stage equation (`stage_tangent`).
+with_value(x::ForwardDiff.Dual{T}, v) where {T} = ForwardDiff.Dual{T}(with_value(ForwardDiff.value(x), v), ForwardDiff.partials(x))
 
 _is_plain(::Type{T}) where {T} = T <: AbstractFloat
 

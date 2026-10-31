@@ -1,4 +1,4 @@
-# The planner's parts that need no model (M2 stage 1): canonical JSON
+# The planner's parts that need no model: canonical JSON
 # (spec/plan.md §2.1), the run-config schema check (§4 step 1), and the band
 # calculus of pass 2 (§5.2.3–§5.2.4). The passes over a model are tested in
 # planner.jl.
@@ -8,7 +8,7 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
 
 @isdefined(REPO) || include("paths.jl")
 
-@testset "planner, without a model (M2 stage 1)" begin
+@testset "planner, without a model" begin
     @testset "RFC 8785 numbers" begin
         # RFC 8785 Appendix B, by bit pattern.
         for (bits, s) in [

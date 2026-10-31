@@ -20,16 +20,17 @@ refuse(code::AbstractString, at::AbstractString, msg::AbstractString) = throw(Pl
 """
     PlannerStageError(what)
 
-A part of the planner that M2 stage 1 does not implement yet: everything that
-needs EarthSciASTDiff (term and operator bands, structure, stiffness by the
-Gershgorin bound, the strategies that read structure, derived documents and
-validation). Raised instead of writing a value that would only look right.
+A part of the plan that needs EarthSciASTDiff (term and operator bands,
+structure, the Gershgorin bound, derived documents and validation), asked of
+a [`PlanBackend`](@ref) that cannot give it, such as [`PendingBackend`](@ref)
+or a test backend. Raised instead of writing a value that would only look
+right. The production backend, [`DiffBackend`](@ref), gives every part.
 """
 struct PlannerStageError <: Exception
     what::String
 end
 Base.showerror(io::IO, e::PlannerStageError) =
-    print(io, "PlannerStageError: not implemented until M2 stage 2 (EarthSciASTDiff): ", e.what)
+    print(io, "PlannerStageError: the planner's backend cannot give what EarthSciASTDiff gives: ", e.what)
 
 """JSON pointer escaping of one reference token (RFC 6901 §3)."""
 pointer_token(s) = replace(string(s), "~" => "~0", "/" => "~1")
