@@ -1,11 +1,10 @@
 //! Pass 2, locality (spec/plan.md §5.2, D66).
 //!
 //! The band list of a term is EarthSciASTDiff's state Jacobian
-//! (`jacobian_bands`, §5.2.2), which arrives with stage 2 of M2. This module
-//! holds what does not need EarthSciASTDiff: the band entry as EarthSciASTDiff
-//! serializes it ([`BandEntry`]), the [`BandSource`] seam stage 2 plugs
-//! `jacobian_bands` into, and the offset, reduction, class and radius rules
-//! of §5.2.3–§5.2.4 as pure functions of a band list.
+//! (`jacobian_bands`, §5.2.2), which [`crate::astdiff::AstDiffBands`]
+//! computes. This module holds the band entry as EarthSciASTDiff serializes
+//! it ([`BandEntry`]), the [`BandSource`] seam, and the offset, reduction,
+//! class and radius rules of §5.2.3–§5.2.4 as pure functions of a band list.
 
 use crate::axes::{Axes, Role};
 use crate::model::{node, ModelInfo};
@@ -48,12 +47,12 @@ pub struct BandFailure {
     pub message: String,
 }
 
-/// Where term bands come from (spec/plan.md §5.2.2). Stage 2 implements it
-/// with EarthSciASTDiff's `jacobian_bands`; until then planning stops at
-/// pass 2 unless a caller supplies band lists.
+/// Where term bands come from (spec/plan.md §5.2.2):
+/// [`crate::astdiff::AstDiffBands`] in production, hand-written band lists
+/// in tests.
 pub trait BandSource {
     /// The band list of each term, in the order given. `Ok(None)` means the
-    /// source cannot compute bands yet (stage 1), which is not a refusal.
+    /// source has no bands, which is not a refusal.
     fn term_bands(
         &self,
         info: &ModelInfo,
@@ -61,7 +60,8 @@ pub trait BandSource {
     ) -> Result<Option<Vec<Vec<BandEntry>>>, BandFailure>;
 }
 
-/// The band source of stage 1: it has no bands.
+/// A band source with no bands: planning stops after the refusals that
+/// come before pass 2.
 pub struct NoBands;
 
 impl BandSource for NoBands {

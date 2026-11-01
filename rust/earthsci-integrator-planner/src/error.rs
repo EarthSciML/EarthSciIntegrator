@@ -54,6 +54,9 @@ pub mod codes {
     pub const PARTITION_AXIS_MISSING: &str = "partition_axis_missing";
     pub const PARTITION_TOO_FINE: &str = "partition_too_fine";
     pub const PARTITION_CONFLICT: &str = "partition_conflict";
+    pub const VALIDATION_RHS_SUM_FAILED: &str = "validation_rhs_sum_failed";
+    pub const VALIDATION_BAND_MODEL_FAILED: &str = "validation_band_model_failed";
+    pub const VALIDATION_EMPTY_OPERATOR: &str = "validation_empty_operator";
 
     /// Every code above, for the test that checks them against
     /// spec/planner-errors.json.
@@ -109,6 +112,9 @@ pub mod codes {
         PARTITION_AXIS_MISSING,
         PARTITION_TOO_FINE,
         PARTITION_CONFLICT,
+        VALIDATION_RHS_SUM_FAILED,
+        VALIDATION_BAND_MODEL_FAILED,
+        VALIDATION_EMPTY_OPERATOR,
     ];
 }
 
@@ -133,12 +139,17 @@ impl std::fmt::Display for Refusal {
 pub enum PlanError {
     /// A refusal of the spec (spec/planner-errors.json).
     Refused(Refusal),
-    /// A step that needs EarthSciASTDiff (bands, structure, stiffness by the
-    /// Gershgorin bound, derived documents, validation), which arrives in
-    /// stage 2 of M2. Never a refusal: it names what is missing.
+    /// A step the planner cannot take: a model that keeps a `table_lookup`
+    /// (no public Rust lowering, spec/plan.md §10 item 7), a band source
+    /// that gives no bands, or a leaf resolved without the structure facts
+    /// it needs. Never a refusal: it names what is missing.
     NotYetImplemented(String),
-    /// A file could not be read.
+    /// A file could not be read or written.
     Io(String),
+    /// EarthSciAST or EarthSciASTDiff failed on a document the planner built
+    /// itself, or on a call the spec gives no refusal for: a bug in the
+    /// planner or upstream, never a refusal.
+    Internal(String),
 }
 
 impl std::fmt::Display for PlanError {
@@ -147,6 +158,7 @@ impl std::fmt::Display for PlanError {
             PlanError::Refused(r) => write!(f, "refused: {r}"),
             PlanError::NotYetImplemented(s) => write!(f, "not yet implemented: {s}"),
             PlanError::Io(s) => write!(f, "{s}"),
+            PlanError::Internal(s) => write!(f, "internal error: {s}"),
         }
     }
 }

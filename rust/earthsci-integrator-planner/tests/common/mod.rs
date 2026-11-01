@@ -1,18 +1,23 @@
-//! A hand-written band source for the conformance fixtures.
+//! Shared test helpers: the conformance directory, a hand-written band
+//! source, and the conformance harness's band-value comparison (spec/plan.md
+//! §8.2).
 //!
-//! Stage 1 has no EarthSciASTDiff, so these band lists are written by hand
-//! from each fixture's `expected.md`: for every state a term references,
-//! one same-cell band (row and column indices equal, the band EarthSciASTDiff
-//! gives a pointwise read), plus, for the terms `expected.md` describes as
-//! stencil or column terms, bands with the offsets it lists. They exercise
-//! the real offset and class rules of spec/plan.md §5.2.3–§5.2.4; the bands
-//! themselves are not EarthSciASTDiff's and are not golden material.
+//! The hand-written band source ([`HandBands`]) was stage 1's stand-in for
+//! EarthSciASTDiff, written by hand from each fixture's `expected.md`: for
+//! every state a term references, one same-cell band (row and column indices
+//! equal, the band EarthSciASTDiff gives a pointwise read), plus, for the
+//! terms `expected.md` describes as stencil or column terms, bands with the
+//! offsets it lists. Stage 2 keeps it to check that EarthSciASTDiff's band
+//! lists give every term the class `expected.md` gives it.
 #![allow(dead_code)]
 
 use earthsci_ast::Expr;
 use earthsci_integrator_planner::locality::{BandEntry, BandFailure, BandSource, RowIdx};
 use earthsci_integrator_planner::model::ModelInfo;
 use earthsci_integrator_planner::terms::Term;
+use earthsci_integrator_planner::Planned;
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub fn conformance() -> PathBuf {
@@ -115,4 +120,80 @@ impl BandSource for HandBands {
                 .collect(),
         ))
     }
+}
+
+/// The conformance harness's comparison of the Rust planner's band values
+/// with a golden's `validation/<op>.bandvalues.json` (spec/plan.md §8.2): at
+/// each sample's `u` and `t`, operator `op`'s band Jacobian must have the
+/// file's structural key set, and every value must agree within
+/// `1e-10 · M_r`, `M_r` the largest magnitude in row `r` of either.
+pub fn compare_band_values(p: &Planned, op: &str, file: &Value) -> Result<(), String> {
+    let names = p.dofs().element_names();
+    let samples = file["samples"]
+        .as_array()
+        .ok_or("the band-value file has no samples")?;
+    for (k, s) in samples.iter().enumerate() {
+        let t = s["t"].as_f64().ok_or("a sample has no t")?;
+        let u: Vec<f64> = names
+            .iter()
+            .map(|n| {
+                s["u"][n]
+                    .as_f64()
+                    .ok_or_else(|| format!("sample {k} has no u[{n}]"))
+            })
+            .collect::<Result<_, _>>()?;
+        let got = p.band_jacobian_at(op, &u, t).map_err(|e| e.to_string())?;
+        let mut want: BTreeMap<(String, String), f64> = BTreeMap::new();
+        for e in s["entries"].as_array().ok_or("a sample has no entries")? {
+            let r = e[0].as_str().ok_or("an entry has no row")?;
+            let c = e[1].as_str().ok_or("an entry has no column")?;
+            let v = e[2].as_f64().ok_or("an entry has no value")?;
+            want.insert((r.to_string(), c.to_string()), v);
+        }
+        if let Some(key) = got.keys().find(|key| !want.contains_key(*key)) {
+            return Err(format!(
+                "sample {k}: {key:?} is in the Rust bands, not in the file"
+            ));
+        }
+        if let Some(key) = want.keys().find(|key| !got.contains_key(*key)) {
+            return Err(format!(
+                "sample {k}: {key:?} is in the file, not in the Rust bands"
+            ));
+        }
+        let mut m: BTreeMap<&str, f64> = BTreeMap::new();
+        for ((r, _), v) in got.iter().chain(&want) {
+            let e = m.entry(r.as_str()).or_insert(0.0);
+            *e = e.max(v.abs());
+        }
+        for (key, g) in &got {
+            let w = want[key];
+            if (g - w).abs() > 1e-10 * m[key.0.as_str()] {
+                return Err(format!(
+                    "sample {k}: {key:?} is {g:e} in Rust, {w:e} in the file"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A band-value file in the golden's form, written from the Rust planner's
+/// own band Jacobian at `states` (`(t, u)` pairs): for testing the
+/// comparison itself.
+pub fn band_values_file(p: &Planned, op: &str, states: &[(f64, Vec<f64>)]) -> Value {
+    let names = p.dofs().element_names();
+    let samples: Vec<Value> = states
+        .iter()
+        .map(|(t, u)| {
+            let jb = p.band_jacobian_at(op, u, *t).unwrap();
+            let um: Map<String, Value> = names
+                .iter()
+                .zip(u)
+                .map(|(n, x)| (n.clone(), json!(x)))
+                .collect();
+            let entries: Vec<Value> = jb.iter().map(|((r, c), v)| json!([r, c, v])).collect();
+            json!({"t": t, "u": um, "entries": entries})
+        })
+        .collect();
+    json!({ "samples": samples })
 }

@@ -83,6 +83,29 @@ impl ModelInfo {
         out
     }
 
+    /// The states, and every observed whose definition reads a state,
+    /// directly or through other observeds. Each definition is read once,
+    /// then the set grows until no observed joins it.
+    pub fn state_dependent(&self) -> BTreeSet<String> {
+        let refs: Vec<(&String, BTreeSet<String>)> = self
+            .observed_defs
+            .iter()
+            .map(|(o, d)| (o, self.names_in(d)))
+            .collect();
+        let mut out: BTreeSet<String> = self.states.iter().cloned().collect();
+        loop {
+            let grew = refs
+                .iter()
+                .filter(|(o, r)| !out.contains(*o) && r.iter().any(|n| out.contains(n)))
+                .map(|(o, _)| (*o).clone())
+                .collect::<Vec<_>>();
+            if grew.is_empty() {
+                return out;
+            }
+            out.extend(grew);
+        }
+    }
+
     /// `names` together with every name the definitions of the observeds
     /// among them reference, transitively (spec/plan.md §5.3).
     pub fn close_over_observeds(&self, names: &BTreeSet<String>) -> BTreeSet<String> {
@@ -158,7 +181,7 @@ pub fn differentiated(lhs: &Expr) -> Option<&str> {
 
 /// The observed an observed definition defines: a bare name, or a `faq`
 /// over `index(name, …)`.
-fn defined_observed(lhs: &Expr) -> Option<&str> {
+pub(crate) fn defined_observed(lhs: &Expr) -> Option<&str> {
     match lhs {
         Expr::Variable(x) => Some(x),
         Expr::Operator(n) if n.op == "faq" => defined_observed(n.expr.as_deref()?),
@@ -234,7 +257,7 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         .contains("\"table_lookup\"")
     {
         return Err(PlanError::NotYetImplemented(
-            "lowering table_lookup inside each contribution (spec/plan.md §4 step 5) has no public Rust entry point in EarthSciAST 0.6".into(),
+            "lowering table_lookup inside each contribution (spec/plan.md §4 step 5) has no public Rust entry point in EarthSciAST 0.7".into(),
         ));
     }
 

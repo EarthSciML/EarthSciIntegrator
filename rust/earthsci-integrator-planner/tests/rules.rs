@@ -5,7 +5,8 @@
 
 mod common;
 
-use common::{conformance, HandBands};
+use common::conformance;
+use earthsci_integrator_planner::astdiff::AstDiffBands;
 use earthsci_integrator_planner::error::codes;
 use earthsci_integrator_planner::{plan, Options, PlanError, Planned};
 use serde_json::{json, Value};
@@ -26,7 +27,7 @@ fn run(case: &str, model: Option<&Value>, rc: Value) -> Result<Planned, PlanErro
     }
     let path = d.join("run.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&rc).unwrap()).unwrap();
-    plan(&path, &Options::default(), &HandBands)
+    plan(&path, &Options::default(), &AstDiffBands)
 }
 
 fn refused(case: &str, model: Option<&Value>, rc: Value) -> (&'static str, String) {
