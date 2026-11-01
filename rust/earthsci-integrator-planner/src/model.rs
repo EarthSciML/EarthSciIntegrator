@@ -83,6 +83,29 @@ impl ModelInfo {
         out
     }
 
+    /// The states, and every observed whose definition reads a state,
+    /// directly or through other observeds. Each definition is read once,
+    /// then the set grows until no observed joins it.
+    pub fn state_dependent(&self) -> BTreeSet<String> {
+        let refs: Vec<(&String, BTreeSet<String>)> = self
+            .observed_defs
+            .iter()
+            .map(|(o, d)| (o, self.names_in(d)))
+            .collect();
+        let mut out: BTreeSet<String> = self.states.iter().cloned().collect();
+        loop {
+            let grew = refs
+                .iter()
+                .filter(|(o, r)| !out.contains(*o) && r.iter().any(|n| out.contains(n)))
+                .map(|(o, _)| (*o).clone())
+                .collect::<Vec<_>>();
+            if grew.is_empty() {
+                return out;
+            }
+            out.extend(grew);
+        }
+    }
+
     /// `names` together with every name the definitions of the observeds
     /// among them reference, transitively (spec/plan.md §5.3).
     pub fn close_over_observeds(&self, names: &BTreeSet<String>) -> BTreeSet<String> {

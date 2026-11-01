@@ -88,8 +88,6 @@ pub struct Planned {
 /// Facts from structure and stiffness that resolving the schedule needs.
 #[derive(Debug, Clone, Default)]
 pub struct StructureFacts {
-    /// Stiffness by the Gershgorin bound (§5.5.2 rule 4), by operator.
-    pub gershgorin_stiff: BTreeMap<String, bool>,
     /// Each operator's `structure.block.vars`, or `None` when it has no
     /// `structure.block`.
     pub block_vars: BTreeMap<String, Option<Vec<String>>>,
@@ -159,10 +157,11 @@ impl<'a> Numbers<'a> {
         jacobian: &Value,
     ) -> Result<&OperatorNumbers> {
         if !self.ops.contains_key(name) {
-            let samples = self.states()?.2.clone();
+            self.states()?;
+            let samples = &self.states.as_ref().expect("set above").2;
             let tspan = self.tspan();
-            let rhs_prog = Program::new(rhs, tspan).map_err(internal)?;
-            let jac_prog = Program::new(jacobian, tspan).map_err(internal)?;
+            let rhs_prog = Program::new(rhs, tspan, &self.dofs).map_err(internal)?;
+            let jac_prog = Program::new(jacobian, tspan, &self.dofs).map_err(internal)?;
             let pattern = numeric::pattern(&self.dofs, &st.bands).map_err(internal)?;
             let owners = self.dofs.owners();
             let rows = owners
@@ -244,6 +243,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let mut rhs_docs = BTreeMap::new();
     let mut views = BTreeMap::new();
     let mut structures = BTreeMap::new();
+    let state_dependent = info.state_dependent();
     for (name, op) in &ops {
         let ts: Vec<&Term> = op.terms.iter().map(|&i| &terms[i]).collect();
         let doc = derived::rhs_document(&info, name, &ts);
@@ -254,7 +254,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 format!("operator {name}: {m}"),
             )
         })?;
-        let st = structure::structure(&info, &axes, op, &terms, &view, band_list)?;
+        let st =
+            structure::structure(&info, &axes, op, &terms, &view, band_list, &state_dependent)?;
         rhs_docs.insert(name.clone(), doc);
         views.insert(name.clone(), view);
         structures.insert(name.clone(), st);
@@ -347,9 +348,6 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                     name.clone(),
                     json!({"rho": rhos, "delta": delta, "rho_delta": rho * delta}),
                 );
-                facts
-                    .gershgorin_stiff
-                    .insert(name.clone(), rho * delta >= 10.0);
                 Stiffness {
                     stiff: rho * delta >= 10.0,
                     source: StiffnessSource::Gershgorin,
@@ -390,18 +388,6 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     };
     // §5.5.3 for every leaf, in tree order, then §7.5's check for the
     // methods it resolved (§4 "Order of refusals" item 6).
-    let mut algs = BTreeMap::new();
-    for n in planned.schedule.leaves() {
-        let s = planned.leaf_strategy(n, Some(&planned.facts))?;
-        algs.insert(n.id().to_string(), s.alg);
-    }
-    settings::precision(
-        &planned.run_config,
-        &planned.model,
-        &planned.operators,
-        &planned.schedule,
-        &algs,
-    )?;
     planned.resolved_schedule = planned.resolve_schedule(Some(&planned.facts))?;
 
     // Pass 6: the derived documents.
@@ -417,8 +403,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
 
     // Pass 8: validation.
     let mut report = Map::new();
-    let (_, base, samples) = numbers.states()?.clone();
-    let model_prog = Program::new(info.path.as_path(), numbers.tspan()).map_err(internal)?;
+    let model_prog =
+        Program::new(info.path.as_path(), numbers.tspan(), &numbers.dofs).map_err(internal)?;
     for (name, op) in &planned.operators {
         numbers.op(
             name,
@@ -428,8 +414,10 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             &jac_docs[name],
         )?;
     }
+    numbers.states()?;
+    let (_, base, samples) = numbers.states.as_ref().expect("set above");
     let mut rhs_sum = Vec::new();
-    for s in &samples {
+    for s in samples {
         let f = model_prog
             .eval(&numbers.dofs, &s.u, s.t)
             .map_err(internal)?;
@@ -454,29 +442,9 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         .push(json!({"check": "rhs_sum", "passed": true}));
     let mut per_op = Map::new();
     for (name, op) in &planned.operators {
-        let on = &numbers.ops[name];
-        let mut measured = Vec::new();
-        for (s, jb) in samples.iter().zip(&on.jb) {
-            let at = validation::At {
-                dofs: &numbers.dofs,
-                sample: s,
-                base: &base,
-                names: &numbers.names,
-            };
-            let r =
-                validation::band_model(&on.rhs, &at, jb, &on.pattern, &on.rows).map_err(|m| {
-                    refuse(
-                        codes::VALIDATION_BAND_MODEL_FAILED,
-                        "/model",
-                        format!("operator {name} at t = {}: {m}", s.t),
-                    )
-                })?;
-            measured.push(r.to_json());
-        }
-        planned
-            .validation
-            .push(json!({"check": "band_model", "operator": name, "passed": true}));
-        // non_empty: a term, and a band when some term reads a state.
+        // non_empty: a term, and a band when some term reads a state. It
+        // needs no numbers, so it is checked first: an operator with no band
+        // would otherwise fail band_model (§8.1).
         let reads_state = op
             .terms
             .iter()
@@ -492,6 +460,28 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 ),
             ));
         }
+        let on = &numbers.ops[name];
+        let mut measured = Vec::new();
+        for (s, jb) in samples.iter().zip(&on.jb) {
+            let at = validation::At {
+                dofs: &numbers.dofs,
+                sample: s,
+                base,
+                names: &numbers.names,
+            };
+            let r =
+                validation::band_model(&on.rhs, &at, jb, &on.pattern, &on.rows).map_err(|m| {
+                    refuse(
+                        codes::VALIDATION_BAND_MODEL_FAILED,
+                        "/model",
+                        format!("operator {name} at t = {}: {m}", s.t),
+                    )
+                })?;
+            measured.push(r.to_json());
+        }
+        planned
+            .validation
+            .push(json!({"check": "band_model", "operator": name, "passed": true}));
         planned
             .validation
             .push(json!({"check": "non_empty", "operator": name, "passed": true}));
@@ -579,13 +569,13 @@ impl Planned {
         Value::Object(out)
     }
 
-    /// An operator's stiffness: rules 1–3, else the Gershgorin bound from
-    /// `facts`.
+    /// An operator's stiffness: rules 1–3, else the Gershgorin bound, which
+    /// is known only with the structure `facts`.
     fn stiffness_of(&self, name: &str, facts: Option<&StructureFacts>) -> Option<bool> {
-        match self.stiffness.get(name) {
-            Some(s) if s.source != StiffnessSource::Gershgorin => Some(s.stiff),
-            _ => facts.and_then(|f| f.gershgorin_stiff.get(name).copied()),
-        }
+        self.stiffness
+            .get(name)
+            .filter(|s| s.source != StiffnessSource::Gershgorin || facts.is_some())
+            .map(|s| s.stiff)
     }
 
     /// What §5.5.3 needs to know about a leaf.
@@ -640,11 +630,11 @@ impl Planned {
     }
 
     /// The resolved schedule (§7.1) with every leaf's method resolved
-    /// (§5.5.3) from `facts`.
+    /// (§5.5.3) from `facts`. Every leaf's method, in tree order, and §7.5's
+    /// classical-Rosenbrock check for those methods come before anything
+    /// else writing the schedule can refuse.
     pub fn resolve_schedule(&self, facts: Option<&StructureFacts>) -> Result<Value> {
         let strategy = |n: &Node| self.leaf_strategy(n, facts);
-        let resolved = schedule::write(&self.schedule, &self.model, &self.operators, &strategy)?;
-        // §7.5's classical-Rosenbrock check for the resolved methods.
         let mut algs = BTreeMap::new();
         for n in self.schedule.leaves() {
             algs.insert(n.id().to_string(), strategy(n)?.alg);
@@ -656,7 +646,7 @@ impl Planned {
             &self.schedule,
             &algs,
         )?;
-        Ok(resolved)
+        schedule::write(&self.schedule, &self.model, &self.operators, &strategy)
     }
 
     /// The canonical DOF order of the flattened model (§4).
@@ -681,9 +671,9 @@ impl Planned {
             .get(op)
             .ok_or_else(|| internal(format!("no operator {op}")))?;
         let doc: Value = serde_json::from_slice(&docs.jacobian).map_err(internal)?;
-        let prog =
-            Program::new(&doc, (self.interval.start, self.interval.end)).map_err(internal)?;
         let dofs = self.dofs();
+        let prog = Program::new(&doc, (self.interval.start, self.interval.end), &dofs)
+            .map_err(internal)?;
         let names = dofs.element_names();
         let bands = &self.structures[op].bands;
         let mut out: BTreeMap<(String, String), f64> = numeric::pattern(&dofs, bands)

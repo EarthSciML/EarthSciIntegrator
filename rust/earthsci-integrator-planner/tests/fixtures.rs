@@ -261,9 +261,9 @@ fn band_model_catches_errors() {
         let tspan = (p.interval.start, p.interval.end);
         let rhs: Value = serde_json::from_slice(&docs.rhs).unwrap();
         let jac: Value = serde_json::from_slice(&docs.jacobian).unwrap();
-        let f = numeric::Program::new(&rhs, tspan).unwrap();
-        let jp = numeric::Program::new(&jac, tspan).unwrap();
         let dofs = Dofs::new(&p.model);
+        let f = numeric::Program::new(&rhs, tspan, &dofs).unwrap();
+        let jp = numeric::Program::new(&jac, tspan, &dofs).unwrap();
         let names = dofs.element_names();
         let u0 = numeric::initial_state(&p.model, &dofs, p.interval.start).unwrap();
         let base = numeric::sampling_base(&u0);

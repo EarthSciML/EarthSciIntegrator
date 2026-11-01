@@ -7,8 +7,10 @@
 use crate::model::ModelInfo;
 use earthsci_ast::{
     esm_problem, rhs_program, Compiler, Expr, ForcingSet, ProblemInput, ProblemOptions, RhsProgram,
+    RhsWorkspace,
 };
 use earthsci_astdiff::{JacEntry, RIdx};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
 /// The canonical state order (spec/plan.md §4): states sorted by code
@@ -200,14 +202,23 @@ pub struct Program {
     forcing: ForcingSet,
     /// Each variable's block in the program's `u`: (offset, length).
     blocks: BTreeMap<String, (usize, usize)>,
+    /// Each canonical state's block: (canonical start, program offset,
+    /// length). Every state of the DOF order has one.
+    map: Vec<(usize, usize, usize)>,
+    /// The evaluation workspace and the program-layout `u` and `du`,
+    /// reused between evaluations.
+    scratch: RefCell<(RhsWorkspace, Vec<f64>, Vec<f64>)>,
 }
 
 impl Program {
     /// Compiles `input` (`native`, falling back to the interpreter when the
-    /// native compiler declines a rule).
+    /// native compiler declines a rule) for the DOF order `dofs`. Every
+    /// state of `dofs` must be a block of the program's state layout with
+    /// the same number of elements.
     pub fn new<'a>(
         input: impl Into<ProblemInput<'a>> + Copy,
         tspan: (f64, f64),
+        dofs: &Dofs,
     ) -> Result<Program, String> {
         let build = |c: Compiler| -> Result<RhsProgram, String> {
             let prob = esm_problem(
@@ -221,12 +232,15 @@ impl Program {
             .map_err(|e| format!("EarthSciAST esm_problem: {e}"))?;
             rhs_program(&prob).map_err(|e| format!("EarthSciAST rhs_program: {e}"))
         };
-        let prog = build(Compiler::Native).or_else(|_| build(Compiler::Interpreter))?;
+        let prog = build(Compiler::Native).or_else(|native| {
+            build(Compiler::Interpreter)
+                .map_err(|interp| format!("native compiler: {native}; interpreter: {interp}"))
+        })?;
         let p = prog
             .parameter_vector(&HashMap::new())
             .map_err(|e| format!("EarthSciAST parameters: {e}"))?;
         let forcing = prog.default_forcing();
-        let blocks = prog
+        let blocks: BTreeMap<String, (usize, usize)> = prog
             .state_layout()
             .iter()
             .map(|b| {
@@ -236,57 +250,57 @@ impl Program {
                 )
             })
             .collect();
+        let mut map = Vec::with_capacity(dofs.states.len());
+        for (name, (start, ext)) in &dofs.states {
+            let n = ext.iter().product::<usize>();
+            match blocks.get(name) {
+                Some((off, len)) if *len == n => map.push((*start, *off, n)),
+                Some((_, len)) => {
+                    return Err(format!(
+                        "the program's state {name} has {len} elements, the model's has {n}"
+                    ))
+                }
+                None => return Err(format!("the program has no state {name}")),
+            }
+        }
+        let n_states = prog.n_states();
+        let scratch = RefCell::new((
+            prog.new_workspace(),
+            vec![0.0; n_states],
+            vec![0.0; n_states],
+        ));
         Ok(Program {
             prog,
             p,
             forcing,
             blocks,
+            map,
+            scratch,
         })
     }
 
-    /// The program's `u` from a canonical state `u` (other blocks zero).
-    fn layout(&self, dofs: &Dofs, u: &[f64]) -> Vec<f64> {
-        let mut out = vec![0.0; self.prog.n_states()];
-        for (name, (start, ext)) in &dofs.states {
-            if let Some((off, len)) = self.blocks.get(name) {
-                let n: usize = ext.iter().product();
-                if n == *len {
-                    out[*off..off + len].copy_from_slice(&u[*start..start + n]);
-                }
-            }
+    /// Evaluates `f(u, p, t)` and hands the program-layout result to `g`.
+    fn with_du<R>(&self, u: &[f64], t: f64, g: impl FnOnce(&[f64]) -> R) -> Result<R, String> {
+        let mut scratch = self.scratch.borrow_mut();
+        let (ws, pu, du) = &mut *scratch;
+        for &(start, off, len) in &self.map {
+            pu[off..off + len].copy_from_slice(&u[start..start + len]);
         }
-        out
-    }
-
-    /// `du = f(u, p, t)` in the program's layout.
-    pub fn eval_raw(&self, dofs: &Dofs, u: &[f64], t: f64) -> Result<Vec<f64>, String> {
-        let pu = self.layout(dofs, u);
-        let mut du = vec![0.0; pu.len()];
-        let mut ws = self.prog.new_workspace();
         self.prog
-            .eval_into(&pu, &[], &self.p, t, &self.forcing, &mut du, &mut ws)
+            .eval_into(pu, &[], &self.p, t, &self.forcing, du, ws)
             .map_err(|e| format!("EarthSciAST evaluation: {e}"))?;
-        Ok(du)
+        Ok(g(du))
     }
 
     /// `f(u, p, t)` in canonical order.
     pub fn eval(&self, dofs: &Dofs, u: &[f64], t: f64) -> Result<Vec<f64>, String> {
-        let du = self.eval_raw(dofs, u, t)?;
-        Ok(self.canonical(dofs, &du))
-    }
-
-    /// A program-layout vector in canonical order.
-    pub fn canonical(&self, dofs: &Dofs, du: &[f64]) -> Vec<f64> {
-        let mut out = vec![0.0; dofs.n];
-        for (name, (start, ext)) in &dofs.states {
-            if let Some((off, len)) = self.blocks.get(name) {
-                let n: usize = ext.iter().product();
-                if n == *len {
-                    out[*start..start + n].copy_from_slice(&du[*off..off + len]);
-                }
+        self.with_du(u, t, |du| {
+            let mut out = vec![0.0; dofs.n];
+            for &(start, off, len) in &self.map {
+                out[start..start + len].copy_from_slice(&du[off..off + len]);
             }
-        }
-        out
+            out
+        })
     }
 
     /// The block of variable `name` in a program-layout vector.
@@ -369,40 +383,41 @@ pub fn band_jacobian(
     u: &[f64],
     t: f64,
 ) -> Result<Sparse, String> {
-    let du = jac.eval_raw(dofs, u, t)?;
-    let mut out = Sparse::new();
-    for (k, en) in entries.iter().enumerate() {
-        let name = format!("{}.J_{}", crate::derived::JACOBIAN_MODEL, k + 1);
-        let field = jac
-            .block(&du, &name)
-            .ok_or_else(|| format!("the Jacobian document's program has no {name}"))?;
-        let mut ext: Vec<usize> = dofs
-            .states
-            .get(&en.u)
-            .map(|(_, e)| e.clone())
-            .unwrap_or_default();
-        ext.extend(en.band.contracted.iter().map(|(_, _, hi)| *hi as usize));
-        let mut err = None;
-        band_points(en, &mut |cell, cc, col| {
-            let (Some(r), Some(c)) = (dofs.dof(&en.u, cell), dofs.dof(&en.v, col)) else {
-                return;
-            };
-            let mut off = 0usize;
-            let mut stride = 1usize;
-            for (x, n) in cell.iter().chain(cc).zip(&ext) {
-                off += (*x as usize - 1) * stride;
-                stride *= n;
+    jac.with_du(u, t, |du| {
+        let mut out = Sparse::new();
+        for (k, en) in entries.iter().enumerate() {
+            let name = format!("{}.J_{}", crate::derived::JACOBIAN_MODEL, k + 1);
+            let field = jac
+                .block(du, &name)
+                .ok_or_else(|| format!("the Jacobian document's program has no {name}"))?;
+            let mut ext: Vec<usize> = dofs
+                .states
+                .get(&en.u)
+                .map(|(_, e)| e.clone())
+                .unwrap_or_default();
+            ext.extend(en.band.contracted.iter().map(|(_, _, hi)| *hi as usize));
+            let mut err = None;
+            band_points(en, &mut |cell, cc, col| {
+                let (Some(r), Some(c)) = (dofs.dof(&en.u, cell), dofs.dof(&en.v, col)) else {
+                    return;
+                };
+                let mut off = 0usize;
+                let mut stride = 1usize;
+                for (x, n) in cell.iter().chain(cc).zip(&ext) {
+                    off += (*x as usize - 1) * stride;
+                    stride *= n;
+                }
+                match field.get(off) {
+                    Some(v) => *out.entry((r, c)).or_insert(0.0) += v,
+                    None => err = Some(format!("{name} has no element {off}")),
+                }
+            })?;
+            if let Some(e) = err {
+                return Err(e);
             }
-            match field.get(off) {
-                Some(v) => *out.entry((r, c)).or_insert(0.0) += v,
-                None => err = Some(format!("{name} has no element {off}")),
-            }
-        })?;
-        if let Some(e) = err {
-            return Err(e);
         }
-    }
-    Ok(out)
+        Ok(out)
+    })?
 }
 
 #[cfg(test)]

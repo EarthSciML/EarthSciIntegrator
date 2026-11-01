@@ -81,12 +81,11 @@ pub fn colour_columns(n: usize, pattern: &Sparse) -> Vec<usize> {
     let mut used: Vec<HashSet<usize>> = Vec::new();
     let mut colour = vec![0usize; n];
     for (c, rows) in rows_of.iter().enumerate() {
-        let k = (0..)
-            .find(|k| {
-                used.get(*k)
-                    .is_none_or(|u: &HashSet<usize>| rows.iter().all(|r| !u.contains(r)))
-            })
-            .unwrap_or(0);
+        // The first colour free of these rows, else a new one.
+        let k = used
+            .iter()
+            .position(|u| rows.iter().all(|r| !u.contains(r)))
+            .unwrap_or(used.len());
         if k == used.len() {
             used.push(HashSet::new());
         }

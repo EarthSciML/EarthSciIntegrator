@@ -77,7 +77,8 @@ fn reads_t(names: impl IntoIterator<Item = String>) -> bool {
 }
 
 /// Pass 4 for one operator: `view` is the flattened view of its
-/// right-hand-side document and `bands` its band list.
+/// right-hand-side document and `bands` its band list. `state_dependent` is
+/// [`ModelInfo::state_dependent`], computed once per model.
 pub fn structure(
     info: &ModelInfo,
     axes: &Axes,
@@ -85,21 +86,13 @@ pub fn structure(
     terms: &[Term],
     view: &FlatView,
     bands: Vec<JacEntry>,
+    state_dependent: &BTreeSet<String>,
 ) -> Result<Structure> {
     let ctx = view.ctx().map_err(|e| PlanError::Internal(e.0))?;
     let class = earthsci_astdiff::detect_structure(&bands, &ctx).to_string();
 
     // linear_in_u: no coefficient reads a state, or an observed whose
-    // definition reads one, transitively.
-    let state_dependent: BTreeSet<String> = info
-        .states
-        .iter()
-        .cloned()
-        .chain(info.observed_defs.keys().filter_map(|o| {
-            let reads = info.close_over_observeds(&[o.clone()].into());
-            reads.iter().any(|n| info.is_state(n)).then(|| o.clone())
-        }))
-        .collect();
+    // definition reads one, transitively (`state_dependent`).
     let linear_in_u = bands.iter().all(|en| {
         earthsci_ast::free_variables(&en.band.coef)
             .iter()
