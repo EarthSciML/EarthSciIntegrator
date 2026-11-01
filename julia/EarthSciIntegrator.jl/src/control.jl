@@ -5,9 +5,10 @@
 
 The value of `x` with any tangent stripped. Error norms and controllers act on
 primal values only (spec/methods.md §7, spec/adjoint.md §2.3 with
-`dt_tangents = false`); the ForwardDiff extension strips `Dual` partials.
+`dt_tangents = false`); a `ForwardDiff.Dual`'s partials are stripped.
 """
 primal(x::Real) = x
+primal(x::ForwardDiff.Dual) = primal(ForwardDiff.value(x))
 _f64(x) = Float64(primal(x))
 
 """

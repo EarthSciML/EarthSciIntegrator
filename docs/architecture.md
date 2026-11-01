@@ -537,7 +537,7 @@ Julia additionally has AD on the RHS as a fallback for primitives, through Diffe
 **Accumulation.**
 - Parameters: per-shard partials, reduced in fixed order.
 - u0: `λ(t0)`.
-- **Gridded fields:** `vjp_p` into array parameters. EarthSciASTDiff today maps parameter columns only through the scalar `p`, so array-parameter gradients are silently zero until U7 lands.
+- **Gridded fields:** `vjp_p` into array parameters. EarthSciASTDiff 0.1.0 mapped parameter columns only through the scalar `p`, so array-parameter gradients were silently zero; U7, released in EarthSciASTDiff 0.2.0, makes array parameters real columns.
 - **Forcing:** accumulated per **provider record**, not per integrator epoch, since GEOS-FP's collections are not co-phased. A slot→record map comes from the tape. The model's own time-blend expression is in the forcing band model, so the chain rule into both bracketing records is automatic.
 - **Writing forcing gradients:**
   - A record's gradient is complete only after both brackets containing it are processed, so records finish in descending time order. Gradient sinks therefore use indexed (positional) writes (U12), with one store per forcing cadence.
@@ -595,17 +595,17 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U4 | EarthSciAST | Reentrant, thread-safe RHS entry point: Rust `RhsProgram` (`Send + Sync`); Julia `f!` without global forcing state; released in v0.5.0 (`rhs_program` in both) | M3 |
 | U5 | EarthSciAST | Honour declared Float32 in integration: Rust (stop refusing), Julia (honour `element_type`), and the Rust XLA emitter | M5g, M7 |
 | U6 | EarthSciAST | Strip mode for events, parameter updates and algebraic equations, plus standalone kernels for residuals, conditions, affects, limits and maps | M4b |
-| U7 | EarthSciASTDiff | ∂f/∂(forcing buffer) bands, and array parameters as real columns | M4 |
-| U8 | EarthSciASTDiff | Second-order bands for Rosenbrock adjoints (`∇_u`, `∇_p`, `∇_F` of `μᵀJw`; `∂f_t/∂u`) | M4 (Rust; Julia can use the D38 fallback) |
-| U9 | EarthSciASTDiff | Filtered `faq`, non-`+` semirings, recurrences; `column_block` structure; dedicated VJP models | M4 (reseact's `Mz` filtered prefix scan), M4b (eqice column contractions)/M7 |
-| U10 | EarthSciASTDiff | Production-rate Rust assembly, after a catch-up step: Rust and Python lagged EarthSciAST (`aggregate`→`faq`, removed `VariableType`), so Rust did not compile against it and Python returned empty bands (both by reading, 2026-10-14); merged on `main` (EarthSciASTDiff#5, #8, #10, #12), to be released with 0.2 | M3 |
+| U7 | EarthSciASTDiff | ∂f/∂(forcing buffer) bands, and array parameters as real columns; released in 0.2.0 (EarthSciASTDiff#28) | M4 |
+| U8 | EarthSciASTDiff | Second-order bands for Rosenbrock adjoints (`∇_u`, `∇_p`, `∇_F` of `μᵀJw`; `∂f_t/∂u`); released in 0.2.0 (EarthSciASTDiff#29) | M4 (Rust; Julia can use the D38 fallback) |
+| U9 | EarthSciASTDiff | Filtered `faq`, non-`+` semirings, recurrences; `column_block` structure; dedicated VJP models; released in 0.2.0 (EarthSciASTDiff#35, #42), recurrences in Rust and Python only | M4 (reseact's `Mz` filtered prefix scan), M4b (eqice column contractions)/M7 |
+| U10 | EarthSciASTDiff | Production-rate Rust assembly, after a catch-up step: Rust and Python lagged EarthSciAST (`aggregate`→`faq`, removed `VariableType`), so Rust did not compile against it and Python returned empty bands (both by reading, 2026-10-14); merged on `main` (EarthSciASTDiff#5, #8, #10, #12), released in 0.1.0 (commit 743d140) | M3 |
 | U11 | EarthSciIO | Async prefetch (forward/reverse) and per-rank name-keyed windows | M5 |
 | U12 | EarthSciIO | Rust streaming writer, multi-rank region writes, indexed time mode, f32/int types | M4 (Rust gradient sinks), M5 |
 | U13 | EarthSciAST (Julia) | Traceable per-operator StableHLO fragments (`operator_ir`, `emit_fragment`), f32 emission, fixed-order folds | M5g |
 | U14 | EarthSciAST | Numerical vs semantic precision: an omitted `element_type` is unspecified, so the run config may choose (D29) | M5g, M7 |
 | U15 | EarthSciAST (Julia) | Execute recurrences in the native compiler and the StableHLO emitter | M7 |
 | U16 | EarthSciAST | `solver.time_span`, the run interval a document asks for (D60); released in v0.4.0 | M2 |
-| U17 | EarthSciASTDiff | Time-derivative bands (∂f/∂t) specified and golden-gated, for Rosenbrock's `f_t` on time-dependent operators; done on `main` (EarthSciASTDiff#13), to be released with 0.2 | M3 |
+| U17 | EarthSciASTDiff | Time-derivative bands (∂f/∂t) specified and golden-gated, for Rosenbrock's `f_t` on time-dependent operators; done on `main` (EarthSciASTDiff#13), released in 0.1.0 (commit 743d140) | M3 |
 
 **Prerequisites the drafts uncovered:**
 - **esm 1.3.0.** U01 and U14 ship in esm 1.3.0. reseact (esm 1.0.0), eqice and EqWeFiC (1.0.0/1.1.0) must move to 1.3.0 before they can use `solver.external` or an f32 choice.

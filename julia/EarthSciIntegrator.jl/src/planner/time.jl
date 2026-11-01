@@ -34,35 +34,40 @@ function plan_duration(m::PlanModel, x, at::AbstractString)
 end
 
 # ---------------------------------------------------------------------------
-# Timestamps, converted as esm-spec §2.2.7 converts a time_span bound (D74).
-# EarthSciAST's own reading is used (its internal `_datetime_parts` and
-# `_time_origin`), so a planner time and a solver.time_span bound cannot
-# disagree; both return the parts rather than a refusal, so the codes of
-# spec/plan.md §7.2 stay the planner's.
+# Timestamps, converted as esm-spec §2.2.7 converts a time_span bound (D74),
+# with EarthSciAST's public `timestamp_to_seconds`, so a planner time and a
+# solver.time_span bound cannot disagree. Its codes are mapped to those of
+# spec/plan.md §7.2.
+
+# EarthSciAST's code for why a timestamp has no value => the planner's.
+const _TIMESTAMP_CODES = Dict(
+    "timestamp_malformed" => "time_invalid_date",
+    "timestamp_no_calendar_day" => "time_invalid_date",
+    "time_origin_invalid" => "time_origin_invalid",
+)
 
 """
     time_seconds(m, T, at) -> Float64
 
 A time of spec/run-config.md §1.1 in seconds: a number, or a UTC timestamp
 counted from the model's time origin as `(W − W₀) + (f − f₀)` (D74).
-`time_invalid_date` for a day its month does not have (at `at`),
-`time_origin_invalid` when the origin field cannot be read.
+`time_invalid_date` for a timestamp that is malformed or names a day its
+month does not have, `time_origin_invalid` when the origin field cannot be
+read, both at `at`.
 """
 time_seconds(m::PlanModel, T, at::AbstractString) = _bound_seconds(T, m.file.domain, at)
 
-"""`time_seconds` against a model `domain`, typed or raw JSON (EarthSciAST's `_time_origin` reads both)."""
+"""`time_seconds` against a model `domain`, typed or raw JSON (`EarthSciAST.timestamp_to_seconds` reads both)."""
 function _bound_seconds(T, domain, at::AbstractString)
     T isa Real && !(T isa Bool) && return Float64(T)
-    parts = EarthSciAST._datetime_parts(String(T), EarthSciAST._TIME_SPAN_TIMESTAMP_RE)
-    parts === nothing && refuse("time_invalid_date", at, "timestamp $(repr(T)) names no calendar day")
-    origin = EarthSciAST._time_origin(domain)
-    # §7.2: time_origin_invalid is at the key of the timestamp that needs the origin.
-    origin isa Tuple || refuse(
-        "time_origin_invalid", at,
-        "timestamp $(repr(T)) needs the model's time origin, and its domain.temporal field is not an RFC 3339 date-time"
-    )
-    (w, f), (w0, f0) = parts, origin
-    return Float64(w - w0) + (f - f0)
+    try
+        return EarthSciAST.timestamp_to_seconds(domain, T)
+    catch e
+        code = e isa EarthSciAST.ExpressionTemplateError ? get(_TIMESTAMP_CODES, e.code, nothing) : nothing
+        code === nothing && rethrow()
+        # §7.2: time_origin_invalid is at the key of the timestamp that needs the origin.
+        refuse(code, at, "timestamp $(repr(T)): " * e.message)
+    end
 end
 
 const _MODEL_SPAN_CODES = ("time_interval_empty", "time_invalid_date", "time_origin_invalid")
@@ -74,8 +79,8 @@ The rule-14 refusal, at `/model`, for a model whose `solver.time_span`
 (`start`, `stop`) EarthSciAST rejects; `domain` is the model's, typed or raw
 JSON. EarthSciAST gives every such rejection the one code
 `solver_time_span_invalid`; spec/plan.md §7.2 asks for the code of the
-cause. `nothing` when the cause is not one of rule 14's (a malformed bound,
-which the schema reports).
+cause, which for a malformed bound (one EarthSciAST's schema rejects at
+load) is `time_invalid_date`. `nothing` when the span is valid.
 """
 function model_span_refusal(start, stop, domain)
     try
@@ -84,7 +89,7 @@ function model_span_refusal(start, stop, domain)
         e > s || refuse("time_interval_empty", "/model", "the model's solver.time_span ends ($e s) no later than it starts ($s s)")
     catch err
         err isa PlannerRefusal && err.code in _MODEL_SPAN_CODES && return err
-        err isa PlannerRefusal || err isa ArgumentError || err isa MethodError || rethrow()
+        err isa PlannerRefusal || rethrow()
     end
     return nothing
 end

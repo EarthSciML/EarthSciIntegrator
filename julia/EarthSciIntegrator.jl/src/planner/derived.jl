@@ -1,0 +1,224 @@
+# The derived documents (spec/plan.md §6, D68, D69): the right-hand-side
+# document of a set of terms and the Jacobian document of an operator, as
+# JSON objects; their bytes are EarthSciASTDiff's `stable_json` (§2.2).
+
+_ser(e::ASTExpr) = EarthSciAST.serialize_expression(e)
+
+"""The zero right-hand side of a state (§6.1.2): `0.0` for a scalar, a `makearray` of `0.0` over the state's extents for an array."""
+function zero_rhs(m::PlanModel, x::AbstractString)
+    haskey(m.shapes, x) || return 0.0
+    return Dict{String, Any}(
+        "op" => "makearray", "args" => Any[],
+        "regions" => Any[Any[Any[1, m.sizes[X]] for X in m.shapes[x]]], "values" => Any[0.0]
+    )
+end
+
+"""The left fold `((t₁ + t₂) + t₃) + …` of serialized terms as nested binary `+` (§6.1.2)."""
+fold_sum(xs::AbstractVector) = foldl((a, b) -> Dict{String, Any}("op" => "+", "args" => Any[a, b]), xs)
+
+"""
+The observed a flattened equation defines, or `nothing`: a bare left-hand
+side `y`, or an indexed one, `index(y, …)` or `faq{index(y, …)}` (an arrayed
+observed).
+"""
+defined_observed(m::PlanModel, eq::Equation) = defined_observed(m.flat, eq)
+function defined_observed(flat::EarthSciAST.FlattenedSystem, eq::Equation)
+    isobs(n) = haskey(flat.observed_variables, n)
+    l = eq.lhs
+    l isa VarExpr && return isobs(l.name) ? l.name : nothing
+    l isa OpExpr || return nothing
+    l.op == "faq" && l.expr_body isa OpExpr && (l = l.expr_body)
+    (l.op == "index" && !isempty(l.args) && l.args[1] isa VarExpr && isobs(l.args[1].name)) || return nothing
+    return l.args[1].name
+end
+
+"""Every right-hand side defining each observed of the flattened model, in equation order (`PlanModel.observed_rhs`)."""
+function observed_definitions(flat::EarthSciAST.FlattenedSystem)
+    defs = Dict{String, Vector{ASTExpr}}()
+    for eq in flat.equations
+        o = defined_observed(flat, eq)
+        o === nothing || push!(get!(defs, o, ASTExpr[]), eq.rhs)
+    end
+    return defs
+end
+
+"""
+    live_observeds(m, names) -> Set{String}
+
+The observeds among `names`, with every observed the definitions of those
+reference, transitively (§6.1.1 "live", §6.2 item 2).
+"""
+function live_observeds(m::PlanModel, names)
+    defs = m.observed_rhs
+    live = Set{String}()
+    stack = String[n for n in names if is_observed(m, n)]
+    while !isempty(stack)
+        o = pop!(stack)
+        o in live && continue
+        push!(live, o)
+        for r in get(defs, o, ASTExpr[]), n in EarthSciAST.free_variables(r)
+            is_observed(m, n) && !(n in live) && push!(stack, n)
+        end
+    end
+    return live
+end
+
+"""The object of a declared variable (§6.1.1): `type`, plus `shape` and `default` when present."""
+function variable_object(m::PlanModel, name::AbstractString, v)
+    d = Dict{String, Any}("type" => is_param(m, name) ? "parameter" : "unknown")
+    haskey(m.shapes, name) && (d["shape"] = Any[m.shapes[name]...])
+    v.default === nothing || (d["default"] = v.default)
+    return d
+end
+
+"""The model of component path `path` in the tree `models`, created (with its parents) when missing."""
+function component_model!(models::AbstractDict, path::AbstractString)
+    segs = split(path, '.')
+    node = get!(
+        models, String(segs[1]),
+        Dict{String, Any}("variables" => Dict{String, Any}(), "equations" => Any[])
+    )
+    for s in segs[2:end]
+        subs = get!(node, "subsystems", Dict{String, Any}())
+        node = get!(subs, String(s), Dict{String, Any}("variables" => Dict{String, Any}(), "equations" => Any[]))
+    end
+    return node
+end
+
+"""
+    rhs_document(m, name, terms; jacobian = nothing) -> Dict
+
+§6.1: the right-hand-side document named `name` of the terms `terms` (in
+term order): every index set, the domain, and the component tree declaring
+every state and parameter and the live observeds, with each state's
+equation the fold of its terms (zero when it has none), the live observeds'
+definitions, and every `ic` equation.
+
+With `jacobian` a vector of EarthSciASTDiff's `JacEntry`s (in band order,
+each band's coefficient its `band.coef`), §6.2's Jacobian document instead: every state's right-hand
+side is zero, observeds are live when a band coefficient references them,
+and a model `_jacobian` holds one band field per band.
+"""
+function rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector; jacobian = nothing)
+    flat = m.flat
+    refs = jacobian === nothing ? reduce(vcat, (t.refs for t in terms); init = String[]) :
+        String[n for en in jacobian for n in EarthSciAST.free_variables(en.band.coef)]
+    live = live_observeds(m, refs)
+    models = Dict{String, Any}()
+    for dict in (flat.state_variables, flat.parameters, flat.observed_variables), (vname, v) in dict
+        (is_state(m, vname) || is_param(m, vname) || vname in live) || continue
+        component_model!(models, component_of(vname))["variables"][last_segment(vname)] = variable_object(m, vname, v)
+    end
+    by_eq = Dict{Int, Vector{Term}}()
+    for t in terms
+        push!(get!(by_eq, t.equation, Term[]), t)
+    end
+    eqinfo = Dict(ei => (var, lifted) for (ei, var, lifted) in m.state_eqs)
+    for (ei, eq) in enumerate(flat.equations)
+        if haskey(eqinfo, ei)
+            var, lifted = eqinfo[ei]
+            ts = get(by_eq, ei, Term[])
+            rhs = if jacobian !== nothing || isempty(ts)
+                zero_rhs(m, var)
+            elseif lifted
+                O, G = lifted_ranges(m, ei, var)
+                Dict{String, Any}(
+                    "op" => "faq", "args" => Any[], "output_idx" => Any[O...], "ranges" => G,
+                    "expr" => fold_sum(Any[_ser(t.expr) for t in ts])
+                )
+            else
+                fold_sum(Any[_ser(t.expr) for t in ts])
+            end
+            lhs = Dict{String, Any}("op" => "D", "args" => Any[var], "wrt" => "t")
+            push!(component_model!(models, component_of(var))["equations"], Dict{String, Any}("lhs" => lhs, "rhs" => rhs))
+        else
+            o = defined_observed(m, eq)
+            (o !== nothing && o in live) || continue
+            push!(
+                component_model!(models, component_of(o))["equations"],
+                Dict{String, Any}("lhs" => _ser(eq.lhs), "rhs" => _ser(eq.rhs))
+            )
+        end
+    end
+    for (x, e) in flat.field_ics
+        push!(
+            component_model!(models, component_of(x))["equations"],
+            Dict{String, Any}("lhs" => Dict{String, Any}("op" => "ic", "args" => Any[x]), "rhs" => _ser(e))
+        )
+    end
+    isets = Dict{String, Any}(k => Dict{String, Any}("kind" => "interval", "size" => n) for (k, n) in m.sizes)
+    doc = Dict{String, Any}(
+        "esm" => "1.3.0", "metadata" => Dict{String, Any}("name" => String(name)),
+        "index_sets" => isets, "models" => models
+    )
+    flat.domain === nothing || (doc["domain"] = EarthSciAST.serialize_domain(flat.domain))
+    jacobian === nothing || add_band_fields!(doc, m, jacobian)
+    return doc
+end
+
+last_segment(name::AbstractString) = (i = findlast('.', name); i === nothing ? String(name) : name[nextind(name, i):end])
+
+"""
+EarthSciASTDiff's name for the index set of a contracted dimension of extent
+`hi` (`_jcax_name`): `jcax<hi>`, with `x` appended while an index set of that
+name has another size; added to the document's `index_sets` when missing.
+"""
+function contracted_axis!(isets::AbstractDict, hi::Int)
+    nm = "jcax$hi"
+    while haskey(isets, nm) && isets[nm]["size"] != hi
+        nm *= "x"
+    end
+    haskey(isets, nm) || (isets[nm] = Dict{String, Any}("kind" => "interval", "size" => hi))
+    return nm
+end
+
+"""
+§6.2 item 3: the model `_jacobian` with band field `J_k` per band, built as
+EarthSciASTDiff's `_evaluation_document` builds them with `cse = false`,
+in the component tree: every reference fully scoped and `J_k` written
+`_jacobian.J_k`.
+"""
+function add_band_fields!(doc::AbstractDict, m::PlanModel, entries)
+    jm = Dict{String, Any}("variables" => Dict{String, Any}(), "equations" => Any[])
+    for (k, en) in enumerate(entries)
+        b = en.band
+        nm = "J_$k"
+        cr = b.contracted
+        rowsets = get(m.shapes, en.u, String[])
+        if isempty(rowsets) && isempty(cr)
+            jm["variables"][nm] = Dict{String, Any}("type" => "unknown", "default" => 0.0)
+            rhs = _ser(b.coef)
+        else
+            jm["variables"][nm] = Dict{String, Any}(
+                "type" => "unknown", "default" => 0.0,
+                "shape" => Any[rowsets..., (contracted_axis!(doc["index_sets"], hi) for (_, _, hi) in cr)...]
+            )
+            free = [(d, r) for (d, r) in enumerate(b.ridx) if r isa String]
+            aggnames = Any[(r for (_, r) in free)..., (n for (n, _, _) in cr)...]
+            val = if isempty(aggnames)
+                _ser(b.coef)
+            else
+                rngs = Dict{String, Any}(r => Any[b.rows[d][1], b.rows[d][2]] for (d, r) in free)
+                for (n, lo, hi) in cr
+                    rngs[n] = Any[lo, hi]
+                end
+                Dict{String, Any}("op" => "faq", "args" => Any[], "output_idx" => aggnames, "ranges" => rngs, "expr" => _ser(b.coef))
+            end
+            rhs = Dict{String, Any}(
+                "op" => "makearray", "args" => Any[],
+                "regions" => Any[
+                    Any[Any[Any[1, m.sizes[X]] for X in rowsets]..., Any[Any[1, hi] for (_, _, hi) in cr]...],
+                    Any[Any[Any[lo, hi] for (lo, hi) in b.rows]..., Any[Any[lo, hi] for (_, lo, hi) in cr]...],
+                ],
+                "values" => Any[0.0, val]
+            )
+        end
+        lhs = Dict{String, Any}("op" => "D", "args" => Any["_jacobian." * nm], "wrt" => "t")
+        push!(jm["equations"], Dict{String, Any}("lhs" => lhs, "rhs" => rhs))
+    end
+    doc["models"]["_jacobian"] = jm
+    return doc
+end
+
+"""The bytes of a derived document: EarthSciASTDiff's `stable_json` (§2.2)."""
+document_bytes(doc::AbstractDict) = EarthSciASTDiff.stable_json(doc)

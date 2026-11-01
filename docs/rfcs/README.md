@@ -24,7 +24,7 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 | U16 | EarthSciAST spec | [`solver.time_span`](U16-solver-time-span.md): the run interval a document asks for (D60) | [EarthSciAST#550](https://github.com/EarthSciML/EarthSciAST/issues/550) | M2 |
 | U17 | EarthSciASTDiff | [Time-derivative bands](U17-time-derivative-bands.md): ∂f/∂t as a specified, golden-gated band model, for Rosenbrock's `f_t` | [EarthSciASTDiff#11](https://github.com/EarthSciML/EarthSciASTDiff/issues/11) | M3 (restores M2's time-dependent Rosenbrock cases) |
 
-**Upstream progress** (2026-10-26):
+**Upstream progress** (2026-10-26; U7, U8 and U9 updated 2026-11-01 for EarthSciASTDiff 0.2.0):
 
 | # | State |
 |---|---|
@@ -32,10 +32,13 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 | U2 | Done: released in EarthSciAST v0.4.0, `equation_contributions` (esm-libraries-spec §4.7.5), plus Rust's `equation_lifted`. |
 | U3 | Done: released in EarthSciAST v0.5.0 (EarthSciAST#557; esm stays 1.3.0), range-restricted right-hand sides over tiles and lanes in Julia and Rust (API_SPEC §5.8, CONFORMANCE_SPEC §5.50). Published 2026-10-26 to Julia's General registry, crates.io and PyPI. |
 | U4 | Done: released in EarthSciAST v0.5.0 (EarthSciAST#561), `rhs_program` with forcing sets in Julia and Rust's `RhsProgram` (`Send + Sync`) (API_SPEC §5.8, CONFORMANCE_SPEC §5.51). Rust's M2 end-to-end runs can use it (spec/toy-problems.md §4). |
-| U10 | Merged on EarthSciASTDiff `main`, closing EarthSciASTDiff#4: catch-up (W0, #5), trimmed evaluation document (W1, #8), scatter plans (W3, #10), Rust production assembly (W2, W4, W5, #12). To be released with EarthSciASTDiff 0.2. |
+| U10 | Merged on EarthSciASTDiff `main`, closing EarthSciASTDiff#4: catch-up (W0, #5), trimmed evaluation document (W1, #8), scatter plans (W3, #10), Rust production assembly (W2, W4, W5, #12). Released in EarthSciASTDiff 0.1.0, its first registered release (commit 743d140; registered in Julia's General registry and published on crates.io on 2026-10-30). |
+| U7 | Done: merged on EarthSciASTDiff `main` (EarthSciASTDiff#28, closing #1) and released in EarthSciASTDiff 0.2.0 (registered in Julia's General registry, 2026-11-01): forcing-buffer and array-parameter columns (`wrt = "forcing"`) in Julia, Rust and Python (`esm-jacobian-spec.md` §4.3). Array parameters are now columns on the `parameters` axis; 0.1.0 dropped their cells. |
+| U8 | Done: released in EarthSciASTDiff 0.2.0 (EarthSciASTDiff#29, closing #2): second-order bands (`"wrt": [a1, a2]`, `esm-jacobian-spec.md` §4.4) and the `hvp_document` product document in Julia, Rust and Python. |
+| U9 | Mostly done: released in EarthSciASTDiff 0.2.0 (EarthSciASTDiff#35 and #42, closing #3): filtered `faq`, `max`/`min`/`*` reductions and the `max_product` semiring, value-indexed reads, `column_block` structure and factorization plans, and the `vjp_document` product document. Causal recurrences (`esm-jacobian-spec.md` §4.5) are differentiated in Rust and Python only; Julia waits on EarthSciAST.jl executing recurrences (U15). |
 | U16 | Done: released in EarthSciAST v0.4.0 (esm 1.3.0), esm-spec §2.2.7, with `resolve_time_span` in every binding. |
-| U17 | Done on EarthSciASTDiff `main` (EarthSciASTDiff#13, closing #11): `esm-jacobian-spec.md` §4.2 specifies `wrt: "time"` bands, §8 their evaluation document, and the `tgrad_photolysis` goldens gate them in Julia, Rust and Python. To be released with EarthSciASTDiff 0.2. |
-| others | Open. EarthSciASTDiff 0.2 (its Rust crate is on EarthSciAST 0.6; its Julia package is 0.1.0 with compat EarthSciAST "0.4, 0.5" and SciMLBase "2", so it cannot yet share an environment with EarthSciIntegrator.jl, spec/plan.md §10 item 12) is expected before M2's stage 2; spec/plan.md is written against its `main`. |
+| U17 | Done on EarthSciASTDiff `main` (EarthSciASTDiff#13, closing #11): `esm-jacobian-spec.md` §4.2 specifies `wrt: "time"` bands, §8 their evaluation document, and the `tgrad_photolysis` goldens gate them in Julia, Rust and Python. Released in EarthSciASTDiff 0.1.0, its first registered release (commit 743d140; registered in Julia's General registry and published on crates.io on 2026-10-30). |
+| others | Open. M2's stage 2 is written against EarthSciAST 0.7.0 and EarthSciASTDiff 0.2.0 (spec/plan.md §0.2). EarthSciASTDiff 0.2.0 accepts EarthSciAST 0.6 and 0.7 in Julia and `>=0.5, <0.8` in Rust, and SciMLBase is no longer its concern: 0.2.0 removed its evaluators and its SciMLBase extension. |
 
 **Cross-cutting prerequisites** (architecture §13):
 - esm 1.3.0 for the three model repos.

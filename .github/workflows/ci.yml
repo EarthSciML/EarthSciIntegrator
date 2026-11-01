@@ -29,7 +29,7 @@ jobs:
       # earthsci-ast is EarthSciAST's Python binding, pinned to the release the
       # M2 fixtures are written against (spec/plan.md §0.2): tier 0 loads,
       # validates and flattens every .esm under tests/conformance with it.
-      - run: pip install "jsonschema>=4.18" "earthsci-ast==0.6.0"
+      - run: pip install "jsonschema>=4.18" "earthsci-ast==0.7.0"
       - run: python tests/conformance/validate_schemas.py --require-esm
       - name: M1 and M2 cases are up to date with their generators
         run: |
@@ -67,8 +67,8 @@ jobs:
           python-version: "3.12"
       - run: pip install "jsonschema>=4.18"
       - name: Test
-        # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote,
-        # ForwardDiff) live in julia/EarthSciIntegrator.jl/test/Project.toml.
+        # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote)
+        # live in julia/EarthSciIntegrator.jl/test/Project.toml.
         run: julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.test()'
       - name: Upload conformance result files
         if: always()

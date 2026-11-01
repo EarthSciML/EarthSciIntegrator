@@ -1,24 +1,12 @@
-# The planner's passes, M2 stage 1 (spec/plan.md): terms and selection,
-# locality, the resolved settings, and the refusal fixtures that need no
-# EarthSciASTDiff.
+# The planner's passes (spec/plan.md): terms and selection, locality, the
+# resolved settings, and the refusal fixtures. Most testsets give the passes
+# hand-written bands and structures through a test backend, so that each
+# checks one pass; planner_fixtures.jl plans every fixture with EarthSciASTDiff.
 
 using EarthSciIntegrator: PlannerRefusal, PlannerStageError, BandEntry, jcs, Axes, PlanBackend, PendingBackend
 import EarthSciAST
 
 @isdefined(REPO) || include("paths.jl")
-
-"""Refusal fixtures that need term or operator bands, structure or stiffness from EarthSciASTDiff (stage 2)."""
-const STAGE2_REFUSALS = Dict(
-    "auto-stiff-global" => "the column mean's locality needs its bands",
-    "auto-stiff-not-block-diagonal" => "the array state's locality needs its bands",
-    "operator-undefined" => "the default operator's existence needs the lifted terms' localities",
-    "partition-too-fine" => "the auto schedule needs the stencil term's locality",
-    "selector-matches-nothing" => "the locality selector needs the lifted terms' localities",
-    "split-explicit" => "default operators need the reseact-shaped terms' localities",
-    "step-control-missing" => "the auto schedule needs the reseact-shaped terms' localities",
-    "term-selected-twice" => "the locality selector needs the reseact-shaped terms' localities",
-    "tstop-off-fixed-step" => "the auto schedule needs the reseact-shaped terms' localities"
-)
 
 """
     HandBackend(bands, structures, derived)
@@ -47,7 +35,7 @@ catch e
     e isa PlannerRefusal ? (e.code, e.at) : rethrow()
 end
 
-@testset "planner (M2 stage 1)" begin
+@testset "planner passes" begin
     @testset "additive terms (§5.1.1)" begin
         E(x) = EarthSciAST.expression_from_json(x)
         S(e) = EarthSciAST.serialize_expression(e)
@@ -106,11 +94,7 @@ end
         for name in sort!(collect(keys(expected)))
             want = expected[name]
             @test want["code"] in codes
-            if haskey(STAGE2_REFUSALS, name)
-                # Not decidable without EarthSciASTDiff: planning stops at the stage boundary.
-                @test_throws PlannerStageError EarthSciIntegrator.plan(joinpath(dir, name, "run.json"))
-                continue
-            end
+            # With EarthSciASTDiff (the default backend): every refusal is decided.
             got = refusal(() -> EarthSciIntegrator.plan(joinpath(dir, name, "run.json")))
             @test got == (want["code"], want["at"])
             got == (want["code"], want["at"]) || @info "refusal fixture $name" got want
@@ -123,8 +107,8 @@ end
     end
 
     @testset "cross_component_term by-label: the whole plan" begin
-        # Structure, derived documents and validation are stage 2's; they are taken
-        # from the hand-written plan, and every other byte must match it.
+        # Structure, derived documents and validation are taken from the
+        # hand-written plan, and every other byte must match it.
         dir = joinpath(PFIX, "cross_component_term")
         text = read(joinpath(dir, "by-label.expected-plan.json"), String)
         exp = JSON.parse(text)
@@ -134,9 +118,9 @@ end
         )
         d = EarthSciIntegrator.plan(joinpath(dir, "by-label.run.json"); backend)
         @test EarthSciIntegrator.plan_json(d) == text
-        # With the stage-1 backend, the plan stops where structure is needed (the
+        # Without EarthSciASTDiff the plan stops where structure is needed (the
         # pointwise linsolve of the Rodas4 leaf reads structure.block).
-        @test_throws PlannerStageError EarthSciIntegrator.plan(joinpath(dir, "by-label.run.json"))
+        @test_throws PlannerStageError EarthSciIntegrator.plan(joinpath(dir, "by-label.run.json"); backend = PendingBackend())
     end
 
     @testset "cross_component_term by-owner" begin
@@ -424,12 +408,22 @@ end
             Dict("operators" => kin, "schedule" => leaf("kinetics"));
             tspan = ("2021-02-30T00:00:00Z", "2021-03-02T00:00:00Z")
         ) == ("time_invalid_date", "")
+        # A malformed timestamp the schema does not check is time_invalid_date.
+        @test try_plan(
+            Dict("operators" => kin, "schedule" => leaf("kinetics"));
+            tspan = ("2021-03-01", "2021-03-02T00:00:00Z")
+        ) == ("time_invalid_date", "")
         # A model solver.time_span EarthSciAST rejects takes its cause's code, at /model.
         backwards = joinpath(tmp, "backwards.esm")
         doc = JSON.parsefile(rob)
         doc["solver"]["time_span"] = Dict("start" => 40, "end" => 0)
         write(backwards, JSON.json(doc))
         @test try_plan(Dict("model" => backwards, "operators" => kin, "schedule" => leaf("kinetics"))) == ("time_interval_empty", "/model")
+        # So does a malformed timestamp, which EarthSciAST's schema rejects at load.
+        malformed = joinpath(tmp, "malformed.esm")
+        doc["solver"]["time_span"] = Dict("start" => "2021-03-01", "end" => "2021-03-02T00:00:00Z")
+        write(malformed, JSON.json(doc))
+        @test try_plan(Dict("model" => malformed, "operators" => kin, "schedule" => leaf("kinetics"))) == ("time_invalid_date", "/model")
         # The cross-component model: a schedule naming a default operator that does not exist.
         @test try_plan(Dict("model" => cross, "schedule" => leaf("default_column"), "step" => Dict("dt" => 60))) ==
             ("operator_undefined", "/schedule/leaf")
@@ -713,7 +707,7 @@ end
         )
         blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => ["Chem.NO", "Chem.O3"]))
         # cross_component_term has no reaction system and no stiffness hint: the
-        # Gershgorin bound decides, which stage 1 cannot compute.
+        # Gershgorin bound decides, which the test backend cannot compute.
         @test_throws PlannerStageError EarthSciIntegrator.plan(path; backend = HandBackend(structures = Dict{String, Any}("default_pointwise" => blk)))
         rob = joinpath(tmp, "rob.json")
         write(
@@ -744,6 +738,7 @@ end
         @test EarthSciIntegrator.time_seconds(m, "1970-01-02T00:00:00Z", "/x") == 86400.0
         @test EarthSciIntegrator.time_seconds(m, "2019-07-01T00:00:00.25Z", "/x") == 1561939200.25
         @test refusal(() -> EarthSciIntegrator.time_seconds(m, "2019-02-29T00:00:00Z", "/time/end")) == ("time_invalid_date", "/time/end")
+        @test refusal(() -> EarthSciIntegrator.time_seconds(m, "2019-07-01 00:00:00", "/time/end")) == ("time_invalid_date", "/time/end")
         @test EarthSciIntegrator.time_seconds(m, "2020-02-29T00:00:00Z", "/x") == 1582934400.0
         @test EarthSciIntegrator.resolve_time(m, Dict("time" => Dict("start" => 10, "duration" => "1.5 min"))) == (10.0, 100.0)
         @test EarthSciIntegrator.resolve_time(m, Dict("time" => Dict("start" => 0.1, "duration" => 0.2)))[2] === 0.1 + 0.2
@@ -775,6 +770,14 @@ end
             )
         ) ==
             ("time_origin_invalid", "/model")
+        @test code(Dict("solver" => Dict("time_span" => Dict("start" => "noon", "end" => "2021-03-02T00:00:00Z")))) ==
+            ("time_invalid_date", "/model")
+        @test code(
+            Dict(
+                "domain" => "nowhere",
+                "solver" => Dict("time_span" => Dict("start" => "2021-03-01T00:00:00Z", "end" => "2021-03-02T00:00:00Z"))
+            )
+        ) == ("time_origin_invalid", "/model")
         @test code(Dict("solver" => Dict("time_span" => Dict("start" => 0, "end" => 1)))) === nothing
         @test code(Dict("solver" => Dict())) === nothing
     end
