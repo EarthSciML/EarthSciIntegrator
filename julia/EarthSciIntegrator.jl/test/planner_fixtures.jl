@@ -119,30 +119,6 @@ const PLAN_FILES = String[]
         @test S[1][2] == [2.0 * (0.5 + r(1, 0)), 1.0 * (0.5 + r(1, 1)), -1.0 * (0.5 + r(1, 2))]
     end
 
-    @testset "index names a model's variables would capture (§6.1.2)" begin
-        faq(idx, expr) = Dict{String, Any}("op" => "faq", "args" => Any[], "output_idx" => Any[idx...], "ranges" => Dict{String, Any}(i => Dict("from" => "cell") for i in idx), "expr" => expr)
-        ix(args...) = Dict{String, Any}("op" => "index", "args" => Any[args...])
-        inner = faq(["j"], ix("M.x", "j"))
-        doc = Dict{String, Any}(
-            "models" => Dict{String, Any}(
-                "M" => Dict{String, Any}(
-                    "variables" => Dict{String, Any}("j" => Dict(), "x" => Dict(), "_c1_j" => Dict()),
-                    "equations" => Any[Dict{String, Any}("lhs" => "M.y", "rhs" => faq(["i", "j"], Dict{String, Any}("op" => "+", "args" => Any[ix("M.x", "i", "j"), "M.j", inner])))]
-                ),
-                "N" => Dict{String, Any}("variables" => Dict{String, Any}("x" => Dict()), "equations" => Any[Dict{String, Any}("lhs" => "N.y", "rhs" => faq(["j"], ix("N.x", "j")))])
-            )
-        )
-        EarthSciIntegrator.rename_captured_indices!(doc)
-        rhs = doc["models"]["M"]["equations"][1]["rhs"]
-        # `_c1_j` is taken (a variable name), so the fresh name is `_c2_j`; `i`
-        # names no variable of M and is kept; the scoped reference M.j is not an index.
-        @test rhs["output_idx"] == ["i", "_c2_j"] && sort(collect(keys(rhs["ranges"]))) == ["_c2_j", "i"]
-        @test rhs["expr"]["args"][1] == ix("M.x", "i", "_c2_j") && rhs["expr"]["args"][2] == "M.j"
-        @test rhs["expr"]["args"][3] == faq(["_c2_j"], ix("M.x", "_c2_j"))
-        # Model N declares no `j`: nothing to rename.
-        @test doc["models"]["N"]["equations"][1]["rhs"] == faq(["j"], ix("N.x", "j"))
-    end
-
     @testset "band points and the Gershgorin bound" begin
         L = EarthSciIntegrator.DofLayout(Dict("a" => 0, "b" => 3), Dict("a" => [3], "b" => Int[]), ["a[1]", "a[2]", "a[3]", "b"])
         bands = [
@@ -234,8 +210,9 @@ const PLAN_FILES = String[]
             flat = a.rhs.flat
             @test sort!(collect(keys(flat.state_variables))) == sort(m.states)
             @test Set(keys(flat.parameters)) == Set(m.params)
-            # The lifted equations' indices a reaction rate would capture are renamed apart.
-            @test occursin("\"_c1_j\"", a.rhs.bytes) && !occursin("\"Chem.j\",\"Chem.k\"", a.rhs.bytes)
+            # The lifted equations keep the indices the model wrote, though a
+            # reaction rate shares the name `j` (EarthSciAST#610).
+            @test !occursin("_c1_", a.rhs.bytes) && !occursin("\"Chem.j\",\"Chem.k\"", a.rhs.bytes)
         end
         # The same plan twice is the same bytes.
         d2 = EarthSciIntegrator.plan(joinpath(PFIX, "reseact_shaped", "named.run.json"))

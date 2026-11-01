@@ -98,13 +98,21 @@ end
 """
     BuiltDocument
 
-A document built with EarthSciAST (`esm_problem`, native compiler): its
-`f!`, default parameters and initial state (its `u0`, in its own slot
-order), the number of its state slots, `perm` mapping
-each canonical DOF to its slot, and the slots of every band field `J_k`
-(column-major over the field's shape) for a Jacobian document.
+A document built with EarthSciAST as spec/operator-interface.md §8.1 has
+runtimes build it: `rhs_program(esm_problem(file, tspan))` with the native
+compiler, with one workspace, its default forcing set and its parameter
+vector at the defaults. The problem's own `f!` (also native) is kept for
+ForwardDiff's dual numbers, which the program's Float64 workspace does not
+take (§8.2). Also: its initial state (its `u0`, in its own slot order), the
+number of its state slots, `perm` mapping each canonical DOF to its slot,
+and the slots of every band field `J_k` (column-major over the field's
+shape) for a Jacobian document.
 """
 struct BuiltDocument
+    prog::EarthSciAST.RhsProgram
+    ws::Any
+    fs::EarthSciAST.ForcingSet
+    pvec::Vector{Float64}
     f!::Any
     p::Any
     u0::Vector{Float64}
@@ -114,27 +122,26 @@ struct BuiltDocument
 end
 
 """
-Build `file` (a loaded EarthSciAST document or a flattened model) with
-EarthSciAST's `esm_problem` and map its state layout to canonical order;
-`fields` gives each band field's extents for a Jacobian document.
-
-The planner builds with EarthSciAST's interpreter (`compiler =
-:interpreter`), not the native compiler runtimes use
-(spec/operator-interface.md §8.1): EarthSciAST.jl 0.6.0's native compiler
-declines a contracting `faq` inside a lifted equation (spec/plan.md §10
-item 5) and evaluates a lifted `index(makearray(…), i, j, k)` term to zero,
-both of which the reseact-shaped fixture has. The interpreter evaluates
-the documents as written; the planner's checks are of the documents, not of
-a compiler.
+Build `file` (a loaded EarthSciAST document or a flattened model) as
+[`BuiltDocument`](@ref) describes and map its state layout to canonical
+order; `fields` gives each band field's extents for a Jacobian document.
+The program's `u` is the problem's flat layout, so the problem's `var_map`
+names the slots of both.
 """
 function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
-    prob = EarthSciAST.esm_problem(file, time; compiler = :interpreter)
+    prob = EarthSciAST.esm_problem(file, time; compiler = :native)
+    prog = EarthSciAST.rhs_program(prob)
+    EarthSciAST.n_states(prog) == length(prob.u0) ||
+        error("EarthSciAST's program of a derived document has $(EarthSciAST.n_states(prog)) states, its problem $(length(prob.u0))")
     vm = Dict{String, Int}(String(k) => Int(v) for (k, v) in prob.var_map)
     slot(name) = haskey(vm, name) ? vm[name] :
         error("EarthSciAST's state layout of a derived document has no element $name")
     perm = Int[slot(n) for n in L.names]
     fslots = [Int[slot(element_name("_jacobian.J_$k", c)) for c in cells(ext)] for (k, ext) in enumerate(fields)]
-    return BuiltDocument(prob.f!, prob.p, prob.u0, length(prob.u0), perm, fslots)
+    return BuiltDocument(
+        prog, EarthSciAST.rhs_workspace(prog), EarthSciAST.default_forcing_set(prog), EarthSciAST.parameter_vector(prog),
+        prob.f!, prob.p, prob.u0, length(prob.u0), perm, fslots
+    )
 end
 
 """The full slot vector of a canonical state `u` (other slots, band fields included, zero)."""
@@ -144,11 +151,15 @@ function _slots(B::BuiltDocument, u::AbstractVector{T}) where {T}
     return U
 end
 
-"""The document's right-hand side at `(u, t)`, every slot (in EarthSciAST's order)."""
+"""The document's right-hand side at `(u, t)`, every slot (in EarthSciAST's order): the program's `rhs!`, or for dual numbers the problem's `f!`."""
 function eval_slots(B::BuiltDocument, u::AbstractVector{T}, t) where {T}
     U = _slots(B, u)
     du = zeros(T, B.nslots)
-    B.f!(du, U, B.p, t)
+    if T === Float64
+        EarthSciAST.rhs!(du, B.prog, B.ws, U, Float64[], B.pvec, t, B.fs)
+    else
+        B.f!(du, U, B.p, t)
+    end
     return du
 end
 

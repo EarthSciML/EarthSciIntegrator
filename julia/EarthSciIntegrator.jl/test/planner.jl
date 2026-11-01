@@ -408,12 +408,22 @@ end
             Dict("operators" => kin, "schedule" => leaf("kinetics"));
             tspan = ("2021-02-30T00:00:00Z", "2021-03-02T00:00:00Z")
         ) == ("time_invalid_date", "")
+        # A malformed timestamp the schema does not check is time_invalid_date.
+        @test try_plan(
+            Dict("operators" => kin, "schedule" => leaf("kinetics"));
+            tspan = ("2021-03-01", "2021-03-02T00:00:00Z")
+        ) == ("time_invalid_date", "")
         # A model solver.time_span EarthSciAST rejects takes its cause's code, at /model.
         backwards = joinpath(tmp, "backwards.esm")
         doc = JSON.parsefile(rob)
         doc["solver"]["time_span"] = Dict("start" => 40, "end" => 0)
         write(backwards, JSON.json(doc))
         @test try_plan(Dict("model" => backwards, "operators" => kin, "schedule" => leaf("kinetics"))) == ("time_interval_empty", "/model")
+        # So does a malformed timestamp, which EarthSciAST's schema rejects at load.
+        malformed = joinpath(tmp, "malformed.esm")
+        doc["solver"]["time_span"] = Dict("start" => "2021-03-01", "end" => "2021-03-02T00:00:00Z")
+        write(malformed, JSON.json(doc))
+        @test try_plan(Dict("model" => malformed, "operators" => kin, "schedule" => leaf("kinetics"))) == ("time_invalid_date", "/model")
         # The cross-component model: a schedule naming a default operator that does not exist.
         @test try_plan(Dict("model" => cross, "schedule" => leaf("default_column"), "step" => Dict("dt" => 60))) ==
             ("operator_undefined", "/schedule/leaf")
@@ -728,6 +738,7 @@ end
         @test EarthSciIntegrator.time_seconds(m, "1970-01-02T00:00:00Z", "/x") == 86400.0
         @test EarthSciIntegrator.time_seconds(m, "2019-07-01T00:00:00.25Z", "/x") == 1561939200.25
         @test refusal(() -> EarthSciIntegrator.time_seconds(m, "2019-02-29T00:00:00Z", "/time/end")) == ("time_invalid_date", "/time/end")
+        @test refusal(() -> EarthSciIntegrator.time_seconds(m, "2019-07-01 00:00:00", "/time/end")) == ("time_invalid_date", "/time/end")
         @test EarthSciIntegrator.time_seconds(m, "2020-02-29T00:00:00Z", "/x") == 1582934400.0
         @test EarthSciIntegrator.resolve_time(m, Dict("time" => Dict("start" => 10, "duration" => "1.5 min"))) == (10.0, 100.0)
         @test EarthSciIntegrator.resolve_time(m, Dict("time" => Dict("start" => 0.1, "duration" => 0.2)))[2] === 0.1 + 0.2
@@ -759,6 +770,14 @@ end
             )
         ) ==
             ("time_origin_invalid", "/model")
+        @test code(Dict("solver" => Dict("time_span" => Dict("start" => "noon", "end" => "2021-03-02T00:00:00Z")))) ==
+            ("time_invalid_date", "/model")
+        @test code(
+            Dict(
+                "domain" => "nowhere",
+                "solver" => Dict("time_span" => Dict("start" => "2021-03-01T00:00:00Z", "end" => "2021-03-02T00:00:00Z"))
+            )
+        ) == ("time_origin_invalid", "/model")
         @test code(Dict("solver" => Dict("time_span" => Dict("start" => 0, "end" => 1)))) === nothing
         @test code(Dict("solver" => Dict())) === nothing
     end
