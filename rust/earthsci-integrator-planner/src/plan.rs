@@ -503,8 +503,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         "planner": "earthsci-integrator-planner (Rust)",
         "version": env!("CARGO_PKG_VERSION"),
         "upstream": {
-            "earthsci-ast": "0.6.0",
-            "earthsci-astdiff": "0.1.0 (743d1404f7573e91c6789a62f0cad88fd93fc0ad)",
+            "earthsci-ast": "0.7.0",
+            "earthsci-astdiff": "0.2.0",
         },
         "validation": Value::Object(report),
     });

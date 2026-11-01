@@ -277,7 +277,7 @@ pub fn jacobian_document(
 
     // The band fields as EarthSciASTDiff's evaluation document builds them,
     // coefficient hoisting off, each `J_k` moved to `_jacobian`.
-    let sv = view.sysview().map_err(|e| PlanError::Internal(e.0))?;
+    let sv = view.sysview();
     let (eval, fields) = earthsci_astdiff::evaluation_document(&sv, entries, false, 0)
         .map_err(|e| PlanError::Internal(format!("evaluation document: {}", e.0)))?;
     let model = &eval["models"]["JacobianEval"];

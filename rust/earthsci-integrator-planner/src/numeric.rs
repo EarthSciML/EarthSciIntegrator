@@ -7,7 +7,6 @@
 use crate::model::ModelInfo;
 use earthsci_ast::{
     esm_problem, rhs_program, Compiler, Expr, ForcingSet, ProblemInput, ProblemOptions, RhsProgram,
-    SolveOptions,
 };
 use earthsci_astdiff::{JacEntry, RIdx};
 use std::collections::{BTreeMap, HashMap};
@@ -158,9 +157,10 @@ pub fn samples(u0: &[f64], t0: f64, tf: f64) -> Vec<Sample> {
         .collect()
 }
 
-/// The initial state `u_0` in canonical order: EarthSciAST's, from building
-/// the flattened model (defaults and `field_ics`), read back as the state of
-/// a solve that does not advance from `t0`.
+/// The initial state `u_0` in canonical order: EarthSciAST's
+/// `initial_state` of the model's Problem (defaults, initialization and `ic`
+/// equations, field initial conditions), matched to the DOFs by
+/// `state_variable_names`.
 pub fn initial_state(info: &ModelInfo, dofs: &Dofs, t0: f64) -> Result<Vec<f64>, String> {
     let prob = esm_problem(
         ProblemInput::File(&info.file),
@@ -171,20 +171,17 @@ pub fn initial_state(info: &ModelInfo, dofs: &Dofs, t0: f64) -> Result<Vec<f64>,
         },
     )
     .map_err(|e| format!("EarthSciAST esm_problem: {e}"))?;
-    let sol = earthsci_ast::solve(
-        &prob,
-        &SolveOptions {
-            saveat: Some(vec![t0]),
-            ..Default::default()
-        },
-    )
-    .map_err(|e| format!("EarthSciAST initial state: {e}"))?;
-    let at: HashMap<&str, f64> = sol
-        .state_variable_names
-        .iter()
-        .zip(&sol.state)
-        .filter_map(|(n, row)| row.first().map(|x| (n.as_str(), *x)))
-        .collect();
+    let u0 = earthsci_ast::initial_state(&prob)
+        .map_err(|e| format!("EarthSciAST initial state: {e}"))?;
+    let names = prob.state_variable_names();
+    if names.len() != u0.len() {
+        return Err(format!(
+            "EarthSciAST's initial state has {} values for {} state elements",
+            u0.len(),
+            names.len()
+        ));
+    }
+    let at: HashMap<&str, f64> = names.iter().map(String::as_str).zip(u0).collect();
     dofs.element_names()
         .iter()
         .map(|n| {

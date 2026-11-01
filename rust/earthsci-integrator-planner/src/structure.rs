@@ -12,18 +12,36 @@ use earthsci_astdiff::JacEntry;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
-/// `structure.block` (§5.4): EarthSciASTDiff's block-diagonal factorization
-/// plan, without its `type` key.
+/// `structure.block` (§5.4): EarthSciASTDiff's factorization plan
+/// (`plan_factorization`), as `serialize_plan` writes it without its `type`
+/// key and with `block_vars` written as `vars`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     /// The block variables, in Markowitz order (`block_vars`).
     pub vars: Vec<String>,
-    /// The 1-based Markowitz ordering.
-    pub ordering: Vec<usize>,
-    /// The permuted pattern, 1-based pairs, sorted.
-    pub pattern: Vec<(usize, usize)>,
-    /// The pattern with the LU fill-in, 1-based pairs, sorted.
-    pub lu_pattern: Vec<(usize, usize)>,
+    /// The block as the plan writes it: `vars`, `ordering`, `pattern` and
+    /// `lu_pattern` (1-based pairs, sorted).
+    pub json: Value,
+}
+
+/// `structure.block` from a `serialize_plan` object: `type` dropped,
+/// `block_vars` renamed `vars`. `None` when it is not a block LU.
+fn block_of(mut plan: Value) -> Option<Block> {
+    let m = plan.as_object_mut()?;
+    if m.remove("type")? != "block_diagonal_lu" {
+        return None;
+    }
+    let vars = m.remove("block_vars")?;
+    let names = vars
+        .as_array()?
+        .iter()
+        .map(|v| v.as_str().map(str::to_string))
+        .collect::<Option<Vec<_>>>()?;
+    m.insert("vars".into(), vars);
+    Some(Block {
+        vars: names,
+        json: plan,
+    })
 }
 
 /// An operator's `structure` (§5.4).
@@ -42,19 +60,6 @@ pub struct Structure {
     pub column: Option<(String, i64, i64)>,
     /// Stencil operators: the footprint, sorted.
     pub footprint: Option<Vec<Vec<i64>>>,
-}
-
-/// 1-based `(row, column)` pairs of a boolean matrix, sorted.
-fn pairs(m: &[Vec<bool>]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    for (i, row) in m.iter().enumerate() {
-        for (j, x) in row.iter().enumerate() {
-            if *x {
-                out.push((i + 1, j + 1));
-            }
-        }
-    }
-    out
 }
 
 /// One band as `serialize_band` writes it, without `coef` (§5.4).
@@ -117,15 +122,20 @@ pub fn structure(
                 .is_some_and(|d| reads_t(earthsci_ast::free_variables(d)))
         });
 
-    let block = (op.locality.class == Class::Pointwise && class == "block_diagonal").then(|| {
-        let lu = earthsci_astdiff::block_diagonal_lu(&bands);
-        Block {
-            vars: lu.block_vars.clone(),
-            ordering: lu.ordering.clone(),
-            pattern: pairs(&lu.pattern),
-            lu_pattern: pairs(&lu.lu),
-        }
-    });
+    let block = if op.locality.class == Class::Pointwise && class == "block_diagonal" {
+        let plan =
+            earthsci_astdiff::plan_factorization(&bands, &view.sysview(), &ctx, Some(&class))
+                .map_err(|e| PlanError::Internal(format!("plan_factorization: {}", e.0)))?
+                .ok_or_else(|| {
+                    PlanError::Internal("plan_factorization gave no block_diagonal plan".into())
+                })?;
+        let plan = earthsci_astdiff::serialize_plan(&plan);
+        Some(block_of(plan.clone()).ok_or_else(|| {
+            PlanError::Internal(format!("serialize_plan gave no block LU: {plan}"))
+        })?)
+    } else {
+        None
+    };
 
     let reaches: Vec<_> = bands
         .iter()
@@ -201,18 +211,7 @@ impl Structure {
             Value::Array(self.bands.iter().map(band_json).collect()),
         );
         if let Some(b) = &self.block {
-            let pj = |p: &[(usize, usize)]| -> Value {
-                Value::Array(p.iter().map(|(i, j)| json!([i, j])).collect())
-            };
-            out.insert(
-                "block".into(),
-                json!({
-                    "vars": b.vars,
-                    "ordering": b.ordering,
-                    "pattern": pj(&b.pattern),
-                    "lu_pattern": pj(&b.lu_pattern),
-                }),
-            );
+            out.insert("block".into(), b.json.clone());
         }
         if let Some((axis, kl, ku)) = &self.column {
             out.insert("column".into(), json!({"axis": axis, "kl": kl, "ku": ku}));
@@ -229,9 +228,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_based_sorted_pairs() {
-        let m = vec![vec![true, false], vec![true, true]];
-        assert_eq!(pairs(&m), [(1, 1), (2, 1), (2, 2)]);
+    fn block_from_serialize_plan() {
+        let plan = json!({"type": "block_diagonal_lu", "block_vars": ["M.a", "M.b"],
+                          "ordering": [2, 1], "pattern": [[1, 1], [2, 2]],
+                          "lu_pattern": [[1, 1], [2, 2]]});
+        let b = block_of(plan).unwrap();
+        assert_eq!(b.vars, ["M.a", "M.b"]);
+        assert_eq!(
+            b.json,
+            json!({"vars": ["M.a", "M.b"], "ordering": [2, 1], "pattern": [[1, 1], [2, 2]],
+                   "lu_pattern": [[1, 1], [2, 2]]})
+        );
+        assert_eq!(block_of(json!({"type": "column_block"})), None);
     }
 
     #[test]
