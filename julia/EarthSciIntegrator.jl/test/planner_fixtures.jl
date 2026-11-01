@@ -131,6 +131,21 @@ const PLAN_FILES = String[]
         @test pts[1:2] == [(1, 1, 1, 2), (1, 2, 2, 3)]
         @test length(pts) == 2 + 9 + 1 && pts[end] == (3, 1, 4, 2)
         @test (2, 4, 1, 2) in pts              # field cell (1, 2) of the 3 × 3 field: row a[1], column a[2]
+        # A `where` guard drops the cells it excludes (EarthSciASTDiff's `_all_points`).
+        g = BandEntry(
+            "a", "a", [(1, 3)], Union{String, Int}["i"], Any["i"], Tuple{String, Int, Int}[],
+            Dict{String, Any}("op" => ">", "args" => Any["i", 1])
+        )
+        @test EarthSciIntegrator.band_points(L, [g]) == [(1, 2, 2, 2), (1, 3, 3, 3)]
+        @test BandEntry(Dict{String, Any}("row" => "a", "col" => "a", "rows" => [[1, 3]], "row_idx" => ["i"], "col_idx" => ["i"], "where" => g.guard)).guard == g.guard
+        # A column index gathering from a constant table is folded first (`_fold_const_gathers`).
+        nbr = Dict{String, Any}("op" => "index", "args" => Any[Dict{String, Any}("op" => "const", "args" => Any[], "value" => Any[3, 1, 2]), "i"])
+        @test EarthSciIntegrator.band_points(L, [BandEntry("a", "a", [(1, 3)], Union{String, Int}["i"], Any[nbr])]) ==
+            [(1, 1, 1, 3), (1, 2, 2, 1), (1, 3, 3, 2)]
+        # A state over an empty index set has no DOF.
+        L0 = EarthSciIntegrator.DofLayout(Dict("a" => 0, "e" => 3, "z" => 3), Dict("a" => [3], "e" => [0], "z" => Int[]), ["a[1]", "a[2]", "a[3]", "z"])
+        @test EarthSciIntegrator.state_dofs(L0, ["e"]) == Int[]
+        @test EarthSciIntegrator.state_dofs(L0, ["e", "z"]) == [4]
         J = Dict((1, 2) => -2.0, (1, 1) => 1.5, (2, 1) => 0.5, (4, 2) => 3.0)
         @test EarthSciIntegrator.gershgorin(J, [1, 2, 3]) == 3.5
         @test EarthSciIntegrator.gershgorin(J, [3]) == 0.0
@@ -237,5 +252,29 @@ const PLAN_FILES = String[]
         @test EarthSciIntegrator._rhs_sum_error(0.0, [0.0, 0.0]) == 0.0
         @test EarthSciIntegrator._rhs_sum_error(1.0, [0.5, 0.5]) == 0.0
         @test EarthSciIntegrator._rhs_sum_error(1.0, [1.0, 1.0e-3]) ≈ 1.0e-3 / 1.001
+    end
+
+    @testset "a backend planned again starts afresh" begin
+        cfg = joinpath(PFIX, "toy_robertson", "rodas4.run.json")
+        b = DiffBackend()
+        d1 = EarthSciIntegrator.plan(cfg; backend = b)
+        a1 = b.ops["kinetics"]
+        d2 = EarthSciIntegrator.plan(cfg; backend = b)
+        @test b.ctx === d2.ctx && b.ops["kinetics"] !== a1
+        @test EarthSciIntegrator.plan_json(d2) == EarthSciIntegrator.plan_json(d1)
+    end
+
+    @testset "write_plan removes an earlier plan's files" begin
+        d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"))
+        dir = mktempdir()
+        mkpath(joinpath(dir, "derived")); mkpath(joinpath(dir, "validation"))
+        write(joinpath(dir, "derived", "old.rhs.esm"), "{}")
+        write(joinpath(dir, "validation", "old.bandvalues.json"), "{}")
+        write(joinpath(dir, "notes.txt"), "kept")
+        write_plan(d, dir; bandvalues = true)
+        @test !isfile(joinpath(dir, "derived", "old.rhs.esm"))
+        @test !isfile(joinpath(dir, "validation", "old.bandvalues.json"))
+        @test read(joinpath(dir, "notes.txt"), String) == "kept"
+        @test sort!(readdir(joinpath(dir, "derived"))) == ["kinetics.jacobian.esm", "kinetics.rhs.esm"]
     end
 end

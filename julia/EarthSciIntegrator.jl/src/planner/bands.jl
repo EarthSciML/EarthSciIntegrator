@@ -39,7 +39,9 @@ its `serialize_band` writes, without `coef`:
 - `col_idx`: per dimension of `col`, an expression in EarthSciAST's serialized
   form (a name `String`, an `Integer` literal, a `Float64` literal, or a
   `Dict` with `"op"` and `"args"`); empty for a scalar column;
-- `contracted`: free contracted dimensions `(name, lo, hi)`, possibly empty.
+- `contracted`: free contracted dimensions `(name, lo, hi)`, possibly empty;
+- `guard`: the band's `where` guard in serialized form, or `nothing`. A
+  cell where it evaluates to zero is not a point of the band.
 
 [`DiffBackend`](@ref) builds these from `EarthSciASTDiff.serialize_band`'s output.
 """
@@ -50,8 +52,10 @@ struct BandEntry
     row_idx::Vector{Union{String, Int}}
     col_idx::Vector{Any}
     contracted::Vector{Tuple{String, Int, Int}}
+    guard::Any
 end
-BandEntry(row, col, rows, row_idx, col_idx) = BandEntry(row, col, rows, row_idx, col_idx, Tuple{String, Int, Int}[])
+BandEntry(row, col, rows, row_idx, col_idx, contracted = Tuple{String, Int, Int}[]) =
+    BandEntry(row, col, rows, row_idx, col_idx, contracted, nothing)
 
 """A `BandEntry` from `serialize_band`'s dictionary (its `coef`, if present, is ignored)."""
 function BandEntry(d::AbstractDict)
@@ -59,7 +63,8 @@ function BandEntry(d::AbstractDict)
         String(d["row"]), String(d["col"]), Tuple{Int, Int}[(Int(r[1]), Int(r[2])) for r in d["rows"]],
         Union{String, Int}[x isa AbstractString ? String(x) : Int(x) for x in d["row_idx"]], Any[d["col_idx"]...],
         haskey(d, "contracted") ? Tuple{String, Int, Int}[(String(c[1]), Int(c[2]), Int(c[3])) for c in d["contracted"]] :
-            Tuple{String, Int, Int}[]
+            Tuple{String, Int, Int}[],
+        get(d, "where", nothing)
     )
 end
 

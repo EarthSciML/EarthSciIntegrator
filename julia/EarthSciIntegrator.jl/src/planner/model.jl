@@ -17,6 +17,8 @@ The flattened model as the passes read it.
 - `sizes`: every index set's size, in the flattened model's `index_sets` order.
 - `state_eqs`: `(equation index, dependent variable, lifted)` per state equation.
 - `observed_defs`: each observed's defining right-hand side.
+- `observed_rhs`: every right-hand side defining each observed, a bare,
+  indexed or `faq` left-hand side alike ([`defined_observed`](@ref)).
 """
 struct PlanModel
     file::EarthSciAST.EsmFile
@@ -32,6 +34,7 @@ struct PlanModel
     lifted::Set{String}
     state_eqs::Vector{Tuple{Int, String, Bool}}
     observed_defs::Dict{String, ASTExpr}
+    observed_rhs::Dict{String, Vector{ASTExpr}}
     reaction_systems::Set{String}
 end
 
@@ -157,7 +160,7 @@ function plan_model(inp::PlanInputs)
     return PlanModel(
         inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
         collect(keys(flat.observed_variables)), shapes, sizes, Set(keys(flat.lifted_shapes)), state_eqs,
-        observed_defs, reaction_system_paths(inp.file)
+        observed_defs, observed_definitions(flat), reaction_system_paths(inp.file)
     )
 end
 

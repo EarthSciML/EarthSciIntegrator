@@ -22,15 +22,15 @@ function DerivedDocument(doc::Dict{String, Any})
 end
 
 """
-    document_bands(d, what) -> Vector{EarthSciASTDiff.JacEntry}
+    document_bands(flat, what) -> Vector{EarthSciASTDiff.JacEntry}
 
 EarthSciASTDiff's state Jacobian of a right-hand-side document, loaded,
-flattened and viewed with `sysview` (§5.2.2, §5.4). An EarthSciASTDiff
-refusal is `band_model_failed` at `/model`, naming `what`.
+flattened (`flat`) and viewed with `sysview` (§5.2.2, §5.4). An
+EarthSciASTDiff refusal is `band_model_failed` at `/model`, naming `what`.
 """
-function document_bands(d::DerivedDocument, what::AbstractString)
+function document_bands(flat::EarthSciAST.FlattenedSystem, what::AbstractString)
     try
-        return EarthSciASTDiff.jacobian_bands(EarthSciASTDiff.sysview(d.flat); wrt = :states)
+        return EarthSciASTDiff.jacobian_bands(EarthSciASTDiff.sysview(flat); wrt = :states)
     catch e
         e isa PlannerRefusal && rethrow()
         refuse("band_model_failed", "/model", "EarthSciASTDiff refused to differentiate $what: " * sprint(showerror, e))
@@ -43,10 +43,11 @@ function band_json(en)
     return Dict{String, Any}(String(k) => v for (k, v) in d if k != "coef")
 end
 
-"""An operator's artifacts: its right-hand-side document and bands, and, once needed, its Jacobian document and the built documents."""
+"""An operator's artifacts: its right-hand-side document, its bands (as EarthSciASTDiff's entries, `serialize_band`'s dictionaries without `coef`, and [`BandEntry`](@ref)s), and, once needed, its Jacobian document and the built documents."""
 mutable struct OperatorArtifacts
     rhs::DerivedDocument
     entries::Vector{EarthSciASTDiff.JacEntry}
+    band_dicts::Vector{Dict{String, Any}}
     bands::Vector{BandEntry}
     sv::EarthSciASTDiff.SysView
     jac::Union{Nothing, DerivedDocument}
@@ -62,9 +63,11 @@ The planner's backend on EarthSciASTDiff (M2 stage 2), holding what one
 planning run derives: per operator its documents, bands and built
 evaluators, the flattened model's evaluator and the sampled states, and,
 after validation, the band values (§8.2) and measured errors for
-`plan.report.json`.
+`plan.report.json`. All of it belongs to the planning context `ctx` it was
+derived from; a backend passed to `plan` again starts afresh.
 """
 mutable struct DiffBackend <: PlanBackend
+    ctx::Any
     ops::Dict{String, OperatorArtifacts}
     layout::Union{Nothing, DofLayout}
     model::Union{Nothing, BuiltDocument}
@@ -72,21 +75,37 @@ mutable struct DiffBackend <: PlanBackend
     bandvalues::Dict{String, Any}
     report::Dict{String, Any}
 end
-DiffBackend() = DiffBackend(Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}())
+DiffBackend() = DiffBackend(nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}())
 
-function term_bands(::DiffBackend, ctx, t::Term)
-    doc = rhs_document(ctx.model, "term", [t])
+"""Bind `b` to the planning context `ctx`, dropping everything derived from another one."""
+function bind!(b::DiffBackend, ctx)
+    b.ctx === ctx && return b
+    b.ctx = ctx
+    empty!(b.ops)
+    b.layout = b.model = b.samples = nothing
+    empty!(b.bandvalues)
+    empty!(b.report)
+    return b
+end
+
+function term_bands(b::DiffBackend, ctx, t::Term)
+    bind!(b, ctx)
+    # A term's document is never written, so it is loaded from memory rather
+    # than through its bytes.
+    flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
     what = "term ($(t.variable), $(t.contribution), $(t.summand))"
-    return BandEntry[BandEntry(band_json(en)) for en in document_bands(DerivedDocument(doc), what)]
+    return BandEntry[BandEntry(band_json(en)) for en in document_bands(flat, what)]
 end
 
 """The operator's artifacts, building its right-hand-side document and bands on first use."""
 function artifacts!(b::DiffBackend, ctx, op::PlanOperator)
+    bind!(b, ctx)
     haskey(b.ops, op.name) && return b.ops[op.name]
     d = DerivedDocument(rhs_document(ctx.model, op.name, op.terms))
-    entries = document_bands(d, "operator $(op.name)")
+    entries = document_bands(d.flat, "operator $(op.name)")
+    dicts = Dict{String, Any}[band_json(en) for en in entries]
     a = OperatorArtifacts(
-        d, entries, BandEntry[BandEntry(band_json(en)) for en in entries], EarthSciASTDiff.sysview(d.flat),
+        d, entries, dicts, BandEntry[BandEntry(x) for x in dicts], EarthSciASTDiff.sysview(d.flat),
         nothing, nothing, nothing, nothing
     )
     return b.ops[op.name] = a
@@ -99,14 +118,18 @@ function jacobian_document!(b::DiffBackend, ctx, op::PlanOperator)
     return a.jac
 end
 
-layout!(b::DiffBackend, ctx) = b.layout === nothing ? (b.layout = DofLayout(ctx.model)) : b.layout
+layout!(b::DiffBackend, ctx) = (bind!(b, ctx); b.layout === nothing ? (b.layout = DofLayout(ctx.model)) : b.layout)
 
 """The flattened model built with EarthSciAST, whose `u0` is §4's initial state; built on first use."""
-model_built!(b::DiffBackend, ctx) =
-    b.model === nothing ? (b.model = build_document(ctx.model.flat, layout!(b, ctx), ctx.time)) : b.model
+function model_built!(b::DiffBackend, ctx)
+    bind!(b, ctx)
+    b.model === nothing || return b.model
+    return b.model = build_document(ctx.model.flat, layout!(b, ctx), ctx.time)
+end
 
 """The three sampled states of §5.5.1, from the flattened model's initial state."""
 function samples!(b::DiffBackend, ctx)
+    bind!(b, ctx)
     b.samples === nothing || return b.samples
     B = model_built!(b, ctx)
     return b.samples = sampled_states(B.u0[B.perm], ctx.time)
@@ -136,11 +159,8 @@ end
 function linear_in_u(m::PlanModel, entries)
     names = Set{String}(n for en in entries for n in EarthSciAST.free_variables(en.band.coef))
     any(n -> is_state(m, n), names) && return false
-    live = live_observeds(m, names)
-    for eq in m.flat.equations
-        o = defined_observed(m, eq)
-        (o !== nothing && o in live) || continue
-        any(n -> is_state(m, n), EarthSciAST.free_variables(eq.rhs)) && return false
+    for o in live_observeds(m, names), r in get(m.observed_rhs, o, ASTExpr[])
+        any(n -> is_state(m, n), EarthSciAST.free_variables(r)) && return false
     end
     return true
 end
@@ -148,11 +168,8 @@ end
 """`true` when the operator's right-hand-side document references `t` in a state equation or in the definition of an observed it keeps (§5.4)."""
 function depends_on_t(m::PlanModel, op::PlanOperator)
     any(t -> "t" in EarthSciAST.free_variables(t.expr), op.terms) && return true
-    live = live_observeds(m, reduce(vcat, (t.refs for t in op.terms); init = String[]))
-    for eq in m.flat.equations
-        o = defined_observed(m, eq)
-        (o !== nothing && o in live) || continue
-        "t" in EarthSciAST.free_variables(eq.rhs) && return true
+    for o in live_observeds(m, reduce(vcat, (t.refs for t in op.terms); init = String[])), r in get(m.observed_rhs, o, ASTExpr[])
+        "t" in EarthSciAST.free_variables(r) && return true
     end
     return false
 end
@@ -197,7 +214,7 @@ function operator_structure(b::DiffBackend, ctx, op::PlanOperator)
         "class" => String(cls),
         "linear_in_u" => linear_in_u(m, a.entries),
         "depends_on_t" => depends_on_t(m, op),
-        "bands" => Any[band_json(en) for en in a.entries]
+        "bands" => Any[a.band_dicts...]
     )
     loc = need_locality(op)
     if loc === :pointwise && cls === :block_diagonal
@@ -288,7 +305,8 @@ Jacobian from the Jacobian document's fields and the bands against
 ForwardDiff's Jacobian of the right-hand-side document, rows of `writes`
 only: `|J^B − J^I| ≤ 1e-10 M_r` per entry, and every nonzero of `J^I` in the
 band pattern. Keeps the ForwardDiff values on the band pattern for the
-band-value file (§8.2).
+band-value file (§8.2). Both Jacobians are held sparsely, row by row; an
+entry absent from both is zero in both and passes.
 """
 function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
     L = layout!(b, ctx)
@@ -299,16 +317,21 @@ function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
     rows = state_dofs(L, op.writes)
     worst = 0.0
     samples = Any[]
+    jrows = sort!(collect(union(Set(rows), (r for (r, _) in pattern))))
     for (t, u) in samples!(b, ctx)
         JB = band_jacobian(B, a.points, u, t)
-        JI = forwarddiff_jacobian(R, u, t)
+        JI = forwarddiff_jacobian(R, u, t, jrows; keep = pattern)
+        cols = Dict{Int, Set{Int}}(r => Set{Int}() for r in rows)
+        for J in (JB, JI), (r, c) in keys(J)
+            haskey(cols, r) && push!(cols[r], c)
+        end
         for r in rows
-            Mr = maximum(abs, view(JI, r, :); init = 0.0)
-            for c in axes(JI, 2)
-                Mr = max(Mr, abs(get(JB, (r, c), 0.0)))
+            Mr = 0.0
+            for c in cols[r]
+                Mr = max(Mr, abs(get(JB, (r, c), 0.0)), abs(get(JI, (r, c), 0.0)))
             end
-            for c in axes(JI, 2)
-                jb, ji = get(JB, (r, c), 0.0), JI[r, c]
+            for c in sort!(collect(cols[r]))
+                jb, ji = get(JB, (r, c), 0.0), get(JI, (r, c), 0.0)
                 d = abs(jb - ji)
                 worst = max(worst, d == 0 ? 0.0 : d / Mr)
                 d <= 1.0e-10 * Mr || refuse(
@@ -323,7 +346,7 @@ function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
                 )
             end
         end
-        entries = sort!([(L.names[r], L.names[c], JI[r, c]) for (r, c) in pattern]; by = e -> (e[1], e[2]))
+        entries = sort!([(L.names[r], L.names[c], JI[(r, c)]) for (r, c) in pattern]; by = e -> (e[1], e[2]))
         push!(
             samples, Dict{String, Any}(
                 "t" => t, "u" => Dict{String, Any}(L.names[n] => u[n] for n in eachindex(u)),

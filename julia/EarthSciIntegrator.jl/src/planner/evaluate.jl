@@ -60,7 +60,7 @@ function dof(L::DofLayout, x::AbstractString, cell::AbstractVector{Int})
 end
 
 """The 1-based DOFs of every cell of the states `xs`."""
-state_dofs(L::DofLayout, xs) = sort!([L.offset[x] + i for x in xs for i in 1:max(1, prod(L.extents[x]; init = 1))])
+state_dofs(L::DofLayout, xs) = sort!([L.offset[x] + i for x in xs for i in 1:prod(L.extents[x]; init = 1)])
 
 # ---------------------------------------------------------------------------
 # Sampled states (§5.5.1)
@@ -103,7 +103,8 @@ runtimes build it: `rhs_program(esm_problem(file, tspan))` with the native
 compiler, with one workspace, its default forcing set and its parameter
 vector at the defaults. The problem's own `f!` (also native) is kept for
 ForwardDiff's dual numbers, which the program's Float64 workspace does not
-take (§8.2). Also: its initial state (its `u0`, in its own slot order), the
+take (§8.2). `aux` is the program's `aux` buffer at zero, of the length
+its layout gives (a whole-model program has none). Also: its initial state (its `u0`, in its own slot order), the
 number of its state slots, `perm` mapping each canonical DOF to its slot,
 and the slots of every band field `J_k` (column-major over the field's
 shape) for a Jacobian document.
@@ -113,6 +114,7 @@ struct BuiltDocument
     ws::Any
     fs::EarthSciAST.ForcingSet
     pvec::Vector{Float64}
+    aux::Vector{Float64}
     f!::Any
     p::Any
     u0::Vector{Float64}
@@ -140,7 +142,7 @@ function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
     fslots = [Int[slot(element_name("_jacobian.J_$k", c)) for c in cells(ext)] for (k, ext) in enumerate(fields)]
     return BuiltDocument(
         prog, EarthSciAST.rhs_workspace(prog), EarthSciAST.default_forcing_set(prog), EarthSciAST.parameter_vector(prog),
-        prob.f!, prob.p, prob.u0, length(prob.u0), perm, fslots
+        zeros(EarthSciAST.tile_layout(prog).n_aux), prob.f!, prob.p, prob.u0, length(prob.u0), perm, fslots
     )
 end
 
@@ -156,7 +158,7 @@ function eval_slots(B::BuiltDocument, u::AbstractVector{T}, t) where {T}
     U = _slots(B, u)
     du = zeros(T, B.nslots)
     if T === Float64
-        EarthSciAST.rhs!(du, B.prog, B.ws, U, Float64[], B.pvec, t, B.fs)
+        EarthSciAST.rhs!(du, B.prog, B.ws, U, B.aux, B.pvec, t, B.fs)
     else
         B.f!(du, U, B.p, t)
     end
@@ -166,37 +168,88 @@ end
 """The document's right-hand side at `(u, t)` in canonical order."""
 eval_rhs(B::BuiltDocument, u, t) = eval_slots(B, u, t)[B.perm]
 
-"""ForwardDiff's Jacobian of the document's right-hand side at `(u, t)`, canonical order (§8.2)."""
-forwarddiff_jacobian(B::BuiltDocument, u::Vector{Float64}, t) = ForwardDiff.jacobian(x -> eval_rhs(B, x, t), u)
+struct BandModelTag end
+
+"""
+    forwarddiff_jacobian(B, u, t, rows; keep = Set()) -> Dict{Tuple{Int, Int}, Float64}
+
+ForwardDiff's Jacobian of the document's right-hand side at `(u, t)`, canonical
+order (§8.2), restricted to the rows `rows` and held sparsely: every nonzero
+entry, and every entry in `keep` whatever its value. The columns are seeded
+in chunks of `chunk`, so memory is O(rows × chunk) beyond the entries kept,
+never a dense n × n matrix; every column is still seeded, so a dependence
+outside any expected pattern is found exactly.
+"""
+function forwarddiff_jacobian(
+        B::BuiltDocument, u::Vector{Float64}, t, rows;
+        keep = Set{Tuple{Int, Int}}(), chunk::Int = 8
+    )
+    n = length(u)
+    J = Dict{Tuple{Int, Int}, Float64}()
+    K = max(1, min(chunk, n))
+    D = ForwardDiff.Dual{BandModelTag, Float64, K}
+    x = Vector{D}(undef, n)
+    for c0 in 1:K:n
+        for j in 1:n
+            k = j - c0 + 1
+            x[j] = D(u[j], ForwardDiff.Partials(ntuple(i -> i == k ? 1.0 : 0.0, Val(K))))
+        end
+        du = eval_rhs(B, x, t)
+        for r in rows, k in 1:min(K, n - c0 + 1)
+            c = c0 + k - 1
+            v = ForwardDiff.partials(du[r], k)
+            (v != 0 || (r, c) in keep) && (J[(r, c)] = v)
+        end
+    end
+    return J
+end
 
 # ---------------------------------------------------------------------------
 # Band Jacobians (esm-jacobian-spec §4, spec/operator-interface.md §8.3)
 
-"""The value of a serialized column-index expression with index names bound by `bind`."""
-function eval_index(c, bind::Dict{String, Int})
-    c isa AbstractString && return haskey(bind, c) ? bind[c] : error("column index names $c, which the band does not bind")
-    c isa Integer && return Int(c)
-    c isa Real && return Int(round(c))
-    op = c["op"]
-    args = c["args"]
-    if op == "+" && length(keys(c)) == 2
-        return sum(a -> eval_index(a, bind), args)
-    elseif op == "*" && length(keys(c)) == 2
-        return prod(a -> eval_index(a, bind), args)
-    elseif op == "-" && length(keys(c)) == 2
-        return length(args) == 1 ? -eval_index(args[1], bind) : eval_index(args[1], bind) - eval_index(args[2], bind)
+"""
+A serialized column index or guard as an expression to evaluate with
+[`eval_index`](@ref): a name `String` or a number as itself, anything else
+parsed by EarthSciAST once.
+"""
+index_expr(c) = c isa AbstractString || c isa Real ? c : EarthSciAST.expression_from_json(c)
+
+"""
+`e` with every literal `index(const, …)` gather (a connectivity table)
+replaced by its value at `bind`, as EarthSciASTDiff's `_fold_const_gathers`
+does before evaluating a column index or a guard (esm-jacobian-spec §4).
+"""
+function fold_const_gathers(e, bind::Dict{String, Float64})
+    e isa EarthSciAST.OpExpr || return e
+    if e.op == "index" && e.args[1] isa EarthSciAST.OpExpr && e.args[1].op == "const"
+        v = e.args[1].value
+        for x in e.args[2:end]
+            v = v[eval_index(x, bind)]
+        end
+        return v isa Integer ? EarthSciAST.IntExpr(Int64(v)) : EarthSciAST.NumExpr(Float64(v))
     end
-    e = EarthSciAST.expression_from_json(c)
-    return Int(round(EarthSciAST.evaluate_expr(e, Dict{String, Float64}(k => Float64(v) for (k, v) in bind))))
+    return EarthSciAST.map_children(x -> fold_const_gathers(x, bind), e)
 end
+
+"""The value of a column-index or guard expression ([`index_expr`](@ref)) with index names bound by `bind`."""
+function eval_value(e, bind::Dict{String, Float64})
+    e isa AbstractString && return haskey(bind, e) ? bind[e] : error("column index names $e, which the band does not bind")
+    e isa Real && return Float64(e)
+    return EarthSciAST.evaluate_expr(fold_const_gathers(e, bind), bind)
+end
+
+"""The integer value of a column-index expression ([`index_expr`](@ref)) with index names bound by `bind`."""
+eval_index(e, bind::Dict{String, Float64}) = Int(round(eval_value(e, bind)))
 
 """
     band_points(L, bands) -> Vector{NTuple{4, Int}}
 
-Every point of every band (esm-jacobian-spec §4): `(k, f, r, c)` for band
-`k`, its field cell `f` (column-major over the row cell and the contracted
-cell), row DOF `r` and column DOF `c`. A column index outside the column
-variable's extents is a ghost read and has no point.
+Every point of every band (esm-jacobian-spec §4), as EarthSciASTDiff's
+`_all_points` enumerates them: `(k, f, r, c)` for band `k`, its field cell
+`f` (column-major over the row cell and the contracted cell), row DOF `r`
+and column DOF `c`. A cell the band's `where` guard excludes is not a
+point; a column index outside the column variable's extents is a ghost
+read and has no point either.
 """
 function band_points(L::DofLayout, bands::AbstractVector{BandEntry})
     pts = NTuple{4, Int}[]
@@ -204,13 +257,16 @@ function band_points(L::DofLayout, bands::AbstractVector{BandEntry})
         rowcells = box_cells(b.rows)
         ccells = box_cells([(lo, hi) for (_, lo, hi) in b.contracted])
         fext = vcat(L.extents[b.row], Int[hi for (_, _, hi) in b.contracted])
+        cidx = Any[index_expr(x) for x in b.col_idx]
+        guard = b.guard === nothing ? nothing : index_expr(b.guard)
         for cell in rowcells, cc in ccells
-            bind = Dict{String, Int}(r => cell[d] for (d, r) in enumerate(b.row_idx) if r isa String)
+            bind = Dict{String, Float64}(r => cell[d] for (d, r) in enumerate(b.row_idx) if r isa String)
             for (j, (n, _, _)) in enumerate(b.contracted)
                 bind[n] = cc[j]
             end
+            guard === nothing || eval_value(guard, bind) != 0 || continue
             r = dof(L, b.row, cell)
-            c = dof(L, b.col, Int[eval_index(x, bind) for x in b.col_idx])
+            c = dof(L, b.col, Int[eval_index(x, bind) for x in cidx])
             (r === nothing || c === nothing) && continue
             push!(pts, (k, linear_index(fext, vcat(cell, cc)), r, c))
         end

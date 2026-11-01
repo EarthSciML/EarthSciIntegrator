@@ -21,13 +21,25 @@ The observed a flattened equation defines, or `nothing`: a bare left-hand
 side `y`, or an indexed one, `index(y, …)` or `faq{index(y, …)}` (an arrayed
 observed).
 """
-function defined_observed(m::PlanModel, eq::Equation)
+defined_observed(m::PlanModel, eq::Equation) = defined_observed(m.flat, eq)
+function defined_observed(flat::EarthSciAST.FlattenedSystem, eq::Equation)
+    isobs(n) = haskey(flat.observed_variables, n)
     l = eq.lhs
-    l isa VarExpr && return is_observed(m, l.name) ? l.name : nothing
+    l isa VarExpr && return isobs(l.name) ? l.name : nothing
     l isa OpExpr || return nothing
     l.op == "faq" && l.expr_body isa OpExpr && (l = l.expr_body)
-    (l.op == "index" && !isempty(l.args) && l.args[1] isa VarExpr && is_observed(m, l.args[1].name)) || return nothing
+    (l.op == "index" && !isempty(l.args) && l.args[1] isa VarExpr && isobs(l.args[1].name)) || return nothing
     return l.args[1].name
+end
+
+"""Every right-hand side defining each observed of the flattened model, in equation order (`PlanModel.observed_rhs`)."""
+function observed_definitions(flat::EarthSciAST.FlattenedSystem)
+    defs = Dict{String, Vector{ASTExpr}}()
+    for eq in flat.equations
+        o = defined_observed(flat, eq)
+        o === nothing || push!(get!(defs, o, ASTExpr[]), eq.rhs)
+    end
+    return defs
 end
 
 """
@@ -37,11 +49,7 @@ The observeds among `names`, with every observed the definitions of those
 reference, transitively (§6.1.1 "live", §6.2 item 2).
 """
 function live_observeds(m::PlanModel, names)
-    defs = Dict{String, Vector{ASTExpr}}()
-    for eq in m.flat.equations
-        o = defined_observed(m, eq)
-        o === nothing || push!(get!(defs, o, ASTExpr[]), eq.rhs)
-    end
+    defs = m.observed_rhs
     live = Set{String}()
     stack = String[n for n in names if is_observed(m, n)]
     while !isempty(stack)
@@ -86,8 +94,8 @@ every state and parameter and the live observeds, with each state's
 equation the fold of its terms (zero when it has none), the live observeds'
 definitions, and every `ic` equation.
 
-With `jacobian = (bands, coefs)` (`bands` as EarthSciASTDiff's `JacEntry`s,
-in band order), §6.2's Jacobian document instead: every state's right-hand
+With `jacobian` a vector of EarthSciASTDiff's `JacEntry`s (in band order,
+each band's coefficient its `band.coef`), §6.2's Jacobian document instead: every state's right-hand
 side is zero, observeds are live when a band coefficient references them,
 and a model `_jacobian` holds one band field per band.
 """

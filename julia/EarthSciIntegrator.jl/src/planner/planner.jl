@@ -177,13 +177,18 @@ plan_json(d::PlanDraft) = jcs(plan_dict(d))
 Write the plan directory (spec/plan.md §1): `plan.json`, `derived/*.esm` and
 `plan.report.json`, and with `bandvalues = true` the conformance band-value
 files `validation/<operator>.bandvalues.json` (§8.2). Needs a
-[`DiffBackend`](@ref) draft. Files already in `dir` are left alone; the
-ones written are replaced.
+[`DiffBackend`](@ref) draft. The planner's own outputs already in `dir`
+(`plan.json`, `plan.report.json`, and the `derived/` and `validation/`
+directories) are removed first, so no file of an earlier plan survives;
+anything else in `dir` is left alone.
 """
 function write_plan(d::PlanDraft, dir::AbstractString; bandvalues::Bool = false)
     b = d.ctx.backend
     b isa DiffBackend || throw(PlannerStageError("writing a plan needs the derived documents' bytes (DiffBackend)"))
     text = plan_json(d)
+    for x in ("plan.json", "plan.report.json", "derived", "validation")
+        rm(joinpath(dir, x); force = true, recursive = true)
+    end
     mkpath(joinpath(dir, "derived"))
     write(joinpath(dir, "plan.json"), text)
     for (path, bytes) in derived_files(b)
