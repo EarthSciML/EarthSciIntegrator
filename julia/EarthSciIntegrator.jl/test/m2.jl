@@ -1,0 +1,231 @@
+# The M2 end-to-end cases (spec/toy-problems.md §4, tests/conformance/m2/cases.json).
+#
+# Each case is planned (spec/plan.md), its plan is built into operators and run
+# (spec/operator-interface.md §8, `build_plan_run`), and its result file is
+# checked against this implementation's result file for the M1 case it names
+# (`toy_equivalence`, §4.3). The M1 result files are the ones conformance.jl
+# writes to RESULTS_DIR; a missing one (when EARTHSCIINTEGRATOR_CASES filters
+# the M1 case out) is produced here by running the M1 case. Plans are written
+# to RESULTS_DIR/m2-plans/<case>/, their run configs to RESULTS_DIR/m2-plans/m2/.
+
+using EarthSciIntegrator: build_plan_run, layout_dofs, result_json, write_tape, read_tape, LeafRecord
+using Random
+
+@isdefined(RESULTS_DIR) || include("conformance.jl")
+const M2_CASES_FILE = joinpath(REPO, "tests", "conformance", "m2", "cases.json")
+const M2_PLANS = joinpath(RESULTS_DIR, "m2-plans")
+
+"""Every leaf record's accepted steps `(t, h)`, in tape order."""
+tape_steps(tape) = [r.steps for r in tape.records if r isa LeafRecord]
+
+"""
+    toy_equivalence(m2, m1, steps2, steps1, chk) -> (passed, detail)
+
+spec/toy-problems.md §4.3 by the comparison rule of the `cross_language`
+check (§2.1): the two result files' states agree to `rtol`, relative to each
+component's largest magnitude over the run in either result, when the step
+sequences agree (the same accepted step count and every step's `t` and `h`),
+and to `rtol_steps_differ` when they differ. Only states and step counts are
+compared. `steps2` and `steps1` are the runs' leaf steps from their tapes.
+"""
+function toy_equivalence(m2, m1, steps2, steps1, chk)
+    t2, t1 = Float64.(m2["t"]), Float64.(m1["t"])
+    t2 == t1 || return false, "output times differ: M2 $t2, M1 $t1"
+    u2 = [Float64.(x) for x in m2["u"]]
+    u1 = [Float64.(x) for x in m1["u"]]
+    ncomp = length(u1[1])
+    all(x -> length(x) == ncomp, vcat(u2, u1)) || return false, "state lengths differ"
+    a2, a1 = m2["stats"]["accepted"], m1["stats"]["accepted"]
+    differ = a2 != a1 || steps2 != steps1
+    rtol = chk["rtol"]
+    note = a2 == a1 ? "accepted $a2" : "accepted M2 $a2, M1 $a1"
+    if differ
+        note *= ", step sequences differ"
+        haskey(chk, "rtol_steps_differ") ||
+            return false, "step sequences differ and the case has no rtol_steps_differ [$note]"
+        rtol = chk["rtol_steps_differ"]
+    end
+    worst, where = 0.0, ""
+    for j in 1:ncomp
+        scale = max(maximum(abs(x[j]) for x in u2), maximum(abs(x[j]) for x in u1))
+        for k in eachindex(t1)
+            d = abs(u2[k][j] - u1[k][j])
+            d = scale > 0 ? d / scale : d
+            if d > worst
+                worst, where = d, "component $(j - 1) at t = $(t1[k])"
+            end
+        end
+    end
+    return worst <= rtol, "largest scaled state difference $worst$(isempty(where) ? "" : " ($where)") [$note; rtol $rtol]"
+end
+
+"""The M1 case `id`'s result file and tape in RESULTS_DIR, running the case first when they are missing."""
+function m1_result(id, m1cases)
+    res, tp = joinpath(RESULTS_DIR, "$id.json"), joinpath(RESULTS_DIR, "$id.tape.jsonl")
+    if !(isfile(res) && isfile(tp))
+        case = only(filter(c -> c["id"] == id, m1cases))
+        run = forward!(build_case(case))
+        run.retcode == "Success" || error("M1 case $id ended with $(run.retcode)")
+        grad = run.functional === nothing ? nothing : gradient(run)
+        mkpath(RESULTS_DIR)
+        write(res, result_json(id, run; gradient = grad))
+        open(io -> write_tape(io, run.tape), tp, "w")
+    end
+    return JSON.parsefile(res), open(read_tape, tp)
+end
+
+"""Plan, build and run one M2 case, write its result file and tape, and run its checks."""
+function run_m2_case(case, m1cases, cache)
+    id = case["id"]
+    return @testset "$id" begin
+        # The case's model is relative to the cases file (spec/toy-problems.md
+        # §4.2). Its run config is written to M2_PLANS/m2/, beside a copy of
+        # the toy documents in M2_PLANS/toys/, so the model string resolves as
+        # written and the plan's inputs keep it (spec/plan.md §7.7).
+        cfgpath = joinpath(M2_PLANS, "m2", "$id.json")
+        write(cfgpath, JSON.json(case["run_config"]))
+        draft = plan(cfgpath; tspan = case["tspan"])
+        plandir = joinpath(M2_PLANS, id)
+        write_plan(draft, plandir)
+        run, pp = build_plan_run(plandir; saveat = get(case, "saveat", nothing), tspan = case["tspan"], cache)
+        forward!(run)
+        @test run.retcode == "Success"
+        run.retcode == "Success" || return
+        write(joinpath(RESULTS_DIR, "$id.json"), result_json(id, run; dofs = layout_dofs(pp, case["layout"])))
+        open(io -> write_tape(io, run.tape), joinpath(RESULTS_DIR, "$id.tape.jsonl"), "w")
+        m2res = JSON.parsefile(joinpath(RESULTS_DIR, "$id.json"))
+        for chk in case["checks"]
+            name = chk["check"]
+            @test name == "toy_equivalence"
+            @testset "$name" begin
+                m1res, m1tape = m1_result(chk["against"], m1cases)
+                ok, detail = toy_equivalence(m2res, m1res, tape_steps(run.tape), tape_steps(m1tape), chk)
+                record!(id, name, ok, detail)
+            end
+        end
+    end
+end
+
+@testset "M2 end-to-end cases" begin
+    file = JSON.parsefile(M2_CASES_FILE)
+    cases = file["cases"]
+    @test length(cases) == 41
+    @test file["esm_integrator"] == string(SPEC_VERSION)
+    m1cases = JSON.parsefile(CASES_FILE)["cases"]
+    only = get(ENV, "EARTHSCIINTEGRATOR_CASES", "")
+    cache = Dict{Any, Any}()     # built derived documents, by hash, shared across plans
+    rm(M2_PLANS; force = true, recursive = true)
+    mkpath(joinpath(M2_PLANS, "m2"))
+    cp(joinpath(REPO, "tests", "conformance", "toys"), joinpath(M2_PLANS, "toys"))
+    n0 = length(OUTCOMES)
+    elapsed = @elapsed for case in cases
+        isempty(only) || occursin(Regex(only), case["id"]) || continue
+        run_m2_case(case, m1cases, cache)
+    end
+    outs = OUTCOMES[(n0 + 1):end]
+    println(
+        "\nM2 end-to-end: ", length(unique(o.case for o in outs)), " cases run in ", round(elapsed; digits = 1), " s, ",
+        count(o -> o.passed, outs), "/", length(outs), " checks passed"
+    )
+    for o in outs
+        println(rpad(o.passed ? "  pass" : "  FAIL", 7), rpad(o.case, 46), rpad(o.check, 16), o.detail)
+    end
+end
+
+# The planned operators against the hand-written toy operators of the same
+# problem, at a perturbed initial state: rhs, jac, jvp_u and vjp_u, through the
+# case's layout (the toy's DOF order). Uses the plans the cases above wrote.
+@testset "planned operators match the hand-written ones" begin
+    file = JSON.parsefile(M2_CASES_FILE)
+    m1cases = JSON.parsefile(CASES_FILE)["cases"]
+    cache = Dict{Any, Any}()
+    rng = Random.MersenneTwister(7)
+    for id in (
+            "m2.forced_decay.BackwardEuler.fixed", "m2.van_der_pol.stiff.Rodas4.adaptive", "m2.robertson.Rodas4.adaptive",
+            "m2.photostationary_cells.Kvaerno4.adaptive", "m2.advection_reaction.strang.order",
+        )
+        plandir = joinpath(M2_PLANS, id)
+        isfile(joinpath(plandir, "plan.json")) || continue      # case filtered out above
+        case = only(filter(c -> c["id"] == id, file["cases"]))
+        m1 = only(filter(c -> c["id"] == case["checks"][1]["against"], m1cases))
+        toy = toy_problem(m1["run_config"]["model"])
+        pp = EarthSciIntegrator.plan_problem(plandir; cache)
+        dofs = layout_dofs(pp, case["layout"])
+        @test pp.prob.u0[dofs] == toy.u0
+        N = pp.prob.N
+        @test N == toy.N && sort(dofs) == 1:N
+        x = toy.u0 .* (1 .+ 0.1 .* rand(rng, N)) .+ 0.01 .* rand(rng, N)
+        u = zeros(N)
+        u[dofs] = x
+        t = toy.tspan[1] + 0.3 * (toy.tspan[2] - toy.tspan[1])
+        v, w = randn(rng, N), randn(rng, N)
+        for (name, op) in pp.prob.operators
+            ref = toy.operators[name]
+            @test EarthSciIntegrator.writes(op, N) == sort(dofs[EarthSciIntegrator.writes(ref, N)])
+            @test EarthSciIntegrator.depends_on_t(op) == EarthSciIntegrator.depends_on_t(ref)
+            @test EarthSciIntegrator.linear_in_u(op) == EarthSciIntegrator.linear_in_u(ref)
+            f, fr = rhs!(op, zeros(N), u, pp.prob.p, t), rhs!(ref, zeros(N), x, toy.p, t)
+            @test isapprox(f[dofs], fr; rtol = 1.0e-12, atol = 1.0e-12 * maximum(abs, fr))
+            J = EarthSciIntegrator.DenseJacobian{Float64}(N)
+            Jr = EarthSciIntegrator.DenseJacobian{Float64}(N)
+            jac!(op, J, u, pp.prob.p, t)
+            jac!(ref, Jr, x, toy.p, t)
+            @test isapprox(J.A[dofs, dofs], Jr.A; rtol = 1.0e-12, atol = 1.0e-12 * maximum(abs, Jr.A))
+            @test isapprox(jvp_u!(op, zeros(N), u, pp.prob.p, t, v), J.A * v; rtol = 1.0e-12)
+            @test isapprox(vjp_u!(op, zeros(N), u, pp.prob.p, t, w), J.A' * w; rtol = 1.0e-12)
+            # §8.3: the calls planned operators do not provide at M2.
+            for call in (:ft, :vjp_p, :hess_u, :hess_p, :ft_vjp_u, :ft_vjp_p)
+                @test !EarthSciIntegrator.provides(op, call)
+            end
+        end
+        if haskey(pp.prob.operators, "photochemistry")
+            # Pointwise with a block plan, over arrays of one shape: block_diagonal.
+            @test EarthSciIntegrator.structure(pp.prob.operators["photochemistry"]) ==
+                EarthSciIntegrator.BlockDiagonalStructure(16, 3)
+        end
+        if haskey(pp.prob.operators, "transport")
+            @test EarthSciIntegrator.structure(pp.prob.operators["transport"]) isa EarthSciIntegrator.DenseStructure
+        end
+    end
+end
+
+@testset "plans the runtime refuses" begin
+    plandir = joinpath(M2_PLANS, "m2.forced_decay.BackwardEuler.fixed")
+    if isfile(joinpath(plandir, "plan.json"))
+        pp = EarthSciIntegrator.plan_problem(plandir)
+        # A Rosenbrock leaf on an operator that depends on t needs ft, which a
+        # planned operator does not provide at M2 (spec/operator-interface.md §8.3).
+        cfg = Dict{String, Any}(
+            "esm_integrator" => "0.1.0", "step" => Dict("dt" => 2),
+            "schedule" => Dict("leaf" => "decay", "alg" => "Rodas4", "dt" => 0.1),
+        )
+        err = try
+            build_run(cfg; tspan = (0, 2), prob = pp.prob); nothing
+        catch e
+            e
+        end
+        @test err isa ConfigError && occursin("decay", err.msg) && occursin("ft", err.msg)
+        # A derived document that does not match the plan's hash: the plan is stale.
+        stale = mktempdir(RESULTS_DIR)
+        cp(plandir, joinpath(stale, "plan"))
+        open(io -> write(io, " "), joinpath(stale, "plan", "derived", "decay.rhs.esm"), "a")
+        err = try
+            build_plan_run(joinpath(stale, "plan")); nothing
+        catch e
+            e
+        end
+        @test err isa ConfigError && occursin("stale", err.msg)
+        # A run interval other than the plan's.
+        err = try
+            build_plan_run(plandir; tspan = (0, 3)); nothing
+        catch e
+            e
+        end
+        @test err isa ConfigError && occursin("stale", err.msg)
+        rm(stale; recursive = true)
+    end
+end
+
+@testset "M2 result files validate against result.schema.json" begin
+    validate_result_files(filter(f -> startswith(basename(f), "m2.") && endswith(f, ".json"), readdir(RESULTS_DIR; join = true)))
+end

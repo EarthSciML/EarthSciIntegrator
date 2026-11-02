@@ -286,7 +286,7 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         for op in ops
             op in jac_ops && !provides(op, :jac) &&
                 throw(ConfigError("operator '$(opname(op))' of leaf $id does not provide jac, which $alg needs"))
-            method isa RosenbrockMethod && method.uses_ft && depends_on_t(op) && !provides(op, :ft) &&
+            method isa RosenbrockMethod && depends_on_t(op) && !provides(op, :ft) &&
                 throw(ConfigError("operator '$(opname(op))' of leaf $id depends on t but does not provide ft, which $alg needs"))
         end
     end

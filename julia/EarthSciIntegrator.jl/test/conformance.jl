@@ -465,8 +465,8 @@ end
     end
 end
 
-@testset "result files validate against result.schema.json" begin
-    files = filter(f -> endswith(f, ".json"), readdir(RESULTS_DIR; join = true))
+"""Validate result files against spec/schemas/result.schema.json with python3's jsonschema, or skip when it is absent."""
+function validate_result_files(files)
     @test !isempty(files)
     validator = """
     import json, sys
@@ -482,10 +482,14 @@ end
     """
     python = Sys.which("python3")
     has_jsonschema = python !== nothing && success(`$python -c "import jsonschema"`)
-    if has_jsonschema
+    return if has_jsonschema
         schema = joinpath(REPO, "spec", "schemas", "result.schema.json")
         @test success(pipeline(`$python -c $validator $schema $files`; stdout, stderr))
     else
         @test_skip "python3 with jsonschema not available" == ""
     end
+end
+
+@testset "result files validate against result.schema.json" begin
+    validate_result_files(filter(f -> endswith(f, ".json"), readdir(RESULTS_DIR; join = true)))
 end

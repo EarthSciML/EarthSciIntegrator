@@ -32,16 +32,17 @@ function result_json(
 end
 
 """
-    result_json(case_id, run; gradient=nothing) -> String
+    result_json(case_id, run; gradient=nothing, dofs=nothing) -> String
 
 The result file of a forward run (`producer` `julia`): the state at `t₀` and
 every output time, the step statistics summed over leaves and macro steps, and
 the functional and gradient for gradient cases (`gradient = (J, ū₀, p̄)` from
-[`gradient`](@ref)).
+[`gradient`](@ref)). `dofs` writes `u` as those entries of the state in that
+order, such as an M2 case's `layout` (spec/toy-problems.md §4.3, `layout_dofs`).
 """
-function result_json(case_id::AbstractString, run::Run; gradient = nothing)
+function result_json(case_id::AbstractString, run::Run; gradient = nothing, dofs = nothing)
     ts = [t for (t, _) in run.outputs]
-    us = [u for (_, u) in run.outputs]
+    us = [dofs === nothing ? u : u[dofs] for (_, u) in run.outputs]
     if gradient === nothing
         return result_json(case_id, "julia", ts, us; accepted = run.accepted, rejected = run.rejected, rhs_calls = run.nf)
     end

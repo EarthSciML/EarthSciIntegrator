@@ -109,6 +109,8 @@ function build_run(
     for k in keys(step)
         k in ("dt", "hit") || throw(UnsupportedError("step.$k is not implemented in this stage"))
     end
+    # A plan writes `hit` always, `[]` by default (spec/plan.md §7.3).
+    isempty(get(step, "hit", Any[])) || throw(UnsupportedError("step.hit with entries is not implemented in this stage"))
     haskey(step, "dt") || throw(UnsupportedError("a step without dt (macro steps from the root leaf's accepted steps, D49) is not implemented in this stage"))
     dt = parse_duration(step["dt"], prob, "step.dt")
     t0, tf = Float64(tspan[1]), Float64(tspan[2])

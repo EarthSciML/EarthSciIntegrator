@@ -22,7 +22,10 @@ time, step, partition, precision, the checkpoint placeholder, stiffness and
 strategies, the derived documents and validation; [`write_plan`](@ref)
 writes the plan directory. What needs EarthSciASTDiff goes through the
 [`PlanBackend`](@ref) interface, whose production form is
-[`DiffBackend`](@ref).
+[`DiffBackend`](@ref). [`build_plan_run`](@ref) executes a plan: it builds
+each operator the schedule names from its derived documents with
+EarthSciAST's reentrant `rhs_program` (spec/operator-interface.md §8) and
+runs the resolved schedule.
 """
 module EarthSciIntegrator
 
@@ -109,6 +112,10 @@ include("planner/schedule_plan.jl")
 include("planner/settings.jl")
 include("planner/planner.jl")
 
+# Executing a plan (spec/operator-interface.md §8): operators built from the
+# plan's derived documents, run by the schedule interpreter above.
+include("plan_runtime.jl")
+
 """
     odefunction(ops::OperatorSum; inplace=true)
     odefunction(leaf::LeafNode; inplace=true)
@@ -123,6 +130,7 @@ export SPEC_VERSION, UnsupportedError, ConfigError, ReplayMismatchError
 export rhs!, jvp_u!, vjp_u!, vjp_p!, jac!, ft!, hess_u!, hess_p!, ft_vjp_u!, ft_vjp_p!
 export apply!, map_vjp!, map_jvp!
 export toy_problem, TABLEAUS, build_run, forward!, replay, gradient, odefunction
+export plan_problem, build_plan_run, PlannedOperator
 export plan, plan_dict, plan_json, write_plan, PlannerRefusal, PlannerStageError, PlanBackend, PendingBackend, DiffBackend, BandEntry, jcs
 
 end

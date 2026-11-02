@@ -352,6 +352,30 @@
       }
     },
     {
+      "name": "build_plan_run",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "build_plan_run"
+      }
+    },
+    {
+      "name": "plan_problem",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "plan_problem"
+      }
+    },
+    {
+      "name": "planned_operator",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "PlannedOperator"
+      }
+    },
+    {
       "name": "band_entry",
       "kind": "type",
       "tier": "stable",
