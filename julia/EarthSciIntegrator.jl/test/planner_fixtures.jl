@@ -347,20 +347,20 @@ const PLAN_FILES = String[]
 
     @testset "the probe document gives each term's own bands (§5.2.2): $fixture/$case" for (fixture, case) in fixture_cases()
         inp = EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json"))
-        m = EarthSciIntegrator.plan_model(inp)
         b = DiffBackend()
-        ctx = EarthSciIntegrator.PlanContext(
-            inp, inp.config, m, b, EarthSciIntegrator.resolve_axes(m, inp.config),
-            EarthSciIntegrator.resolve_time(m, inp.config; tspan = nothing), EarthSciIntegrator.Term[],
-            Dict{String, EarthSciIntegrator.PlanOperator}()
-        )
+        ctx = EarthSciIntegrator.plan_context(inp, b)
+        m = ctx.model
         terms = EarthSciIntegrator.build_terms(m)
-        probe = EarthSciIntegrator.probe_term_bands(b, ctx, terms)
-        # The probe itself succeeds, so planning does not fall back to one document per term.
+        probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms)
+        # The probe itself succeeds, so planning does not split it.
         @test probe !== nothing
-        fields(x) = (x.row, x.col, x.rows, x.row_idx, x.col_idx, x.contracted, x.guard)
-        # Band for band, in order, each term's bands from its own document.
-        @test [map(fields, x) for x in probe] == [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
+        # Band for band, in order, every field `serialize_band` writes (but
+        # `coef`) equals each term's bands from its own document.
+        @test probe == [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
+        # all_term_bands gives the same, every field of every BandEntry.
+        fields(x) = ntuple(i -> getfield(x, i), fieldcount(typeof(x)))
+        @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms)] ==
+            [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
         # The probe states are declared with their equation state's index sets.
         doc = EarthSciIntegrator.probe_document(m, terms)
         vars = doc["models"]["JacobianEval"]["variables"]
@@ -368,6 +368,9 @@ const PLAN_FILES = String[]
         for (k, t) in enumerate(terms)
             @test get(vars["term_$k"], "shape", nothing) == (haskey(m.shapes, t.variable) ? m.shapes[t.variable] : nothing)
         end
+        # Each has its term's state's `ic` equation, when the state has one.
+        ics = Set(only(e["lhs"]["args"]) for e in doc["models"]["JacobianEval"]["equations"] if e["lhs"]["op"] == "ic")
+        @test ics == Set(EarthSciIntegrator.probe_state(k) for (k, t) in enumerate(terms) if any(p -> first(p) == t.variable, m.flat.field_ics))
     end
 
     @testset "band_model_failed names the term that fails, after the probe document fails" begin
