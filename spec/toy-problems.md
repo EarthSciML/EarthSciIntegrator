@@ -147,3 +147,27 @@ Left out: `source_decay_map` (maps), and every case with a Rosenbrock leaf on a 
 ### 4.3 The `toy_equivalence` check
 
 A runtime writes an M2 case's result file (§3) with `u` in the case's `layout`: the listed variables' cells, each variable column-major, in the listed order. That is §1's layout. The check compares this result file with the same implementation's result file for the M1 case named by `against`, by the rule of the `cross_language` check (§2.1) with the check's `rtol` and `rtol_steps_differ`: states agree to `rtol` relative to each component's largest magnitude when the step sequences agree, and to `rtol_steps_differ` when they differ, in count or in any accepted step's $t$ or $h$. Only states and step sequences are compared, not tape paths; an M1 gradient case's `functional` and `gradient` have no counterpart in its M2 run. The two runs evaluate the same equations in a different order of floating-point operations (the hand-written right-hand side against EarthSciAST's compiled one, and species order inside a `block_lu` block), so step sequences may differ in adaptive runs, as between languages.
+
+### 4.4 A case with data input (D87)
+
+M2's runtimes also fetch data and run leaves that read it (spec/operator-interface.md §8.4). One problem with no M1 counterpart gates this, with an exact solution, so the check is against a reference rather than `toy_equivalence`.
+
+**`data_decay`** (`tests/conformance/toys/data_decay.esm`). Model `Decay`, `domain.temporal.reference_time` `2016-01-01T00:00:00Z`, index sets `x` (3) and `rec` (2):
+
+- state `u[x]`, $u(t_0) = 1$; one operator `decay` = `{"components": "Decay"}`, pointwise;
+- `Decay.F_k[rec, x]`, a data-fed parameter (`default` 1.0e-4) from source `Rate`: `kind` `grid`, `url_template` `data/data_decay/rate_{date:%Y%m%d}.nc`, `temporal` `{"start": "2016-01-01T00:00:00Z", "frequency": "PT1H", "file_period": "P1D", "records_per_file": 24, "time_variable": "time"}`, `metadata.esio_format` `"netcdf"`, `file_variable` `K`; the run config's `forcing.records` is `{"Decay.F_k": 2}`;
+- `Decay.s[x]`, a data-fed parameter (`default` 1.0) from source `Scale`, a `static` source with no `temporal` (`const`), file `data/data_decay/scale.nc`, `file_variable` `S`;
+- the observed weight `Decay.w` $= \mathrm{frac}(t/3600)$, and $u_i' = -s_i\,\big((1 - w)\,F_k[1, i] + w\,F_k[2, i]\big)\,u_i$.
+
+**Data.** Two daily files, `rate_20160101.nc` and `rate_20160102.nc`, each with `K(time, x)` for the 24 hourly records of its day (CF `time` in `hours since 2016-01-01 00:00:00`), and `scale.nc` with `S(x)`. All are netCDF-4, a few kilobytes, checked in under `tests/conformance/toys/data/data_decay/` with their generator `make_data.py`, which also writes the reference result file. The values are $K_{h,i} = 10^{-4}\,(1 + i/2 + (h \bmod 5)/4)$ for hour $h$ counted from the origin and $i = 0, 1, 2$, and $S_i = 1 + i/4$. CI regenerates the files and compares their decoded values (not their bytes, which the HDF5 library stamps) and the reference.
+
+**Exact solution.** The blend is linear in $t$ within each hour, so with $\kappa_i(t) = s_i\,k_i(t)$, $u_i(t) = \exp\!\big(-\int_{t_0}^{t} \kappa_i\big)$, the integral a sum of trapezoids $1800\,s_i\,(K_{h,i} + K_{h+1,i})$ over whole hours plus a partial one. The generator evaluates it in binary64 at each output time.
+
+**Cases.** The interval is $[79200, 93600]$ (22:00 on 1 January to 02:00 on 2 January), so the run crosses a file boundary at midnight and forcing epochs begin at 82800, 86400 and 90000; `output.saveat` is 3600, and `step.hit` is `["forcing_refresh", "output"]` (spec/plan.md §7.3):
+
+| id | schedule | checks |
+|---|---|---|
+| `m2.data_decay.tsit5` | one adaptive `Tsit5` leaf, `reltol` 1e-8, `abstol` 1e-12 | `reference` at `rtol` 1e-6; `cross_language` with `rtol_steps_differ` |
+| `m2.data_decay.tsit5_dt600` | one `Tsit5` leaf, `dt` 600 | `reference` at `rtol` 1e-7; `cross_language` |
+
+The runtimes' own tests add the check of spec/operator-interface.md §8.4.2 item 3 on this model: each buffer at $t_0$ equals EarthSciAST's `esm_problem` forcing buffer for the same providers, bit for bit. A Rosenbrock case waits for time-derivative documents (U17), since `decay` depends on $t$ through $w$.

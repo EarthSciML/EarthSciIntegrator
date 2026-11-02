@@ -36,7 +36,20 @@
     "precision": {"$ref": "#/$defs/precision"},
     "adjoint": {"$ref": "#/$defs/adjoint"},
     "output": {"$ref": "#/$defs/output"},
-    "restart": {"$ref": "#/$defs/restart"}
+    "restart": {"$ref": "#/$defs/restart"},
+    "forcing": {
+      "description": "How data-fed parameters receive records (spec/run-config.md §7.4, D87). Where the data is stays in the model's data_sources.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "records": {
+          "description": "Data-fed parameter (qualified name) -> records per sample: 1 (the record at or before t, the default) or 2 (the bracketing pair along the parameter's first dimension).",
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/qualifiedName"},
+          "additionalProperties": {"enum": [1, 2]}
+        }
+      }
+    }
   },
 
   "$defs": {

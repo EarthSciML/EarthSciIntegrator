@@ -29,9 +29,11 @@
       "minProperties": 1,
       "additionalProperties": {
         "type": "object",
-        "required": ["shape", "source", "file_variable"],
+        "required": ["shape", "source", "file_variable", "cadence", "records"],
         "additionalProperties": false,
         "properties": {
+          "cadence": {"enum": ["const", "discrete"], "description": "discrete when the source declares a time-varying temporal block (spec/plan.md §4.1)."},
+          "records": {"enum": [1, 2]},
           "shape": {
             "description": "Index-set names, as the flattened model declares them; [] for a scalar.",
             "type": "array",
