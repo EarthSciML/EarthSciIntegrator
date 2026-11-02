@@ -176,15 +176,39 @@ function derived_domain(domain)
 end
 
 """
-    jacobian_document(rhs) -> Dict
+    jacobian_document(rhs, entries) -> Dict
 
 §6.2: the Jacobian document of an operator whose right-hand-side document,
-loaded and flattened, is `rhs`: EarthSciASTDiff's evaluation document of
-`rhs` with coefficient hoisting off (`cse = false`), its band fields `J_k`
-in the model `JacobianEval`, without its `ic` equations.
+loaded and flattened, is `rhs` and whose bands are `entries` (§5.4):
+EarthSciASTDiff's evaluation document of `rhs` with coefficient hoisting off
+(`cse = false`), its band fields `J_k` in the model `JacobianEval`, without
+its `ic` equations.
+
+Band `k` must be field `J_k`. EarthSciASTDiff's public `evaluation_document`
+computes its own bands, with the same `jacobian_bands(sysview(rhs); wrt =
+:states)` call as [`document_bands`](@ref), so its fields are checked
+against `entries`: their names, and each field's row region against the
+band's `rows`. (The `band_model` check of §8.1 compares the values.)
 """
-function jacobian_document(rhs::EarthSciAST.FlattenedSystem)
-    doc, _ = EarthSciASTDiff.evaluation_document(rhs; cse = false)
+function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVector)
+    doc, fields = EarthSciASTDiff.evaluation_document(rhs; cse = false)
+    fields == ["J_$k" for k in eachindex(entries)] || error(
+        "EarthSciASTDiff's evaluation document has band fields $fields, " *
+            "but the operator has $(length(entries)) bands (spec/plan.md §6.2)"
+    )
+    eqs = Dict(
+        eq["lhs"]["args"][1] => eq["rhs"] for eq in doc["models"]["JacobianEval"]["equations"]
+            if eq["lhs"] isa AbstractDict && get(eq["lhs"], "op", nothing) == "D"
+    )
+    for (k, en) in enumerate(entries)
+        r = eqs["J_$k"]
+        r isa AbstractDict && get(r, "op", nothing) == "makearray" || continue
+        rows = [Int.(x) for x in r["regions"][2][1:length(en.band.rows)]]
+        rows == [Int[lo, hi] for (lo, hi) in en.band.rows] || error(
+            "band field J_$k of EarthSciASTDiff's evaluation document covers rows $rows, " *
+                "but band $k has rows $(en.band.rows) (spec/plan.md §6.2)"
+        )
+    end
     drop_ic!(doc["models"])
     return doc
 end
@@ -192,7 +216,8 @@ end
 """Remove the `ic` equations of every model and subsystem in `models`."""
 function drop_ic!(models::AbstractDict)
     for (_, node) in models
-        filter!(eq -> !(eq["lhs"] isa AbstractDict && get(eq["lhs"], "op", nothing) == "ic"), node["equations"])
+        eqs = get(node, "equations", nothing)
+        eqs === nothing || filter!(eq -> !(eq["lhs"] isa AbstractDict && get(eq["lhs"], "op", nothing) == "ic"), eqs)
         haskey(node, "subsystems") && drop_ic!(node["subsystems"])
     end
     return models

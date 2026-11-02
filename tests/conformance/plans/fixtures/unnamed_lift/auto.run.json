@@ -1,0 +1,6 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Everything automatic on a lift that no declared variable names: one default_pointwise operator over flatten's synthetic index set.",
+  "model": "model.esm",
+  "schedule": "auto"
+}
