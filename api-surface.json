@@ -368,14 +368,6 @@
       }
     },
     {
-      "name": "planned_operator",
-      "kind": "type",
-      "tier": "stable",
-      "bindings": {
-        "julia": "PlannedOperator"
-      }
-    },
-    {
       "name": "band_entry",
       "kind": "type",
       "tier": "stable",
