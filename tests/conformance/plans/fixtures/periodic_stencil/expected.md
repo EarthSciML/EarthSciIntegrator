@@ -17,7 +17,7 @@ The model: one state `Transport.q` over `lon × lat × lev` = 8 × 2 × 2, advec
 - `linear_in_u` true (coefficients read only `c` and `dx`); `depends_on_t` false.
 - No `block`, no `column`.
 
-**Derived documents.** `derived/<op>.rhs.esm`: model `Transport` with `q` (shape `["lon", "lat", "lev"]`, default 1.5), `c` (same shape, 0.125), `dx`; its equation `D(Transport.q) = ` the `makearray` as flattened, with every reference fully scoped; its `ic` equation. The Jacobian document has 36 band fields `_jacobian.J_1 … J_36`, each of shape `["lon", "lat", "lev"]`.
+**Derived documents.** `derived/<op>.rhs.esm`: model `Transport` with `q` (shape `["lon", "lat", "lev"]`, default 1.5), `c` (same shape, 0.125), `dx`; its equation `D(Transport.q) = ` the `makearray` as flattened, with every reference fully scoped; its `ic` equation. The Jacobian document has 36 band fields `JacobianEval.J_1 … J_36`, each of shape `["lon", "lat", "lev"]`, and no `ic` equation (§6.2).
 
 **Time.** `{"start": 0, "end": 0.5}`.
 

@@ -29,9 +29,20 @@ const CASES: &[(&str, &str)] = &[
     ("reseact_shaped", "auto"),
     ("reseact_shaped", "named"),
     ("toy_advection_reaction", "strang"),
+    ("unnamed_lift", "auto"),
     ("toy_photostationary_cells", "kvaerno4"),
     ("toy_robertson", "rodas4"),
 ];
+
+/// The left-hand-side `op` of every equation of a model and its subsystems.
+fn lhs_ops(model: &Value, out: &mut Vec<String>) {
+    for eq in model["equations"].as_array().into_iter().flatten() {
+        out.push(eq["lhs"]["op"].as_str().unwrap_or_default().to_string());
+    }
+    for sub in model["subsystems"].as_object().into_iter().flatten() {
+        lhs_ops(sub.1, out);
+    }
+}
 
 fn run_config(fixture: &str, case: &str) -> PathBuf {
     conformance()
@@ -144,8 +155,21 @@ fn every_case() {
         let bytes = p.plan_bytes().unwrap();
         assert_eq!(String::from_utf8(bytes.clone()).unwrap(), canon(&plan_json));
         // Each derived document loads and flattens, and the Jacobian
-        // document has one band field per band.
+        // document has one band field per band and no `ic` equation.
         for (op, d) in &p.documents {
+            let jac_json: Value = serde_json::from_slice(&d.jacobian).unwrap();
+            let mut ops = Vec::new();
+            for m in jac_json["models"].as_object().unwrap().values() {
+                lhs_ops(m, &mut ops);
+            }
+            assert!(
+                !ops.is_empty(),
+                "{fixture}/{case} {op}.jacobian has no equation"
+            );
+            assert!(
+                !ops.contains(&"ic".to_string()),
+                "{fixture}/{case} {op}.jacobian has an ic equation"
+            );
             FlatView::new(std::str::from_utf8(&d.rhs).unwrap())
                 .unwrap_or_else(|e| panic!("{fixture}/{case} {op}.rhs: {e}"));
             let jac = FlatView::new(std::str::from_utf8(&d.jacobian).unwrap())
@@ -154,7 +178,7 @@ fn every_case() {
                 .flat
                 .state_variables
                 .keys()
-                .filter(|k| k.starts_with("_jacobian.J_"))
+                .filter(|k| k.starts_with("JacobianEval.J_"))
                 .count();
             assert_eq!(
                 fields,
@@ -397,6 +421,52 @@ fn full_block(vars: &[&str]) -> Value {
     json!({"vars": vars, "ordering": (1..=n).collect::<Vec<_>>(), "pattern": pairs, "lu_pattern": pairs})
 }
 
+/// `unnamed_lift/expected.md`: no index set is declared, so `flatten` names
+/// the lift's dimension `_liftdim1_4` (spec/plan.md §6.1.3). It is the
+/// lifted states' shape, the default axis, and in both derived documents'
+/// `index_sets`; the band fields are shaped on it.
+#[test]
+fn unnamed_lift() {
+    let set = "_liftdim1_4";
+    let p = planned("unnamed_lift", "auto");
+    let op = "default_pointwise";
+    assert_eq!(p.operators.keys().collect::<Vec<_>>(), [op]);
+    assert_eq!(p.model.states, ["Chem.NO", "Chem.NO2", "Chem.O3"]);
+    for x in &p.model.states {
+        assert_eq!(p.model.shapes[x], [set], "shape of {x}");
+    }
+    assert_eq!(p.axes.horizontal, [set]);
+    assert_eq!(p.structures[op].class, "block_diagonal");
+    let plan_json: Value = serde_json::from_slice(&p.plan_bytes().unwrap()).unwrap();
+    assert_eq!(plan_json["partition"]["halo"], json!({set: 0}));
+    let sets = json!({set: {"kind": "interval", "size": 4}});
+    let d = &p.documents[op];
+    let rhs: Value = serde_json::from_slice(&d.rhs).unwrap();
+    let jac: Value = serde_json::from_slice(&d.jacobian).unwrap();
+    for (name, doc) in [("rhs", &rhs), ("jacobian", &jac)] {
+        assert_eq!(doc["index_sets"], sets, "{name} index_sets");
+        assert!(doc.get("domain").is_none(), "{name} has a domain");
+        for v in ["NO", "NO2", "O3"] {
+            assert_eq!(
+                doc["models"]["Chem"]["variables"][v]["shape"],
+                json!([set]),
+                "{name} Chem.{v}"
+            );
+        }
+    }
+    for eq in rhs["models"]["Chem"]["equations"].as_array().unwrap() {
+        let r = &eq["rhs"];
+        assert_eq!(r["op"], "faq");
+        assert_eq!(r["output_idx"], json!(["i"]));
+        assert_eq!(r["ranges"], json!({"i": {"from": set}}));
+    }
+    let fields = jac["models"]["JacobianEval"]["variables"]
+        .as_object()
+        .unwrap();
+    assert_eq!(fields.len(), 9);
+    assert!(fields.values().all(|f| f["shape"] == json!([set])));
+}
+
 #[test]
 fn pointwise_chemistry() {
     for case in ["auto", "named"] {
@@ -502,7 +572,9 @@ fn pointwise_chemistry() {
             same(&eq["rhs"]["output_idx"], &json!(["i"]), "output_idx");
         }
         let jac: Value = serde_json::from_slice(&p.documents[op].jacobian).unwrap();
-        let fields = jac["models"]["_jacobian"]["variables"].as_object().unwrap();
+        let fields = jac["models"]["JacobianEval"]["variables"]
+            .as_object()
+            .unwrap();
         assert_eq!(fields.len(), 9);
         for f in fields.values() {
             same(
@@ -605,7 +677,7 @@ fn periodic_stencil() {
         }
         let jac: Value = serde_json::from_slice(&p.documents[op].jacobian).unwrap();
         assert_eq!(
-            jac["models"]["_jacobian"]["variables"]
+            jac["models"]["JacobianEval"]["variables"]
                 .as_object()
                 .unwrap()
                 .len(),
@@ -665,7 +737,7 @@ fn column_contraction() {
     assert!((rho[0].as_f64().unwrap() - 0.32).abs() < 1e-12);
     // The contracted band field has the row's index sets and one of extent 5.
     let jac: Value = serde_json::from_slice(&p.documents["default_column"].jacobian).unwrap();
-    let shape = jac["models"]["_jacobian"]["variables"]["J_2"]["shape"].clone();
+    let shape = jac["models"]["JacobianEval"]["variables"]["J_2"]["shape"].clone();
     assert_eq!(
         &shape.as_array().unwrap()[..3],
         &[json!("lon"), json!("lat"), json!("lev")]

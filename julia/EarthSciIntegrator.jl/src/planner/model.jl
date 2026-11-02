@@ -13,7 +13,7 @@ The flattened model as the passes read it.
   `state_set` holds them for lookup, and `canonical` is the same names
   sorted by code point (§4).
 - `shapes`: index-set names per array variable: the declared shape, or for
-  a lifted state the shape of §6.1.3.
+  a lifted state the shape `flatten` records (§6.1.3).
 - `sizes`: every index set's size, in the flattened model's `index_sets` order.
 - `state_eqs`: `(equation index, dependent variable, lifted)` per state equation.
 - `observed_defs`: each observed's defining right-hand side.
@@ -99,35 +99,10 @@ function reaction_system_paths(file::EarthSciAST.EsmFile)
 end
 
 """
-    lifted_shape(flat, name, extents, sizes) -> Vector{String}
-
-spec/plan.md §6.1.3: a lifted state's shape is the declared shape of the
-first non-lifted variable of the flattened model, searching
-`state_variables`, then `parameters`, then `observed_variables`, each in
-document order, whose declared shape has exactly the lift's extents, index
-set by index set; `lift_shape_unresolved` when none does. The `shape` that
-Julia's `flatten` records on a lifted state itself (`["cell"]`, even when no
-variable declares it) is ignored, as §6.1.3 says.
-"""
-function lifted_shape(flat, name, extents::Vector{Int}, sizes)
-    for dict in (flat.state_variables, flat.parameters, flat.observed_variables), (vname, v) in dict
-        haskey(flat.lifted_shapes, vname) && continue
-        sh = v.shape
-        (sh === nothing || length(sh) != length(extents)) && continue
-        all(i -> get(sizes, sh[i], -1) == extents[i], eachindex(sh)) && return String.(sh)
-    end
-    return refuse(
-        "lift_shape_unresolved", "/model",
-        "no declared shape has the extents $extents of the lifted state $name (spec/plan.md §6.1.3, §10 item 1)"
-    )
-end
-
-"""
     plan_model(inputs) -> PlanModel
 
-The flattened model's names, shapes and equations (§4). Resolves lifted
-shapes (§6.1.3), so `lift_shape_unresolved` is raised here, in §4 step 8,
-before the axes, which need state shapes (§5.2.1).
+The flattened model's names, shapes and equations (§4). A lifted state's
+shape is the one `flatten` records on it (§6.1.3).
 """
 function plan_model(inp::PlanInputs)
     flat = inp.flat
@@ -151,11 +126,10 @@ function plan_model(inp::PlanInputs)
     states = [k for k in keys(flat.state_variables) if k in differentiated]
     shapes = Dict{String, Vector{String}}()
     for dict in (flat.state_variables, flat.parameters, flat.observed_variables), (k, v) in dict
-        haskey(flat.lifted_shapes, k) && continue
         v.shape === nothing || isempty(v.shape) || (shapes[k] = String.(v.shape))
     end
-    for (k, ext) in flat.lifted_shapes
-        shapes[k] = lifted_shape(flat, k, ext, sizes)
+    for k in keys(flat.lifted_shapes)
+        haskey(shapes, k) || error("EarthSciAST's flatten recorded no shape for the lifted state $k (spec/plan.md §6.1.3)")
     end
     return PlanModel(
         inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
@@ -171,8 +145,9 @@ The `faq` wrapper of a lifted state equation as §6.1.2 writes it in a derived
 document: `output_idx` copied from the flattened equation's right-hand-side
 `faq`, and `ranges` built, not copied, mapping the `d`-th name of
 `output_idx` to `{"from": X_d}`, `X_d` the index set of dimension `d` of the
-state's shape (§6.1.3). (Julia's `flatten` writes `{"from": "cell"}`, Rust's
-`[1, 4]`; building them keeps the documents the same in both.)
+state's shape (§6.1.3). (Before EarthSciAST 0.8, Rust's `flatten` wrote the
+interval `[1, 4]` where Julia's wrote `{"from": "cell"}`; building them keeps
+the documents the same in both.)
 """
 function lifted_ranges(m::PlanModel, ei::Int, var::AbstractString)
     rhs = m.flat.equations[ei].rhs

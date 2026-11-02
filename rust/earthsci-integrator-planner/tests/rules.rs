@@ -522,3 +522,35 @@ fn imex_operator_names() {
     );
     assert!(run("imex-ignored", None, ignored).is_ok());
 }
+
+/// spec/plan.md §6.1.3: the `unnamed_lift` fixture's model with its grid
+/// declared as the index set `cell`, which no variable's shape names: the
+/// only declared index set of the lift's size, so `flatten` names the
+/// lift's dimension `cell`, and every derived document declares it and the
+/// lifted `faq` ranges over it. (The fixture itself, with no index set,
+/// covers the synthetic `_liftdim1_4`.)
+#[test]
+fn lift_onto_declared_unnamed_grid() {
+    let path = conformance().join("plans/fixtures/unnamed_lift/model.esm");
+    let mut model: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    model["index_sets"] = json!({"cell": {"kind": "interval", "size": 4}});
+    let rc = json!({"esm_integrator": "0.1.0", "model": "model.esm", "schedule": "auto"});
+    let p = run("lift-declared-unnamed-grid", Some(&model), rc).unwrap();
+    for x in &p.model.states {
+        assert_eq!(p.model.shapes[x], ["cell"], "shape of {x}");
+    }
+    let sets = json!({"cell": {"kind": "interval", "size": 4}});
+    for (op, d) in &p.documents {
+        let rhs: Value = serde_json::from_slice(&d.rhs).unwrap();
+        let jac: Value = serde_json::from_slice(&d.jacobian).unwrap();
+        assert_eq!(rhs["index_sets"], sets, "{op}.rhs index_sets");
+        assert_eq!(jac["index_sets"], sets, "{op}.jacobian index_sets");
+        for eq in rhs["models"]["Chem"]["equations"].as_array().unwrap() {
+            assert_eq!(
+                eq["rhs"]["ranges"],
+                json!({"i": {"from": "cell"}}),
+                "{op} ranges"
+            );
+        }
+    }
+}

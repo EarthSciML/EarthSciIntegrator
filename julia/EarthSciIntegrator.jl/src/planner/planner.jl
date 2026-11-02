@@ -114,12 +114,12 @@ function _resolved_alg(tree, id)
     return nothing
 end
 
-"""§4 step 7 (§6.1.4): a top-level component named `_jacobian` is refused, since the Jacobian document uses that name."""
+"""§4 step 7 (§6.1.4): a top-level component named `JacobianEval` is refused, since the Jacobian document uses that name."""
 function check_reserved_names(file::EarthSciAST.EsmFile)
     for d in (file.models, file.reaction_systems)
-        d !== nothing && haskey(d, "_jacobian") && refuse(
+        d !== nothing && haskey(d, "JacobianEval") && refuse(
             "reserved_component_name", "/model",
-            "the model has a top-level component named _jacobian, which the Jacobian document reserves (spec/plan.md §6.1.4)"
+            "the model has a top-level component named JacobianEval, which the Jacobian document reserves (spec/plan.md §6.1.4)"
         )
     end
     return

@@ -9,13 +9,13 @@ A derived document as the planner holds it: its JSON object, its bytes
 (`stable_json`, §2.2), and the document loaded and flattened by EarthSciAST.
 """
 struct DerivedDocument
-    doc::Dict{String, Any}
+    doc::AbstractDict{String, Any}
     bytes::String
     file::EarthSciAST.EsmFile
     flat::EarthSciAST.FlattenedSystem
 end
 
-function DerivedDocument(doc::Dict{String, Any})
+function DerivedDocument(doc::AbstractDict{String, Any})
     bytes = document_bytes(doc)
     file = EarthSciAST.load_string(bytes)
     return DerivedDocument(doc, bytes, file, EarthSciAST.flatten(file))
@@ -114,7 +114,7 @@ end
 """The operator's Jacobian document (§6.2), built on first use."""
 function jacobian_document!(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
-    a.jac === nothing && (a.jac = DerivedDocument(rhs_document(ctx.model, op.name, op.terms; jacobian = a.entries)))
+    a.jac === nothing && (a.jac = DerivedDocument(jacobian_document(a.rhs.flat, a.entries)))
     return a.jac
 end
 
@@ -289,9 +289,12 @@ function derived_and_validation(b::DiffBackend, ctx)
     validation = Any[Dict{String, Any}("check" => "rhs_sum", "passed" => true)]
     for o in names
         op = ctx.ops[o]
+        # `non_empty` runs first, so an operator that reads a state but has
+        # no band is `validation_empty_operator` rather than a `band_model`
+        # failure; `validation` still lists `band_model` first.
+        non_empty_check(b, ctx, op)
         band_model_check!(b, ctx, op)
         push!(validation, Dict{String, Any}("check" => "band_model", "operator" => o, "passed" => true))
-        non_empty_check(b, ctx, op)
         push!(validation, Dict{String, Any}("check" => "non_empty", "operator" => o, "passed" => true))
     end
     return derived, validation

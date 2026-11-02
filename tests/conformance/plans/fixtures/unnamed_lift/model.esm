@@ -1,14 +1,8 @@
 {
   "esm": "1.3.0",
   "metadata": {
-    "name": "lift_without_shape",
-    "description": "The pointwise chemistry fixture without its arrayed parameter: no declared shape names the lift's index set."
-  },
-  "index_sets": {
-    "cell": {
-      "kind": "interval",
-      "size": 4
-    }
+    "name": "unnamed_lift",
+    "description": "The pointwise chemistry fixture without its arrayed parameter: no index set is declared, so flatten names the lift's dimension with the synthetic index set _liftdim1_4."
   },
   "reaction_systems": {
     "Chem": {

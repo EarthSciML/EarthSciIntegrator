@@ -139,7 +139,7 @@ function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
     slot(name) = haskey(vm, name) ? vm[name] :
         error("EarthSciAST's state layout of a derived document has no element $name")
     perm = Int[slot(n) for n in L.names]
-    fslots = [Int[slot(element_name("_jacobian.J_$k", c)) for c in cells(ext)] for (k, ext) in enumerate(fields)]
+    fslots = [Int[slot(element_name("JacobianEval.J_$k", c)) for c in cells(ext)] for (k, ext) in enumerate(fields)]
     return BuiltDocument(
         prog, EarthSciAST.rhs_workspace(prog), EarthSciAST.default_forcing_set(prog), EarthSciAST.parameter_vector(prog),
         zeros(EarthSciAST.tile_layout(prog).n_aux), prob.f!, prob.p, prob.u0, length(prob.u0), perm, fslots

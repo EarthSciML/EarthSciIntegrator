@@ -95,7 +95,7 @@ A runtime that executes a plan (spec/plan.md) builds each operator the schedule 
 ### 8.1 Building the kernels
 
 - **Right-hand side.** Load `derived/<name>.rhs.esm` with EarthSciAST and build its right-hand side as the public reentrant program of U4 (EarthSciAST 0.5.0), the same way in both languages: `rhs_program(esm_problem(path, tspan))` with the native compiler, which returns an `RhsProgram`. `esm_problem` flattens the document, so both languages build from the flattened document, whose names and parameter order §8.2 refers to. `tspan` is the run's interval; it does not affect the program, which takes $t$ as an argument, and derived documents carry no data providers for it to sample. Runtimes do not use the problem's `f!`, which is not reentrant (architecture §7.3), nor `build_evaluator`, deprecated since EarthSciAST 0.4.0 (spec/plan.md §10 item 3). A runtime calls one `RhsProgram` from as many threads as it runs shards on.
-- **Jacobian.** Load and build `derived/<name>.jacobian.esm` the same way. Its right-hand side at $(u, p, t)$ holds band field `J_k` in the slots of the state `_jacobian.J_k` (spec/plan.md §6.2).
+- **Jacobian.** Load and build `derived/<name>.jacobian.esm` the same way. Its right-hand side at $(u, p, t)$ holds band field `J_k` in the slots of the state `JacobianEval.J_k` (spec/plan.md §6.2).
 - A build failure refuses the leaf, naming the operator and the document.
 
 ### 8.2 Layout and arguments

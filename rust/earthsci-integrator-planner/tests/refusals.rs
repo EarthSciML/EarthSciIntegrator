@@ -21,7 +21,6 @@ const BEFORE_BANDS: &[&str] = &[
     "reserved-component-name",
     "axes-unresolved",
     "axes-too-many",
-    "lift-shape-unresolved",
     "time-interval-empty",
     "time-interval-missing",
     "time-invalid-date",

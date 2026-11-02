@@ -192,10 +192,8 @@ impl<'a> Numbers<'a> {
 pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Planned> {
     // §4 steps 1–7.
     let rc = runconfig::read(path)?;
-    let mut info = model::read(&rc)?;
-    // §4 step 8: the shapes of lifted states (§6.1.3), whether or not `axes`
-    // is given, then the axes, then the time.
-    model::resolve_lifted_shapes(&mut info)?;
+    let info = model::read(&rc)?;
+    // §4 step 8: the axes, then the time.
     let axes = axes::resolve(&rc, &info)?;
     let interval = time::resolve(&rc, &info, options.time.as_ref())?;
 
@@ -240,24 +238,33 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
 
     // Pass 4: each operator's band list, from its right-hand-side document,
     // and its structure.
+    // Each operator's view is built once (`sysview_flat` checks the lifted
+    // shapes) and read by its bands, its structure and its Jacobian
+    // document (§6.2), which is built here: the Gershgorin bound evaluates
+    // it, and it is written with the other derived documents.
     let mut rhs_docs = BTreeMap::new();
-    let mut views = BTreeMap::new();
+    let mut jac_docs = BTreeMap::new();
     let mut structures = BTreeMap::new();
     let state_dependent = info.state_dependent();
     for (name, op) in &ops {
         let ts: Vec<&Term> = op.terms.iter().map(|&i| &terms[i]).collect();
         let doc = derived::rhs_document(&info, name, &ts);
-        let (view, band_list) = astdiff::document_bands(&doc).map_err(|m| {
+        let band_model_failed = |m: String| {
             refuse(
                 codes::BAND_MODEL_FAILED,
                 "/model",
                 format!("operator {name}: {m}"),
             )
-        })?;
-        let st =
-            structure::structure(&info, &axes, op, &terms, &view, band_list, &state_dependent)?;
+        };
+        let view = astdiff::FlatView::of_document(&doc).map_err(band_model_failed)?;
+        let sv = view
+            .sysview()
+            .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let band_list =
+            astdiff::bands(&sv).map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let st = structure::structure(&info, &axes, op, &terms, &sv, band_list, &state_dependent)?;
+        jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
-        views.insert(name.clone(), view);
         structures.insert(name.clone(), st);
     }
 
@@ -280,16 +287,6 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let given_algs = given_algs(&root);
     let precision = settings::precision(&rc, &info, &ops, &root, &given_algs)?;
     let checkpoint_schedule = settings::checkpoint(&rc, &info, &root)?;
-
-    // The Jacobian documents (§6.2): built here, since the Gershgorin bound
-    // evaluates them; written with the other derived documents.
-    let mut jac_docs = BTreeMap::new();
-    for (name, st) in &structures {
-        jac_docs.insert(
-            name.clone(),
-            derived::jacobian_document(&info, name, &views[name], &st.bands)?,
-        );
-    }
 
     // Pass 5: stiffness, rules 1–3, then rule 4.
     let reference_steps = schedule::reference_steps(&root, &rc, &info, interval)?;
@@ -493,8 +490,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         "planner": "earthsci-integrator-planner (Rust)",
         "version": env!("CARGO_PKG_VERSION"),
         "upstream": {
-            "earthsci-ast": "0.7.0",
-            "earthsci-astdiff": "0.2.0",
+            "earthsci-ast": "0.8.0",
+            "earthsci-astdiff": "0.3.0",
         },
         "validation": Value::Object(report),
     });
