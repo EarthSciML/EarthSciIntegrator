@@ -229,13 +229,9 @@ The math is in [`adjoint.md`](adjoint.md).
 - `output.accumulators`: name → observed. The planner adds each as an integrated state (D26).
 - `restart`: `path`, cadence `every`, and `from`, a restart store to start from. Restart is bitwise for the same decomposition (architecture §11).
 
-### 7.4 `forcing`
+### 7.4 Data
 
-How the model's data-fed parameters (spec/plan.md §4.1) receive their records. Where the data is stays in the model's `data_sources`; the run config never names a file or URL, and the runtime's cache directory, offline mode and URL overrides are run-time options, not run-config keys (spec/operator-interface.md §8.4.2).
-
-- `forcing.records`: data-fed parameter → `1` or `2`, default `1`. `1` gives the record at or before the current forcing epoch; `2` gives that record and its successor, stacked along the parameter's first dimension, which must have size 2, for the model to blend in time (EarthSciIO's `records_per_sample`; esm-jacobian-spec §4.3's record axis). It is here only because the esm format has no field for it (spec/plan.md §10 item 20); when the format gains one, the model's declaration is read and this key, if given, must agree with it.
-
-A model that uses a time-varying data-fed parameter must name `forcing_refresh` in `step.hit` (§5; spec/plan.md §7.3).
+The run config names no data: where the data is, which records a parameter receives and how they are read are the model's own declarations (its `data_sources` and each data-fed parameter's `update.from`; spec/plan.md §4.1). The runtime's cache directory, offline mode and URL overrides are run-time options, not run-config keys (spec/operator-interface.md §8.4.2). A model that uses a time-varying data-fed parameter must name `forcing_refresh` in `step.hit` (§5; spec/plan.md §7.3).
 
 ## 8. Rules the planner checks
 
@@ -257,6 +253,6 @@ The schema checks structure. The planner additionally refuses, naming the offend
 14. no run interval from any source; one whose end is not after its start; a timestamp naming a day its month does not have, or a malformed timestamp in the caller's interval or the model's `solver.time_span` (a malformed run-config timestamp fails the run-config schema instead and is `run_config_invalid`; spec/plan.md §7.2); or a timestamp from any source when the model's time-origin field is present but unreadable (§1.1);
 15. a leaf with `dt` omitted that has a `bind_dt: "leaf"` parameter but no `control.dt0`, since the first-step algorithm evaluates the right-hand side before any step size exists (spec/methods.md §9);
 16. `coupled` with algebraic operators, `split_explicit`, `crossing` parameter-update rules (D22; `unsupported_crossing_update` wins over the general `unsupported_parameter_update`), or any other construct this version specifies but no implementation yet supports, with a refusal that says so.
-17. a `forcing.records` key that is not a data-fed parameter, or `2` on one that is not time-varying or whose first dimension is not of size 2; a used data-fed parameter without a nonzero `default` at every element; a model with a used time-varying data-fed parameter whose `step.hit` lacks `forcing_refresh`; an operator whose stiffness would be classified by the Gershgorin bound although its Jacobian reads a data-fed parameter (spec/plan.md §4.1, §5.5.2, §7.3; D87).
+17. a data-fed parameter that asks for two records (`update.from.records`) but is not time-varying or whose first dimension is not of size 2; a used data-fed parameter without a nonzero `default` at every element; a model with a used time-varying data-fed parameter whose `step.hit` lacks `forcing_refresh`; an operator whose stiffness would be classified by the Gershgorin bound although its Jacobian reads a data-fed parameter (spec/plan.md §4.1, §5.5.2, §7.3; D87).
 
 Each refusal has a code, listed with the rule it implements in [`planner-errors.json`](planner-errors.json) (D79); a refusal reports its code and the run-config pointer, which conformance fixtures check, and a message, which they do not. Where the cause has no run-config key of its own, or the key is not obvious, the pointer is fixed, and spec/planner-errors.json gives it in the code's description; that file is the one list of these pointers. They include `""` for a schema failure and for refusals about the caller's interval, `/model` for refusals about the model alone, `/schedule` for a default operator no node advances, and the precision entry that set the role for precision refusals. At M2, rule 16 also covers algebraic equations, events, every parameter `update` rule, data-loader forcing, `map` operators and nodes, observed step limits and `solve` nodes (spec/plan.md §0.1, D75).
