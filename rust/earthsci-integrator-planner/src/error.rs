@@ -49,7 +49,6 @@ pub mod codes {
     pub const BIND_DT_LEAF_WITHOUT_DT0: &str = "bind_dt_leaf_without_dt0";
     pub const AUTO_STRATEGY_UNAVAILABLE: &str = "auto_strategy_unavailable";
     pub const BAND_MODEL_FAILED: &str = "band_model_failed";
-    pub const LIFT_SHAPE_UNRESOLVED: &str = "lift_shape_unresolved";
     pub const RESERVED_COMPONENT_NAME: &str = "reserved_component_name";
     pub const PARTITION_AXIS_MISSING: &str = "partition_axis_missing";
     pub const PARTITION_TOO_FINE: &str = "partition_too_fine";
@@ -107,7 +106,6 @@ pub mod codes {
         BIND_DT_LEAF_WITHOUT_DT0,
         AUTO_STRATEGY_UNAVAILABLE,
         BAND_MODEL_FAILED,
-        LIFT_SHAPE_UNRESOLVED,
         RESERVED_COMPONENT_NAME,
         PARTITION_AXIS_MISSING,
         PARTITION_TOO_FINE,

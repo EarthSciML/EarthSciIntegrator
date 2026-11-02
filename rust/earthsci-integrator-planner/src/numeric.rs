@@ -374,7 +374,7 @@ pub fn pattern(dofs: &Dofs, entries: &[JacEntry]) -> Result<Sparse, String> {
 }
 
 /// The band Jacobian at `(u, t)` from the Jacobian document's program: band
-/// `k`'s field `_jacobian.J_k` over the row's extents then the contracted
+/// `k`'s field `JacobianEval.J_k` over the row's extents then the contracted
 /// extents, column-major, scattered with the band's indices and summed.
 pub fn band_jacobian(
     jac: &Program,

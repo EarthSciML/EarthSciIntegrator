@@ -192,10 +192,8 @@ impl<'a> Numbers<'a> {
 pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Planned> {
     // §4 steps 1–7.
     let rc = runconfig::read(path)?;
-    let mut info = model::read(&rc)?;
-    // §4 step 8: the shapes of lifted states (§6.1.3), whether or not `axes`
-    // is given, then the axes, then the time.
-    model::resolve_lifted_shapes(&mut info)?;
+    let info = model::read(&rc)?;
+    // §4 step 8: the axes, then the time.
     let axes = axes::resolve(&rc, &info)?;
     let interval = time::resolve(&rc, &info, options.time.as_ref())?;
 
@@ -287,7 +285,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     for (name, st) in &structures {
         jac_docs.insert(
             name.clone(),
-            derived::jacobian_document(&info, name, &views[name], &st.bands)?,
+            derived::jacobian_document(&views[name], &st.bands)?,
         );
     }
 
@@ -493,8 +491,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         "planner": "earthsci-integrator-planner (Rust)",
         "version": env!("CARGO_PKG_VERSION"),
         "upstream": {
-            "earthsci-ast": "0.7.0",
-            "earthsci-astdiff": "0.2.0",
+            "earthsci-ast": "0.8.0",
+            "earthsci-astdiff": "0.3.0",
         },
         "validation": Value::Object(report),
     });

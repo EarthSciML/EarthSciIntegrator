@@ -116,12 +116,14 @@ pub fn structure(
         });
 
     let block = if op.locality.class == Class::Pointwise && class == "block_diagonal" {
-        let plan =
-            earthsci_astdiff::plan_factorization(&bands, &view.sysview(), &ctx, Some(&class))
-                .map_err(|e| PlanError::Internal(format!("plan_factorization: {}", e.0)))?
-                .ok_or_else(|| {
-                    PlanError::Internal("plan_factorization gave no block_diagonal plan".into())
-                })?;
+        let sv = view
+            .sysview()
+            .map_err(|e| PlanError::Internal(format!("sysview_flat: {}", e.0)))?;
+        let plan = earthsci_astdiff::plan_factorization(&bands, &sv, &ctx, Some(&class))
+            .map_err(|e| PlanError::Internal(format!("plan_factorization: {}", e.0)))?
+            .ok_or_else(|| {
+                PlanError::Internal("plan_factorization gave no block_diagonal plan".into())
+            })?;
         let plan = earthsci_astdiff::serialize_plan(&plan);
         Some(block_of(plan.clone()).ok_or_else(|| {
             PlanError::Internal(format!("serialize_plan gave no block LU: {plan}"))

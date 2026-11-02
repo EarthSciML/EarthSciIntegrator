@@ -144,8 +144,14 @@ fn every_case() {
         let bytes = p.plan_bytes().unwrap();
         assert_eq!(String::from_utf8(bytes.clone()).unwrap(), canon(&plan_json));
         // Each derived document loads and flattens, and the Jacobian
-        // document has one band field per band.
+        // document has one band field per band and no `ic` equation.
         for (op, d) in &p.documents {
+            assert!(
+                !std::str::from_utf8(&d.jacobian)
+                    .unwrap()
+                    .contains(r#""op":"ic""#),
+                "{fixture}/{case} {op}.jacobian has an ic equation"
+            );
             FlatView::new(std::str::from_utf8(&d.rhs).unwrap())
                 .unwrap_or_else(|e| panic!("{fixture}/{case} {op}.rhs: {e}"));
             let jac = FlatView::new(std::str::from_utf8(&d.jacobian).unwrap())
@@ -154,7 +160,7 @@ fn every_case() {
                 .flat
                 .state_variables
                 .keys()
-                .filter(|k| k.starts_with("_jacobian.J_"))
+                .filter(|k| k.starts_with("JacobianEval.J_"))
                 .count();
             assert_eq!(
                 fields,
@@ -502,7 +508,9 @@ fn pointwise_chemistry() {
             same(&eq["rhs"]["output_idx"], &json!(["i"]), "output_idx");
         }
         let jac: Value = serde_json::from_slice(&p.documents[op].jacobian).unwrap();
-        let fields = jac["models"]["_jacobian"]["variables"].as_object().unwrap();
+        let fields = jac["models"]["JacobianEval"]["variables"]
+            .as_object()
+            .unwrap();
         assert_eq!(fields.len(), 9);
         for f in fields.values() {
             same(
@@ -605,7 +613,7 @@ fn periodic_stencil() {
         }
         let jac: Value = serde_json::from_slice(&p.documents[op].jacobian).unwrap();
         assert_eq!(
-            jac["models"]["_jacobian"]["variables"]
+            jac["models"]["JacobianEval"]["variables"]
                 .as_object()
                 .unwrap()
                 .len(),
@@ -665,7 +673,7 @@ fn column_contraction() {
     assert!((rho[0].as_f64().unwrap() - 0.32).abs() < 1e-12);
     // The contracted band field has the row's index sets and one of extent 5.
     let jac: Value = serde_json::from_slice(&p.documents["default_column"].jacobian).unwrap();
-    let shape = jac["models"]["_jacobian"]["variables"]["J_2"]["shape"].clone();
+    let shape = jac["models"]["JacobianEval"]["variables"]["J_2"]["shape"].clone();
     assert_eq!(
         &shape.as_array().unwrap()[..3],
         &[json!("lon"), json!("lat"), json!("lev")]

@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// The top-level component name the Jacobian document reserves
 /// (spec/plan.md §6.1.4).
-pub const RESERVED_COMPONENT: &str = "_jacobian";
+pub const RESERVED_COMPONENT: &str = "JacobianEval";
 
 /// The flattened model and what the passes read from it.
 #[derive(Debug, Clone)]
@@ -32,7 +32,7 @@ pub struct ModelInfo {
     /// differentiates), in canonical order: sorted by code point (§4).
     pub states: Vec<String>,
     /// Each state's index sets (its declared shape, or for a lifted state
-    /// the shape of §6.1.3); empty for a scalar.
+    /// the shape `flatten` records, §6.1.3); empty for a scalar.
     pub shapes: BTreeMap<String, Vec<String>>,
     /// Observed definitions: observed name → its right-hand side.
     pub observed_defs: BTreeMap<String, Expr>,
@@ -257,7 +257,7 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         .contains("\"table_lookup\"")
     {
         return Err(PlanError::NotYetImplemented(
-            "lowering table_lookup inside each contribution (spec/plan.md §4 step 5) has no public Rust entry point in EarthSciAST 0.7".into(),
+            "lowering table_lookup inside each contribution (spec/plan.md §4 step 5) has no public Rust entry point in EarthSciAST 0.8".into(),
         ));
     }
 
@@ -352,7 +352,7 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         shapes: BTreeMap::new(),
         observed_defs,
     };
-    // Declared shapes now; lifted states get theirs in `resolve_lifted_shapes`.
+    // A lifted state's shape is the one `flatten` records on it (§6.1.3).
     for s in info.states.clone() {
         let declared = info.flat.state_variables[&s]
             .shape
@@ -404,56 +404,6 @@ fn check_external(rc: &RunConfig, file: &EsmFile, model_path: &Path) -> Result<(
                 ours.unwrap_or_default()
             ),
         ));
-    }
-    Ok(())
-}
-
-/// spec/plan.md §6.1.3: a lifted state's shape is the declared shape of the
-/// first variable of the flattened model (`state_variables`, then
-/// `parameters`, then `observed_variables`, each in document order) whose
-/// declared shape has exactly the lift's extents, index set by index set;
-/// none is `lift_shape_unresolved`.
-pub fn resolve_lifted_shapes(info: &mut ModelInfo) -> Result<()> {
-    let lifted: Vec<(String, Vec<i64>)> = info
-        .flat
-        .lifted_shapes
-        .iter()
-        .filter(|(k, _)| info.shapes.contains_key(*k))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    for (state, extents) in lifted {
-        // Non-lifted variables only: a shape `flatten` records on a lifted
-        // state itself is ignored (Rust's records none; Julia's does).
-        let lifted = &info.flat.lifted_shapes;
-        let candidates = info
-            .flat
-            .state_variables
-            .iter()
-            .chain(info.flat.parameters.iter())
-            .chain(info.flat.observed_variables.iter())
-            .filter(|(k, _)| !lifted.contains_key(*k))
-            .map(|(_, v)| v);
-        let found = candidates.filter_map(|v| v.shape.as_ref()).find(|shape| {
-            shape.len() == extents.len()
-                && shape
-                    .iter()
-                    .zip(&extents)
-                    .all(|(set, n)| info.index_sets.get(set) == Some(n))
-        });
-        match found {
-            Some(shape) => {
-                info.shapes.insert(state, shape.clone());
-            }
-            None => {
-                return Err(refuse(
-                    codes::LIFT_SHAPE_UNRESOLVED,
-                    "/model",
-                    format!(
-                        "no declared shape has the extents {extents:?} of the lifted state {state}"
-                    ),
-                ))
-            }
-        }
     }
     Ok(())
 }

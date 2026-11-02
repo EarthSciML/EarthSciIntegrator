@@ -30,19 +30,19 @@ impl FlatView {
     }
 
     /// EarthSciASTDiff's view of the flattened system (`sysview_flat`).
-    pub fn sysview(&self) -> SysView<'_> {
+    pub fn sysview(&self) -> Result<SysView<'_>, BandError> {
         earthsci_astdiff::sysview_flat(&self.flat)
     }
 
     /// EarthSciASTDiff's context of the view (index-set sizes, shapes).
     pub fn ctx(&self) -> Result<Ctx, BandError> {
-        earthsci_astdiff::ctx_of(&self.sysview())
+        earthsci_astdiff::ctx_of(&self.sysview()?)
     }
 
     /// The state Jacobian's band list (`jacobian_bands_view`, `wrt =
     /// states`), in EarthSciASTDiff's order.
     pub fn bands(&self) -> Result<Vec<JacEntry>, BandError> {
-        earthsci_astdiff::jacobian_bands_view(&self.sysview(), Wrt::States, None)
+        earthsci_astdiff::jacobian_bands_view(&self.sysview()?, Wrt::States, None)
     }
 }
 
