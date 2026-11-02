@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use earthsci_ast::Expr;
-use earthsci_integrator_planner::locality::{BandEntry, BandFailure, BandSource, RowIdx};
+use earthsci_integrator_planner::locality::{BandEntry, BandSource, BandSourceError, RowIdx};
 use earthsci_integrator_planner::model::ModelInfo;
 use earthsci_integrator_planner::terms::Term;
 use earthsci_integrator_planner::Planned;
@@ -65,7 +65,7 @@ impl BandSource for HandBands {
         &self,
         info: &ModelInfo,
         terms: &[Term],
-    ) -> Result<Option<Vec<Vec<BandEntry>>>, BandFailure> {
+    ) -> Result<Option<Vec<Vec<BandEntry>>>, BandSourceError> {
         let model = info.file.metadata.name.clone().unwrap_or_default();
         Ok(Some(
             terms
