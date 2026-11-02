@@ -20,6 +20,20 @@ mutable struct PlanContext
 end
 
 """
+    plan_context(inp, backend; tspan=nothing) -> PlanContext
+
+§4 step 8 for the inputs `inp`: the planner's model (lifted shapes,
+§6.1.3), then the axes and the time interval, in a context with no terms or
+operators yet.
+"""
+function plan_context(inp::PlanInputs, backend::PlanBackend; tspan = nothing)
+    m = plan_model(inp)
+    axes = resolve_axes(m, inp.config)
+    time = resolve_time(m, inp.config; tspan)
+    return PlanContext(inp, inp.config, m, backend, axes, time, Term[], Dict{String, PlanOperator}())
+end
+
+"""
     PlanDraft
 
 Everything a plan holds, as the planner computed it. `structure`, the
@@ -53,11 +67,8 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
     inp = read_inputs(config_path)                       # §4 steps 1–5
     check_scope(inp.flat)                                # step 6
     check_reserved_names(inp.file)                       # step 7
-    m = plan_model(inp)                                  # step 8: lifted shapes (§6.1.3), then axes and time
-    config = inp.config
-    axes = resolve_axes(m, config)
-    time = resolve_time(m, config; tspan)
-    ctx = PlanContext(inp, config, m, backend, axes, time, Term[], Dict{String, PlanOperator}())
+    ctx = plan_context(inp, backend; tspan)              # step 8: lifted shapes (§6.1.3), then axes and time
+    m, config, axes = ctx.model, ctx.config, ctx.axes
     # Passes 1 and 2, interleaved (§4 "Order of refusals", D81): terms and
     # owners, each term's locality, selection, then operator classes.
     ctx.terms = build_terms(m)

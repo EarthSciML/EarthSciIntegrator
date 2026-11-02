@@ -150,13 +150,19 @@ function _rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector
         end
     end
     if probe
+        v = component_model!(models, PROBE_COMPONENT)
         for (k, t) in enumerate(terms)
             x = probe_state(k)
-            v = component_model!(models, PROBE_COMPONENT)
+            # The term's state's declaration (its shape and `default`) and its
+            # `ic` equation, if any, so the new state is initialized as it is.
             v["variables"][last_segment(x)] = variable_object(m, t.variable, flat.state_variables[t.variable])
             eq = state_equation(m, t.equation, t.variable, t.lifted, [t])
             eq["lhs"]["args"] = Any[x]
             push!(v["equations"], eq)
+            for (y, e) in flat.field_ics
+                y == t.variable || continue
+                push!(v["equations"], Dict{String, Any}("lhs" => Dict{String, Any}("op" => "ic", "args" => Any[x]), "rhs" => _ser(e)))
+            end
         end
     end
     for (x, e) in flat.field_ics
