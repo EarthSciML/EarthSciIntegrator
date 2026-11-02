@@ -7,6 +7,23 @@ abstract type Node end
 const Bindings = Vector{Pair{Int, Symbol}}
 
 """
+    LeafState
+
+The state a leaf of planned operators advances (spec/operator-interface.md
+§8.2): `dofs`, the union of its operators' `writes` in canonical order (the
+leaf's DOF `i` is the model's DOF `dofs[i]`); `loc`, the inverse map (0 for a
+DOF outside the leaf); and `background`, the whole model state at the start
+of the current invocation, which supplies every state the leaf does not
+advance, a constant of the leaf over its interval. The interpreter sets
+`background` before each invocation; the leaf's operators only read it.
+"""
+struct LeafState
+    dofs::Vector{Int}
+    loc::Vector{Int}
+    background::Vector{Float64}
+end
+
+"""
     LeafNode
 
 A `leaf` (spec/run-config.md §4.2): the sum of its operators advanced by one
@@ -33,7 +50,9 @@ struct LeafNode{O <: OperatorSum, M <: AbstractMethod} <: Node
     check_stages::Bool           # domain.check_stages (Rosenbrock only)
     ψ::Union{Nothing, Integrand} # the integrand of a functional over time, on the leaf that integrates it
     imex::Any                    # IMEX Euler: (explicit part or nothing, implicit part) as OperatorSums; else nothing
+    state::Union{Nothing, LeafState} # a leaf of planned operators: the part of the model state it advances; else nothing (the whole state)
 end
+LeafNode(args::Vararg{Any, 19}) = LeafNode(args..., nothing)
 is_adaptive(l::LeafNode) = l.dt === nothing
 
 """The [`RosenbrockContext`](@ref) of a Rosenbrock leaf."""
@@ -195,6 +214,18 @@ function build_node(spec::AbstractDict, prob::ToyProblem, path::String)
     end
 end
 
+"""
+    bind_leaf(ops, prob, id) -> nothing or (ops′, LeafState)
+
+A leaf's operators bound to the leaf's own state. `nothing` for operators
+that act on the whole state (the hand-written toy problems); planned
+operators override it (plan_runtime.jl).
+"""
+bind_leaf(ops, prob, id) = any(binds_to_leaf, ops) ? bind_planned_leaf(ops, prob, id) : nothing
+
+"""`binds_to_leaf(op)`: whether `op` acts on its leaf's own state rather than the whole state ([`bind_leaf`](@ref))."""
+binds_to_leaf(::AbstractOperator) = false
+
 function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     for k in keys(spec)
         k in _LEAF_KEYS || throw(ConfigError("unknown key '$k' on leaf $id"))
@@ -205,6 +236,21 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     for n in names
         haskey(prob.operators, n) || throw(ConfigError("leaf $id names operator '$n', which $(prob.name) does not define"))
         push!(ops, prob.operators[n])
+    end
+    # Operators a plan supplies are bound to the leaf's own state, the union of
+    # their writes (spec/operator-interface.md §8.2); the hand-written toy
+    # operators act on the whole state (`bind_leaf` returns nothing).
+    bound = bind_leaf(ops, prob, id)
+    leafstate = bound === nothing ? nothing : bound[2]
+    bound === nothing || (ops = bound[1])
+    opof = Dict{String, AbstractOperator}(zip(names, ops))
+    N = leafstate === nothing ? prob.N : length(leafstate.dofs)
+    # Model DOFs (of variables a run config names) as the leaf's own.
+    function leafdofs(d, what)
+        leafstate === nothing && return d
+        l = leafstate.loc[d]
+        all(>(0), l) || throw(ConfigError("leaf $id: $what names a state the leaf does not advance"))
+        return l
     end
     alg = String(get(spec, "alg", "auto"))
     alg == "auto" && throw(UnsupportedError("alg \"auto\" (leaf $id) needs the planner's strategy rules (M2)"))
@@ -261,8 +307,8 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
                 throw(ConfigError("leaf $id: imex puts operator '$n' in $(count(==(n), vcat(impl, expl))) parts; every term must be in exactly one"))
         end
         # Each part sums its operators in the leaf's declared order.
-        opsI = OperatorSum([prob.operators[n] for n in names if n in impl])
-        opsE = isempty(expl) ? nothing : OperatorSum([prob.operators[n] for n in names if n in expl])
+        opsI = OperatorSum([opof[n] for n in names if n in impl])
+        opsE = isempty(expl) ? nothing : OperatorSum([opof[n] for n in names if n in expl])
         imex = (opsE, opsI)
     end
     method = method_for(tab; theta, linearized = isolve == "linearized")
@@ -317,13 +363,13 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     if dt === nothing || implicit
         reltol = Float64(get(ctrl, "reltol", 1.0e-3))
         at = get(ctrl, "abstol", 1.0e-6)
-        abstol = fill(at isa Real ? Float64(at) : 1.0e-6, prob.N)
+        abstol = fill(at isa Real ? Float64(at) : 1.0e-6, N)
         if at isa AbstractDict
             for (name, v) in at
-                abstol[variable_dofs(prob, name)] .= Float64(v)
+                abstol[leafdofs(variable_dofs(prob, name), "control.abstol")] .= Float64(v)
             end
         end
-        tol = Tolerances(reltol, abstol, writes(opsum, prob.N))
+        tol = Tolerances(reltol, abstol, writes(opsum, N))
     end
     controller = controller_kind(
         let c = get(ctrl, "controller", "auto")
@@ -339,7 +385,10 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         check_stages = Bool(get(dom, "check_stages", false))
         check_stages && !(method isa RosenbrockMethod) &&
             throw(UnsupportedError("domain.check_stages applies to Rosenbrock leaves only (leaf $id)"))
-        haskey(dom, "nonnegative") && (nonneg = _dofs(prob, dom["nonnegative"]))
+        if haskey(dom, "nonnegative")
+            nn = dom["nonnegative"]
+            nonneg = nn == "all" ? collect(1:N) : leafdofs(_dofs(prob, nn), "domain.nonnegative")
+        end
         ov = get(dom, "on_violation", "reject")
         ov in ("reject", "clip") ||
             throw(ConfigError("leaf $id: domain.on_violation $(repr(ov)) (reject or clip)"))
@@ -361,7 +410,7 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     end
     return LeafNode(
         id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
-        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex
+        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex, leafstate
     )
 end
 
@@ -369,7 +418,7 @@ end
 with_integrand(l::LeafNode, ψ::Integrand) = LeafNode(
     l.id, l.opnames, l.ops, l.tab, l.method, l.dt, l.tol, l.dt0,
     l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, ψ,
-    l.imex
+    l.imex, l.state
 )
 
 """

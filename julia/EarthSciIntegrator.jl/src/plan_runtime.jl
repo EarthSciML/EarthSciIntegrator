@@ -2,12 +2,12 @@
 # the operators the schedule names, built from the plan's entries and their
 # derived documents, and a run of the plan's resolved schedule on them.
 #
-# Every operator acts on the whole model state in canonical order (§8.2,
+# A `PlannedOperator` acts on the whole model state in canonical order (§8.2,
 # spec/plan.md §4): state names sorted by code point, each array's cells
-# column-major. A leaf advances that whole vector, as at M1, with its error
-# norm and first step over its DOFs, the union of its operators' `writes`
-# (§3); the states no operator of the leaf writes have a zero right-hand side
-# there, so they stay constant over the leaf's interval, as §8.2 requires.
+# column-major. A leaf advances only its own state, the union of its
+# operators' `writes` in canonical order (§8.2): its operators are bound to
+# it as `LeafOperator`s, which fill every other state from the model state
+# at the start of the invocation, so those are constants of the leaf.
 
 """A workspace of a [`PlanDocument`](@ref): EarthSciAST's, and the slot, output and parameter buffers of one call."""
 struct DocWorkspace{W}
@@ -200,6 +200,8 @@ struct PlannedOperator{R <: PlanDocument, J <: PlanDocument} <: AbstractOperator
     jac::J
     points::Vector{NTuple{3, Int}}
     cache::BandCache
+    layout::DofLayout            # the model's canonical layout
+    blockable::Bool              # pointwise, with a block plan (`structure.block`)
 end
 
 opname(op::PlannedOperator) = op.name
@@ -271,6 +273,131 @@ function vjp_u!(op::PlannedOperator, out, u, p, t, w)
         end
         out
     end
+end
+
+# ---------------------------------------------------------------------------
+# A leaf's view of its planned operators (spec/operator-interface.md §8.2)
+
+"""
+    LeafOperator
+
+A [`PlannedOperator`](@ref) bound to a leaf's state ([`LeafState`](@ref)):
+its calls take and return leaf-sized vectors. `writes` are leaf indices,
+`points` the operator's band points whose column lies in the leaf, as `(k,
+row, col)` with `k` the point's index in the operator's band points and the
+leaf's row and column (an entry in a column outside the leaf's DOFs is
+dropped, §8.3), and `structure` the leaf's storage (§8.3): its block size is
+the number of the leaf's state variables.
+"""
+struct LeafOperator{O <: PlannedOperator} <: AbstractOperator
+    op::O
+    leaf::LeafState
+    writes::Vector{Int}
+    points::Vector{NTuple{3, Int}}
+    structure::Structure
+    pool::Vector{Vector{Float64}}
+    lock::ReentrantLock
+end
+
+opname(o::LeafOperator) = o.op.name
+structure(o::LeafOperator) = o.structure
+depends_on_t(o::LeafOperator) = o.op.depends_on_t
+linear_in_u(o::LeafOperator) = o.op.linear_in_u
+writes(o::LeafOperator, N) = o.writes
+ft_refused_on_rosenbrock(::LeafOperator) = true
+
+"""`f(full)`, with `full` the model state: the leaf's `x` at its DOFs, the background elsewhere."""
+function with_full_state(f, o::LeafOperator, x)
+    full = lock(() -> isempty(o.pool) ? nothing : pop!(o.pool), o.lock)
+    full === nothing && (full = similar(o.leaf.background))
+    try
+        _check_f64(x, o.leaf.background)
+        copyto!(full, o.leaf.background)
+        @inbounds for (i, d) in enumerate(o.leaf.dofs)
+            full[d] = x[i]
+        end
+        return f(full)
+    finally
+        lock(() -> push!(o.pool, full), o.lock)
+    end
+end
+
+function rhs!(o::LeafOperator, out, x, p, t)
+    d = o.op.rhs
+    return with_full_state(o, x) do u
+        evaluate(d, u, p, t) do du
+            @inbounds for (i, c) in zip(o.writes, o.op.writes)
+                out[i] += du[d.perm[c]]
+            end
+            out
+        end
+    end
+end
+
+function jac!(o::LeafOperator, out, x, p, t)
+    return with_full_state(o, x) do u
+        with_band_values(o.op, u, p, t) do vals
+            for (k, r, c) in o.points
+                addentry!(out, r, c, vals[k])
+            end
+            out
+        end
+    end
+end
+
+function jvp_u!(o::LeafOperator, out, x, p, t, v)
+    return with_full_state(o, x) do u
+        with_band_values(o.op, u, p, t) do vals
+            @inbounds for (k, r, c) in o.points
+                out[r] += vals[k] * v[c]
+            end
+            out
+        end
+    end
+end
+
+function vjp_u!(o::LeafOperator, out, x, p, t, w)
+    return with_full_state(o, x) do u
+        with_band_values(o.op, u, p, t) do vals
+            @inbounds for (k, r, c) in o.points
+                out[c] += vals[k] * w[r]
+            end
+            out
+        end
+    end
+end
+
+binds_to_leaf(::PlannedOperator) = true
+
+"""
+    bind_planned_leaf(ops, prob, id) -> (ops′, LeafState)
+
+The planned operators `ops` of leaf `id` bound to the leaf's state, the
+union of their `writes` in canonical order (spec/operator-interface.md §8.2).
+The leaf's storage is `block_diagonal` when every operator is pointwise with
+`structure.block` and the leaf's state variables are all arrays of one shape
+or all scalars: `ncells` that shape's cells (1 for scalars), `n` the number
+of the leaf's state variables; otherwise `dense` (§8.3).
+"""
+function bind_planned_leaf(ops, prob, id)
+    all(o -> o isa PlannedOperator, ops) ||
+        throw(ConfigError("leaf $id mixes operators a plan supplies with others"))
+    N = prob.N
+    dofs = sort!(unique!(reduce(vcat, (o.writes for o in ops); init = Int[])))
+    isempty(dofs) && throw(ConfigError("leaf $id: its operators write nothing"))
+    loc = zeros(Int, N)
+    loc[dofs] = 1:length(dofs)
+    leaf = LeafState(dofs, loc, copy(prob.u0))
+    L = first(ops).layout
+    vars = [x for x in sort!(collect(keys(L.offset))) if loc[L.offset[x] + 1] > 0]
+    exts = [L.extents[x] for x in vars]
+    st = all(o -> o.blockable, ops) && all(==(first(exts)), exts) ?
+        BlockDiagonalStructure(prod(first(exts); init = 1), length(vars)) : DenseStructure()
+    bound = map(ops) do o
+        pts = NTuple{3, Int}[(k, loc[r], loc[c]) for (k, (_, r, c)) in enumerate(o.points) if loc[c] > 0]
+        LeafOperator(o, leaf, loc[o.writes], pts, st, Vector{Float64}[], ReentrantLock())
+    end
+    return AbstractOperator[bound...], leaf
 end
 
 # ---------------------------------------------------------------------------
@@ -422,7 +549,7 @@ function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDoc
     points = NTuple{3, Int}[(fields[k][f], row, col) for (k, f, row, col) in band_points(L, bands)]
     return PlannedOperator(
         String(name), w, planned_structure(entry, L), Bool(st["depends_on_t"]), Bool(st["linear_in_u"]), r, j, points,
-        BandCache()
+        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block")
     )
 end
 

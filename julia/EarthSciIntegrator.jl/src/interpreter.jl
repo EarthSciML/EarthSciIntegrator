@@ -147,6 +147,10 @@ function build_run(
     sort!(unique!(bound))
     if haskey(config, "adjoint")
         adj = config["adjoint"]
+        for n in nodes
+            n isa LeafNode && n.state !== nothing &&
+                throw(UnsupportedError("leaf $(n.id) advances part of the model state (operators a plan supplies, spec/operator-interface.md §8.2); its adjoint is not implemented at M2"))
+        end
         haskey(adj, "checkpoint") && throw(UnsupportedError("adjoint.checkpoint: M1 checkpoints every macro step in memory"))
         functional = build_functional(adj["functional"], prob)
         if functional.over === :time
@@ -342,7 +346,39 @@ function _stops(run::Run, node::LeafNode, ta, tb)
     return stops
 end
 
+"""The model state `u` with the leaf's state `x` scattered into its DOFs."""
+function _scatter(S::LeafState, u, x)
+    v = copy(u)
+    v[S.dofs] = x
+    return v
+end
+
 function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64)
+    node.state === nothing && return _advance!(run, ctx, node, u, ta, tb)
+    # A leaf of planned operators advances its own state; every other state is
+    # a constant of the leaf over its interval (spec/operator-interface.md §8.2).
+    S = node.state
+    eltype(u) === Float64 ||
+        throw(UnsupportedError("leaf $(node.id): replaying a leaf of planned operators with dual numbers is not implemented"))
+    copyto!(S.background, u)
+    mode = ctx.mode
+    if mode isa ReplayMode
+        mode.trace === nothing ||
+            throw(UnsupportedError("leaf $(node.id): the adjoint of a leaf of planned operators is not implemented at M2"))
+        visit = mode.visit === nothing ? nothing : (t, x) -> mode.visit(t, _scatter(S, u, x))
+        mode = ReplayMode(mode.tape, mode.p, nothing, visit, mode.qacc)
+    end
+    sub = ExecCtx(ctx.k, ctx.Δmacro, ctx.occ, mode)
+    n0 = length(run.outputs)
+    x = _advance!(run, sub, node, u[S.dofs], ta, tb)
+    for i in (n0 + 1):length(run.outputs)
+        t, xi = run.outputs[i]
+        run.outputs[i] = (t, _scatter(S, u, xi))
+    end
+    return _scatter(S, u, x)
+end
+
+function _advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64)
     path = next_path!(ctx, node.id)
     nb = filter(b -> b.second !== :leaf, node.bindings)
     pinv = apply_bindings(_params(run, ctx.mode), nb, 0.0, tb - ta, ctx.Δmacro)

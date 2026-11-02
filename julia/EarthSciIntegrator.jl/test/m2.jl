@@ -8,7 +8,7 @@
 # the M1 case out) is produced here by running the M1 case. Plans are written
 # to RESULTS_DIR/m2-plans/<case>/, their run configs to RESULTS_DIR/m2-plans/m2/.
 
-using EarthSciIntegrator: build_plan_run, layout_dofs, result_json, write_tape, read_tape, LeafRecord
+using EarthSciIntegrator: build_plan_run, layout_dofs, result_json, write_tape, read_tape, LeafRecord, UnsupportedError
 using Random
 
 @isdefined(RESULTS_DIR) || include("conformance.jl")
@@ -257,7 +257,109 @@ EarthSciIntegrator.depends_on_t(::M2TimeDependentOp) = true
         end
         @test err isa ConfigError && occursin("stale", err.msg)
         rm(stale; recursive = true)
+        # An adjoint through a leaf that advances part of the model state is
+        # not implemented at M2.
+        cfg = Dict{String, Any}(
+            "esm_integrator" => "0.1.0", "step" => Dict("dt" => 2),
+            "schedule" => Dict("leaf" => "decay", "alg" => "Heun", "dt" => 0.1),
+            "adjoint" => Dict("functional" => Dict("sum" => "Decay.u", "over" => "final"), "wrt" => ["u0"]),
+        )
+        err = try
+            build_run(cfg; tspan = (0, 2), prob = pp.prob); nothing
+        catch e
+            e
+        end
+        @test err isa UnsupportedError && occursin("adjoint", err.msg)
     end
+end
+
+# spec/operator-interface.md §8.2: a leaf of planned operators advances the
+# union of its operators' writes; every other state is a constant of the leaf,
+# and a block-diagonal leaf's block size is the number of its own states.
+@testset "a leaf advances only its operators' writes" begin
+    # advection_reaction's transport leaf writes Reaction.A only.
+    plandir = joinpath(M2_PLANS, "m2.advection_reaction.strang.order")
+    if isfile(joinpath(plandir, "plan.json"))
+        run, pp = build_plan_run(plandir)
+        A, B = EarthSciIntegrator.variable_dofs(pp.prob, "Reaction.A"), EarthSciIntegrator.variable_dofs(pp.prob, "Reaction.B")
+        transport, reaction = run.leaves["root.0"], run.leaves["root.1"]
+        @test transport.opnames == ["transport"] && reaction.opnames == ["reaction"]
+        @test transport.state.dofs == A && length(transport.tol.abstol) == 64
+        @test EarthSciIntegrator.structure(transport.ops) isa EarthSciIntegrator.DenseStructure
+        @test reaction.state.dofs == vcat(A, B)
+        @test EarthSciIntegrator.structure(reaction.ops) == EarthSciIntegrator.BlockDiagonalStructure(64, 2)
+        # The transport leaf alone, from a state with B nonzero: B is unchanged
+        # bit for bit, A is advected.
+        cfg = Dict{String, Any}(
+            "esm_integrator" => "0.1.0", "step" => pp.plan["step"], "schedule" => pp.plan["schedule"]["strang"][1],
+        )
+        u0 = copy(pp.prob.u0)
+        u0[B] .= 0.25 .+ 0.5 .* rand(Random.MersenneTwister(3), 64)
+        r = forward!(build_run(cfg; tspan = pp.prob.tspan, prob = pp.prob, u0))
+        @test r.retcode == "Success"
+        @test reinterpret(UInt64, r.u[B]) == reinterpret(UInt64, u0[B])
+        @test r.u[A] != u0[A]
+    end
+    # A model of three states over 4 cells: chem, pointwise, writes X and Y
+    # and reads Z; decay writes Z. Each leaf is block-diagonal over its own
+    # states only (n = 2 and n = 1, not 3).
+    dir = joinpath(M2_PLANS, "partial_leaves")
+    mkpath(dir)
+    fa(e) = Dict("op" => "faq", "args" => [], "output_idx" => ["i"], "ranges" => Dict("i" => Dict("from" => "cell")), "expr" => e)
+    ix(v) = Dict("op" => "index", "args" => [v, "i"])
+    D(x) = Dict("op" => "D", "args" => [x], "wrt" => "t")
+    doc = Dict(
+        "esm" => "1.3.0", "metadata" => Dict("name" => "partial_leaves"),
+        "index_sets" => Dict("cell" => Dict("kind" => "interval", "size" => 4)),
+        "models" => Dict(
+            "Box" => Dict(
+                "variables" => Dict(
+                    "X" => Dict("type" => "unknown", "shape" => ["cell"], "default" => 1),
+                    "Y" => Dict("type" => "unknown", "shape" => ["cell"], "default" => 0.5),
+                    "Z" => Dict("type" => "unknown", "shape" => ["cell"], "default" => 2),
+                    "k" => Dict("type" => "parameter", "default" => 3.5),
+                    "c" => Dict("type" => "parameter", "default" => 0.25),
+                ),
+                "equations" => [
+                    Dict("lhs" => D("X"), "rhs" => fa(Dict("op" => "+", "args" => [Dict("op" => "*", "args" => [-1, "k", ix("X")]), ix("Z")]))),
+                    Dict("lhs" => D("Y"), "rhs" => fa(Dict("op" => "-", "args" => [Dict("op" => "*", "args" => ["k", ix("X")]), ix("Y")]))),
+                    Dict("lhs" => D("Z"), "rhs" => fa(Dict("op" => "*", "args" => [-1, "c", ix("Z")]))),
+                ],
+            ),
+        ),
+    )
+    write(joinpath(dir, "partial_leaves.esm"), JSON.json(doc))
+    ctl = Dict("dt_scope" => "global", "reltol" => 1.0e-8, "abstol" => 1.0e-10)
+    leaf(op, alg) = Dict("leaf" => op, "alg" => alg, "linsolve" => Dict("block_lu" => Dict("pivot" => false)), "control" => ctl)
+    cfg = Dict(
+        "esm_integrator" => "0.1.0", "model" => "partial_leaves.esm",
+        "operators" => Dict(
+            "chem" => Dict("select" => Dict("variables" => ["Box.X", "Box.Y"])),
+            "decay" => Dict("select" => Dict("variables" => ["Box.Z"])),
+        ),
+        "schedule" => Dict("sequence" => [leaf("chem", "Rodas4"), leaf("decay", "Kvaerno4")]),
+        "step" => Dict("dt" => 0.25),
+    )
+    write(joinpath(dir, "run-config.json"), JSON.json(cfg))
+    write_plan(plan(joinpath(dir, "run-config.json"); tspan = [0, 1]), joinpath(dir, "plan"))
+    run, pp = build_plan_run(joinpath(dir, "plan"))
+    X, Y, Z = (EarthSciIntegrator.variable_dofs(pp.prob, "Box.$v") for v in ("X", "Y", "Z"))
+    chem, decay = run.leaves["root.0"], run.leaves["root.1"]
+    @test chem.state.dofs == vcat(X, Y) && decay.state.dofs == Z
+    @test EarthSciIntegrator.structure(chem.ops) == EarthSciIntegrator.BlockDiagonalStructure(4, 2)
+    @test EarthSciIntegrator.structure(decay.ops) == EarthSciIntegrator.BlockDiagonalStructure(4, 1)
+    forward!(run)
+    @test run.retcode == "Success"
+    @test all(z -> isapprox(z, 2 * exp(-0.25); rtol = 1.0e-7), run.u[Z])
+    # The chem leaf alone reads Z as a constant and leaves it unchanged.
+    alone = Dict{String, Any}("esm_integrator" => "0.1.0", "step" => pp.plan["step"], "schedule" => pp.plan["schedule"]["sequence"][1])
+    r = forward!(build_run(alone; tspan = pp.prob.tspan, prob = pp.prob))
+    @test r.retcode == "Success"
+    @test reinterpret(UInt64, r.u[Z]) == reinterpret(UInt64, pp.prob.u0[Z])
+    @test r.u[X] != pp.prob.u0[X]
+    # The leaf's Jacobian has no column for Z: dropped, not stored (§8.3).
+    op = only(chem.ops.ops)
+    @test all(((_, r, c),) -> 1 <= r <= 8 && 1 <= c <= 8, op.points)
 end
 
 @testset "M2 result files validate against result.schema.json" begin
