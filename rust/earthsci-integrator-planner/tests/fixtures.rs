@@ -3,11 +3,12 @@
 //! must validate against `spec/schemas/plan.schema.json`, and what each
 //! case's `expected.md` lists is checked here (for
 //! `cross_component_term/by-label`, the whole hand-written
-//! `expected-plan.json`). Where a case has a golden (`<case>.golden/`,
-//! written by the Julia planner), `plan.json` and `derived/*.esm` must equal
-//! it byte for byte, and the Rust band values must agree with its
-//! `validation/<op>.bandvalues.json` (§8.2), a missing file being a harness
-//! error.
+//! `expected-plan.json`). Every case has a golden (`<case>.golden/`, written
+//! by the Julia planner with `tools/plan-goldens.jl`): `plan.json` and
+//! `derived/*.esm` must equal it byte for byte, and the Rust band values must
+//! agree with its `validation/<op>.bandvalues.json` (§8.2). A missing golden
+//! or band-value file is a harness error, and so is a fixture case missing
+//! from `CASES`.
 
 mod common;
 
@@ -138,8 +139,36 @@ fn plan_schema() -> jsonschema::Validator {
         .unwrap()
 }
 
+/// `CASES` is every `<case>.run.json` under the fixtures, so `every_case`,
+/// which requires each case's golden, cannot skip one.
+#[test]
+fn every_case_is_listed() {
+    let root = conformance().join("plans/fixtures");
+    let mut found: Vec<(String, String)> = Vec::new();
+    for fixture in std::fs::read_dir(&root).unwrap() {
+        let fixture = fixture.unwrap();
+        if !fixture.file_type().unwrap().is_dir() {
+            continue;
+        }
+        let name = fixture.file_name().to_string_lossy().into_owned();
+        for f in std::fs::read_dir(fixture.path()).unwrap() {
+            let f = f.unwrap().file_name().to_string_lossy().into_owned();
+            if let Some(case) = f.strip_suffix(".run.json") {
+                found.push((name.clone(), case.to_string()));
+            }
+        }
+    }
+    found.sort();
+    let mut listed: Vec<(String, String)> = CASES
+        .iter()
+        .map(|(f, c)| (f.to_string(), c.to_string()))
+        .collect();
+    listed.sort();
+    assert_eq!(found, listed, "CASES must list every fixture case");
+}
+
 /// Every case plans; its plan validates; its derived documents load and
-/// flatten with EarthSciAST; and where a golden exists, the plan equals it.
+/// flatten with EarthSciAST; and the plan equals its golden.
 #[test]
 fn every_case() {
     let schema = plan_schema();
@@ -190,22 +219,32 @@ fn every_case() {
     }
 }
 
-/// The golden of a case, when the Julia planner has written one (§9).
+/// The case's golden, written by the Julia planner (§9); a missing golden is
+/// a harness error.
 fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
     let golden = conformance()
         .join("plans/fixtures")
         .join(fixture)
         .join(format!("{case}.golden"));
-    if !golden.is_dir() {
-        return;
-    }
-    let want = std::fs::read(golden.join("plan.json")).unwrap();
+    let want = std::fs::read(golden.join("plan.json")).unwrap_or_else(|e| {
+        panic!(
+            "harness error: {fixture}/{case} has no golden plan.json at {} \
+             (write it with tools/plan-goldens.jl): {e}",
+            golden.display()
+        )
+    });
     assert!(
         want == plan_bytes,
         "{fixture}/{case}: plan.json differs from the golden"
     );
-    let mut files: Vec<String> = std::fs::read_dir(golden.join("derived"))
-        .unwrap()
+    let derived = golden.join("derived");
+    let mut files: Vec<String> = std::fs::read_dir(&derived)
+        .unwrap_or_else(|e| {
+            panic!(
+                "harness error: {fixture}/{case}: the golden has no {}: {e}",
+                derived.display()
+            )
+        })
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     files.sort();
@@ -231,7 +270,7 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
             .join(format!("{op}.bandvalues.json"));
         let text = std::fs::read(&path).unwrap_or_else(|e| {
             panic!(
-                "harness error: {fixture}/{case} has a golden but no {}: {e}",
+                "harness error: {fixture}/{case}: the golden has no {}: {e}",
                 path.display()
             )
         });
@@ -269,6 +308,30 @@ fn band_value_comparison() {
             .unwrap()
             .pop();
         assert!(compare_band_values(&p, &op, &missing).is_err());
+        // The file's own form: a duplicate entry, a dropped or empty sample
+        // list, a shifted t, and a u without every DOF all fail.
+        let mut twice = file.clone();
+        let first = twice["samples"][0]["entries"][0].clone();
+        twice["samples"][0]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(first);
+        assert!(compare_band_values(&p, &op, &twice).is_err());
+        let mut fewer = file.clone();
+        fewer["samples"].as_array_mut().unwrap().pop();
+        assert!(compare_band_values(&p, &op, &fewer).is_err());
+        assert!(compare_band_values(&p, &op, &json!({"samples": []})).is_err());
+        let mut shifted = file.clone();
+        let t = shifted["samples"][0]["t"].as_f64().unwrap();
+        shifted["samples"][0]["t"] = json!(t + 1.0);
+        assert!(compare_band_values(&p, &op, &shifted).is_err());
+        let mut short = file.clone();
+        let name = p.dofs().element_names()[0].clone();
+        short["samples"][2]["u"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&name);
+        assert!(compare_band_values(&p, &op, &short).is_err());
     }
 }
 

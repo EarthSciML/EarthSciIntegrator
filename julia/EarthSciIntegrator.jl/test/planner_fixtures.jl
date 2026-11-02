@@ -1,8 +1,11 @@
 # The planner on EarthSciASTDiff (spec/plan.md §5.2.2, §5.4, §5.5, §6, §8):
 # every fixture case of tests/conformance/plans/fixtures/ planned with the
 # production backend, checked against its expected.md (the contents it
-# names) and, where there is one, its hand-written expected plan; the derived
+# names) and, where there is one, its hand-written expected plan; against its
+# golden `<case>.golden/` (§9: plan.json and derived/*.esm byte for byte, the
+# band values as §8.2 compares them; a missing golden fails); the derived
 # documents; the band-value files; and the parts the backend is built from.
+# tools/plan-goldens.jl rewrites the goldens.
 
 using EarthSciIntegrator: PlannerRefusal, DiffBackend, jcs, write_plan
 import EarthSciAST, EarthSciASTDiff
@@ -33,6 +36,52 @@ function plans_validate(files)
     python = Sys.which("python3")
     (python !== nothing && success(`$python -c "import jsonschema, referencing"`)) || return nothing
     return success(pipeline(`$python -c $validator $(joinpath(REPO, "spec", "schemas")) $files`; stdout, stderr))
+end
+
+"""
+Why the golden's band-value file `want` for operator `o` of plan draft `d`
+does not match the Julia planner's bands (spec/plan.md §8.2), or `nothing`
+when it does. As the Rust harness does, the band Jacobian is evaluated at
+each sample's own `t` and `u`, so this run need not reproduce the golden's
+sampled states bit for bit; it must have the file's structural (row, column)
+key set, and each value must be within ``10^{-10} M_r`` of the file's,
+``M_r`` the largest magnitude in row ``r`` of either. The file itself must
+have the form §8.2 gives it: one sample per quantile of §5.5.1 at that
+quantile's `t`, a `u` naming every DOF and nothing else, and no (row,
+column) listed twice.
+"""
+function golden_bandvalues_mismatch(d, o, want)
+    b, ctx = d.ctx.backend, d.ctx
+    L = EarthSciIntegrator.layout!(b, ctx)
+    B = EarthSciIntegrator.jac_built!(b, ctx, ctx.ops[o])
+    t0, tf = ctx.time
+    quantiles = (0.25, 0.5, 0.75)
+    samples = want["samples"]
+    length(samples) == length(quantiles) || return "$(length(samples)) samples, §5.5.1 has $(length(quantiles))"
+    for (k, (s, q)) in enumerate(zip(samples, quantiles))
+        s["t"] == t0 + (tf - t0) * q || return "sample $k: t is $(s["t"]), quantile $q of the interval is $(t0 + (tf - t0) * q)"
+        Set(keys(s["u"])) == Set(L.names) || return "sample $k: u does not name exactly the model's DOFs"
+        u = Float64[s["u"][n] for n in L.names]
+        JB = EarthSciIntegrator.band_jacobian(B, b.ops[o].points, u, Float64(s["t"]))
+        G = Dict((L.names[r], L.names[c]) => v for ((r, c), v) in JB)
+        W = Dict{Tuple{String, String}, Float64}()
+        for e in s["entries"]
+            haskey(W, (e[1], e[2])) && return "sample $k: ($(e[1]), $(e[2])) is listed twice"
+            W[(e[1], e[2])] = Float64(e[3])
+        end
+        extra = setdiff(keys(G), keys(W))
+        isempty(extra) || return "sample $k: $(first(extra)) is in the band pattern, not in the golden"
+        absent = setdiff(keys(W), keys(G))
+        isempty(absent) || return "sample $k: $(first(absent)) is in the golden, not in the band pattern"
+        M = Dict{String, Float64}()
+        for ((r, _), v) in Iterators.flatten((G, W))
+            M[r] = max(get(M, r, 0.0), abs(v))
+        end
+        for (key, v) in G
+            abs(v - W[key]) <= 1.0e-10 * M[key[1]] || return "sample $k: $key is $v, $(W[key]) in the golden"
+        end
+    end
+    return nothing
 end
 
 """Every fixture case, `(fixture, case)`, in code-point order."""
@@ -201,6 +250,46 @@ const PLAN_FILES = String[]
             s = bv["samples"][1]
             @test issorted(s["entries"]; by = e -> (e[1], e[2]))
             @test s["t"] == p["time"]["start"] + (p["time"]["end"] - p["time"]["start"]) * 0.25
+        end
+        # The golden (§9): a missing one is a failure, not a skip.
+        golden = joinpath(PFIX, fixture, "$case.golden")
+        @test isfile(joinpath(golden, "plan.json"))
+        if isfile(joinpath(golden, "plan.json"))
+            @test text == read(joinpath(golden, "plan.json"), String)
+            gd = isdir(joinpath(golden, "derived")) ? sort!(readdir(joinpath(golden, "derived"))) : String[]
+            @test gd == sort!(readdir(joinpath(dir, "derived")))
+            for f in gd
+                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f))
+            end
+            for o in ops
+                path = joinpath(golden, "validation", "$o.bandvalues.json")
+                @test isfile(path)
+                isfile(path) || continue
+                @test golden_bandvalues_mismatch(d, o, JSON.parsefile(path)) === nothing
+            end
+            # The comparison itself, on one case: a state one ulp off still
+            # passes; a changed value, a missing or doubled entry, a dropped
+            # sample, a shifted t and a u without every DOF fail.
+            if key == "pointwise_chemistry/auto"
+                o = only(ops)
+                want = JSON.parsefile(joinpath(golden, "validation", "$o.bandvalues.json"))
+                bad(f) = (w = deepcopy(want); f(w); golden_bandvalues_mismatch(d, o, w) !== nothing)
+                function nudge!(w)
+                    u = w["samples"][1]["u"]
+                    for n in keys(u)
+                        u[n] = nextfloat(Float64(u[n]))
+                    end
+                    return
+                end
+                @test !bad(nudge!)
+                @test bad(w -> (e = w["samples"][2]["entries"][1]; e[3] = Float64(e[3]) * (1 + 1.0e-6) + 1.0e-12))
+                @test bad(w -> pop!(w["samples"][1]["entries"]))
+                @test bad(w -> push!(w["samples"][1]["entries"], w["samples"][1]["entries"][1]))
+                @test bad(w -> pop!(w["samples"]))
+                @test bad(w -> empty!(w["samples"]))
+                @test bad(w -> (w["samples"][1]["t"] += 1.0))
+                @test bad(w -> delete!(w["samples"][3]["u"], first(keys(w["samples"][3]["u"]))))
+            end
         end
         # expected.md's contents.
         for (o, (loc, stiff, cls, extra)) in get(EXPECTED_OPERATORS, key, Dict())
