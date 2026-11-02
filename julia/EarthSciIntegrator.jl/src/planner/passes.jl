@@ -44,8 +44,7 @@ end
 radius. Left `nothing` when the backend has no bands for it yet.
 """
 function term_localities!(ctx, terms::Vector{Term})
-    for t in terms
-        bands = term_bands(ctx.backend, ctx, t)
+    for (t, bands) in zip(terms, all_term_bands(ctx.backend, ctx, terms))
         bands === nothing && continue
         t.locality, t.radius = classify_bands(bands, ctx.model.shapes, ctx.axes, ctx.model.sizes)
     end

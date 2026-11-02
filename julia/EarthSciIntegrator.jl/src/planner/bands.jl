@@ -267,6 +267,8 @@ raises [`PlannerStageError`](@ref) where it needs the value.
 
 Methods:
 - `term_bands(backend, ctx, term) -> Union{Vector{BandEntry}, Nothing}`
+- `all_term_bands(backend, ctx, terms)`: every term's `term_bands`, in term
+  order; [`DiffBackend`](@ref) computes them from one probe document
 - `operator_structure(backend, ctx, op) -> Union{AbstractDict, Nothing}` (the
   plan's `structure` object)
 - `gershgorin_bound(backend, ctx, op) -> Union{Float64, Nothing}` (`max_s ρ(u_s, p, t_s)`)
@@ -284,6 +286,15 @@ term is pointwise whatever its band list; `term_bands` returns an empty list
 for it, which classifies identically. It returns `nothing` otherwise.
 """
 struct PendingBackend <: PlanBackend end
+
+"""
+    all_term_bands(backend, ctx, terms) -> Vector
+
+Every term's [`term_bands`](@ref), in term order; a backend may compute them
+together (§5.2.2). The first term whose bands fail refuses, as `term_bands`
+would.
+"""
+all_term_bands(b::PlanBackend, ctx, terms) = [term_bands(b, ctx, t) for t in terms]
 
 term_bands(::PendingBackend, ctx, t) = all(s -> !haskey(ctx.model.shapes, s), ctx.model.states) ? BandEntry[] : nothing
 operator_structure(::PendingBackend, ctx, op) = nothing

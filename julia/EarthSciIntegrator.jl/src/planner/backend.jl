@@ -97,6 +97,51 @@ function term_bands(b::DiffBackend, ctx, t::Term)
     return BandEntry[BandEntry(band_json(en)) for en in document_bands(flat, what)]
 end
 
+"""
+    probe_term_bands(b::DiffBackend, ctx, terms) -> Union{Vector{Vector{BandEntry}}, Nothing}
+
+Every term's bands from one probe document (§5.2.2, [`probe_document`](@ref)):
+one EarthSciAST load and flatten and one `jacobian_bands` call, whose bands
+with row `probe_state(k)` are term `k`'s, row renamed to its variable.
+`nothing` when EarthSciAST or EarthSciASTDiff fails on the probe document,
+or gives a band whose row is not a probe state.
+"""
+function probe_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    bind!(b, ctx)
+    entries = try
+        flat = EarthSciAST.flatten(EarthSciAST.load_document(probe_document(ctx.model, terms)))
+        EarthSciASTDiff.jacobian_bands(EarthSciASTDiff.sysview(flat); wrt = :states)
+    catch e
+        e isa InterruptException && rethrow()
+        return nothing
+    end
+    out = [BandEntry[] for _ in terms]
+    index = Dict(probe_state(k) => k for k in eachindex(terms))
+    for en in entries
+        d = band_json(en)
+        k = get(index, d["row"], nothing)
+        k === nothing && return nothing      # only the probe states have nonzero right-hand sides
+        d["row"] = terms[k].variable
+        push!(out[k], BandEntry(d))
+    end
+    return out
+end
+
+"""
+    all_term_bands(b::DiffBackend, ctx, terms) -> Vector{Vector{BandEntry}}
+
+Every term's bands from one probe document ([`probe_term_bands`](@ref)). When
+that fails, a failure that names no term, each term's own document is
+differentiated instead, in term order ([`term_bands`](@ref)), so
+`band_model_failed` is reported against the first term that fails, with the
+message it would have without the probe (§5.2.2).
+"""
+function all_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    isempty(terms) && return Vector{BandEntry}[]
+    out = probe_term_bands(b, ctx, terms)
+    return out !== nothing ? out : Vector{BandEntry}[term_bands(b, ctx, t) for t in terms]
+end
+
 """The operator's artifacts, building its right-hand-side document and bands on first use."""
 function artifacts!(b::DiffBackend, ctx, op::PlanOperator)
     bind!(b, ctx)

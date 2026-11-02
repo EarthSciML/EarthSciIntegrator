@@ -345,6 +345,43 @@ const PLAN_FILES = String[]
         @test EarthSciIntegrator.plan_json(d2) == EarthSciIntegrator.plan_json(d1)
     end
 
+    @testset "the probe document gives each term's own bands (§5.2.2): $fixture/$case" for (fixture, case) in fixture_cases()
+        inp = EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json"))
+        m = EarthSciIntegrator.plan_model(inp)
+        b = DiffBackend()
+        ctx = EarthSciIntegrator.PlanContext(
+            inp, inp.config, m, b, EarthSciIntegrator.resolve_axes(m, inp.config),
+            EarthSciIntegrator.resolve_time(m, inp.config; tspan = nothing), EarthSciIntegrator.Term[],
+            Dict{String, EarthSciIntegrator.PlanOperator}()
+        )
+        terms = EarthSciIntegrator.build_terms(m)
+        probe = EarthSciIntegrator.probe_term_bands(b, ctx, terms)
+        # The probe itself succeeds, so planning does not fall back to one document per term.
+        @test probe !== nothing
+        fields(x) = (x.row, x.col, x.rows, x.row_idx, x.col_idx, x.contracted, x.guard)
+        # Band for band, in order, each term's bands from its own document.
+        @test [map(fields, x) for x in probe] == [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
+        # The probe states are declared with their equation state's index sets.
+        doc = EarthSciIntegrator.probe_document(m, terms)
+        vars = doc["models"]["JacobianEval"]["variables"]
+        @test length(vars) == length(terms)
+        for (k, t) in enumerate(terms)
+            @test get(vars["term_$k"], "shape", nothing) == (haskey(m.shapes, t.variable) ? m.shapes[t.variable] : nothing)
+        end
+    end
+
+    @testset "band_model_failed names the term that fails, after the probe document fails" begin
+        cfg = joinpath(CONF, "plans", "refusals", "band-model-failed", "run.json")
+        err = try
+            EarthSciIntegrator.plan(cfg); nothing
+        catch e
+            e
+        end
+        @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
+        # The third term, erf(x); the two before it differentiate.
+        @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
+    end
+
     @testset "write_plan removes an earlier plan's files" begin
         d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"))
         dir = mktempdir()
