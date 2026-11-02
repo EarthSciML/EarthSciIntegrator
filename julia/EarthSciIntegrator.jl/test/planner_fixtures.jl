@@ -381,8 +381,43 @@ const PLAN_FILES = String[]
             e
         end
         @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
+        # The refusal comes from the search: the probe document itself fails.
+        b = DiffBackend()
+        ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(cfg), b)
+        @test EarthSciIntegrator.probe_band_dicts(b, ctx, EarthSciIntegrator.build_terms(ctx.model)) === nothing
         # The third term, erf(x); the two before it differentiate.
         @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
+    end
+
+    @testset "the probe document fails exactly when a term's own document fails (§5.2.2)" begin
+        dir = joinpath(CONF, "plans", "refusals")
+        checked = 0
+        for name in sort(collect(keys(JSON.parsefile(joinpath(dir, "expected-codes.json")))))
+            b = DiffBackend()
+            ctx, terms = try
+                inp = EarthSciIntegrator.read_inputs(joinpath(dir, name, "run.json"))
+                EarthSciIntegrator.check_scope(inp.flat)
+                EarthSciIntegrator.check_reserved_names(inp.file)
+                c = EarthSciIntegrator.plan_context(inp, b)
+                c, EarthSciIntegrator.build_terms(c.model)
+            catch e
+                e isa PlannerRefusal || rethrow()
+                continue        # refused before pass 2
+            end
+            isempty(terms) && continue
+            probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms)
+            each = try
+                [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
+            catch e
+                (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
+                nothing
+            end
+            # A probe that succeeds hides no term's failure, and gives its bands.
+            @test (probe === nothing) == (each === nothing)
+            probe === nothing || @test probe == each
+            checked += 1
+        end
+        @test checked > 0
     end
 
     @testset "write_plan removes an earlier plan's files" begin

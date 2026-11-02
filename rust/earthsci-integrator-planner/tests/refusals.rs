@@ -4,10 +4,10 @@
 mod common;
 
 use common::conformance;
-use earthsci_integrator_planner::astdiff::AstDiffBands;
+use earthsci_integrator_planner::astdiff::{testing, AstDiffBands};
 use earthsci_integrator_planner::error::codes;
 use earthsci_integrator_planner::locality::NoBands;
-use earthsci_integrator_planner::{plan, Options, PlanError};
+use earthsci_integrator_planner::{model, plan, runconfig, terms, Options, PlanError};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -59,6 +59,13 @@ fn refusal_fixtures() {
 #[test]
 fn band_model_failed_names_its_term() {
     let path = conformance().join("plans/refusals/band-model-failed/run.json");
+    let rc = runconfig::read(&path).unwrap();
+    let info = model::read(&rc).unwrap();
+    let ts = terms::terms(&info).unwrap();
+    // The refusal comes from the fallback, not from the probe.
+    let probe = testing::probe(&info, &ts).unwrap();
+    assert!(probe.is_err(), "the probe document differentiates");
+    assert_eq!(testing::each_term(&info, &ts).unwrap_err().term, 2);
     match plan(&path, &Options::default(), &AstDiffBands) {
         Err(PlanError::Refused(r)) => {
             assert_eq!(
@@ -70,6 +77,43 @@ fn band_model_failed_names_its_term() {
         }
         other => panic!("want band_model_failed, got {other:?}"),
     }
+}
+
+/// On every refusal fixture that reaches pass 2, the probe document
+/// (§5.2.2) fails exactly when some term's own document fails, and gives
+/// the same bands when none does: a successful probe hides no term's
+/// failure.
+#[test]
+fn probe_fails_exactly_when_a_term_fails() {
+    let dir = conformance().join("plans/refusals");
+    let expected: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("expected-codes.json")).unwrap()).unwrap();
+    let mut checked = 0;
+    for name in expected.as_object().unwrap().keys() {
+        let Ok(rc) = runconfig::read(&dir.join(name).join("run.json")) else {
+            continue;
+        };
+        let Ok(info) = model::read(&rc) else { continue };
+        let Ok(ts) = terms::terms(&info) else {
+            continue;
+        };
+        if ts.is_empty() {
+            continue;
+        }
+        let probe = testing::probe(&info, &ts).unwrap();
+        let each = testing::each_term(&info, &ts);
+        match (probe, each) {
+            (Ok(p), Ok(e)) => assert_eq!(p, e, "{name}"),
+            (Err(_), Err(_)) => {}
+            (p, e) => panic!(
+                "{name}: probe {:?}, term documents {:?}",
+                p.is_ok(),
+                e.is_ok()
+            ),
+        }
+        checked += 1;
+    }
+    assert!(checked > 0);
 }
 
 /// Every code the planner raises is in spec/planner-errors.json.

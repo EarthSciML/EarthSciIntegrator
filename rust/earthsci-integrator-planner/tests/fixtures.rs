@@ -343,25 +343,36 @@ fn hand_bands_agree() {
 
 /// The probe document (§5.2.2) gives every term, band for band and in
 /// order, the bands of its own right-hand-side document, and its probe
-/// states carry their equation states' index sets.
+/// states carry their equation states' index sets and `ic` equations.
 #[test]
 fn probe_document_gives_each_terms_bands() {
+    use earthsci_integrator_planner::astdiff::testing;
     use earthsci_integrator_planner::{derived, model, runconfig, terms};
     for (fixture, case) in CASES {
         let rc = runconfig::read(&run_config(fixture, case)).unwrap();
         let info = model::read(&rc).unwrap();
         let ts = terms::terms(&info).unwrap();
         // The probe itself succeeds: planning does not fall back.
-        let probe = AstDiffBands::probe(&info, &ts)
-            .unwrap_or_else(|| panic!("{fixture}/{case}: the probe document failed"));
-        let each = AstDiffBands::each_term(&info, &ts).unwrap();
+        let probe = testing::probe(&info, &ts)
+            .unwrap()
+            .unwrap_or_else(|m| panic!("{fixture}/{case}: the probe document failed: {m}"));
+        let each = testing::each_term(&info, &ts).unwrap();
         assert_eq!(probe, each, "{fixture}/{case}");
         let doc = derived::probe_document(&info, &ts);
-        let vars = doc["models"][derived::PROBE_COMPONENT]["variables"]
-            .as_object()
-            .unwrap();
-        assert_eq!(vars.len(), ts.len(), "{fixture}/{case}");
+        let probe_model = &doc["models"][derived::PROBE_COMPONENT];
+        let vars = probe_model["variables"].as_object();
+        assert_eq!(
+            vars.map_or(0, |v| v.len()),
+            ts.len(),
+            "{fixture}/{case}: one probe state per term"
+        );
+        let eqs: Vec<&Value> = probe_model["equations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .collect();
         for (k, t) in ts.iter().enumerate() {
+            let x = derived::probe_state(k);
             let shape = &info.shapes[&t.variable];
             let want = if shape.is_empty() {
                 Value::Null
@@ -369,10 +380,22 @@ fn probe_document_gives_each_terms_bands() {
                 json!(shape)
             };
             assert_eq!(
-                vars[&format!("term_{}", k + 1)]["shape"],
+                vars.unwrap()[&format!("term_{}", k + 1)]["shape"],
                 want,
                 "{fixture}/{case} {k}"
             );
+            let ics = |s: &str| {
+                eqs.iter()
+                    .filter(|e| e["lhs"]["op"] == "ic" && e["lhs"]["args"][0] == s)
+                    .count()
+            };
+            let want = info
+                .flat
+                .field_ics
+                .iter()
+                .filter(|(s, _)| *s == t.variable)
+                .count();
+            assert_eq!(ics(&x), want, "{fixture}/{case} {k}: ic equations");
         }
     }
 }

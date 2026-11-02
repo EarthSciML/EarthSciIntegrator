@@ -47,6 +47,21 @@ pub struct BandFailure {
     pub message: String,
 }
 
+/// Why a band source gave no term bands: a term's band list failed
+/// (`band_model_failed`), or the source itself went wrong (an internal
+/// planner error, not a refusal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BandSourceError {
+    Failed(BandFailure),
+    Internal(String),
+}
+
+impl From<BandFailure> for BandSourceError {
+    fn from(f: BandFailure) -> Self {
+        BandSourceError::Failed(f)
+    }
+}
+
 /// Where term bands come from (spec/plan.md §5.2.2):
 /// [`crate::astdiff::AstDiffBands`] in production, hand-written band lists
 /// in tests.
@@ -57,7 +72,7 @@ pub trait BandSource {
         &self,
         info: &ModelInfo,
         terms: &[Term],
-    ) -> Result<Option<Vec<Vec<BandEntry>>>, BandFailure>;
+    ) -> Result<Option<Vec<Vec<BandEntry>>>, BandSourceError>;
 }
 
 /// A band source with no bands: planning stops after the refusals that
@@ -69,7 +84,7 @@ impl BandSource for NoBands {
         &self,
         _info: &ModelInfo,
         _terms: &[Term],
-    ) -> Result<Option<Vec<Vec<BandEntry>>>, BandFailure> {
+    ) -> Result<Option<Vec<Vec<BandEntry>>>, BandSourceError> {
         Ok(None)
     }
 }
