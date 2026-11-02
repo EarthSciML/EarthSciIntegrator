@@ -1,0 +1,2 @@
+# Planner goldens are compared byte for byte (spec/plan.md §9): never convert line endings.
+tests/conformance/plans/fixtures/**/*.golden/** -text
