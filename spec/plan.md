@@ -312,7 +312,7 @@ A JSON object with exactly these keys:
 - `"esm": "1.3.0"`.
 - `"metadata": {"name": "<operator>"}`.
 - `"index_sets"`: every index set of the flattened model, `{"kind": "interval", "size": N}` (§4 step 6 refused any other kind).
-- `"domain"`: the flattened model's `domain`, as EarthSciAST serializes it, when it has one; otherwise absent.
+- `"domain"`: built from the flattened model's `domain`, as EarthSciAST serializes it, exactly as EarthSciASTDiff builds its evaluation document's (§6.2), so both derived documents carry the same one: `temporal` holding only those of `start`, `end` and `reference_time` that are given, then `element_type` and `array_type` when given. Every other field (`independent_variable`, `spatial`, boundary conditions and the rest) is dropped: the derived equations are written with respect to `t`, and the time origin is all a derived document reads. Absent when the flattened model has no `domain` or nothing is left.
 - `"models"`: the **component tree** (§6.1.1).
 
 No other key appears: no `solver`, `coupling`, `reaction_systems`, `data_sources`, `function_tables`, `enums`, `expression_templates` or `metaparameters`, all of which were consumed by load and flatten.

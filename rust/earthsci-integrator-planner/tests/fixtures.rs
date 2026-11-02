@@ -33,6 +33,16 @@ const CASES: &[(&str, &str)] = &[
     ("toy_robertson", "rodas4"),
 ];
 
+/// The left-hand-side `op` of every equation of a model and its subsystems.
+fn lhs_ops(model: &Value, out: &mut Vec<String>) {
+    for eq in model["equations"].as_array().into_iter().flatten() {
+        out.push(eq["lhs"]["op"].as_str().unwrap_or_default().to_string());
+    }
+    for sub in model["subsystems"].as_object().into_iter().flatten() {
+        lhs_ops(sub.1, out);
+    }
+}
+
 fn run_config(fixture: &str, case: &str) -> PathBuf {
     conformance()
         .join("plans/fixtures")
@@ -146,10 +156,17 @@ fn every_case() {
         // Each derived document loads and flattens, and the Jacobian
         // document has one band field per band and no `ic` equation.
         for (op, d) in &p.documents {
+            let jac_json: Value = serde_json::from_slice(&d.jacobian).unwrap();
+            let mut ops = Vec::new();
+            for m in jac_json["models"].as_object().unwrap().values() {
+                lhs_ops(m, &mut ops);
+            }
             assert!(
-                !std::str::from_utf8(&d.jacobian)
-                    .unwrap()
-                    .contains(r#""op":"ic""#),
+                !ops.is_empty(),
+                "{fixture}/{case} {op}.jacobian has no equation"
+            );
+            assert!(
+                !ops.contains(&"ic".to_string()),
                 "{fixture}/{case} {op}.jacobian has an ic equation"
             );
             FlatView::new(std::str::from_utf8(&d.rhs).unwrap())

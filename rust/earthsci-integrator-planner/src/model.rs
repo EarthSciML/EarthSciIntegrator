@@ -3,6 +3,7 @@
 //! canonical state order, observed definitions and the names an expression
 //! references.
 
+use crate::derived::JACOBIAN_MODEL;
 use crate::error::{codes, refuse, PlanError, Result};
 use crate::runconfig::RunConfig;
 use earthsci_ast::{EsmFile, Expr, FlattenedSystem};
@@ -10,10 +11,6 @@ use indexmap::IndexMap;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
-
-/// The top-level component name the Jacobian document reserves
-/// (spec/plan.md §6.1.4).
-pub const RESERVED_COMPONENT: &str = "JacobianEval";
 
 /// The flattened model and what the passes read from it.
 #[derive(Debug, Clone)]
@@ -36,6 +33,9 @@ pub struct ModelInfo {
     pub shapes: BTreeMap<String, Vec<String>>,
     /// Observed definitions: observed name → its right-hand side.
     pub observed_defs: BTreeMap<String, Expr>,
+    /// The derived documents' `domain` ([`crate::derived::domain_json`] of
+    /// the flattened model's), built once; `None` when they have none.
+    pub domain: Option<Value>,
 }
 
 impl ModelInfo {
@@ -139,7 +139,15 @@ pub(crate) fn collect_strings(v: &Value, f: &mut impl FnMut(&str)) {
 /// `{"from": X_d}`, `X_d` the index set of dimension d of the state's shape.
 /// Built rather than copied, since the bindings write the flattened ranges
 /// differently.
+///
+/// The two have the same length: [`read`] stops with an internal error
+/// when a lifted equation's do not.
 pub fn lifted_ranges(output_idx: &[String], shape: &[String]) -> serde_json::Map<String, Value> {
+    assert_eq!(
+        output_idx.len(),
+        shape.len(),
+        "lifted_ranges: output_idx {output_idx:?} and shape {shape:?} differ in length"
+    );
     output_idx
         .iter()
         .zip(shape)
@@ -322,10 +330,10 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         .iter()
         .flat_map(|m| m.keys())
         .chain(file.reaction_systems.iter().flat_map(|r| r.keys()));
-    if top_level.into_iter().any(|k| k == RESERVED_COMPONENT) {
+    if top_level.into_iter().any(|k| k == JACOBIAN_MODEL) {
         return scope(
             codes::RESERVED_COMPONENT_NAME,
-            format!("the model has a top-level component named {RESERVED_COMPONENT}, which the Jacobian document reserves"),
+            format!("the model has a top-level component named {JACOBIAN_MODEL}, which the Jacobian document reserves"),
         );
     }
 
@@ -351,7 +359,11 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         states: states.into_iter().collect(),
         shapes: BTreeMap::new(),
         observed_defs,
+        domain: None,
     };
+    if let Some(d) = &info.flat.domain {
+        info.domain = crate::derived::domain_json(d)?;
+    }
     // A lifted state's shape is the one `flatten` records on it (§6.1.3).
     for s in info.states.clone() {
         let declared = info.flat.state_variables[&s]
@@ -360,7 +372,55 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
             .unwrap_or_default();
         info.shapes.insert(s, declared);
     }
+    check_shapes(&info)?;
     Ok(info)
+}
+
+/// The shapes the derived documents read hold together (§6.1.2, §6.1.3):
+/// every index set of a state's shape is an index set of the flattened
+/// model; a lifted state's recorded shape has the lift's extents, index set
+/// by index set; and a lifted equation's `output_idx` names one index per
+/// dimension of its state's shape. EarthSciAST 0.8's `flatten` guarantees
+/// all three, so a failure is an internal error, not a refusal.
+fn check_shapes(info: &ModelInfo) -> Result<()> {
+    let internal = |m: String| Err(PlanError::Internal(m));
+    for (s, shape) in &info.shapes {
+        if let Some(set) = shape.iter().find(|set| !info.index_sets.contains_key(*set)) {
+            return internal(format!(
+                "state {s} has the index set {set} in its shape, which the flattened model does not declare"
+            ));
+        }
+    }
+    for (s, extents) in &info.flat.lifted_shapes {
+        let Some(shape) = info.shapes.get(s) else {
+            continue;
+        };
+        let sizes: Vec<i64> = shape.iter().map(|set| info.index_sets[set]).collect();
+        if &sizes != extents {
+            return internal(format!(
+                "flatten recorded the shape {shape:?} (extents {sizes:?}) on the lifted state {s}, whose lift has the extents {extents:?}"
+            ));
+        }
+    }
+    for (i, eq) in info.flat.equations.iter().enumerate() {
+        if !info.flat.equation_lifted.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(x) = differentiated(&eq.lhs).filter(|x| info.shapes.contains_key(*x)) else {
+            continue;
+        };
+        let n = node(&eq.rhs)
+            .and_then(|n| n.output_idx.as_ref())
+            .map_or(0, Vec::len);
+        if n != info.shapes[x].len() {
+            return internal(format!(
+                "the lifted equation {i} of state {x} has {n} output indices, but the state's shape {:?} has {} dimensions",
+                info.shapes[x],
+                info.shapes[x].len()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Step 4 of spec/plan.md §4: the model's `solver.external`, resolved with
@@ -411,6 +471,12 @@ fn check_external(rc: &RunConfig, file: &EsmFile, model_path: &Path) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "differ in length")]
+    fn lifted_faq_ranges_lengths() {
+        lifted_ranges(&["i".into(), "j".into()], &["cell".into()]);
+    }
 
     #[test]
     fn lifted_faq_ranges() {

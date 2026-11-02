@@ -9,7 +9,7 @@ use crate::locality::{BandEntry, BandFailure, BandSource, RowIdx};
 use crate::model::ModelInfo;
 use crate::terms::Term;
 use earthsci_ast::FlattenedSystem;
-use earthsci_astdiff::{BandError, Ctx, JacEntry, RIdx, SysView, Wrt};
+use earthsci_astdiff::{BandError, JacEntry, RIdx, SysView, Wrt};
 use serde_json::Value;
 
 /// A derived document, loaded and flattened by EarthSciAST.
@@ -29,21 +29,24 @@ impl FlatView {
         Ok(FlatView { flat })
     }
 
-    /// EarthSciASTDiff's view of the flattened system (`sysview_flat`).
+    /// The document `doc`, written as its bytes, loaded and flattened.
+    pub fn of_document(doc: &Value) -> Result<FlatView, String> {
+        let text = String::from_utf8(derived::to_bytes(doc)).map_err(|e| e.to_string())?;
+        FlatView::new(&text)
+    }
+
+    /// EarthSciASTDiff's view of the flattened system (`sysview_flat`),
+    /// which checks each lifted state's shape. It is not free: build it
+    /// once and pass it to [`bands`] and the passes that read it.
     pub fn sysview(&self) -> Result<SysView<'_>, BandError> {
         earthsci_astdiff::sysview_flat(&self.flat)
     }
+}
 
-    /// EarthSciASTDiff's context of the view (index-set sizes, shapes).
-    pub fn ctx(&self) -> Result<Ctx, BandError> {
-        earthsci_astdiff::ctx_of(&self.sysview()?)
-    }
-
-    /// The state Jacobian's band list (`jacobian_bands_view`, `wrt =
-    /// states`), in EarthSciASTDiff's order.
-    pub fn bands(&self) -> Result<Vec<JacEntry>, BandError> {
-        earthsci_astdiff::jacobian_bands_view(&self.sysview()?, Wrt::States, None)
-    }
+/// The state Jacobian's band list of the view `sv` (`jacobian_bands_view`,
+/// `wrt = states`), in EarthSciASTDiff's order.
+pub fn bands(sv: &SysView) -> Result<Vec<JacEntry>, BandError> {
+    earthsci_astdiff::jacobian_bands_view(sv, Wrt::States, None)
 }
 
 /// A band entry as the locality rules read it (§5.2.3).
@@ -69,13 +72,15 @@ pub fn band_entry(en: &JacEntry) -> BandEntry {
 /// The band list of the document `doc` (§5.2.2, §5.4): loaded, flattened,
 /// viewed and differentiated. A failure anywhere is a message for
 /// `band_model_failed`.
-pub fn document_bands(doc: &Value) -> Result<(FlatView, Vec<JacEntry>), String> {
-    let text = String::from_utf8(derived::to_bytes(doc)).map_err(|e| e.to_string())?;
-    let view = FlatView::new(&text)?;
-    let bands = view
-        .bands()
-        .map_err(|e| format!("EarthSciASTDiff: {}", e.0))?;
-    Ok((view, bands))
+pub fn document_bands(doc: &Value) -> Result<Vec<JacEntry>, String> {
+    let view = FlatView::of_document(doc)?;
+    let sv = view.sysview().map_err(astdiff_message)?;
+    bands(&sv).map_err(astdiff_message)
+}
+
+/// An EarthSciASTDiff failure as a `band_model_failed` message.
+pub fn astdiff_message(e: BandError) -> String {
+    format!("EarthSciASTDiff: {}", e.0)
 }
 
 /// Term bands from EarthSciASTDiff (§5.2.2): each term's band list is that
@@ -93,8 +98,7 @@ impl BandSource for AstDiffBands {
         let mut out = Vec::with_capacity(terms.len());
         for (i, t) in terms.iter().enumerate() {
             let doc = derived::rhs_document(info, "term", &[t]);
-            let (_, bands) =
-                document_bands(&doc).map_err(|message| BandFailure { term: i, message })?;
+            let bands = document_bands(&doc).map_err(|message| BandFailure { term: i, message })?;
             out.push(bands.iter().map(band_entry).collect());
         }
         Ok(Some(out))
