@@ -37,8 +37,9 @@ end
 The result file of a forward run (`producer` `julia`): the state at `t₀` and
 every output time, the step statistics summed over leaves and macro steps, and
 the functional and gradient for gradient cases (`gradient = (J, ū₀, p̄)` from
-[`gradient`](@ref)). `dofs` writes `u` as those entries of the state in that
-order, such as an M2 case's `layout` (spec/toy-problems.md §4.3, `layout_dofs`).
+[`gradient`](@ref)). `dofs` writes `u`, and the gradient's `u0`, as those
+entries of the state in that order, such as an M2 case's `layout`
+(spec/toy-problems.md §4.3, `layout_dofs`).
 """
 function result_json(case_id::AbstractString, run::Run; gradient = nothing, dofs = nothing)
     ts = [t for (t, _) in run.outputs]
@@ -48,7 +49,7 @@ function result_json(case_id::AbstractString, run::Run; gradient = nothing, dofs
     end
     J, ū0, p̄ = gradient
     g = Dict{Symbol, Vector{Float64}}()
-    run.wrt_u0 && (g[:u0] = ū0)
+    run.wrt_u0 && (g[:u0] = dofs === nothing ? ū0 : ū0[dofs])
     isempty(run.wrt_p) || (g[:p] = p̄[run.wrt_p])
     return result_json(
         case_id, "julia", ts, us; accepted = run.accepted, rejected = run.rejected, rhs_calls = run.nf,

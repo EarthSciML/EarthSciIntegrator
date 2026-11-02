@@ -9,6 +9,14 @@
 # (§3); the states no operator of the leaf writes have a zero right-hand side
 # there, so they stay constant over the leaf's interval, as §8.2 requires.
 
+"""A workspace of a [`PlanDocument`](@ref): EarthSciAST's, and the slot, output and parameter buffers of one call."""
+struct DocWorkspace{W}
+    ws::W
+    U::Vector{Float64}
+    du::Vector{Float64}
+    P::Vector{Float64}
+end
+
 """
     PlanDocument
 
@@ -16,30 +24,42 @@ One derived document built as spec/operator-interface.md §8.1 says:
 `rhs_program(esm_problem(path, tspan))` with the native compiler. `perm`
 maps each canonical DOF to its slot in the program's `u`, `pidx` each of the
 program's parameters to its index in the model's parameter vector (§8.2),
-and `nslots` is the length of the program's `u`. Workspaces are kept in a
+and `nslots` is the length of the program's `u`. `slots` maps each state
+element name to its slot, from the program's state layout, which the build
+checks the problem's `var_map` and `u0` agree with. Workspaces are kept in a
 pool, one per concurrent caller (EarthSciAST's `rhs_workspace`), so one
 document serves every thread.
 """
-struct PlanDocument
+struct PlanDocument{P, W}
     path::String
-    prog::EarthSciAST.RhsProgram
+    prog::P
     fs::EarthSciAST.ForcingSet
     aux::Vector{Float64}
     nslots::Int
     perm::Vector{Int}
     pidx::Vector{Int}
-    var_map::Dict{String, Int}
+    slots::Dict{String, Int}
     u0::Vector{Float64}
-    pool::Vector{Any}
+    pool::Vector{DocWorkspace{W}}
     lock::ReentrantLock
 end
 
-"""A workspace of a [`PlanDocument`](@ref): EarthSciAST's, and the slot, output and parameter buffers of one call."""
-struct DocWorkspace
-    ws::Any
-    U::Vector{Float64}
-    du::Vector{Float64}
-    P::Vector{Float64}
+"""`d` with another `path` (the plan directory's own, for a document a cache built for another plan), `perm` or `pidx`."""
+_with(d::PlanDocument; path = d.path, perm = d.perm, pidx = d.pidx) =
+    PlanDocument(String(path), d.prog, d.fs, d.aux, d.nslots, perm, pidx, d.slots, d.u0, d.pool, d.lock)
+
+"""
+The slot of every state element of program `prog` in its `u`, from its state
+layout: each block's cells column-major from the block's offset.
+"""
+function program_slots(prog)
+    slots = Dict{String, Int}()
+    for b in EarthSciAST.state_layout(prog)
+        for (k, c) in enumerate(cells(collect(Int, b.shape)))
+            slots[element_name(b.name, c)] = b.offset + k - 1
+        end
+    end
+    return slots
 end
 
 """Load and build the derived document at `path` (§8.1). A build failure is a [`ConfigError`](@ref) naming the operator and the document."""
@@ -51,40 +71,70 @@ function build_plan_document(path::AbstractString, opname::AbstractString, tspan
         e isa InterruptException && rethrow()
         throw(ConfigError("operator '$opname': building $(basename(path)) failed: " * sprint(showerror, e)))
     end
-    vm = Dict{String, Int}(String(k) => Int(v) for (k, v) in prob.var_map)
     nslots = EarthSciAST.n_states(prog)
     nslots == length(prob.u0) ||
         throw(ConfigError("operator '$opname': $(basename(path)) builds a program of $nslots states and a problem of $(length(prob.u0))"))
+    # The program's `u` is laid out as its state layout says; the problem's
+    # `var_map` indexes `u0`. Both must name the same slot for every element,
+    # or the initial state and every evaluation would put states in the wrong
+    # slots.
+    slots = program_slots(prog)
+    length(slots) == nslots ||
+        throw(ConfigError("operator '$opname': $(basename(path)): the program's state layout covers $(length(slots)) of its $nslots states"))
+    for (k, v) in prob.var_map
+        n = String(k)
+        get(slots, n, 0) == Int(v) || throw(
+            ConfigError(
+                "operator '$opname': $(basename(path)): the problem puts state element $n at $v, " *
+                    "the program's state layout at $(get(slots, n, "no slot"))"
+            )
+        )
+    end
+    length(prob.var_map) == nslots ||
+        throw(ConfigError("operator '$opname': $(basename(path)): the problem names $(length(prob.var_map)) of the program's $nslots states"))
+    ws = EarthSciAST.rhs_workspace(prog)
+    npar = length(EarthSciAST.parameters(prog))
+    w = DocWorkspace(ws, zeros(nslots), zeros(nslots), zeros(npar))
     return PlanDocument(
         String(path), prog, EarthSciAST.default_forcing_set(prog), zeros(EarthSciAST.tile_layout(prog).n_aux),
-        nslots, Int[], Int[], vm, Float64.(prob.u0), Any[], ReentrantLock()
+        nslots, Int[], Int[], slots, Float64.(prob.u0), [w], ReentrantLock()
     )
 end
 
 """`d` with its canonical permutation and parameter map for the layout `L` and parameter names `pnames`."""
 function bind_document(d::PlanDocument, L::DofLayout, pnames::Vector{String}, opname)
     perm = Int[
-        haskey(d.var_map, n) ? d.var_map[n] :
+        haskey(d.slots, n) ? d.slots[n] :
             throw(ConfigError("operator '$opname': $(basename(d.path)) does not declare state element $n"))
             for n in L.names
     ]
-    pi = Dict(n => i for (i, n) in enumerate(pnames))
+    pindex = Dict(n => i for (i, n) in enumerate(pnames))
     pidx = Int[
-        haskey(pi, s.name) ? pi[s.name] :
+        haskey(pindex, s.name) ? pindex[s.name] :
             throw(ConfigError("operator '$opname': $(basename(d.path)) has parameter $(s.name), which the model does not declare"))
             for s in EarthSciAST.parameters(d.prog)
     ]
-    return PlanDocument(d.path, d.prog, d.fs, d.aux, d.nslots, perm, pidx, d.var_map, d.u0, d.pool, d.lock)
+    return _with(d; perm, pidx)
 end
 
-function _acquire(d::PlanDocument)
+function _acquire(d::PlanDocument{P, W}) where {P, W}
     w = lock(d.lock) do
         isempty(d.pool) ? nothing : pop!(d.pool)
     end
     w === nothing || return w
-    return DocWorkspace(EarthSciAST.rhs_workspace(d.prog), zeros(d.nslots), zeros(d.nslots), zeros(length(d.pidx)))
+    return DocWorkspace{W}(EarthSciAST.rhs_workspace(d.prog), zeros(d.nslots), zeros(d.nslots), zeros(length(d.pidx)))
 end
 _release(d::PlanDocument, w::DocWorkspace) = lock(() -> push!(d.pool, w), d.lock)
+
+function _check_f64(u, p)
+    (eltype(u) <: Float64 && eltype(p) <: Float64) || throw(
+        UnsupportedError(
+            "operators built from a plan evaluate Float64 states and parameters only " *
+                "(EarthSciAST's program takes no dual numbers; spec/operator-interface.md §8.3)"
+        )
+    )
+    return nothing
+end
 
 """
     evaluate(f, d, u, p, t)
@@ -94,12 +144,7 @@ fields included, zero) and the model parameters `p`, then call `f(du)` on
 the program's output in its own slot order, and return what `f` returns.
 """
 function evaluate(f, d::PlanDocument, u, p, t)
-    (eltype(u) <: Float64 && eltype(p) <: Float64) || throw(
-        UnsupportedError(
-            "operators built from a plan evaluate Float64 states and parameters only " *
-                "(EarthSciAST's program takes no dual numbers; spec/operator-interface.md §8.3)"
-        )
-    )
+    _check_f64(u, p)
     w = _acquire(d)
     try
         U, P = w.U, w.P
@@ -118,6 +163,24 @@ function evaluate(f, d::PlanDocument, u, p, t)
 end
 
 """
+    BandCache
+
+The values of a planned operator's band points at the last linearization
+point `(u, p, t)` it was evaluated at, so `jac`, `jvp_u` and `vjp_u` at one
+point evaluate the Jacobian document once. `vals` is replaced, never written
+in place.
+"""
+mutable struct BandCache
+    valid::Bool
+    t::Float64
+    u::Vector{Float64}
+    p::Vector{Float64}
+    vals::Vector{Float64}
+    const lock::ReentrantLock
+end
+BandCache() = BandCache(false, NaN, Float64[], Float64[], Float64[], ReentrantLock())
+
+"""
     PlannedOperator
 
 An operator a plan supplies (spec/operator-interface.md §8): the right-hand
@@ -127,15 +190,16 @@ the slot of the band field `J_k` cell in the Jacobian document and the
 canonical row and column DOFs it adds into. It provides `rhs`, `jvp_u`,
 `vjp_u` and `jac` (§8.3); the other calls are not provided at M2.
 """
-struct PlannedOperator <: AbstractOperator
+struct PlannedOperator{R <: PlanDocument, J <: PlanDocument} <: AbstractOperator
     name::String
     writes::Vector{Int}
     structure::Structure
     depends_on_t::Bool
     linear_in_u::Bool
-    rhs::PlanDocument
-    jac::PlanDocument
+    rhs::R
+    jac::J
     points::Vector{NTuple{3, Int}}
+    cache::BandCache
 end
 
 opname(op::PlannedOperator) = op.name
@@ -143,6 +207,9 @@ structure(op::PlannedOperator) = op.structure
 depends_on_t(op::PlannedOperator) = op.depends_on_t
 linear_in_u(op::PlannedOperator) = op.linear_in_u
 writes(op::PlannedOperator, N) = op.writes
+# §8.3: a Rosenbrock leaf on a planned operator that depends on t is refused,
+# whatever the method's dᵢ.
+ft_refused_on_rosenbrock(::PlannedOperator) = true
 
 function rhs!(op::PlannedOperator, out, u, p, t)
     d = op.rhs
@@ -154,28 +221,53 @@ function rhs!(op::PlannedOperator, out, u, p, t)
     end
 end
 
+"""
+    with_band_values(f, op, u, p, t)
+
+`f(vals)`, with `vals[k]` the value of the Jacobian document at band point
+`op.points[k]` at `(u, p, t)`. The document is evaluated once per point
+`(u, p, t)`, compared bitwise; the calls at the point it last saw reuse it.
+"""
+function with_band_values(f, op::PlannedOperator, u, p, t)
+    _check_f64(u, p)
+    c, tt = op.cache, Float64(t)
+    hit, res = lock(c.lock) do
+        c.valid && c.t === tt && bitwise_same(c.u, u) && bitwise_same(c.p, p) ? (true, f(c.vals)) : (false, nothing)
+    end
+    hit && return res
+    vals = evaluate(op.jac, u, p, tt) do du
+        Float64[du[s] for (s, _, _) in op.points]
+    end
+    lock(c.lock) do
+        resize!(c.u, length(u)) .= u
+        resize!(c.p, length(p)) .= p
+        c.t, c.vals, c.valid = tt, vals, true
+    end
+    return f(vals)
+end
+
 function jac!(op::PlannedOperator, out, u, p, t)
-    return evaluate(op.jac, u, p, t) do du
-        for (s, r, c) in op.points
-            addentry!(out, r, c, du[s])
+    return with_band_values(op, u, p, t) do vals
+        for (k, (_, r, c)) in enumerate(op.points)
+            addentry!(out, r, c, vals[k])
         end
         out
     end
 end
 
 function jvp_u!(op::PlannedOperator, out, u, p, t, v)
-    return evaluate(op.jac, u, p, t) do du
-        @inbounds for (s, r, c) in op.points
-            out[r] += du[s] * v[c]
+    return with_band_values(op, u, p, t) do vals
+        @inbounds for (k, (_, r, c)) in enumerate(op.points)
+            out[r] += vals[k] * v[c]
         end
         out
     end
 end
 
 function vjp_u!(op::PlannedOperator, out, u, p, t, w)
-    return evaluate(op.jac, u, p, t) do du
-        @inbounds for (s, r, c) in op.points
-            out[c] += du[s] * w[r]
+    return with_band_values(op, u, p, t) do vals
+        @inbounds for (k, (_, r, c)) in enumerate(op.points)
+            out[c] += vals[k] * w[r]
         end
         out
     end
@@ -262,21 +354,30 @@ function plan_problem(dir::AbstractString; cache::Union{Nothing, AbstractDict} =
         h = bytes2hex(sha256(read(path)))
         h == entry["sha256"] || throw(ConfigError("operator '$op': $rel does not match the plan's hash (the plan is stale)"))
         cache === nothing && return build_plan_document(path, op, tspan)
-        key = (h, tspan)
-        return get!(() -> build_plan_document(path, op, tspan), cache, key)
+        # A derived document is self-contained (spec/plan.md §6.1: no data
+        # sources, function tables or other files), so its bytes and the
+        # interval determine its build; a document another plan built is
+        # reused, under this plan's path.
+        d = get!(() -> build_plan_document(path, op, tspan), cache, (h, tspan))
+        return _with(d; path)
     end
     built = Dict{String, Tuple{PlanDocument, PlanDocument}}(n => (doc(n, "rhs"), doc(n, "jacobian")) for n in names)
-    # The layout and the parameters come from the first operator's right-hand
-    # side; every other document must declare the same states (§8.2).
+    # The layout comes from the first operator's right-hand side; every other
+    # document must declare the same states (§8.2). The parameters are the
+    # model's: every scalar parameter any of the documents reads, at its
+    # default, in code-point order of their names (§8.2).
     first_rhs = built[first(names)][1]
     L = canonical_layout(first_rhs)
-    params = EarthSciAST.parameters(first_rhs.prog)
-    pnames = String[s.name for s in params]
-    p = Float64[
-        s.default === nothing ? throw(ConfigError("parameter $(s.name) has no default (spec/operator-interface.md §8.2)")) :
-            s.default for s in params
-    ]
-    issorted(pnames) || (perm = sortperm(pnames); pnames = pnames[perm]; p = p[perm])
+    defaults = Dict{String, Float64}()
+    for n in names, d in built[n], s in EarthSciAST.parameters(d.prog)
+        s.default === nothing &&
+            throw(ConfigError("operator '$n': parameter $(s.name) of $(basename(d.path)) has no default (spec/operator-interface.md §8.2)"))
+        v = get!(defaults, s.name, s.default)
+        v === s.default ||
+            throw(ConfigError("operator '$n': parameter $(s.name) has default $(s.default) in $(basename(d.path)) and $v in another derived document"))
+    end
+    pnames = sort!(collect(keys(defaults)))
+    p = Float64[defaults[x] for x in pnames]
     ops = Dict{String, AbstractOperator}()
     u0 = nothing
     for n in names
@@ -313,14 +414,15 @@ function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDoc
     fields = map(enumerate(bands)) do (k, b)
         ext = vcat(L.extents[b.row], Int[hi for (_, _, hi) in b.contracted])
         Int[
-            get(j.var_map, element_name("JacobianEval.J_$k", c)) do
+            get(j.slots, element_name("JacobianEval.J_$k", c)) do
                 throw(ConfigError("operator '$name': derived/$name.jacobian.esm has no band field element $(element_name("JacobianEval.J_$k", c))"))
             end for c in cells(ext)
         ]
     end
     points = NTuple{3, Int}[(fields[k][f], row, col) for (k, f, row, col) in band_points(L, bands)]
     return PlannedOperator(
-        String(name), w, planned_structure(entry, L), Bool(st["depends_on_t"]), Bool(st["linear_in_u"]), r, j, points
+        String(name), w, planned_structure(entry, L), Bool(st["depends_on_t"]), Bool(st["linear_in_u"]), r, j, points,
+        BandCache()
     )
 end
 

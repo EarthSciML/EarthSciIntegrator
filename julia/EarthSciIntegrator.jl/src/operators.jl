@@ -165,6 +165,27 @@ function provides(op::AbstractOperator, call::Symbol)
     return hasmethod(f, Tuple{typeof(op), ntuple(_ -> Any, nargs)...})
 end
 
+"""
+    rosenbrock_needs_ft(method, op) -> Bool
+
+Whether a leaf advancing `op` with `method` needs `op`'s `ft` (§3): a
+Rosenbrock method that forms f_t (some dᵢ ≠ 0) on an operator that depends on
+t. [`ft_refused_on_rosenbrock`](@ref) operators need it under any Rosenbrock
+method.
+"""
+rosenbrock_needs_ft(method, op) =
+    method isa RosenbrockMethod && depends_on_t(op) && (method.uses_ft || ft_refused_on_rosenbrock(op))
+
+"""
+    ft_refused_on_rosenbrock(op) -> Bool
+
+Whether a Rosenbrock leaf on `op` is refused when `op` depends on t and does
+not provide `ft`, even under a method whose dᵢ are all zero. False for
+operators written by hand; true for the operators a plan supplies
+(operator-interface.md §8.3).
+"""
+ft_refused_on_rosenbrock(op) = false
+
 # ---------------------------------------------------------------------------
 # Matrix storage (operator-interface.md §4)
 

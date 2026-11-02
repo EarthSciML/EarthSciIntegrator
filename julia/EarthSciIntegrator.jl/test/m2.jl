@@ -25,8 +25,8 @@ spec/toy-problems.md §4.3 by the comparison rule of the `cross_language`
 check (§2.1): the two result files' states agree to `rtol`, relative to each
 component's largest magnitude over the run in either result, when the step
 sequences agree (the same accepted step count and every step's `t` and `h`),
-and to `rtol_steps_differ` when they differ. Only states and step counts are
-compared. `steps2` and `steps1` are the runs' leaf steps from their tapes.
+and to `rtol_steps_differ` when they differ. Only states and step sequences
+are compared. `steps2` and `steps1` are the runs' leaf steps from their tapes.
 """
 function toy_equivalence(m2, m1, steps2, steps1, chk)
     t2, t1 = Float64.(m2["t"]), Float64.(m1["t"])
@@ -173,6 +173,14 @@ end
             @test isapprox(J.A[dofs, dofs], Jr.A; rtol = 1.0e-12, atol = 1.0e-12 * maximum(abs, Jr.A))
             @test isapprox(jvp_u!(op, zeros(N), u, pp.prob.p, t, v), J.A * v; rtol = 1.0e-12)
             @test isapprox(vjp_u!(op, zeros(N), u, pp.prob.p, t, w), J.A' * w; rtol = 1.0e-12)
+            # The band values are reused only at the point they were evaluated at.
+            u2 = u .* 1.07 .+ 0.003
+            J2 = EarthSciIntegrator.DenseJacobian{Float64}(N)
+            Jr2 = EarthSciIntegrator.DenseJacobian{Float64}(N)
+            @test isapprox(jvp_u!(op, zeros(N), u2, pp.prob.p, t, v), (jac!(op, J2, u2, pp.prob.p, t); J2.A) * v; rtol = 1.0e-12)
+            jac!(ref, Jr2, u2[dofs], toy.p, t)
+            @test isapprox(J2.A[dofs, dofs], Jr2.A; rtol = 1.0e-12, atol = 1.0e-12 * maximum(abs, Jr2.A))
+            @test isapprox(vjp_u!(op, zeros(N), u, pp.prob.p, t, w), J.A' * w; rtol = 1.0e-12)
             # §8.3: the calls planned operators do not provide at M2.
             for call in (:ft, :vjp_p, :hess_u, :hess_p, :ft_vjp_u, :ft_vjp_p)
                 @test !EarthSciIntegrator.provides(op, call)
@@ -188,6 +196,10 @@ end
         end
     end
 end
+
+"""An operator written by hand that depends on t and provides no ft."""
+struct M2TimeDependentOp <: EarthSciIntegrator.AbstractOperator end
+EarthSciIntegrator.depends_on_t(::M2TimeDependentOp) = true
 
 @testset "plans the runtime refuses" begin
     plandir = joinpath(M2_PLANS, "m2.forced_decay.BackwardEuler.fixed")
@@ -205,6 +217,28 @@ end
             e
         end
         @test err isa ConfigError && occursin("decay", err.msg) && occursin("ft", err.msg)
+        # §8.3 refuses that leaf under any Rosenbrock method; an operator
+        # written by hand needs ft only when the method forms f_t (§3).
+        rodas4 = EarthSciIntegrator.RosenbrockMethod(EarthSciIntegrator.TABLEAUS["Rodas4"])
+        fields = [getfield(rodas4, f) for f in fieldnames(EarthSciIntegrator.RosenbrockMethod)]
+        no_ft = EarthSciIntegrator.RosenbrockMethod(fields[1:(end - 1)]..., false)
+        decay = pp.prob.operators["decay"]
+        hand = M2TimeDependentOp()
+        @test EarthSciIntegrator.depends_on_t(decay) && EarthSciIntegrator.depends_on_t(hand)
+        @test EarthSciIntegrator.rosenbrock_needs_ft(no_ft, decay)
+        @test !EarthSciIntegrator.rosenbrock_needs_ft(no_ft, hand)
+        @test EarthSciIntegrator.rosenbrock_needs_ft(rodas4, hand)
+        # A plan's step writes `hit` as a list; null is a config error, not a crash.
+        cfg = Dict{String, Any}(
+            "esm_integrator" => "0.1.0", "step" => Dict("dt" => 2, "hit" => nothing),
+            "schedule" => Dict("leaf" => "decay", "alg" => "BackwardEuler", "dt" => 0.1),
+        )
+        err = try
+            build_run(cfg; tspan = (0, 2), prob = pp.prob); nothing
+        catch e
+            e
+        end
+        @test err isa ConfigError && occursin("hit", err.msg)
         # A derived document that does not match the plan's hash: the plan is stale.
         stale = mktempdir(RESULTS_DIR)
         cp(plandir, joinpath(stale, "plan"))
