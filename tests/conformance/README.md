@@ -42,6 +42,7 @@ plans/fixtures/<fixture>/
 | `periodic_stencil` | PPM-like advection reaching 3 cells upwind and 2 downwind, the periodic seam as literal wrapped indices, the footprint read from bands, halos and a rank/tile grid |
 | `column_contraction` | a PBL-mean-like full-column `faq` contraction (column locality), Gershgorin stiffness, TRBDF2 with a banded solve |
 | `reseact_shaped` | reseact's shape: chemistry, transport and mixing as three `operator_compose` contributions; operators by provenance and by default locality; `auto` and named schedules |
+| `unnamed_lift` | a pointwise lift onto a grid no index set is declared for: `flatten`'s synthetic index set `_liftdim1_4` as the lifted states' shape, the default axis and every derived document's `index_sets` (spec/plan.md §6.1.3) |
 | `cross_component_term` | a `couple` term that reads two other components' variables, which provenance alone cannot place (D65), selected by provenance label and by owner |
 | `toy_robertson`, `toy_photostationary_cells`, `toy_advection_reaction` | the toy problems' `.esm` versions under their M2 cases' run configs |
 

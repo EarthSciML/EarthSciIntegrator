@@ -312,7 +312,7 @@ A JSON object with exactly these keys:
 - `"esm": "1.3.0"`.
 - `"metadata": {"name": "<operator>"}`.
 - `"index_sets"`: every index set of the flattened model, `{"kind": "interval", "size": N}` (§4 step 6 refused any other kind).
-- `"domain"`: built from the flattened model's `domain`, as EarthSciAST serializes it, exactly as EarthSciASTDiff builds its evaluation document's (§6.2), so both derived documents carry the same one: `temporal` holding only those of `start`, `end` and `reference_time` that are given, then `element_type` and `array_type` when given. Every other field (`independent_variable`, `spatial`, boundary conditions and the rest) is dropped: the derived equations are written with respect to `t`, and the time origin is all a derived document reads. Absent when the flattened model has no `domain` or nothing is left.
+- `"domain"`: of the flattened model's `domain` as EarthSciAST serializes it, `temporal` holding only its `start`, `end` and `reference_time`, then `element_type` and `array_type`, each when given; not `independent_variable` or any other key. Absent when none of these is given. This is the `domain` EarthSciASTDiff writes in its evaluation document (esm-jacobian-spec.md §8.1), so an operator's two documents carry the same one (§6.2).
 - `"models"`: the **component tree** (§6.1.1).
 
 No other key appears: no `solver`, `coupling`, `reaction_systems`, `data_sources`, `function_tables`, `enums`, `expression_templates` or `metaparameters`, all of which were consumed by load and flatten.
@@ -445,7 +445,7 @@ The checks run after the derived documents are written to memory and before anyt
 - **`band_model`** (per operator): at each sampled state, the band Jacobian $J^B$ assembled from the Jacobian document's fields and `structure.bands` is compared with an independent Jacobian of the operator's right-hand-side document, rows of `writes` only: ForwardDiff in Julia, central finite differences in Rust (§8.2). The check also confirms the band pattern is a structural superset of the true dependence.
 - **`non_empty`** (per operator): the operator has at least one term, and its band list is non-empty when any of its terms references a state.
 
-`validation` lists `rhs_sum` first, then `band_model` and `non_empty` for each operator in code-point order of the operator name.
+`validation` lists `rhs_sum` first, then `band_model` and `non_empty` for each operator in code-point order of the operator name. The checks run in that order except that, for each operator, `non_empty` runs before `band_model`: an operator that has no band although a term references a state is `validation_empty_operator`, not `validation_band_model_failed`.
 
 ### 8.2 The independent Jacobian
 

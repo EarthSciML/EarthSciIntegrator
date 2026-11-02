@@ -523,59 +523,33 @@ fn imex_operator_names() {
     assert!(run("imex-ignored", None, ignored).is_ok());
 }
 
-/// spec/plan.md §6.1.3: a lift onto a grid no variable declares (the model
-/// of the former `lift-shape-unresolved` refusal, without its index sets)
-/// is planned. `flatten` records each lifted state's shape as a synthetic
-/// index set, which every derived document declares and the lifted `faq`
-/// ranges over. With the grid declared as `cell`, the shape is `cell`.
+/// spec/plan.md §6.1.3: the `unnamed_lift` fixture's model with its grid
+/// declared as the index set `cell`, which no variable's shape names: the
+/// only declared index set of the lift's size, so `flatten` names the
+/// lift's dimension `cell`, and every derived document declares it and the
+/// lifted `faq` ranges over it. (The fixture itself, with no index set,
+/// covers the synthetic `_liftdim1_4`.)
 #[test]
-fn lift_onto_undeclared_grid() {
-    let base: Value = serde_json::from_str(include_str!("lift_undeclared_grid.esm")).unwrap();
-    let mut declared = base.clone();
-    declared["index_sets"] = json!({"cell": {"kind": "interval", "size": 4}});
-    for (case, model, set) in [
-        ("lift-undeclared-grid", &base, "_liftdim1_4"),
-        ("lift-declared-grid", &declared, "cell"),
-    ] {
-        let rc = json!({"esm_integrator": "0.1.0", "model": "model.esm", "schedule": "auto"});
-        let p = run(case, Some(model), rc).unwrap_or_else(|e| panic!("{case}: {e}"));
-        assert_eq!(p.model.index_sets.get(set), Some(&4), "{case}: index sets");
-        for x in &p.model.states {
+fn lift_onto_declared_unnamed_grid() {
+    let path = conformance().join("plans/fixtures/unnamed_lift/model.esm");
+    let mut model: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    model["index_sets"] = json!({"cell": {"kind": "interval", "size": 4}});
+    let rc = json!({"esm_integrator": "0.1.0", "model": "model.esm", "schedule": "auto"});
+    let p = run("lift-declared-unnamed-grid", Some(&model), rc).unwrap();
+    for x in &p.model.states {
+        assert_eq!(p.model.shapes[x], ["cell"], "shape of {x}");
+    }
+    let sets = json!({"cell": {"kind": "interval", "size": 4}});
+    for (op, d) in &p.documents {
+        let rhs: Value = serde_json::from_slice(&d.rhs).unwrap();
+        let jac: Value = serde_json::from_slice(&d.jacobian).unwrap();
+        assert_eq!(rhs["index_sets"], sets, "{op}.rhs index_sets");
+        assert_eq!(jac["index_sets"], sets, "{op}.jacobian index_sets");
+        for eq in rhs["models"]["Chem"]["equations"].as_array().unwrap() {
             assert_eq!(
-                p.model.shapes[x],
-                vec![set.to_string()],
-                "{case}: shape of {x}"
-            );
-        }
-        assert!(!p.documents.is_empty(), "{case}: no operator");
-        for (op, d) in &p.documents {
-            let rhs: Value = serde_json::from_slice(&d.rhs).unwrap();
-            assert_eq!(
-                rhs["index_sets"][set],
-                json!({"kind": "interval", "size": 4}),
-                "{case}: {op}.rhs index_sets"
-            );
-            let mut lifted = 0;
-            for m in rhs["models"].as_object().unwrap().values() {
-                for eq in m["equations"].as_array().unwrap() {
-                    let r = &eq["rhs"];
-                    if r["op"] == "faq" && eq["lhs"]["op"] == "D" {
-                        let idx = r["output_idx"][0].as_str().unwrap();
-                        assert_eq!(
-                            r["ranges"],
-                            json!({idx: {"from": set}}),
-                            "{case}: {op} ranges"
-                        );
-                        lifted += 1;
-                    }
-                }
-            }
-            assert!(lifted > 0, "{case}: {op}.rhs has no lifted equation");
-            let jac: Value = serde_json::from_slice(&d.jacobian).unwrap();
-            assert_eq!(
-                jac["index_sets"][set],
-                json!({"kind": "interval", "size": 4}),
-                "{case}: {op}.jacobian index_sets"
+                eq["rhs"]["ranges"],
+                json!({"i": {"from": "cell"}}),
+                "{op} ranges"
             );
         }
     }

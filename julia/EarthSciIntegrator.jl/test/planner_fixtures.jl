@@ -84,6 +84,9 @@ const EXPECTED_OPERATORS = Dict(
         "transport" => ("stencil", ("nonstiff", "run_config"), "general", Dict("stencil" => Dict("footprint" => [[-1], [0]]))),
         "reaction" => ("pointwise", ("stiff", "run_config"), "block_diagonal", block(["Reaction.A", "Reaction.B"], [[1, 1], [1, 2], [2, 1], [2, 2]])),
     ),
+    "unnamed_lift/auto" => Dict(
+        "default_pointwise" => ("pointwise", ("stiff", "reaction_systems"), "block_diagonal", block(CHEM3, FULL3)),
+    ),
     "toy_photostationary_cells/kvaerno4" => Dict(
         "photochemistry" => ("pointwise", ("stiff", "run_config"), "block_diagonal", block(["Photo.NO", "Photo.NO2", "Photo.O3"], FULL3)),
     ),
@@ -102,6 +105,7 @@ const EXPECTED_FLAGS = Dict(
     "periodic_stencil/auto" => Dict("default_stencil" => (true, false)),
     "column_contraction/auto" => Dict("default_column" => (true, false)),
     "pointwise_chemistry/auto" => Dict("default_pointwise" => (false, false)),
+    "unnamed_lift/auto" => Dict("default_pointwise" => (false, false)),
     "reseact_shaped/named" => Dict("transport" => (true, false), "mixing" => (true, false), "chemistry" => (false, false)),
 )
 
@@ -214,6 +218,20 @@ const PLAN_FILES = String[]
             @test p["operators"][o]["structure"]["depends_on_t"] == dt
         end
         haskey(EXPECTED_OPERATORS, key) && @test Set(ops) == Set(keys(EXPECTED_OPERATORS[key]))
+        if key == "unnamed_lift/auto"
+            # No index set is declared, so `flatten` names the lift's
+            # dimension `_liftdim1_4` (§6.1.3): it is the default axis and in
+            # both derived documents' `index_sets`, and the states and band
+            # fields are shaped on it.
+            @test p["partition"]["halo"] == Dict("_liftdim1_4" => 0)
+            want = Dict("_liftdim1_4" => Dict("kind" => "interval", "size" => 4))
+            for k in ("rhs", "jacobian")
+                doc = JSON.parsefile(joinpath(dir, "derived", "default_pointwise.$k.esm"))
+                @test doc["index_sets"] == want
+                @test all(x -> x == ["_liftdim1_4"], (doc["models"]["Chem"]["variables"][v]["shape"] for v in ("NO", "NO2", "O3")))
+                k == "jacobian" && @test all(v -> v["shape"] == ["_liftdim1_4"], values(doc["models"]["JacobianEval"]["variables"]))
+            end
+        end
     end
 
     @testset "the plans validate against plan.schema.json" begin
@@ -291,6 +309,30 @@ const PLAN_FILES = String[]
         )
         @test JSON.parse(a.rhs.bytes)["domain"] == want
         @test JSON.parse(a.jac.bytes)["domain"] == want
+    end
+
+    @testset "the Jacobian document's band fields are the operator's bands" begin
+        d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"))
+        a = d.ctx.backend.ops["kinetics"]
+        @test EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries) isa AbstractDict
+        # A band count that differs from the fields EarthSciASTDiff writes is an error.
+        @test_throws ErrorException EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries[1:(end - 1)])
+        # `drop_ic!` passes over a node with no `equations`.
+        models = Dict{String, Any}(
+            "A" => Dict{String, Any}(
+                "variables" => Dict{String, Any}(), "subsystems" => Dict{String, Any}(
+                    "B" => Dict{String, Any}(
+                        "equations" => Any[
+                            Dict{String, Any}("lhs" => Dict{String, Any}("op" => "ic", "args" => Any["A.B.x"]), "rhs" => 1.0),
+                            Dict{String, Any}("lhs" => Dict{String, Any}("op" => "D", "args" => Any["A.B.x"], "wrt" => "t"), "rhs" => 0.0),
+                        ]
+                    )
+                )
+            )
+        )
+        EarthSciIntegrator.drop_ic!(models)
+        @test length(models["A"]["subsystems"]["B"]["equations"]) == 1
+        @test !haskey(models["A"], "equations")
     end
 
     @testset "a backend planned again starts afresh" begin

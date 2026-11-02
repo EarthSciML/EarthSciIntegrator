@@ -29,6 +29,7 @@ const CASES: &[(&str, &str)] = &[
     ("reseact_shaped", "auto"),
     ("reseact_shaped", "named"),
     ("toy_advection_reaction", "strang"),
+    ("unnamed_lift", "auto"),
     ("toy_photostationary_cells", "kvaerno4"),
     ("toy_robertson", "rodas4"),
 ];
@@ -418,6 +419,52 @@ fn full_block(vars: &[&str]) -> Value {
         .flat_map(|i| (1..=n).map(move |j| json!([i, j])))
         .collect();
     json!({"vars": vars, "ordering": (1..=n).collect::<Vec<_>>(), "pattern": pairs, "lu_pattern": pairs})
+}
+
+/// `unnamed_lift/expected.md`: no index set is declared, so `flatten` names
+/// the lift's dimension `_liftdim1_4` (spec/plan.md §6.1.3). It is the
+/// lifted states' shape, the default axis, and in both derived documents'
+/// `index_sets`; the band fields are shaped on it.
+#[test]
+fn unnamed_lift() {
+    let set = "_liftdim1_4";
+    let p = planned("unnamed_lift", "auto");
+    let op = "default_pointwise";
+    assert_eq!(p.operators.keys().collect::<Vec<_>>(), [op]);
+    assert_eq!(p.model.states, ["Chem.NO", "Chem.NO2", "Chem.O3"]);
+    for x in &p.model.states {
+        assert_eq!(p.model.shapes[x], [set], "shape of {x}");
+    }
+    assert_eq!(p.axes.horizontal, [set]);
+    assert_eq!(p.structures[op].class, "block_diagonal");
+    let plan_json: Value = serde_json::from_slice(&p.plan_bytes().unwrap()).unwrap();
+    assert_eq!(plan_json["partition"]["halo"], json!({set: 0}));
+    let sets = json!({set: {"kind": "interval", "size": 4}});
+    let d = &p.documents[op];
+    let rhs: Value = serde_json::from_slice(&d.rhs).unwrap();
+    let jac: Value = serde_json::from_slice(&d.jacobian).unwrap();
+    for (name, doc) in [("rhs", &rhs), ("jacobian", &jac)] {
+        assert_eq!(doc["index_sets"], sets, "{name} index_sets");
+        assert!(doc.get("domain").is_none(), "{name} has a domain");
+        for v in ["NO", "NO2", "O3"] {
+            assert_eq!(
+                doc["models"]["Chem"]["variables"][v]["shape"],
+                json!([set]),
+                "{name} Chem.{v}"
+            );
+        }
+    }
+    for eq in rhs["models"]["Chem"]["equations"].as_array().unwrap() {
+        let r = &eq["rhs"];
+        assert_eq!(r["op"], "faq");
+        assert_eq!(r["output_idx"], json!(["i"]));
+        assert_eq!(r["ranges"], json!({"i": {"from": set}}));
+    }
+    let fields = jac["models"]["JacobianEval"]["variables"]
+        .as_object()
+        .unwrap();
+    assert_eq!(fields.len(), 9);
+    assert!(fields.values().all(|f| f["shape"] == json!([set])));
 }
 
 #[test]

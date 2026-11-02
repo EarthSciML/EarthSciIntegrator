@@ -114,7 +114,7 @@ end
 """The operator's Jacobian document (§6.2), built on first use."""
 function jacobian_document!(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
-    a.jac === nothing && (a.jac = DerivedDocument(jacobian_document(a.rhs.flat)))
+    a.jac === nothing && (a.jac = DerivedDocument(jacobian_document(a.rhs.flat, a.entries)))
     return a.jac
 end
 

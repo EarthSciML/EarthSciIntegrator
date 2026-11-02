@@ -288,8 +288,16 @@ pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
 /// is the field `JacobianEval.J_k`; the document's `esm` version and
 /// `metadata.name` are EarthSciASTDiff's.
 pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
-    let (mut doc, _) = earthsci_astdiff::evaluation_document(sv, entries, false, 0)
+    let (mut doc, fields) = earthsci_astdiff::evaluation_document(sv, entries, false, 0)
         .map_err(|e| PlanError::Internal(format!("evaluation_document: {}", e.0)))?;
+    // Band `k` is the field `J_k` (§6.2).
+    let want: Vec<String> = (1..=entries.len()).map(|k| format!("J_{k}")).collect();
+    if fields != want {
+        return Err(PlanError::Internal(format!(
+            "evaluation_document wrote the band fields {fields:?} for {} bands",
+            entries.len()
+        )));
+    }
     let Some(Value::Object(models)) = doc.get_mut("models") else {
         return Err(PlanError::Internal(
             "evaluation_document wrote no models".into(),
