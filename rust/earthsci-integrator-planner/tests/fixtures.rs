@@ -341,6 +341,42 @@ fn hand_bands_agree() {
     }
 }
 
+/// The probe document (§5.2.2) gives every term, band for band and in
+/// order, the bands of its own right-hand-side document, and its probe
+/// states carry their equation states' index sets.
+#[test]
+fn probe_document_gives_each_terms_bands() {
+    use earthsci_integrator_planner::{derived, model, runconfig, terms};
+    for (fixture, case) in CASES {
+        let rc = runconfig::read(&run_config(fixture, case)).unwrap();
+        let info = model::read(&rc).unwrap();
+        let ts = terms::terms(&info).unwrap();
+        // The probe itself succeeds: planning does not fall back.
+        let probe = AstDiffBands::probe(&info, &ts)
+            .unwrap_or_else(|| panic!("{fixture}/{case}: the probe document failed"));
+        let each = AstDiffBands::each_term(&info, &ts).unwrap();
+        assert_eq!(probe, each, "{fixture}/{case}");
+        let doc = derived::probe_document(&info, &ts);
+        let vars = doc["models"][derived::PROBE_COMPONENT]["variables"]
+            .as_object()
+            .unwrap();
+        assert_eq!(vars.len(), ts.len(), "{fixture}/{case}");
+        for (k, t) in ts.iter().enumerate() {
+            let shape = &info.shapes[&t.variable];
+            let want = if shape.is_empty() {
+                Value::Null
+            } else {
+                json!(shape)
+            };
+            assert_eq!(
+                vars[&format!("term_{}", k + 1)]["shape"],
+                want,
+                "{fixture}/{case} {k}"
+            );
+        }
+    }
+}
+
 #[test]
 fn cross_component_term_by_label() {
     let p = planned("cross_component_term", "by-label");

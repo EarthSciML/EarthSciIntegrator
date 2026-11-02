@@ -281,6 +281,42 @@ pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
     document(info, name, tree(info, &live, &rhs).to_json())
 }
 
+/// The component of the probe document's new states (§5.2.2): the name
+/// §6.1.4 reserves for the Jacobian document, so no name of the model can
+/// clash with them.
+pub const PROBE_COMPONENT: &str = JACOBIAN_MODEL;
+
+/// The probe document's new state for the term at position `k` (0-based)
+/// of the slice passed to [`probe_document`]: `JacobianEval.term_<k+1>`.
+pub fn probe_state(k: usize) -> String {
+    format!("{PROBE_COMPONENT}.term_{}", k + 1)
+}
+
+/// §5.2.2's probe document: §6.1's document of `terms` in which every
+/// state of the model has the zero right-hand side (§6.1.2), and the `k`-th
+/// term is instead the whole right-hand side of a new state
+/// [`probe_state`]`(k)` of the shape of its equation's state (the same
+/// index-set names), written as that state's equation would hold it alone
+/// (a lifted term inside the same `faq`). Its bands with row
+/// `probe_state(k)` are the `k`-th term's bands, row renamed.
+pub fn probe_document(info: &ModelInfo, terms: &[Term]) -> Value {
+    let mut names = BTreeSet::new();
+    for t in terms {
+        names.extend(t.names.iter().cloned());
+    }
+    let live = live_observeds(info, &names);
+    let rhs = |_: usize, x: &str| zero(info, x);
+    let mut tree = tree(info, &live, &rhs);
+    for (k, t) in terms.iter().enumerate() {
+        let x = probe_state(k);
+        let v = &info.flat.state_variables[&t.variable];
+        tree.declare(&x, variable_json(v, &info.shapes[&t.variable]));
+        let rhs = state_rhs(info, t.equation, &t.variable, &[t]);
+        tree.push(&x, json!({"lhs": d_of(&x), "rhs": rhs}));
+    }
+    document(info, "probe", tree.to_json())
+}
+
 /// The Jacobian document of an operator (§6.2): EarthSciASTDiff's
 /// evaluation document (`evaluation_document`, coefficient hoisting off) of
 /// `sv`, the view of the operator's flattened right-hand-side document, for

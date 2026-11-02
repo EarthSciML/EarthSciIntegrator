@@ -11,6 +11,7 @@ use crate::terms::Term;
 use earthsci_ast::FlattenedSystem;
 use earthsci_astdiff::{BandError, JacEntry, RIdx, SysView, Wrt};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// A derived document, loaded and flattened by EarthSciAST.
 #[derive(Debug, Clone)]
@@ -85,9 +86,47 @@ pub fn astdiff_message(e: BandError) -> String {
 
 /// Term bands from EarthSciASTDiff (§5.2.2): each term's band list is that
 /// of the right-hand-side document of a hypothetical operator holding only
-/// that term. One document per term: the fixtures are small, and the band
-/// lists are exactly the definition's.
+/// that term. They are computed together from one probe document
+/// ([`derived::probe_document`]): one EarthSciAST load and flatten and one
+/// `jacobian_bands` call, whose bands with row `probe_state(k)` are term
+/// `k`'s, row renamed to its variable. When EarthSciAST or EarthSciASTDiff
+/// fails on the probe document, whose failure names no term, each term's
+/// own document is differentiated instead, in term order
+/// ([`AstDiffBands::each_term`]), so `band_model_failed` is reported
+/// against the first term that fails, as without the probe.
 pub struct AstDiffBands;
+
+impl AstDiffBands {
+    /// The probe document's band lists, or `None` when EarthSciAST or
+    /// EarthSciASTDiff fails on it.
+    pub fn probe(info: &ModelInfo, terms: &[Term]) -> Option<Vec<Vec<BandEntry>>> {
+        let entries = document_bands(&derived::probe_document(info, terms)).ok()?;
+        let index: HashMap<String, usize> = (0..terms.len())
+            .map(|k| (derived::probe_state(k), k))
+            .collect();
+        let mut out = vec![Vec::new(); terms.len()];
+        for en in &entries {
+            // Only the probe states have nonzero right-hand sides.
+            let k = *index.get(&en.u)?;
+            let mut b = band_entry(en);
+            b.row = terms[k].variable.clone();
+            out[k].push(b);
+        }
+        Some(out)
+    }
+
+    /// Each term's band list from its own right-hand-side document, in
+    /// term order; the first failure is the failing term's.
+    pub fn each_term(info: &ModelInfo, terms: &[Term]) -> Result<Vec<Vec<BandEntry>>, BandFailure> {
+        let mut out = Vec::with_capacity(terms.len());
+        for (i, t) in terms.iter().enumerate() {
+            let doc = derived::rhs_document(info, "term", &[t]);
+            let bands = document_bands(&doc).map_err(|message| BandFailure { term: i, message })?;
+            out.push(bands.iter().map(band_entry).collect());
+        }
+        Ok(out)
+    }
+}
 
 impl BandSource for AstDiffBands {
     fn term_bands(
@@ -95,12 +134,12 @@ impl BandSource for AstDiffBands {
         info: &ModelInfo,
         terms: &[Term],
     ) -> Result<Option<Vec<Vec<BandEntry>>>, BandFailure> {
-        let mut out = Vec::with_capacity(terms.len());
-        for (i, t) in terms.iter().enumerate() {
-            let doc = derived::rhs_document(info, "term", &[t]);
-            let bands = document_bands(&doc).map_err(|message| BandFailure { term: i, message })?;
-            out.push(bands.iter().map(band_entry).collect());
+        if terms.is_empty() {
+            return Ok(Some(Vec::new()));
         }
-        Ok(Some(out))
+        match Self::probe(info, terms) {
+            Some(out) => Ok(Some(out)),
+            None => Self::each_term(info, terms).map(Some),
+        }
     }
 }

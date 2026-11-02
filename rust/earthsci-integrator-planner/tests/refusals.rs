@@ -53,6 +53,25 @@ fn refusal_fixtures() {
     assert_eq!(passed, expected.as_object().unwrap().len());
 }
 
+/// `band_model_failed` (§5.2.2) is reported against the term it concerns:
+/// the probe document fails, and the term documents find the third term,
+/// whose `erf` has no derivative rule.
+#[test]
+fn band_model_failed_names_its_term() {
+    let path = conformance().join("plans/refusals/band-model-failed/run.json");
+    match plan(&path, &Options::default(), &AstDiffBands) {
+        Err(PlanError::Refused(r)) => {
+            assert_eq!(
+                (r.code, r.pointer.as_str()),
+                (codes::BAND_MODEL_FAILED, "/model")
+            );
+            assert!(r.message.starts_with("term (K.y, 0, 1): "), "{}", r.message);
+            assert!(r.message.contains("erf"), "{}", r.message);
+        }
+        other => panic!("want band_model_failed, got {other:?}"),
+    }
+}
+
 /// Every code the planner raises is in spec/planner-errors.json.
 #[test]
 fn codes_are_listed() {
