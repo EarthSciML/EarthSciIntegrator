@@ -92,37 +92,50 @@ fn m2_conformance_cases() {
         if let Err(e) = write_result(&m2, &paths) {
             return fail(format!("result file: {e}"));
         }
-        let Check::ToyEquivalence {
-            against,
-            rtol,
-            rtol_steps_differ,
-        } = &case.checks[0];
-        let Some(m1_case) = m1.cases.iter().find(|c| &c.id == against) else {
-            return fail(format!("no M1 case {against}"));
-        };
-        let m1r = match run_m1_forward(m1_case) {
-            Ok(r) => r,
-            Err(e) => return fail(format!("M1 case {against}: {e}")),
-        };
-        if let Err(e) = write_result(&m1r, &paths) {
-            return fail(format!("M1 result file: {e}"));
+        if case.checks.is_empty() {
+            return fail("the case has no checks".into());
         }
-        let o = toy_equivalence(&m2, &m1r, *rtol, *rtol_steps_differ);
+        // Every check must pass; each names the M1 case it compares with.
+        let mut notes = Vec::new();
+        let mut ok = true;
+        for check in &case.checks {
+            let Check::ToyEquivalence {
+                against,
+                rtol,
+                rtol_steps_differ,
+            } = check;
+            let Some(m1_case) = m1.cases.iter().find(|c| &c.id == against) else {
+                return fail(format!("no M1 case {against}"));
+            };
+            let m1r = match run_m1_forward(m1_case) {
+                Ok(r) => r,
+                Err(e) => return fail(format!("M1 case {against}: {e}")),
+            };
+            if let Err(e) = write_result(&m1r, &paths) {
+                return fail(format!("M1 result file: {e}"));
+            }
+            match toy_equivalence(&m2, &m1r, *rtol, *rtol_steps_differ) {
+                Outcome::Pass(m) => notes.push(format!("toy_equivalence against {against}: {m}")),
+                Outcome::Fail(m) | Outcome::Skip(m) => {
+                    ok = false;
+                    notes.push(format!("toy_equivalence against {against} FAILED: {m}"));
+                }
+            }
+        }
         let t = format!(
             "plan {:.2} s, total {:.2} s",
             planned.as_secs_f64(),
             start.elapsed().as_secs_f64()
         );
-        match o {
-            Outcome::Pass(m) => (
-                format!("PASS  {}: toy_equivalence: {m} [{t}]\n", case.id),
-                true,
+        (
+            format!(
+                "{}  {}: {} [{t}]\n",
+                if ok { "PASS" } else { "FAIL" },
+                case.id,
+                notes.join("; ")
             ),
-            Outcome::Fail(m) | Outcome::Skip(m) => (
-                format!("FAIL  {}: toy_equivalence: {m} [{t}]\n", case.id),
-                false,
-            ),
-        }
+            ok,
+        )
     };
 
     // Cases are independent: run them on as many threads as there are cores.

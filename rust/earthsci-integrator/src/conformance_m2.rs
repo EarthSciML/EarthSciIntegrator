@@ -147,6 +147,13 @@ fn steps_of(tape: &Tape) -> Vec<&[[f64; 2]]> {
         .collect()
 }
 
+fn no_states(which: &str) -> String {
+    format!(
+        "the {which} result's t or u is missing or has a value that is not a finite number \
+         (written null)"
+    )
+}
+
 /// spec/toy-problems.md §4.3: the M2 result against the M1 result by the
 /// rule of the `cross_language` check (§2.1). The step sequences differ when
 /// the accepted counts do or when any step's `(t, h)` does; then states
@@ -187,8 +194,15 @@ pub fn toy_equivalence(
             serde_json::from_value(r["u"].clone()).ok()?,
         ))
     };
-    let (Some((ta, ua)), Some((tb, ub))) = (parse(a), parse(b)) else {
-        return Outcome::Fail("a result has no t or u".into());
+    // A non-finite value is written null in a result file, so it fails
+    // here, on either side.
+    let (ta, ua) = match parse(a) {
+        Some(x) => x,
+        None => return Outcome::Fail(no_states("M2")),
+    };
+    let (tb, ub) = match parse(b) {
+        Some(x) => x,
+        None => return Outcome::Fail(no_states("M1")),
     };
     if ta != tb {
         return Outcome::Fail(format!("output times differ: M2 {ta:?}, M1 {tb:?}"));
@@ -196,9 +210,6 @@ pub fn toy_equivalence(
     let ncomp = ub.first().map_or(0, Vec::len);
     if ua.iter().chain(&ub).any(|r| r.len() != ncomp) {
         return Outcome::Fail("state lengths differ".into());
-    }
-    if ua.iter().flatten().any(|x| !x.is_finite()) {
-        return Outcome::Fail("the M2 result has a value that is not a finite number".into());
     }
     let mut worst = (0.0f64, 0usize, 0usize);
     for j in 0..ncomp {
@@ -218,5 +229,34 @@ pub fn toy_equivalence(
             "state component {} at t = {}: relative difference {:.3e} > rtol {tol:e} [{msg}]",
             worst.2, ta[worst.1], worst.0
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(u: Vec<Vec<f64>>) -> RunResult {
+        let t: Vec<f64> = (0..u.len()).map(|k| k as f64).collect();
+        RunResult {
+            result: serde_json::json!({"t": t, "u": u, "stats": {"accepted": 1}}),
+            tape: Tape::default(),
+        }
+    }
+
+    #[test]
+    fn non_finite_values_fail_on_either_side() {
+        let good = result(vec![vec![1.0, 2.0]]);
+        let bad = result(vec![vec![1.0, f64::NAN]]);
+        assert!(matches!(
+            toy_equivalence(&good, &good, 1e-12, None),
+            Outcome::Pass(_)
+        ));
+        for (m2, m1, which) in [(&bad, &good, "M2"), (&good, &bad, "M1")] {
+            match toy_equivalence(m2, m1, 1e-12, None) {
+                Outcome::Fail(m) => assert!(m.contains(which), "{m}"),
+                o => panic!("{which}: {o:?}"),
+            }
+        }
     }
 }

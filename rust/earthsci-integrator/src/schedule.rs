@@ -244,16 +244,6 @@ fn build_leaf<T: Scalar>(
     let tab =
         tableau(&alg).ok_or_else(|| Error::Config(format!("leaf {id}: unknown alg {alg:?}")))?;
     let mut structure = Structure::common(ops.iter().map(|o| o.structure()));
-    // A dense_lu leaf on operators that can also store dense (a plan's,
-    // operator-interface.md §8.3) stores dense: the entries are the same.
-    let dense_lu = match l.linsolve.as_ref() {
-        Some(serde_json::Value::String(s)) => s == "dense_lu",
-        Some(serde_json::Value::Object(m)) => m.contains_key("dense_lu"),
-        _ => false,
-    };
-    if dense_lu && ops.iter().all(|o| o.dense_storage()) {
-        structure = Structure::Dense;
-    }
     // The implicit families' options (run-config §4.2, §4.5).
     if l.theta.is_some() && tab.family != Family::Theta {
         return Err(Error::Config(format!(
@@ -290,6 +280,11 @@ fn build_leaf<T: Scalar>(
                 }
             }
             let ls = linsolve(l.linsolve.as_ref(), structure, id)?;
+            // dense_lu factors the same entries whatever the structure, so
+            // the leaf stores them dense (operator-interface.md §8.3).
+            if matches!(ls, LinsolveKind::DenseLu) {
+                structure = Structure::Dense;
+            }
             // The block solve covers ncells·n entries; any others would pass
             // through it unsolved.
             if let Structure::BlockDiagonal { ncells, n } = structure {
@@ -547,7 +542,8 @@ fn imex_partition(
 
 /// The leaf's `linsolve` (spec/run-config.md §4.2). Omitted or `"auto"`, it
 /// is `block_lu` with pivoting for a `block_diagonal` leaf and `dense_lu`
-/// otherwise; `block_lu` pivots unless `pivot` is false. Without a planner
+/// otherwise; `block_lu` pivots unless `pivot` is false. `dense_lu` is
+/// accepted on either structure (the leaf then stores its Jacobian dense). Without a planner
 /// (M2) the Rust implementation offers only these two direct solvers.
 fn linsolve(
     v: Option<&serde_json::Value>,
@@ -571,7 +567,14 @@ fn linsolve(
         Some(Value::Object(m)) if m.len() == 1 => {
             let (k, opts) = m.iter().next().expect("one key");
             match k.as_str() {
-                "dense_lu" => Some(LinsolveKind::DenseLu),
+                "dense_lu" => match opts {
+                    Value::Object(o) if o.is_empty() => Some(LinsolveKind::DenseLu),
+                    _ => {
+                        return Err(Error::Config(format!(
+                            "leaf {id}: dense_lu takes no options, not {opts}"
+                        )))
+                    }
+                },
                 "block_lu" => {
                     let Value::Object(opts) = opts else {
                         return Err(Error::Config(format!("leaf {id}: block_lu options {opts}")));
@@ -614,10 +617,6 @@ fn linsolve(
     match (kind, block) {
         (LinsolveKind::BlockLu { .. }, false) => Err(Error::Config(format!(
             "leaf {id}: block_lu needs a block_diagonal leaf (operator-interface.md §2)"
-        ))),
-        (LinsolveKind::DenseLu, true) => Err(Error::Unimplemented(format!(
-            "leaf {id}: dense_lu on a block_diagonal leaf: the Rust implementation stores \
-             block_diagonal Jacobians per block; use block_lu"
         ))),
         _ => Ok(kind),
     }
@@ -817,8 +816,14 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     clips: out.clips.clone(),
                 });
                 if out.retcode != Retcode::Success {
+                    // Why an operator's evaluation failed, when one did.
+                    let faults: String = leaf
+                        .ops
+                        .iter()
+                        .filter_map(|o| o.fault().map(|f| format!("; operator {}: {f}", o.name())))
+                        .collect();
                     return Err(Error::Run(format!(
-                        "leaf {} ({}) returned {:?} at {path}",
+                        "leaf {} ({}) returned {:?} at {path}{faults}",
                         leaf.id, leaf.alg, out.retcode
                     )));
                 }

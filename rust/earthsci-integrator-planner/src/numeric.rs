@@ -10,8 +10,8 @@ use earthsci_ast::{
     RhsWorkspace,
 };
 use earthsci_astdiff::{JacEntry, RIdx};
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 
 /// The canonical state order (spec/plan.md §4): states sorted by code
 /// point, each array's cells in column-major order. DOF `n` is position `n`.
@@ -25,18 +25,33 @@ pub struct Dofs {
 
 impl Dofs {
     pub fn new(info: &ModelInfo) -> Dofs {
-        let mut states = BTreeMap::new();
-        let mut n = 0;
-        for s in &info.states {
+        Dofs::from_shapes(info.states.iter().map(|s| {
             let ext: Vec<usize> = info.shapes[s]
                 .iter()
                 .map(|x| info.index_sets[x] as usize)
                 .collect();
+            (s.clone(), ext)
+        }))
+    }
+
+    /// The canonical order of states given as `(name, extents)`, in any
+    /// order: sorted by code point, then numbered.
+    pub fn from_shapes(states: impl IntoIterator<Item = (String, Vec<usize>)>) -> Dofs {
+        let sorted: BTreeMap<String, Vec<usize>> = states.into_iter().collect();
+        let mut out = BTreeMap::new();
+        let mut n = 0;
+        for (name, ext) in sorted {
             let len: usize = ext.iter().product();
-            states.insert(s.clone(), (n, ext));
+            out.insert(name, (n, ext));
             n += len;
         }
-        Dofs { states, n }
+        Dofs { states: out, n }
+    }
+
+    /// The DOFs of every cell of `state`.
+    pub fn dofs_of(&self, state: &str) -> Option<std::ops::Range<usize>> {
+        let (start, ext) = self.states.get(state)?;
+        Some(*start..start + ext.iter().product::<usize>())
     }
 
     /// The DOF of `state` at the 1-based `cell`, `None` outside its extents.
@@ -194,10 +209,24 @@ pub fn initial_state(info: &ModelInfo, dofs: &Dofs, t0: f64) -> Result<Vec<f64>,
         .collect()
 }
 
+/// An evaluation workspace and the program-layout `u`, `p` and `du`; `du`
+/// is `f(u, p, t)` at the `t` beside it when `valid`.
+struct Scratch {
+    ws: RhsWorkspace,
+    u: Vec<f64>,
+    p: Vec<f64>,
+    du: Vec<f64>,
+    t: f64,
+    valid: bool,
+}
+
 /// A document's right-hand side, compiled by EarthSciAST (`rhs_program`),
-/// evaluated with parameters at their defaults.
+/// with the permutation between its own state layout and the canonical
+/// order. It may be evaluated from several threads at once: each takes a
+/// workspace from a pool (an `RhsWorkspace` is not `Sync`).
 pub struct Program {
     prog: RhsProgram,
+    /// The parameters at their defaults, in the program's order.
     p: Vec<f64>,
     forcing: ForcingSet,
     /// Each variable's block in the program's `u`: (offset, length).
@@ -205,9 +234,7 @@ pub struct Program {
     /// Each canonical state's block: (canonical start, program offset,
     /// length). Every state of the DOF order has one.
     map: Vec<(usize, usize, usize)>,
-    /// The evaluation workspace and the program-layout `u` and `du`,
-    /// reused between evaluations.
-    scratch: RefCell<(RhsWorkspace, Vec<f64>, Vec<f64>)>,
+    pool: Mutex<Vec<Scratch>>,
 }
 
 impl Program {
@@ -236,6 +263,11 @@ impl Program {
             build(Compiler::Interpreter)
                 .map_err(|interp| format!("native compiler: {native}; interpreter: {interp}"))
         })?;
+        Program::from_program(prog, dofs)
+    }
+
+    /// A program already built, for the DOF order `dofs`.
+    pub fn from_program(prog: RhsProgram, dofs: &Dofs) -> Result<Program, String> {
         let p = prog
             .parameter_vector(&HashMap::new())
             .map_err(|e| format!("EarthSciAST parameters: {e}"))?;
@@ -263,33 +295,86 @@ impl Program {
                 None => return Err(format!("the program has no state {name}")),
             }
         }
-        let n_states = prog.n_states();
-        let scratch = RefCell::new((
-            prog.new_workspace(),
-            vec![0.0; n_states],
-            vec![0.0; n_states],
-        ));
         Ok(Program {
             prog,
             p,
             forcing,
             blocks,
             map,
-            scratch,
+            pool: Mutex::new(Vec::new()),
         })
     }
 
-    /// Evaluates `f(u, p, t)` and hands the program-layout result to `g`.
-    fn with_du<R>(&self, u: &[f64], t: f64, g: impl FnOnce(&[f64]) -> R) -> Result<R, String> {
-        let mut scratch = self.scratch.borrow_mut();
-        let (ws, pu, du) = &mut *scratch;
+    /// The compiled program.
+    pub fn program(&self) -> &RhsProgram {
+        &self.prog
+    }
+
+    /// The parameters at their defaults, in the program's order.
+    pub fn default_parameters(&self) -> &[f64] {
+        &self.p
+    }
+
+    /// The block of variable `name` in a program-layout vector: (offset,
+    /// length).
+    pub fn block_range(&self, name: &str) -> Option<(usize, usize)> {
+        self.blocks.get(name).copied()
+    }
+
+    /// Evaluates `f(u, p, t)`, where `u(j)` is canonical DOF `j` and `p(i)`
+    /// the program's parameter `i`, and hands the program-layout result to
+    /// `g`. A workspace that last evaluated the same `(u, p, t)`, bit for
+    /// bit, is not evaluated again.
+    pub fn eval_with<R>(
+        &self,
+        u: impl Fn(usize) -> f64,
+        p: impl Fn(usize) -> f64,
+        t: f64,
+        g: impl FnOnce(&[f64]) -> R,
+    ) -> Result<R, String> {
+        let popped = self.pool.lock().expect("workspace pool").pop();
+        let mut s = popped.unwrap_or_else(|| {
+            let n = self.prog.n_states();
+            Scratch {
+                ws: self.prog.new_workspace(),
+                u: vec![0.0; n],
+                p: vec![0.0; self.p.len()],
+                du: vec![0.0; n],
+                t: f64::NAN,
+                valid: false,
+            }
+        });
+        let mut same = s.valid && s.t.to_bits() == t.to_bits();
         for &(start, off, len) in &self.map {
-            pu[off..off + len].copy_from_slice(&u[start..start + len]);
+            for k in 0..len {
+                let x = u(start + k);
+                same &= s.u[off + k].to_bits() == x.to_bits();
+                s.u[off + k] = x;
+            }
         }
-        self.prog
-            .eval_into(pu, &[], &self.p, t, &self.forcing, du, ws)
-            .map_err(|e| format!("EarthSciAST evaluation: {e}"))?;
-        Ok(g(du))
+        for (i, slot) in s.p.iter_mut().enumerate() {
+            let x = p(i);
+            same &= slot.to_bits() == x.to_bits();
+            *slot = x;
+        }
+        s.t = t;
+        let res = if same {
+            Ok(())
+        } else {
+            self.prog
+                .eval_into(&s.u, &[], &s.p, t, &self.forcing, &mut s.du, &mut s.ws)
+                .map_err(|e| format!("EarthSciAST evaluation: {e}"))
+        };
+        s.valid = res.is_ok();
+        let r = res.map(|()| g(&s.du));
+        self.pool.lock().expect("workspace pool").push(s);
+        r
+    }
+
+    /// Evaluates `f(u, p, t)` with the parameters at their defaults and
+    /// hands the program-layout result to `g`.
+    fn with_du<R>(&self, u: &[f64], t: f64, g: impl FnOnce(&[f64]) -> R) -> Result<R, String> {
+        self.eval_with(|j| u[j], |i| self.p[i], t, g)
     }
 
     /// `f(u, p, t)` in canonical order.
@@ -373,9 +458,55 @@ pub fn pattern(dofs: &Dofs, entries: &[JacEntry]) -> Result<Sparse, String> {
     Ok(out)
 }
 
+/// Where band `en`'s values land: for each point of the band on a DOF,
+/// `(offset in the band field, row DOF, column DOF)`. The field holds the
+/// row's extents then the contracted extents, column-major, in `len`
+/// elements; a ghost read (a column outside its variable's extent) is left
+/// out.
+pub fn band_scatter(
+    dofs: &Dofs,
+    en: &JacEntry,
+    len: usize,
+    field: &str,
+) -> Result<Vec<(usize, usize, usize)>, String> {
+    let mut ext: Vec<usize> = dofs
+        .states
+        .get(&en.u)
+        .map(|(_, e)| e.clone())
+        .unwrap_or_default();
+    ext.extend(en.band.contracted.iter().map(|(_, _, hi)| *hi as usize));
+    let mut out = Vec::new();
+    let mut err = None;
+    band_points(en, &mut |cell, cc, col| {
+        let (Some(r), Some(c)) = (dofs.dof(&en.u, cell), dofs.dof(&en.v, col)) else {
+            return;
+        };
+        let mut off = 0usize;
+        let mut stride = 1usize;
+        for (x, n) in cell.iter().chain(cc).zip(&ext) {
+            off += (*x as usize - 1) * stride;
+            stride *= n;
+        }
+        if off < len {
+            out.push((off, r, c));
+        } else {
+            err = Some(format!("{field} has no element {off}"));
+        }
+    })?;
+    match err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
+}
+
+/// The name of band `k`'s field (1-based) in a Jacobian document
+/// (spec/plan.md §6.2).
+pub fn band_field(k: usize) -> String {
+    format!("{}.J_{k}", crate::derived::JACOBIAN_MODEL)
+}
+
 /// The band Jacobian at `(u, t)` from the Jacobian document's program: band
-/// `k`'s field `JacobianEval.J_k` over the row's extents then the contracted
-/// extents, column-major, scattered with the band's indices and summed.
+/// `k`'s field `JacobianEval.J_k` scattered by [`band_scatter`] and summed.
 pub fn band_jacobian(
     jac: &Program,
     dofs: &Dofs,
@@ -383,41 +514,25 @@ pub fn band_jacobian(
     u: &[f64],
     t: f64,
 ) -> Result<Sparse, String> {
+    let mut points = Vec::new();
+    for (k, en) in entries.iter().enumerate() {
+        let name = band_field(k + 1);
+        let (base, len) = jac
+            .block_range(&name)
+            .ok_or_else(|| format!("the Jacobian document's program has no {name}"))?;
+        points.extend(
+            band_scatter(dofs, en, len, &name)?
+                .into_iter()
+                .map(|(off, r, c)| (base + off, r, c)),
+        );
+    }
     jac.with_du(u, t, |du| {
         let mut out = Sparse::new();
-        for (k, en) in entries.iter().enumerate() {
-            let name = format!("{}.J_{}", crate::derived::JACOBIAN_MODEL, k + 1);
-            let field = jac
-                .block(du, &name)
-                .ok_or_else(|| format!("the Jacobian document's program has no {name}"))?;
-            let mut ext: Vec<usize> = dofs
-                .states
-                .get(&en.u)
-                .map(|(_, e)| e.clone())
-                .unwrap_or_default();
-            ext.extend(en.band.contracted.iter().map(|(_, _, hi)| *hi as usize));
-            let mut err = None;
-            band_points(en, &mut |cell, cc, col| {
-                let (Some(r), Some(c)) = (dofs.dof(&en.u, cell), dofs.dof(&en.v, col)) else {
-                    return;
-                };
-                let mut off = 0usize;
-                let mut stride = 1usize;
-                for (x, n) in cell.iter().chain(cc).zip(&ext) {
-                    off += (*x as usize - 1) * stride;
-                    stride *= n;
-                }
-                match field.get(off) {
-                    Some(v) => *out.entry((r, c)).or_insert(0.0) += v,
-                    None => err = Some(format!("{name} has no element {off}")),
-                }
-            })?;
-            if let Some(e) = err {
-                return Err(e);
-            }
+        for (k, r, c) in points {
+            *out.entry((r, c)).or_insert(0.0) += du[k];
         }
-        Ok(out)
-    })?
+        out
+    })
 }
 
 #[cfg(test)]

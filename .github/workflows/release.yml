@@ -39,11 +39,12 @@ jobs:
     with:
       tag: ${{ needs.resolve.outputs.tag }}
       version: ${{ needs.resolve.outputs.version }}
-      # In dependency order: the other three depend on -solvers.
+      # In dependency order: the other three depend on -solvers, and
+      # earthsci-integrator on -planner.
       crates: >-
         rust/earthsci-integrator-solvers
-        rust/earthsci-integrator
         rust/earthsci-integrator-planner
+        rust/earthsci-integrator
         rust/earthsci-integrator-mpi
       install-notes: |
         ```

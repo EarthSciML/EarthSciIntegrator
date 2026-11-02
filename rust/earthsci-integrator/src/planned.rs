@@ -18,10 +18,8 @@ use crate::config::RunConfig;
 use crate::operator::{Call, MatrixStorage, Operator, Structure};
 use crate::toy::ToyProblem;
 use crate::{Error, Scalar};
-use earthsci_ast::{
-    esm_problem, rhs_program, Compiler, ForcingSet, ProblemInput, ProblemOptions, RhsProgram,
-    RhsWorkspace,
-};
+use earthsci_ast::{esm_problem, rhs_program, Compiler, ProblemInput, ProblemOptions, RhsProgram};
+use earthsci_integrator_planner::numeric::{band_field, band_scatter, Dofs, Program};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -29,128 +27,7 @@ use std::sync::{Arc, Mutex};
 
 /// The model component that holds a Jacobian document's band fields
 /// (spec/plan.md §6.2).
-const JACOBIAN_MODEL: &str = "JacobianEval";
-
-/// One state of the canonical order: its first DOF and its extents (empty
-/// for a scalar).
-#[derive(Debug, Clone, PartialEq)]
-struct StateSlot {
-    start: usize,
-    ext: Vec<usize>,
-}
-
-/// The canonical state order (spec/plan.md §4).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Canonical {
-    states: BTreeMap<String, StateSlot>,
-    /// The number of DOFs.
-    pub n: usize,
-}
-
-impl Canonical {
-    /// The canonical order of `blocks` `(name, extents)`, leaving out the
-    /// names `skip` accepts.
-    fn new<'a>(
-        blocks: impl Iterator<Item = (&'a str, &'a [usize])>,
-        skip: impl Fn(&str) -> bool,
-    ) -> Self {
-        let sorted: BTreeMap<String, Vec<usize>> = blocks
-            .filter(|(n, _)| !skip(n))
-            .map(|(n, e)| (n.to_string(), e.to_vec()))
-            .collect();
-        let mut states = BTreeMap::new();
-        let mut n = 0;
-        for (name, ext) in sorted {
-            let len = ext.iter().product::<usize>();
-            states.insert(name, StateSlot { start: n, ext });
-            n += len;
-        }
-        Canonical { states, n }
-    }
-
-    /// The DOF of `state` at the 1-based `cell`, `None` outside its extents
-    /// (a ghost read).
-    fn dof(&self, state: &str, cell: &[i64]) -> Option<usize> {
-        let s = self.states.get(state)?;
-        if cell.len() != s.ext.len() {
-            return None;
-        }
-        let (mut off, mut stride) = (0usize, 1usize);
-        for (c, n) in cell.iter().zip(&s.ext) {
-            if *c < 1 || *c as usize > *n {
-                return None;
-            }
-            off += (*c as usize - 1) * stride;
-            stride *= n;
-        }
-        Some(s.start + off)
-    }
-
-    /// Every DOF's element name as EarthSciAST writes it (`X`, `X[i,j]`).
-    fn element_names(&self) -> Vec<String> {
-        let mut out = Vec::with_capacity(self.n);
-        for (name, s) in &self.states {
-            if s.ext.is_empty() {
-                out.push(name.clone());
-                continue;
-            }
-            for cell in cells(&s.ext.iter().map(|n| (1, *n as i64)).collect::<Vec<_>>()) {
-                let idx: Vec<String> = cell.iter().map(i64::to_string).collect();
-                out.push(format!("{name}[{}]", idx.join(",")));
-            }
-        }
-        out
-    }
-
-    /// The canonical DOFs of every cell of `state`.
-    fn dofs_of(&self, state: &str) -> Option<std::ops::Range<usize>> {
-        let s = self.states.get(state)?;
-        Some(s.start..s.start + s.ext.iter().product::<usize>())
-    }
-}
-
-/// Every cell of the box `ranges` (1-based, inclusive), first index fastest.
-fn cells(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
-    if ranges.iter().any(|(lo, hi)| lo > hi) {
-        return vec![];
-    }
-    let mut out = Vec::new();
-    let mut cell: Vec<i64> = ranges.iter().map(|(lo, _)| *lo).collect();
-    loop {
-        out.push(cell.clone());
-        let mut k = 0;
-        loop {
-            if k == cell.len() {
-                return out;
-            }
-            cell[k] += 1;
-            if cell[k] <= ranges[k].1 {
-                break;
-            }
-            cell[k] = ranges[k].0;
-            k += 1;
-        }
-    }
-}
-
-/// An evaluation workspace with its program-layout `u` and `du`.
-type Scratch = (RhsWorkspace, Vec<f64>, Vec<f64>);
-
-/// A derived document's right-hand side as EarthSciAST builds it (§8.1),
-/// with the permutation between its own state layout and canonical order.
-struct Document {
-    prog: RhsProgram,
-    forcing: ForcingSet,
-    /// Per canonical state: (canonical start, program offset, length).
-    map: Vec<(usize, usize, usize)>,
-    /// Every block of the program's state layout: offset and length.
-    blocks: HashMap<String, (usize, usize)>,
-    /// For each of the program's parameters, its index in the problem's `p`.
-    p_index: Vec<usize>,
-    /// Workspaces with their program-layout `u` and `du`, one per thread
-    /// that is evaluating; an `RhsWorkspace` is not `Sync`.
-    pool: Mutex<Vec<Scratch>>,
-}
+const JACOBIAN_MODEL: &str = earthsci_integrator_planner::derived::JACOBIAN_MODEL;
 
 /// `esm_problem(path, tspan)` with the native compiler, then `rhs_program`.
 fn build_program(
@@ -170,31 +47,26 @@ fn build_program(
     Ok((prob, prog))
 }
 
-impl Document {
-    fn new(prog: RhsProgram, canon: &Canonical, params: &[String]) -> Result<Document, String> {
-        let blocks: HashMap<String, (usize, usize)> = prog
-            .state_layout()
+/// The canonical order of a program's states, leaving out the names `skip`
+/// accepts.
+fn program_dofs(prog: &RhsProgram, skip: impl Fn(&str) -> bool) -> Dofs {
+    Dofs::from_shapes(
+        prog.state_layout()
             .iter()
-            .map(|b| {
-                (
-                    b.name.clone(),
-                    (b.flat_offset, b.shape.iter().product::<usize>().max(1)),
-                )
-            })
-            .collect();
-        let mut map = Vec::with_capacity(canon.states.len());
-        for (name, s) in &canon.states {
-            let n = s.ext.iter().product::<usize>();
-            match blocks.get(name) {
-                Some((off, len)) if *len == n => map.push((s.start, *off, n)),
-                Some((_, len)) => {
-                    return Err(format!(
-                        "its state {name} has {len} elements; the plan's canonical order has {n}"
-                    ))
-                }
-                None => return Err(format!("it does not declare the state {name}")),
-            }
-        }
+            .filter(|b| !skip(&b.name))
+            .map(|b| (b.name.clone(), b.shape.clone())),
+    )
+}
+
+/// A derived document's right-hand side (§8.1) and, for each of its
+/// parameters, the parameter's index in the problem's `p`.
+struct Document {
+    prog: Program,
+    p_index: Vec<usize>,
+}
+
+impl Document {
+    fn new(prog: RhsProgram, dofs: &Dofs, params: &[String]) -> Result<Document, String> {
         let p_index =
             prog.parameters()
                 .iter()
@@ -204,42 +76,23 @@ impl Document {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-        let forcing = prog.default_forcing();
         Ok(Document {
-            prog,
-            forcing,
-            map,
-            blocks,
+            prog: Program::from_program(prog, dofs)?,
             p_index,
-            pool: Mutex::new(Vec::new()),
         })
     }
 
     /// Evaluates the document's right-hand side at the canonical state `u`
-    /// and hands its program-layout result to `g`. A fault of EarthSciAST's
-    /// evaluation fills the result with NaN, which the leaf's step rejects.
-    fn with_du<T: Scalar, R>(&self, u: &[T], p: &[f64], t: f64, g: impl FnOnce(&[f64]) -> R) -> R {
-        let popped = self.pool.lock().expect("workspace pool").pop();
-        let (mut ws, mut pu, mut du) = popped.unwrap_or_else(|| {
-            let n = self.prog.n_states();
-            (self.prog.new_workspace(), vec![0.0; n], vec![0.0; n])
-        });
-        for &(start, off, len) in &self.map {
-            for k in 0..len {
-                pu[off + k] = u[start + k].to_f64();
-            }
-        }
-        let pp: Vec<f64> = self.p_index.iter().map(|&i| p[i]).collect();
-        if self
-            .prog
-            .eval_into(&pu, &[], &pp, t, &self.forcing, &mut du, &mut ws)
-            .is_err()
-        {
-            du.iter_mut().for_each(|x| *x = f64::NAN);
-        }
-        let r = g(&du);
-        self.pool.lock().expect("workspace pool").push((ws, pu, du));
-        r
+    /// and hands its program-layout result to `g`.
+    fn eval<T: Scalar, R>(
+        &self,
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        g: impl FnOnce(&[f64]) -> R,
+    ) -> Result<R, String> {
+        self.prog
+            .eval_with(|j| u[j].to_f64(), |i| p[self.p_index[i]], t, g)
     }
 }
 
@@ -260,9 +113,21 @@ pub struct PlannedOperator {
     /// (program-layout offset of its `J_k` element, row DOF, column DOF).
     /// Ghost reads (a column outside its variable's extent) are left out.
     points: Vec<(usize, usize, usize)>,
+    /// `jvp_u`/`vjp_u` accumulators, one per thread that is evaluating.
+    acc: Mutex<Vec<Vec<f64>>>,
+    /// The first evaluation fault (see [`Operator::fault`]).
+    fault: Mutex<Option<String>>,
 }
 
 impl PlannedOperator {
+    /// Records the first evaluation fault.
+    fn record(&self, doc: &str, e: String) {
+        let mut f = self.fault.lock().expect("fault");
+        if f.is_none() {
+            *f = Some(format!("its {doc} document: {e}"));
+        }
+    }
+
     /// `out += J v` (`transpose` false) or `out += Jᵀ v` from the assembled
     /// band entries.
     fn jprod<T: Scalar>(
@@ -274,10 +139,13 @@ impl PlannedOperator {
         v: &[T],
         transpose: bool,
     ) {
-        self.jacobian.with_du(u, p, t, |du| {
-            // Sum each entry's contributions before it multiplies v, as the
-            // entry (esm-jacobian-spec §4 additivity) would.
-            let mut acc = vec![0.0f64; out.len()];
+        let popped = self.acc.lock().expect("accumulator pool").pop();
+        let mut acc = popped.unwrap_or_default();
+        acc.clear();
+        acc.resize(out.len(), 0.0);
+        // Each output's contributions are summed in f64, then added into
+        // out once.
+        let done = self.jacobian.eval(u, p, t, |du| {
             for &(k, r, c) in &self.points {
                 if transpose {
                     acc[c] += du[k] * v[r].to_f64();
@@ -285,12 +153,21 @@ impl PlannedOperator {
                     acc[r] += du[k] * v[c].to_f64();
                 }
             }
-            for (o, a) in out.iter_mut().zip(&acc) {
-                if *a != 0.0 {
-                    *o += T::from_f64(*a);
-                }
+        });
+        if let Err(e) = done {
+            // A fault of EarthSciAST's evaluation makes the product NaN,
+            // which the leaf's step rejects.
+            self.record("Jacobian", e);
+            for &(_, r, c) in &self.points {
+                acc[if transpose { c } else { r }] = f64::NAN;
             }
-        })
+        }
+        for (o, a) in out.iter_mut().zip(&acc) {
+            if *a != 0.0 {
+                *o += T::from_f64(*a);
+            }
+        }
+        self.acc.lock().expect("accumulator pool").push(acc);
     }
 }
 
@@ -315,16 +192,23 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
         // (operator-interface.md §8.3).
         matches!(call, Call::Rhs | Call::JvpU | Call::VjpU | Call::Jac)
     }
-    fn dense_storage(&self) -> bool {
-        true
+    fn fault(&self) -> Option<String> {
+        self.fault.lock().expect("fault").clone()
     }
 
     fn rhs(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
-        self.rhs.with_du(u, p, t, |du| {
+        let done = self.rhs.eval(u, p, t, |du| {
             for &(dof, off) in &self.rhs_writes {
                 out[dof] += T::from_f64(du[off]);
             }
-        })
+        });
+        if let Err(e) = done {
+            // NaN, which the leaf's step rejects.
+            self.record("right-hand-side", e);
+            for &(dof, _) in &self.rhs_writes {
+                out[dof] = T::from_f64(f64::NAN);
+            }
+        }
     }
     fn jvp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, v: &[T]) {
         self.jprod(out, u, p, t, v, false)
@@ -333,25 +217,19 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
         self.jprod(out, u, p, t, w, true)
     }
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
-        self.jacobian.with_du(u, p, t, |du| match out {
-            MatrixStorage::Dense { n, data } => {
-                let n = *n;
-                for &(k, r, c) in &self.points {
-                    data[c * n + r] += T::from_f64(du[k]);
-                }
+        // A block_diagonal operator's points stay inside their cell (checked
+        // when it was built), so either storage takes every point.
+        let done = self.jacobian.eval(u, p, t, |du| {
+            for &(k, r, c) in &self.points {
+                out.add(r, c, T::from_f64(du[k]));
             }
-            MatrixStorage::BlockDiagonal { ncells, n, data } => {
-                // Species-major (§2): DOF i·ncells + c is species i of cell c.
-                let (ncells, n) = (*ncells, *n);
-                for &(k, r, c) in &self.points {
-                    let (i, cr) = (r / ncells, r % ncells);
-                    let (j, cc) = (c / ncells, c % ncells);
-                    if cr == cc && i < n && j < n {
-                        data[(i * n + j) * ncells + cr] += T::from_f64(du[k]);
-                    }
-                }
+        });
+        if let Err(e) = done {
+            self.record("Jacobian", e);
+            for &(_, r, c) in &self.points {
+                out.add(r, c, T::from_f64(f64::NAN));
             }
-        })
+        }
     }
 }
 
@@ -373,24 +251,45 @@ fn refuse(op: &str, doc: &str, m: impl std::fmt::Display) -> Error {
     ))
 }
 
-/// The operator names a schedule node uses, in tree order.
-fn schedule_operators(node: &Value, out: &mut BTreeSet<String>) {
+/// How a schedule node uses an operator (spec/run-config.md §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// A term operator of a `leaf`, `coupled` or `split_explicit` node.
+    Term,
+    /// A map operator (`{"map": op}`, §4.10).
+    Map,
+    /// An algebraic operator (`{"solve": op}`, §4.10).
+    Algebraic,
+}
+
+/// Adds `name` to `out` unless it is there already.
+fn add_operator(out: &mut Vec<(String, Role)>, name: &str, role: Role) {
+    if !out.iter().any(|(n, _)| n == name) {
+        out.push((name.to_string(), role));
+    }
+}
+
+/// The operators a schedule node uses, in tree order (depth first, each
+/// node's keys in the order the plan writes them), each once, with how the
+/// node uses it.
+fn schedule_operators(node: &Value, out: &mut Vec<(String, Role)>) {
     match node {
         Value::Object(o) => {
-            for k in ["leaf", "coupled", "map"] {
-                match o.get(k) {
-                    Some(Value::String(s)) => {
-                        out.insert(s.clone());
-                    }
-                    Some(Value::Array(a)) => {
-                        out.extend(a.iter().filter_map(|x| x.as_str().map(String::from)))
-                    }
-                    _ => {}
-                }
-            }
             for (k, v) in o {
-                if !["leaf", "coupled", "map"].contains(&k.as_str()) {
-                    schedule_operators(v, out);
+                let role = match k.as_str() {
+                    "leaf" | "coupled" | "split_explicit" => Some(Role::Term),
+                    "map" => Some(Role::Map),
+                    "solve" => Some(Role::Algebraic),
+                    _ => None,
+                };
+                match (role, v) {
+                    (Some(r), Value::String(s)) => add_operator(out, s, r),
+                    (Some(r), Value::Array(a)) if a.iter().all(Value::is_string) => {
+                        for x in a {
+                            add_operator(out, x.as_str().expect("a string"), r);
+                        }
+                    }
+                    _ => schedule_operators(v, out),
                 }
             }
         }
@@ -417,10 +316,21 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
         (Some(a), Some(b)) => (a, b),
         _ => return Err(cfg("plan.json: no time interval".into())),
     };
-    let mut names = BTreeSet::new();
+    let mut names = Vec::new();
     schedule_operators(&plan["schedule"], &mut names);
     if names.is_empty() {
         return Err(cfg("plan.json: the schedule names no operator".into()));
+    }
+    for (name, role) in &names {
+        let what = match role {
+            Role::Term => continue,
+            Role::Map => "a map node",
+            Role::Algebraic => "a solve node",
+        };
+        return Err(Error::Unimplemented(format!(
+            "operator {name}: the schedule runs it from {what}, which a plan's operators do not \
+             support at M2 (operator-interface.md §8)"
+        )));
     }
     // Each operator's documents, by the plan's `derived` list.
     let mut docs: HashMap<(String, String), String> = HashMap::new();
@@ -430,12 +340,24 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
         }
     }
 
-    let mut canon: Option<Canonical> = None;
-    let mut params: Vec<String> = Vec::new();
-    let mut p: Vec<f64> = Vec::new();
-    let mut u0: Vec<f64> = Vec::new();
+    // The canonical order, parameters, initial state and index sets come
+    // from the first operator's right-hand-side document; every derived
+    // document of a plan declares the same states (§8.2), so the others
+    // must agree.
+    struct Model {
+        dofs: Dofs,
+        params: Vec<String>,
+        p: Vec<f64>,
+        u0: Vec<f64>,
+        /// Each state's index sets (empty for a scalar).
+        shapes: BTreeMap<String, Vec<String>>,
+        /// The number of cells of the states' one shape, when they share
+        /// one (§8.3).
+        ncells: Option<usize>,
+    }
+    let mut model: Option<Model> = None;
     let mut operators: Vec<Arc<dyn Operator<T>>> = Vec::new();
-    for name in &names {
+    for (name, _) in &names {
         let entry = &plan["operators"][name];
         if !entry.is_object() {
             return Err(cfg(format!(
@@ -444,7 +366,7 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
         }
         if entry["kind"].as_str() != Some("rhs") {
             return Err(cfg(format!(
-                "operator {name}: kind {} is not run at M2",
+                "operator {name}: the schedule uses it as a term operator, but its kind is {}",
                 entry["kind"]
             )));
         }
@@ -459,46 +381,43 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
         let (_, jac_prog) =
             build_program(&dir.join(&jac_path), tspan).map_err(|e| refuse(name, &jac_path, e))?;
 
-        // The canonical order, parameters and initial state come from the
-        // first operator's right-hand-side document; every derived document
-        // of a plan declares the same states (§8.2), so the others must
-        // agree.
-        let this = Canonical::new(
-            rhs_prog
-                .state_layout()
-                .iter()
-                .map(|b| (b.name.as_str(), b.shape.as_slice())),
-            |_| false,
-        );
-        let jac_states = Canonical::new(
-            jac_prog
-                .state_layout()
-                .iter()
-                .map(|b| (b.name.as_str(), b.shape.as_slice())),
-            |n| n.starts_with(&format!("{JACOBIAN_MODEL}.")),
-        );
-        if jac_states != this {
+        let this = program_dofs(&rhs_prog, |_| false);
+        let jac_states = program_dofs(&jac_prog, |n| n.starts_with(&format!("{JACOBIAN_MODEL}.")));
+        if jac_states.states != this.states {
             return Err(refuse(
                 name,
                 &jac_path,
                 "its states are not those of the right-hand-side document",
             ));
         }
-        match &canon {
+        match &model {
             None => {
-                let pv = rhs_prog
+                let p = rhs_prog
                     .parameter_vector(&HashMap::new())
                     .map_err(|e| refuse(name, &rhs_path, format!("parameters: {e}")))?;
-                params = rhs_prog
+                let params = rhs_prog
                     .parameters()
                     .iter()
                     .map(|ps| ps.name.clone())
                     .collect();
-                p = pv;
-                u0 = initial_state(&rhs_prob, &this).map_err(|e| refuse(name, &rhs_path, e))?;
-                canon = Some(this);
+                let u0 = initial_state(&rhs_prob, &this).map_err(|e| refuse(name, &rhs_path, e))?;
+                let shapes = state_shapes(&dir.join(&rhs_path), &this)
+                    .map_err(|e| refuse(name, &rhs_path, e))?;
+                let exts: BTreeSet<&Vec<usize>> = this.states.values().map(|(_, e)| e).collect();
+                let ncells = match exts.len() {
+                    1 => exts.first().map(|e| e.iter().product::<usize>()),
+                    _ => None,
+                };
+                model = Some(Model {
+                    dofs: this,
+                    params,
+                    p,
+                    u0,
+                    shapes,
+                    ncells,
+                });
             }
-            Some(c) if *c != this => {
+            Some(m) if m.dofs.states != this.states => {
                 return Err(refuse(
                     name,
                     &rhs_path,
@@ -507,40 +426,51 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
             }
             Some(_) => {}
         }
-        let c = canon.as_ref().expect("set above");
-        let rhs = Document::new(rhs_prog, c, &params).map_err(|e| refuse(name, &rhs_path, e))?;
+        let m = model.as_ref().expect("set above");
+        let rhs =
+            Document::new(rhs_prog, &m.dofs, &m.params).map_err(|e| refuse(name, &rhs_path, e))?;
         let jacobian =
-            Document::new(jac_prog, c, &params).map_err(|e| refuse(name, &jac_path, e))?;
-        operators.push(Arc::new(build_operator(name, entry, c, rhs, jacobian)?));
+            Document::new(jac_prog, &m.dofs, &m.params).map_err(|e| refuse(name, &jac_path, e))?;
+        // A document that cannot be evaluated at the initial state is
+        // refused here, with EarthSciAST's message, rather than failing
+        // every step of the run.
+        for (doc, path) in [(&rhs, &rhs_path), (&jacobian, &jac_path)] {
+            doc.eval(&m.u0, &m.p, tspan.0, |_| ())
+                .map_err(|e| refuse(name, path, format!("at the initial state: {e}")))?;
+        }
+        operators.push(Arc::new(build_operator(
+            name, entry, &m.dofs, m.ncells, rhs, jacobian,
+        )?));
     }
-    let canon = canon.expect("at least one operator");
+    let m = model.expect("at least one operator");
 
     // The problem: names and layout for run configs' variable references.
-    let mut variables = vec![String::new(); canon.n];
-    let mut cell_of = vec![0usize; canon.n];
-    let mut one_d = true;
+    // The toy problems' one index set is `cell` (spec/toy-problems.md), so
+    // a cell index is given exactly when every state's shape is `[cell]`.
+    let mut variables = vec![String::new(); m.dofs.n];
+    let mut cell_of = vec![0usize; m.dofs.n];
     let mut state_dofs = BTreeMap::new();
-    for (name, s) in &canon.states {
-        let r = canon.dofs_of(name).expect("a state");
+    for name in m.dofs.states.keys() {
+        let r = m.dofs.dofs_of(name).expect("a state");
         for (k, j) in r.clone().enumerate() {
             variables[j] = name.clone();
             cell_of[j] = k;
         }
-        one_d &= s.ext.len() <= 1;
         state_dofs.insert(name.clone(), r.collect());
     }
+    let by_cell = m.shapes.values().all(|s| s.len() == 1 && s[0] == "cell");
     let problem = ToyProblem {
         name: plan["inputs"]["model"]["path"]
             .as_str()
             .unwrap_or("plan")
             .to_string(),
-        n: canon.n,
-        param_names: params,
-        p,
-        u0,
+        n: m.dofs.n,
+        param_names: m.params,
+        p: m.p,
+        u0: m.u0,
         tspan,
         variables,
-        cells: if one_d { Some(cell_of) } else { None },
+        cells: by_cell.then_some(cell_of),
         operators,
         maps: vec![],
         invariants: vec![],
@@ -568,7 +498,7 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
 
 /// EarthSciAST's initial state of a right-hand-side document (defaults and
 /// `ic` equations), in canonical order (spec/plan.md §4, §6.1.2).
-fn initial_state(prob: &earthsci_ast::EsmProblem, canon: &Canonical) -> Result<Vec<f64>, String> {
+fn initial_state(prob: &earthsci_ast::EsmProblem, dofs: &Dofs) -> Result<Vec<f64>, String> {
     let u0 =
         earthsci_ast::initial_state(prob).map_err(|e| format!("EarthSciAST initial_state: {e}"))?;
     let names = prob.state_variable_names();
@@ -580,8 +510,7 @@ fn initial_state(prob: &earthsci_ast::EsmProblem, canon: &Canonical) -> Result<V
         ));
     }
     let at: HashMap<&str, f64> = names.iter().map(String::as_str).zip(u0).collect();
-    canon
-        .element_names()
+    dofs.element_names()
         .iter()
         .map(|n| {
             at.get(n.as_str())
@@ -591,11 +520,37 @@ fn initial_state(prob: &earthsci_ast::EsmProblem, canon: &Canonical) -> Result<V
         .collect()
 }
 
-/// One operator from its plan entry and documents (§8.2, §8.3).
+/// Each state's index sets, as the flattened document declares them
+/// (spec/plan.md §6.1: a derived document writes every state's shape).
+fn state_shapes(path: &Path, dofs: &Dofs) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let file = earthsci_ast::load_path(path).map_err(|e| format!("EarthSciAST load: {e}"))?;
+    let flat = earthsci_ast::flatten(&file).map_err(|e| format!("EarthSciAST flatten: {e}"))?;
+    dofs.states
+        .iter()
+        .map(|(name, (_, ext))| {
+            let v = flat
+                .state_variables
+                .get(name)
+                .ok_or_else(|| format!("the flattened document has no state {name}"))?;
+            let shape = v.shape.clone().unwrap_or_default();
+            if shape.len() != ext.len() {
+                return Err(format!(
+                    "the state {name} has the index sets {shape:?} for {} dimensions",
+                    ext.len()
+                ));
+            }
+            Ok((name.clone(), shape))
+        })
+        .collect()
+}
+
+/// One operator from its plan entry and documents (§8.2, §8.3). `ncells` is
+/// the number of cells of the states' one shape, when they share one.
 fn build_operator(
     name: &str,
     entry: &Value,
-    canon: &Canonical,
+    dofs: &Dofs,
+    ncells: Option<usize>,
     rhs: Document,
     jacobian: Document,
 ) -> Result<PlannedOperator, Error> {
@@ -608,37 +563,25 @@ fn build_operator(
     };
     let (depends_on_t, linear_in_u) = (flag("depends_on_t")?, flag("linear_in_u")?);
 
-    // writes: every cell of every variable in the plan's list.
-    let wnames: Vec<String> = entry["writes"]
+    // writes: every cell of every variable in the plan's list, each beside
+    // its offset in the right-hand-side document's layout.
+    let mut rhs_writes = Vec::new();
+    for v in entry["writes"]
         .as_array()
         .ok_or_else(|| bad("no writes".into()))?
-        .iter()
-        .map(|v| {
-            v.as_str()
-                .map(String::from)
-                .ok_or_else(|| bad(format!("writes entry {v}")))
-        })
-        .collect::<Result<_, _>>()?;
-    let mut writes = Vec::new();
-    for w in &wnames {
-        writes.extend(
-            canon
-                .dofs_of(w)
-                .ok_or_else(|| bad(format!("writes {w}, which is not a state")))?,
-        );
+    {
+        let w = v.as_str().ok_or_else(|| bad(format!("writes entry {v}")))?;
+        let r = dofs
+            .dofs_of(w)
+            .ok_or_else(|| bad(format!("writes {w}, which is not a state")))?;
+        let (off, _) = rhs.prog.block_range(w).expect("every state is a block");
+        rhs_writes.extend(r.clone().map(|j| (j, off + j - r.start)));
     }
-    writes.sort_unstable();
-    writes.dedup();
-    let mut owner = vec![usize::MAX; canon.n];
-    for (start, off, len) in rhs.map.iter().copied() {
-        for k in 0..len {
-            owner[start + k] = off + k;
-        }
-    }
-    let rhs_writes = writes.iter().map(|&j| (j, owner[j])).collect();
+    rhs_writes.sort_unstable();
+    rhs_writes.dedup();
+    let writes: Vec<usize> = rhs_writes.iter().map(|&(j, _)| j).collect();
 
-    // The band points, scattered once: band k's field JacobianEval.J_k over
-    // the row's extents, then the contracted extents, column-major.
+    // The band points, scattered once (spec/plan.md §6.2).
     let mut points = Vec::new();
     for (k, b) in st["bands"]
         .as_array()
@@ -646,62 +589,40 @@ fn build_operator(
         .iter()
         .enumerate()
     {
-        let field = format!("{JACOBIAN_MODEL}.J_{}", k + 1);
-        let &(base, len) = jacobian
-            .blocks
-            .get(&field)
+        let field = band_field(k + 1);
+        let (base, len) = jacobian
+            .prog
+            .block_range(&field)
             .ok_or_else(|| bad(format!("its Jacobian document has no {field}")))?;
         let mut with_coef = b.clone();
         with_coef["coef"] = json!(0);
         let en = earthsci_astdiff::parse_band(&with_coef)
             .map_err(|e| bad(format!("band {}: {e}", k + 1)))?;
-        let mut ext: Vec<usize> = canon
-            .states
-            .get(&en.u)
-            .map(|s| s.ext.clone())
-            .unwrap_or_default();
-        ext.extend(en.band.contracted.iter().map(|(_, _, hi)| *hi as usize));
-        let mut err = None;
-        earthsci_astdiff::points::foreach_point(&en.band, &mut |cell, cc, _, col| {
-            let (Some(r), Some(c)) = (canon.dof(&en.u, cell), canon.dof(&en.v, col)) else {
-                return Ok(()); // a ghost read contributes nothing
-            };
-            let (mut off, mut stride) = (0usize, 1usize);
-            for (x, n) in cell.iter().chain(cc).zip(&ext) {
-                off += (*x as usize - 1) * stride;
-                stride *= n;
-            }
-            if off >= len {
-                err = Some(format!("{field} has no element {off}"));
-            } else {
-                points.push((base + off, r, c));
-            }
-            Ok(())
-        })
-        .map_err(|e| bad(format!("band {}: {e}", k + 1)))?;
-        if let Some(e) = err {
-            return Err(bad(e));
-        }
+        let scatter = band_scatter(dofs, &en, len, &field)
+            .map_err(|e| bad(format!("band {}: {e}", k + 1)))?;
+        points.extend(scatter.into_iter().map(|(off, r, c)| (base + off, r, c)));
     }
 
     // §8.3: block_diagonal when the operator is pointwise with
-    // structure.block and its states are all arrays of one shape (ncells
-    // the cells of that shape) or all scalars (ncells = 1).
+    // structure.block and the states are all arrays of one shape (ncells
+    // the cells of that shape) or all scalars (ncells = 1), with n the
+    // number of states. A leaf of such operators covers every state, so it
+    // has the same structure (the leaf refuses a block_diagonal structure
+    // that does not cover its state).
     let pointwise = entry["locality"]["class"].as_str() == Some("pointwise");
-    let shapes: BTreeSet<Vec<usize>> = wnames.iter().map(|w| canon.states[w].ext.clone()).collect();
-    let structure = if pointwise && st.get("block").is_some() && shapes.len() == 1 {
-        let ncells = shapes
-            .iter()
-            .next()
-            .expect("one shape")
-            .iter()
-            .product::<usize>();
-        Structure::BlockDiagonal {
-            ncells,
-            n: wnames.len(),
+    let structure = match ncells {
+        Some(ncells) if pointwise && st.get("block").is_some() => {
+            if let Some((_, r, c)) = points.iter().find(|(_, r, c)| r % ncells != c % ncells) {
+                return Err(bad(format!(
+                    "structure.block, but its band entry ({r}, {c}) joins two cells"
+                )));
+            }
+            Structure::BlockDiagonal {
+                ncells,
+                n: dofs.states.len(),
+            }
         }
-    } else {
-        Structure::Dense
+        _ => Structure::Dense,
     };
     Ok(PlannedOperator {
         name: name.to_string(),
@@ -713,5 +634,33 @@ fn build_operator(
         rhs,
         jacobian,
         points,
+        acc: Mutex::new(Vec::new()),
+        fault: Mutex::new(None),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schedule_operators_in_tree_order() {
+        let sched = json!({"sequence": [
+            {"leaf": ["kinetics", "advection"], "frozen": [{"every": "advection"}]},
+            {"map": "clip"},
+            {"solve": "balance", "unknowns": ["x"]},
+            {"leaf": "kinetics"}
+        ]});
+        let mut out = Vec::new();
+        schedule_operators(&sched, &mut out);
+        assert_eq!(
+            out,
+            [
+                ("kinetics".to_string(), Role::Term),
+                ("advection".to_string(), Role::Term),
+                ("clip".to_string(), Role::Map),
+                ("balance".to_string(), Role::Algebraic),
+            ]
+        );
+    }
 }

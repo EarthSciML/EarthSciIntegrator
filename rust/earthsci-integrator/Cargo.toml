@@ -15,10 +15,10 @@ repository.workspace = true
 earthsci-ast = { version = "0.8", default-features = false, features = ["solve"] }
 # Reading the plan's band positions (esm-jacobian-spec §4).
 earthsci-astdiff = "0.3"
+# The planner's canonical order, derived-document evaluation and band
+# scatter (its `numeric` module), shared so that a plan is read the way it
+# was checked.
+earthsci-integrator-planner.workspace = true
 earthsci-integrator-solvers.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
-
-[dev-dependencies]
-# The M2 end-to-end cases plan each case before running it.
-earthsci-integrator-planner = { path = "../earthsci-integrator-planner" }

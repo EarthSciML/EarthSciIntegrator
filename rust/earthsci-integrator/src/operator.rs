@@ -82,11 +82,11 @@ pub trait Operator<T: Scalar>: Send + Sync {
     fn provides(&self, call: Call) -> bool {
         matches!(call, Call::Rhs | Call::JvpU | Call::VjpU)
     }
-    /// Whether `jac` also accumulates into `dense` storage when the
-    /// operator's structure is `block_diagonal`, so that a `dense_lu` leaf
-    /// can use it. The hand-written toy operators store per block only.
-    fn dense_storage(&self) -> bool {
-        false
+    /// The first fault the operator met evaluating a call, if any: an
+    /// operator built from external code (a plan's, §8) returns NaN where
+    /// that code fails, and this says why. A leaf that fails reports it.
+    fn fault(&self) -> Option<String> {
+        None
     }
 
     /// `out += f_k(u, p, t)`.
@@ -99,7 +99,9 @@ pub trait Operator<T: Scalar>: Send + Sync {
     fn vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, w: &[T]) {
         unimplemented!("{}: vjp_p", self.name())
     }
-    /// `J_k(u)` into the leaf's matrix storage (§4).
+    /// `J_k(u)` into the leaf's matrix storage (§4): the operators' common
+    /// structure, or `dense` for a `dense_lu` leaf whatever the structure
+    /// (an operator that adds through [`MatrixStorage::add`] fills either).
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
         unimplemented!("{}: jac", self.name())
     }
