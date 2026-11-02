@@ -1,0 +1,8 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "model.esm",
+  "step": {
+    "dt": 0.1
+  },
+  "schedule": "auto"
+}
