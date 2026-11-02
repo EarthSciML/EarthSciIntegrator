@@ -400,6 +400,30 @@
       }
     },
     {
+      "name": "load_plan",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "planned::load_plan"
+      }
+    },
+    {
+      "name": "loaded_plan",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "planned::LoadedPlan"
+      }
+    },
+    {
+      "name": "planned_operator",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "planned::PlannedOperator"
+      }
+    },
+    {
       "name": "tableau",
       "kind": "type",
       "tier": "stable",

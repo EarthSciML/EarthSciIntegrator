@@ -6,7 +6,9 @@
 //! - this crate: the operator interface ([`operator`]), the toy problems
 //!   ([`toy`]), run-config parsing ([`config`]), the leaf ([`leaf`]), the
 //!   schedule interpreter ([`schedule`]), the tape and checkpoints
-//!   ([`tape`]) and the discrete adjoint ([`adjoint`]);
+//!   ([`tape`]) and the discrete adjoint ([`adjoint`]); from M2, operators
+//!   built from a plan directory ([`planned`], spec/operator-interface.md
+//!   §8) and the M2 end-to-end cases ([`conformance_m2`]);
 //! - `earthsci-integrator-solvers`: coefficient tables, method steps, error
 //!   norm, controllers, first step and the direct linear solvers,
 //!   independent of the operator interface.
@@ -14,8 +16,10 @@
 pub mod adjoint;
 pub mod config;
 pub mod conformance;
+pub mod conformance_m2;
 pub mod leaf;
 pub mod operator;
+pub mod planned;
 pub mod schedule;
 pub mod tape;
 pub mod toy;

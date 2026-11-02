@@ -243,7 +243,7 @@ fn build_leaf<T: Scalar>(
     }
     let tab =
         tableau(&alg).ok_or_else(|| Error::Config(format!("leaf {id}: unknown alg {alg:?}")))?;
-    let structure = Structure::common(ops.iter().map(|o| o.structure()));
+    let mut structure = Structure::common(ops.iter().map(|o| o.structure()));
     // The implicit families' options (run-config §4.2, §4.5).
     if l.theta.is_some() && tab.family != Family::Theta {
         return Err(Error::Config(format!(
@@ -280,6 +280,11 @@ fn build_leaf<T: Scalar>(
                 }
             }
             let ls = linsolve(l.linsolve.as_ref(), structure, id)?;
+            // dense_lu factors the same entries whatever the structure, so
+            // the leaf stores them dense (operator-interface.md §8.3).
+            if matches!(ls, LinsolveKind::DenseLu) {
+                structure = Structure::Dense;
+            }
             // The block solve covers ncells·n entries; any others would pass
             // through it unsolved.
             if let Structure::BlockDiagonal { ncells, n } = structure {
@@ -485,13 +490,10 @@ fn imex_partition(
         match m.get(key) {
             None => Ok(None),
             Some(Value::String(s)) => Ok(Some(vec![s.clone()])),
-            Some(Value::Array(a)) if a.is_empty() => Err(Error::Config(format!(
-                "leaf {id}: imex.{key} is empty{}",
-                if key == "implicit" {
-                    " (an empty implicit part would make IMEX Euler forward Euler)"
-                } else {
-                    ""
-                }
+            // An empty explicit part is how a resolved plan writes "every
+            // term implicit" (spec/plan.md §7.1).
+            Some(Value::Array(a)) if a.is_empty() && key == "implicit" => Err(Error::Config(format!(
+                "leaf {id}: imex.implicit is empty (an empty implicit part would make IMEX Euler forward Euler)"
             ))),
             Some(Value::Array(a)) => a
                 .iter()
@@ -540,7 +542,8 @@ fn imex_partition(
 
 /// The leaf's `linsolve` (spec/run-config.md §4.2). Omitted or `"auto"`, it
 /// is `block_lu` with pivoting for a `block_diagonal` leaf and `dense_lu`
-/// otherwise; `block_lu` pivots unless `pivot` is false. Without a planner
+/// otherwise; `block_lu` pivots unless `pivot` is false. `dense_lu` is
+/// accepted on either structure (the leaf then stores its Jacobian dense). Without a planner
 /// (M2) the Rust implementation offers only these two direct solvers.
 fn linsolve(
     v: Option<&serde_json::Value>,
@@ -564,7 +567,14 @@ fn linsolve(
         Some(Value::Object(m)) if m.len() == 1 => {
             let (k, opts) = m.iter().next().expect("one key");
             match k.as_str() {
-                "dense_lu" => Some(LinsolveKind::DenseLu),
+                "dense_lu" => match opts {
+                    Value::Object(o) if o.is_empty() => Some(LinsolveKind::DenseLu),
+                    _ => {
+                        return Err(Error::Config(format!(
+                            "leaf {id}: dense_lu takes no options, not {opts}"
+                        )))
+                    }
+                },
                 "block_lu" => {
                     let Value::Object(opts) = opts else {
                         return Err(Error::Config(format!("leaf {id}: block_lu options {opts}")));
@@ -607,10 +617,6 @@ fn linsolve(
     match (kind, block) {
         (LinsolveKind::BlockLu { .. }, false) => Err(Error::Config(format!(
             "leaf {id}: block_lu needs a block_diagonal leaf (operator-interface.md §2)"
-        ))),
-        (LinsolveKind::DenseLu, true) => Err(Error::Unimplemented(format!(
-            "leaf {id}: dense_lu on a block_diagonal leaf: the Rust implementation stores \
-             block_diagonal Jacobians per block; use block_lu"
         ))),
         _ => Ok(kind),
     }
@@ -810,8 +816,14 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     clips: out.clips.clone(),
                 });
                 if out.retcode != Retcode::Success {
+                    // Why an operator's evaluation failed, when one did.
+                    let faults: String = leaf
+                        .ops
+                        .iter()
+                        .filter_map(|o| o.fault().map(|f| format!("; operator {}: {f}", o.name())))
+                        .collect();
                     return Err(Error::Run(format!(
-                        "leaf {} ({}) returned {:?} at {path}",
+                        "leaf {} ({}) returned {:?} at {path}{faults}",
                         leaf.id, leaf.alg, out.retcode
                     )));
                 }
@@ -980,6 +992,18 @@ impl<T: Scalar> RunSpec<T> {
                 "a toy problem's operators exist under their names; the run config has no operators key (spec/toy-problems.md)".into(),
             ));
         }
+        Self::with_problem(problem, rc, tspan, saveat)
+    }
+
+    /// Builds a run of `rc`'s schedule and step against a problem already
+    /// built: a toy problem, or the operators of a plan
+    /// ([`crate::planned`]). `rc.model` and `rc.operators` are not read.
+    pub fn with_problem(
+        problem: ToyProblem<T>,
+        rc: &RunConfig,
+        tspan: (f64, f64),
+        saveat: Option<&[f64]>,
+    ) -> Result<Self, Error> {
         for (k, v) in [
             ("partition", &rc.partition),
             ("precision", &rc.precision),
@@ -1089,7 +1113,7 @@ impl<T: Scalar> RunSpec<T> {
                 }
             };
             let mut dofs: Vec<usize> = (0..problem.n)
-                .filter(|&j| problem.variables[j] == name)
+                .filter(|&j| problem.variables[j] == *name)
                 .collect();
             if dofs.is_empty() {
                 return Err(Error::Config(format!(
