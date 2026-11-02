@@ -436,6 +436,7 @@
       "kind": "type",
       "tier": "stable",
       "bindings": {
+        "julia": "PlannedOperator",
         "rust": "planned::PlannedOperator"
       }
     },
