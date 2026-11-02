@@ -102,6 +102,7 @@ A runtime that executes a plan (spec/plan.md) builds each operator the schedule 
 
 - **State.** The operator acts on the whole model state in the plan's **canonical order** (spec/plan.md §4): state names sorted by code point, each array's cells column-major. Every derived document of a plan declares the same states, so one permutation from the binding's own build order (its name map) to canonical order serves all of them; the runtime computes it once per document at build time. The leaf's state vector $u$ (§1) is the union of its operators' `writes`, in canonical order; every other state is a constant of the leaf over its interval (§1).
 - **`writes`.** The operator's `writes` (§3) are the canonical indices of every cell of every variable in the plan's `writes` list. The right-hand side document is zero outside them by construction.
+- **Initial state.** The initial state is the one EarthSciAST builds for a right-hand-side document (its defaults and `ic` equations; every right-hand-side document of a plan builds the same, spec/plan.md §6.1.2), in canonical order.
 - **Parameters.** $p$ is the flattened model's scalar parameters in code-point order of their names, at their defaults; array parameters are fixed at their defaults, since array-parameter gradients wait for U7 (§6).
 - **Declarations.** `depends_on_t` and `linear_in_u` are the plan's `structure.depends_on_t` and `structure.linear_in_u`.
 
