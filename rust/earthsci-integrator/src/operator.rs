@@ -11,10 +11,11 @@
 //! operator holds no state between calls, so it is `Send + Sync` and one
 //! object may serve several threads at once (U4).
 //!
-//! At M1 every operator is defined over the full model state vector (its
-//! length is the problem's `N`); [`Operator::writes`] says which DOFs it
-//! writes. A leaf's DOFs are the union of its operators' (architecture §3.2
-//! pass 3); its error norm runs over those DOFs only.
+//! Every operator is defined over the full model state vector (its length
+//! is the problem's `N`); [`Operator::writes`] says which DOFs it writes. A
+//! leaf's state vector is the union of its operators' writes (§1, §8.2;
+//! architecture §3.2 pass 3): the leaf advances only those DOFs, and every
+//! other state is a constant of the leaf ([`crate::leaf::Bound`]).
 
 use crate::Scalar;
 
@@ -78,6 +79,14 @@ pub trait Operator<T: Scalar>: Send + Sync {
     fn linear_in_u(&self) -> bool;
     /// The DOFs (full-state indices, ascending) the operator writes.
     fn writes(&self) -> Vec<usize>;
+    /// The DOFs (full-state indices, ascending) `f_k` may depend on, when the
+    /// operator knows them; `None` when it does not. A leaf that advances
+    /// part of the state needs them for its adjoint: the states it does not
+    /// advance are its constants (§1), and their cotangents pass through it
+    /// unchanged only when no operator reads them.
+    fn reads(&self) -> Option<Vec<usize>> {
+        None
+    }
     /// Whether the operator implements `call`.
     fn provides(&self, call: Call) -> bool {
         matches!(call, Call::Rhs | Call::JvpU | Call::VjpU)

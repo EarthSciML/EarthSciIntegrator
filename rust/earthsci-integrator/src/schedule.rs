@@ -243,7 +243,19 @@ fn build_leaf<T: Scalar>(
     }
     let tab =
         tableau(&alg).ok_or_else(|| Error::Config(format!("leaf {id}: unknown alg {alg:?}")))?;
-    let mut structure = Structure::common(ops.iter().map(|o| o.structure()));
+    // The leaf's state vector: the union of its operators' writes, ascending
+    // (operator-interface.md §1, §8.2). Every other state is a constant of
+    // the leaf over its interval.
+    let mut dofs: Vec<usize> = ops.iter().flat_map(|o| o.writes()).collect();
+    dofs.sort_unstable();
+    dofs.dedup();
+    if dofs.is_empty() {
+        return Err(Error::Config(format!(
+            "leaf {id}: its operators write nothing"
+        )));
+    }
+    let model_structure = Structure::common(ops.iter().map(|o| o.structure()));
+    let mut structure = leaf_structure(model_structure, &dofs, pb.n);
     // The implicit families' options (run-config §4.2, §4.5).
     if l.theta.is_some() && tab.family != Family::Theta {
         return Err(Error::Config(format!(
@@ -287,7 +299,7 @@ fn build_leaf<T: Scalar>(
             }
             // The block solve covers ncells·n entries; any others would pass
             // through it unsolved.
-            if let Structure::BlockDiagonal { ncells, n } = structure {
+            if let Structure::BlockDiagonal { ncells, n } = model_structure {
                 if ncells * n != pb.n {
                     return Err(Error::Config(format!(
                         "leaf {id}: the operators' block_diagonal structure covers \
@@ -316,10 +328,6 @@ fn build_leaf<T: Scalar>(
             }
         }
     };
-    let mut dofs: Vec<usize> = ops.iter().flat_map(|o| o.writes()).collect();
-    dofs.sort_unstable();
-    dofs.dedup();
-
     // Calls the method and its adjoint need (operator-interface.md §3).
     for (k, op) in ops.iter().enumerate() {
         // An IMEX Euler leaf's explicit-part operators never enter W.
@@ -369,8 +377,32 @@ fn build_leaf<T: Scalar>(
         )));
     }
 
+    // An adjoint through a leaf that advances part of the state carries the
+    // cotangents of the other states through unchanged, which is exact only
+    // when no operator of the leaf reads them: the leaf's map would
+    // otherwise depend on its constants.
+    if needs.adjoint && dofs.len() != pb.n {
+        for op in &ops {
+            let inside = op
+                .reads()
+                .is_some_and(|r| r.iter().all(|j| dofs.binary_search(j).is_ok()));
+            if !inside {
+                return Err(Error::Unimplemented(format!(
+                    "leaf {id}: operator {} may read states the leaf does not advance; the \
+                     adjoint of a leaf through its constants (operator-interface.md §1) is not \
+                     implemented",
+                    op.name()
+                )));
+            }
+        }
+    }
+
     let ctl = l.control.clone().unwrap_or_default();
-    let (tol, kind, dt0, dtmin, dtmax) = control(&ctl, id, pb)?;
+    let (mut tol, kind, dt0, dtmin, dtmax) = control(&ctl, id, pb)?;
+    // Tolerances over the leaf's state vector.
+    tol.abstol = dofs.iter().map(|&j| tol.abstol[j]).collect();
+    // Model DOFs as indices into the leaf's state vector.
+    let loc = |j: usize| dofs.binary_search(&j).ok();
     let controller = if method.adaptive() {
         Controller::new(kind, tab)
     } else {
@@ -387,18 +419,14 @@ fn build_leaf<T: Scalar>(
             }
             let listed = match &d.nonnegative {
                 None => vec![],
-                Some(v) if v.as_str() == Some("all") => dofs.clone(),
+                Some(v) if v.as_str() == Some("all") => (0..dofs.len()).collect(),
                 Some(serde_json::Value::Array(a)) => {
                     let mut v = Vec::new();
                     for name in a {
                         let nm = name.as_str().ok_or_else(|| {
                             Error::Config(format!("leaf {id}: domain.nonnegative entry {name}"))
                         })?;
-                        v.extend(
-                            variable_dofs(pb, nm)?
-                                .into_iter()
-                                .filter(|j| dofs.contains(j)),
-                        );
+                        v.extend(variable_dofs(pb, nm)?.into_iter().filter_map(loc));
                     }
                     v.sort_unstable();
                     v.dedup();
@@ -452,7 +480,9 @@ fn build_leaf<T: Scalar>(
         id: id.to_string(),
         ops,
         dofs,
+        n_model: pb.n,
         structure,
+        model_structure,
         alg,
         method,
         dt_mode,
@@ -468,6 +498,33 @@ fn build_leaf<T: Scalar>(
         imex_implicit,
         work: Default::default(),
     })
+}
+
+/// The structure of a leaf's state vector (operator-interface.md §2, §8.3)
+/// from its operators' common structure over the model state of `n_model`
+/// DOFs. A leaf that writes every DOF has the operators' structure. One that
+/// writes whole species of a `block_diagonal` structure (every cell of each)
+/// is `block_diagonal` over its own species: its state vector, the model
+/// state at `dofs` in ascending order, is species-major with the same cells,
+/// and `n` is the number of its species. Any other is `dense`.
+fn leaf_structure(model: Structure, dofs: &[usize], n_model: usize) -> Structure {
+    if dofs.len() == n_model {
+        return model;
+    }
+    match model {
+        Structure::BlockDiagonal { ncells, .. }
+            if dofs.len().is_multiple_of(ncells)
+                && dofs.chunks(ncells).all(|s| {
+                    s[0].is_multiple_of(ncells) && s.iter().enumerate().all(|(c, &j)| j == s[0] + c)
+                }) =>
+        {
+            Structure::BlockDiagonal {
+                ncells,
+                n: dofs.len() / ncells,
+            }
+        }
+        _ => Structure::Dense,
+    }
 }
 
 /// IMEX Euler's partition (run-config §4.5): per operator of the leaf, in
@@ -674,6 +731,9 @@ pub enum AdjRecord<T> {
     Leaf {
         leaf: usize,
         steps: Vec<StepData<T>>,
+        /// The model state at the invocation's start, the leaf's constants,
+        /// when the leaf advances part of it (operator-interface.md §1).
+        background: Option<Vec<T>>,
     },
     Map {
         map: usize,
@@ -801,6 +861,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     record_stages: self.adj.is_some(),
                     tight_newton: self.tight_newton,
                 };
+                let background = (self.adj.is_some() && leaf.is_partial()).then(|| u.to_vec());
                 let out = leaf.invoke(u, &mut self.persist[*idx], &call)?;
                 self.rhs_calls += out.rhs_calls;
                 self.integral += out.integral;
@@ -831,6 +892,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     adj.push(AdjRecord::Leaf {
                         leaf: *idx,
                         steps: out.stage_data,
+                        background,
                     });
                 }
             }
@@ -1183,7 +1245,21 @@ impl<T: Scalar> RunSpec<T> {
                             )));
                         }
                     }
-                    schedule.leaves[*idx].integrand = Some((dofs.clone(), weight));
+                    // ψ over the leaf's state vector. A DOF the leaf does not
+                    // advance would add a constant the leaf's adjoint does
+                    // not carry.
+                    let leaf = &mut schedule.leaves[*idx];
+                    let local = dofs
+                        .iter()
+                        .map(|j| leaf.dofs.binary_search(j).ok())
+                        .collect::<Option<Vec<usize>>>()
+                        .ok_or_else(|| {
+                            Error::Unimplemented(format!(
+                                "a functional over \"time\" of states leaf {id} does not \
+                                 advance (operator-interface.md §1)"
+                            ))
+                        })?;
+                    leaf.integrand = Some((local, weight));
                     vec![]
                 }
                 o => return Err(Error::Config(format!("functional over {o:?}"))),
@@ -1491,6 +1567,34 @@ fn glob(pat: &str, s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leaf_structure_of_part_of_the_state() {
+        let bd = |ncells, n| Structure::BlockDiagonal { ncells, n };
+        let all: Vec<usize> = (0..12).collect();
+        // A leaf that writes every DOF keeps its operators' structure.
+        assert_eq!(leaf_structure(bd(4, 3), &all, 12), bd(4, 3));
+        assert_eq!(leaf_structure(Structure::Dense, &all, 12), Structure::Dense);
+        // Whole species: block diagonal over the leaf's own.
+        assert_eq!(
+            leaf_structure(bd(4, 3), &[0, 1, 2, 3, 8, 9, 10, 11], 12),
+            bd(4, 2)
+        );
+        assert_eq!(leaf_structure(bd(4, 3), &[4, 5, 6, 7], 12), bd(4, 1));
+        // Part of a species, or a dense operator: dense.
+        assert_eq!(
+            leaf_structure(bd(4, 3), &[0, 1, 2, 3, 4, 5], 12),
+            Structure::Dense
+        );
+        assert_eq!(
+            leaf_structure(bd(4, 3), &[1, 2, 3, 4], 12),
+            Structure::Dense
+        );
+        assert_eq!(
+            leaf_structure(Structure::Dense, &[0, 1], 12),
+            Structure::Dense
+        );
+    }
 
     #[test]
     fn globs() {

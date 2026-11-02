@@ -11,7 +11,8 @@
 //!
 //! Layout (§8.2): operators act on the whole model state in the plan's
 //! canonical order (spec/plan.md §4): state names sorted by code point, each
-//! array's cells column-major. Parameters are the flattened model's scalar
+//! array's cells column-major. A leaf advances only the union of its
+//! operators' writes ([`crate::leaf::Bound`]). Parameters are the flattened model's scalar
 //! parameters in code-point order of their names, at their defaults.
 
 use crate::config::RunConfig;
@@ -186,6 +187,14 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
     }
     fn writes(&self) -> Vec<usize> {
         self.writes.clone()
+    }
+    fn reads(&self) -> Option<Vec<usize>> {
+        // The columns of the Jacobian's band points: the DOFs the right-hand
+        // side depends on.
+        let mut r: Vec<usize> = self.points.iter().map(|&(_, _, c)| c).collect();
+        r.sort_unstable();
+        r.dedup();
+        Some(r)
     }
     fn provides(&self, call: Call) -> bool {
         // ft, vjp_p and the second-order calls wait for U17, U7 and U8
@@ -606,9 +615,8 @@ fn build_operator(
     // §8.3: block_diagonal when the operator is pointwise with
     // structure.block and the states are all arrays of one shape (ncells
     // the cells of that shape) or all scalars (ncells = 1), with n the
-    // number of states. A leaf of such operators covers every state, so it
-    // has the same structure (the leaf refuses a block_diagonal structure
-    // that does not cover its state).
+    // number of states. A leaf of such operators that writes only some of
+    // the states is block_diagonal over its own (schedule::leaf_structure).
     let pointwise = entry["locality"]["class"].as_str() == Some("pointwise");
     let structure = match ncells {
         Some(ncells) if pointwise && st.get("block").is_some() => {

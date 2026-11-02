@@ -247,6 +247,10 @@ impl<T: Scalar> Operator<T> for Decay {
     fn writes(&self) -> Vec<usize> {
         vec![0]
     }
+    fn reads(&self) -> Option<Vec<usize>> {
+        // Every toy operator reads only what it writes.
+        Some(Operator::<T>::writes(self))
+    }
     fn provides(&self, call: Call) -> bool {
         ALL_CALLS.contains(&call)
     }
@@ -304,6 +308,10 @@ impl<T: Scalar> Operator<T> for Oscillator {
     }
     fn writes(&self) -> Vec<usize> {
         vec![0, 1]
+    }
+    fn reads(&self) -> Option<Vec<usize>> {
+        // Every toy operator reads only what it writes.
+        Some(Operator::<T>::writes(self))
     }
     fn provides(&self, call: Call) -> bool {
         ALL_CALLS.contains(&call)
@@ -380,6 +388,10 @@ impl<T: Scalar> Operator<T> for Kinetics {
     }
     fn writes(&self) -> Vec<usize> {
         vec![0, 1, 2]
+    }
+    fn reads(&self) -> Option<Vec<usize>> {
+        // Every toy operator reads only what it writes.
+        Some(Operator::<T>::writes(self))
     }
     fn provides(&self, call: Call) -> bool {
         ALL_CALLS.contains(&call)
@@ -510,6 +522,10 @@ impl<T: Scalar> Operator<T> for Photochemistry {
     }
     fn writes(&self) -> Vec<usize> {
         (0..3 * PHOTO_NCELLS).collect()
+    }
+    fn reads(&self) -> Option<Vec<usize>> {
+        // Every toy operator reads only what it writes.
+        Some(Operator::<T>::writes(self))
     }
     fn provides(&self, call: Call) -> bool {
         ALL_CALLS.contains(&call)
@@ -670,6 +686,10 @@ impl<T: Scalar> Operator<T> for Transport {
     fn writes(&self) -> Vec<usize> {
         (0..ADV_NCELLS).collect()
     }
+    fn reads(&self) -> Option<Vec<usize>> {
+        // Every toy operator reads only what it writes.
+        Some(Operator::<T>::writes(self))
+    }
     fn provides(&self, call: Call) -> bool {
         ALL_CALLS.contains(&call)
     }
@@ -745,6 +765,10 @@ impl<T: Scalar> Operator<T> for Reaction {
     }
     fn writes(&self) -> Vec<usize> {
         (0..2 * ADV_NCELLS).collect()
+    }
+    fn reads(&self) -> Option<Vec<usize>> {
+        // Every toy operator reads only what it writes.
+        Some(Operator::<T>::writes(self))
     }
     fn provides(&self, call: Call) -> bool {
         ALL_CALLS.contains(&call)
@@ -835,6 +859,10 @@ impl<T: Scalar> Operator<T> for Source {
     }
     fn writes(&self) -> Vec<usize> {
         vec![0]
+    }
+    fn reads(&self) -> Option<Vec<usize>> {
+        // Every toy operator reads only what it writes.
+        Some(Operator::<T>::writes(self))
     }
     fn provides(&self, call: Call) -> bool {
         ALL_CALLS.contains(&call)
