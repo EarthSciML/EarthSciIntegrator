@@ -274,7 +274,13 @@ const PLAN_FILES = String[]
                 o = only(ops)
                 want = JSON.parsefile(joinpath(golden, "validation", "$o.bandvalues.json"))
                 bad(f) = (w = deepcopy(want); f(w); golden_bandvalues_mismatch(d, o, w) !== nothing)
-                @test !bad(w -> (u = w["samples"][1]["u"]; for n in keys(u); u[n] = nextfloat(Float64(u[n])); end))
+                @test !bad(
+                    w -> (
+                        u = w["samples"][1]["u"]; for n in keys(u)
+                            u[n] = nextfloat(Float64(u[n]))
+                        end
+                    )
+                )
                 @test bad(w -> (e = w["samples"][2]["entries"][1]; e[3] = Float64(e[3]) * (1 + 1.0e-6) + 1.0e-12))
                 @test bad(w -> pop!(w["samples"][1]["entries"]))
                 @test bad(w -> push!(w["samples"][1]["entries"], w["samples"][1]["entries"][1]))
