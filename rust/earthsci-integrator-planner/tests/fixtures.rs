@@ -139,10 +139,10 @@ fn plan_schema() -> jsonschema::Validator {
         .unwrap()
 }
 
-/// `CASES` is every `<case>.run.json` under the fixtures, and each has a
-/// golden: a case added without one fails rather than being skipped.
+/// `CASES` is every `<case>.run.json` under the fixtures, so `every_case`,
+/// which requires each case's golden, cannot skip one.
 #[test]
-fn every_case_is_listed_and_has_a_golden() {
+fn every_case_is_listed() {
     let root = conformance().join("plans/fixtures");
     let mut found: Vec<(String, String)> = Vec::new();
     for fixture in std::fs::read_dir(&root).unwrap() {
@@ -165,14 +165,6 @@ fn every_case_is_listed_and_has_a_golden() {
         .collect();
     listed.sort();
     assert_eq!(found, listed, "CASES must list every fixture case");
-    for (fixture, case) in &found {
-        let golden = root.join(fixture).join(format!("{case}.golden"));
-        assert!(
-            golden.join("plan.json").is_file(),
-            "harness error: {fixture}/{case} has no golden at {} (write it with tools/plan-goldens.jl)",
-            golden.display()
-        );
-    }
 }
 
 /// Every case plans; its plan validates; its derived documents load and
@@ -236,7 +228,8 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
         .join(format!("{case}.golden"));
     let want = std::fs::read(golden.join("plan.json")).unwrap_or_else(|e| {
         panic!(
-            "harness error: {fixture}/{case} has no golden plan.json at {}: {e}",
+            "harness error: {fixture}/{case} has no golden plan.json at {} \
+             (write it with tools/plan-goldens.jl): {e}",
             golden.display()
         )
     });
@@ -244,8 +237,14 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
         want == plan_bytes,
         "{fixture}/{case}: plan.json differs from the golden"
     );
-    let mut files: Vec<String> = std::fs::read_dir(golden.join("derived"))
-        .unwrap()
+    let derived = golden.join("derived");
+    let mut files: Vec<String> = std::fs::read_dir(&derived)
+        .unwrap_or_else(|e| {
+            panic!(
+                "harness error: {fixture}/{case}: the golden has no {}: {e}",
+                derived.display()
+            )
+        })
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     files.sort();
@@ -309,6 +308,30 @@ fn band_value_comparison() {
             .unwrap()
             .pop();
         assert!(compare_band_values(&p, &op, &missing).is_err());
+        // The file's own form: a duplicate entry, a dropped or empty sample
+        // list, a shifted t, and a u without every DOF all fail.
+        let mut twice = file.clone();
+        let first = twice["samples"][0]["entries"][0].clone();
+        twice["samples"][0]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(first);
+        assert!(compare_band_values(&p, &op, &twice).is_err());
+        let mut fewer = file.clone();
+        fewer["samples"].as_array_mut().unwrap().pop();
+        assert!(compare_band_values(&p, &op, &fewer).is_err());
+        assert!(compare_band_values(&p, &op, &json!({"samples": []})).is_err());
+        let mut shifted = file.clone();
+        let t = shifted["samples"][0]["t"].as_f64().unwrap();
+        shifted["samples"][0]["t"] = json!(t + 1.0);
+        assert!(compare_band_values(&p, &op, &shifted).is_err());
+        let mut short = file.clone();
+        let name = p.dofs().element_names()[0].clone();
+        short["samples"][2]["u"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&name);
+        assert!(compare_band_values(&p, &op, &short).is_err());
     }
 }
 

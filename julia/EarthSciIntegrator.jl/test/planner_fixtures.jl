@@ -39,24 +39,40 @@ function plans_validate(files)
 end
 
 """
-Why band-value file `got` does not match the golden's `want` (spec/plan.md
-§8.2), or `nothing` when it does: the same samples at the same `t` and `u`,
-the same structural (row, column) key set, and each value within ``10^{-10}
-M_r`` of the golden's, ``M_r`` the largest magnitude in row ``r`` of either.
+Why the golden's band-value file `want` for operator `o` of plan draft `d`
+does not match the Julia planner's bands (spec/plan.md §8.2), or `nothing`
+when it does. As the Rust harness does, the band Jacobian is evaluated at
+each sample's own `t` and `u`, so this run need not reproduce the golden's
+sampled states bit for bit; it must have the file's structural (row, column)
+key set, and each value must be within ``10^{-10} M_r`` of the file's,
+``M_r`` the largest magnitude in row ``r`` of either. The file itself must
+have the form §8.2 gives it: one sample per quantile of §5.5.1 at that
+quantile's `t`, a `u` naming every DOF and nothing else, and no (row,
+column) listed twice.
 """
-function bandvalues_mismatch(got, want)
-    length(got["samples"]) == length(want["samples"]) || return "$(length(got["samples"])) samples, the golden has $(length(want["samples"]))"
-    for (k, (g, w)) in enumerate(zip(got["samples"], want["samples"]))
-        g["t"] == w["t"] || return "sample $k: t is $(g["t"]), the golden's is $(w["t"])"
-        g["u"] == w["u"] || return "sample $k: u differs from the golden's"
-        G = Dict((e[1], e[2]) => Float64(e[3]) for e in g["entries"])
-        W = Dict((e[1], e[2]) => Float64(e[3]) for e in w["entries"])
-        for key in setdiff(keys(G), keys(W))
-            return "sample $k: $key is in the band pattern, not in the golden"
+function golden_bandvalues_mismatch(d, o, want)
+    b, ctx = d.ctx.backend, d.ctx
+    L = EarthSciIntegrator.layout!(b, ctx)
+    B = EarthSciIntegrator.jac_built!(b, ctx, ctx.ops[o])
+    t0, tf = ctx.time
+    quantiles = (0.25, 0.5, 0.75)
+    samples = want["samples"]
+    length(samples) == length(quantiles) || return "$(length(samples)) samples, §5.5.1 has $(length(quantiles))"
+    for (k, (s, q)) in enumerate(zip(samples, quantiles))
+        s["t"] == t0 + (tf - t0) * q || return "sample $k: t is $(s["t"]), quantile $q of the interval is $(t0 + (tf - t0) * q)"
+        Set(keys(s["u"])) == Set(L.names) || return "sample $k: u does not name exactly the model's DOFs"
+        u = Float64[s["u"][n] for n in L.names]
+        JB = EarthSciIntegrator.band_jacobian(B, b.ops[o].points, u, Float64(s["t"]))
+        G = Dict((L.names[r], L.names[c]) => v for ((r, c), v) in JB)
+        W = Dict{Tuple{String, String}, Float64}()
+        for e in s["entries"]
+            haskey(W, (e[1], e[2])) && return "sample $k: ($(e[1]), $(e[2])) is listed twice"
+            W[(e[1], e[2])] = Float64(e[3])
         end
-        for key in setdiff(keys(W), keys(G))
-            return "sample $k: $key is in the golden, not in the band pattern"
-        end
+        extra = setdiff(keys(G), keys(W))
+        isempty(extra) || return "sample $k: $(first(extra)) is in the band pattern, not in the golden"
+        absent = setdiff(keys(W), keys(G))
+        isempty(absent) || return "sample $k: $(first(absent)) is in the golden, not in the band pattern"
         M = Dict{String, Float64}()
         for ((r, _), v) in Iterators.flatten((G, W))
             M[r] = max(get(M, r, 0.0), abs(v))
@@ -249,7 +265,23 @@ const PLAN_FILES = String[]
                 path = joinpath(golden, "validation", "$o.bandvalues.json")
                 @test isfile(path)
                 isfile(path) || continue
-                @test bandvalues_mismatch(JSON.parsefile(joinpath(dir, "validation", "$o.bandvalues.json")), JSON.parsefile(path)) === nothing
+                @test golden_bandvalues_mismatch(d, o, JSON.parsefile(path)) === nothing
+            end
+            # The comparison itself, on one case: a state one ulp off still
+            # passes; a changed value, a missing or doubled entry, a dropped
+            # sample, a shifted t and a u without every DOF fail.
+            if key == "pointwise_chemistry/auto"
+                o = only(ops)
+                want = JSON.parsefile(joinpath(golden, "validation", "$o.bandvalues.json"))
+                bad(f) = (w = deepcopy(want); f(w); golden_bandvalues_mismatch(d, o, w) !== nothing)
+                @test !bad(w -> (u = w["samples"][1]["u"]; for n in keys(u); u[n] = nextfloat(Float64(u[n])); end))
+                @test bad(w -> (e = w["samples"][2]["entries"][1]; e[3] = Float64(e[3]) * (1 + 1.0e-6) + 1.0e-12))
+                @test bad(w -> pop!(w["samples"][1]["entries"]))
+                @test bad(w -> push!(w["samples"][1]["entries"], w["samples"][1]["entries"][1]))
+                @test bad(w -> pop!(w["samples"]))
+                @test bad(w -> empty!(w["samples"]))
+                @test bad(w -> (w["samples"][1]["t"] += 1.0))
+                @test bad(w -> delete!(w["samples"][3]["u"], first(keys(w["samples"][3]["u"]))))
             end
         end
         # expected.md's contents.

@@ -5,6 +5,8 @@
 #
 #     julia --project=julia/EarthSciIntegrator.jl tools/plan-goldens.jl [--out OUTDIR] [FIXTURE[/CASE] ...]
 #
+# `--out OUTDIR` (or `--out=OUTDIR`) may come before or after the names.
+#
 # Without OUTDIR the goldens are written beside the run configs, for review
 # and check-in. With --out OUTDIR they go to OUTDIR/<fixture>/<case>.golden/. A
 # case with `<case>.expected-plan.json` is compared with it, the derived
@@ -32,11 +34,20 @@ end
 
 function main(args)
     outdir = nothing
-    if !isempty(args) && startswith(args[1], "--out")
+    names = String[]
+    while !isempty(args)
         a = popfirst!(args)
-        outdir = a == "--out" ? (isempty(args) ? error("--out needs a directory") : popfirst!(args)) :
-            startswith(a, "--out=") ? a[(length("--out=") + 1):end] : error("unknown option $a")
+        if a == "--out" || startswith(a, "--out=")
+            outdir === nothing || error("--out given twice")
+            outdir = a == "--out" ? (isempty(args) ? "" : popfirst!(args)) : a[(length("--out=") + 1):end]
+            (isempty(outdir) || startswith(outdir, "-")) && error("--out needs a directory")
+        elseif startswith(a, "-")
+            error("unknown option $a")
+        else
+            push!(names, a)
+        end
     end
+    args = names
     for a in args
         p = split(a, "/")
         ok = length(p) == 1 ? isdir(joinpath(FIXTURES, a)) :

@@ -14,6 +14,7 @@
 use earthsci_ast::Expr;
 use earthsci_integrator_planner::locality::{BandEntry, BandFailure, BandSource, RowIdx};
 use earthsci_integrator_planner::model::ModelInfo;
+use earthsci_integrator_planner::numeric;
 use earthsci_integrator_planner::terms::Term;
 use earthsci_integrator_planner::Planned;
 use serde_json::{json, Map, Value};
@@ -126,14 +127,41 @@ impl BandSource for HandBands {
 /// with a golden's `validation/<op>.bandvalues.json` (spec/plan.md §8.2): at
 /// each sample's `u` and `t`, operator `op`'s band Jacobian must have the
 /// file's structural key set, and every value must agree within
-/// `1e-10 · M_r`, `M_r` the largest magnitude in row `r` of either.
+/// `1e-10 · M_r`, `M_r` the largest magnitude in row `r` of either. The file
+/// itself must have the form §8.2 gives it: one sample per quantile of
+/// §5.5.1 at that quantile's `t`, a `u` naming every DOF and nothing else,
+/// and no (row, column) listed twice.
 pub fn compare_band_values(p: &Planned, op: &str, file: &Value) -> Result<(), String> {
     let names = p.dofs().element_names();
     let samples = file["samples"]
         .as_array()
         .ok_or("the band-value file has no samples")?;
-    for (k, s) in samples.iter().enumerate() {
+    let (t0, tf) = (p.interval.start, p.interval.end);
+    if samples.len() != numeric::SAMPLE_QUANTILES.len() {
+        return Err(format!(
+            "{} samples, §5.5.1 has {}",
+            samples.len(),
+            numeric::SAMPLE_QUANTILES.len()
+        ));
+    }
+    for (k, (s, q)) in samples.iter().zip(numeric::SAMPLE_QUANTILES).enumerate() {
         let t = s["t"].as_f64().ok_or("a sample has no t")?;
+        if t != t0 + (tf - t0) * q {
+            return Err(format!(
+                "sample {k}: t is {t:e}, quantile {q} of the interval is {:e}",
+                t0 + (tf - t0) * q
+            ));
+        }
+        let listed = s["u"]
+            .as_object()
+            .ok_or_else(|| format!("sample {k} has no u"))?
+            .len();
+        if listed != names.len() {
+            return Err(format!(
+                "sample {k}: u lists {listed} names, the model has {} DOFs",
+                names.len()
+            ));
+        }
         let u: Vec<f64> = names
             .iter()
             .map(|n| {
@@ -148,7 +176,9 @@ pub fn compare_band_values(p: &Planned, op: &str, file: &Value) -> Result<(), St
             let r = e[0].as_str().ok_or("an entry has no row")?;
             let c = e[1].as_str().ok_or("an entry has no column")?;
             let v = e[2].as_f64().ok_or("an entry has no value")?;
-            want.insert((r.to_string(), c.to_string()), v);
+            if want.insert((r.to_string(), c.to_string()), v).is_some() {
+                return Err(format!("sample {k}: ({r:?}, {c:?}) is listed twice"));
+            }
         }
         if let Some(key) = got.keys().find(|key| !want.contains_key(*key)) {
             return Err(format!(
