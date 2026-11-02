@@ -345,6 +345,46 @@ const PLAN_FILES = String[]
         @test EarthSciIntegrator.plan_json(d2) == EarthSciIntegrator.plan_json(d1)
     end
 
+    @testset "the probe document gives each term's own bands (§5.2.2): $fixture/$case" for (fixture, case) in fixture_cases()
+        inp = EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json"))
+        b = DiffBackend()
+        ctx = EarthSciIntegrator.plan_context(inp, b)
+        m = ctx.model
+        terms = EarthSciIntegrator.build_terms(m)
+        probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms)
+        # The probe itself succeeds, so planning does not split it.
+        @test probe !== nothing
+        # Band for band, in order, every field `serialize_band` writes (but
+        # `coef`) equals each term's bands from its own document.
+        @test probe == [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
+        # all_term_bands gives the same, every field of every BandEntry.
+        fields(x) = ntuple(i -> getfield(x, i), fieldcount(typeof(x)))
+        @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms)] ==
+            [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
+        # The probe states are declared with their equation state's index sets.
+        doc = EarthSciIntegrator.probe_document(m, terms)
+        vars = doc["models"]["JacobianEval"]["variables"]
+        @test length(vars) == length(terms)
+        for (k, t) in enumerate(terms)
+            @test get(vars["term_$k"], "shape", nothing) == (haskey(m.shapes, t.variable) ? m.shapes[t.variable] : nothing)
+        end
+        # Each has its term's state's `ic` equation, when the state has one.
+        ics = Set(only(e["lhs"]["args"]) for e in doc["models"]["JacobianEval"]["equations"] if e["lhs"]["op"] == "ic")
+        @test ics == Set(EarthSciIntegrator.probe_state(k) for (k, t) in enumerate(terms) if any(p -> first(p) == t.variable, m.flat.field_ics))
+    end
+
+    @testset "band_model_failed names the term that fails, after the probe document fails" begin
+        cfg = joinpath(CONF, "plans", "refusals", "band-model-failed", "run.json")
+        err = try
+            EarthSciIntegrator.plan(cfg); nothing
+        catch e
+            e
+        end
+        @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
+        # The third term, erf(x); the two before it differentiate.
+        @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
+    end
+
     @testset "write_plan removes an earlier plan's files" begin
         d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"))
         dir = mktempdir()

@@ -96,6 +96,33 @@ equation the fold of its terms (zero when it has none), the live observeds'
 definitions, and every `ic` equation.
 """
 function rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector)
+    return _rhs_document(m, name, terms, false)
+end
+
+"""
+The component of the probe document's new states (§5.2.2): the name
+§6.1.4 reserves for the Jacobian document, so no name of the model can
+clash with them.
+"""
+const PROBE_COMPONENT = "JacobianEval"
+
+"""The probe document's new state for the `k`-th term (§5.2.2)."""
+probe_state(k::Integer) = "$PROBE_COMPONENT.term_$k"
+
+"""
+    probe_document(m, terms) -> Dict
+
+§5.2.2's probe document: §6.1's document of the terms `terms` in which every
+state of the model has the zero right-hand side (§6.1.2), and the `k`-th term
+is instead the whole right-hand side of a new state [`probe_state`](@ref)`(k)`
+of the shape of its equation's state (the same index-set names), written as
+that state's equation would hold it alone (a lifted term inside the same
+`faq`). Its bands with row `probe_state(k)` are the `k`-th term's bands,
+row renamed.
+"""
+probe_document(m::PlanModel, terms::AbstractVector) = _rhs_document(m, "probe", terms, true)
+
+function _rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector, probe::Bool)
     flat = m.flat
     live = live_observeds(m, reduce(vcat, (t.refs for t in terms); init = String[]))
     models = Dict{String, Any}()
@@ -111,20 +138,8 @@ function rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector)
     for (ei, eq) in enumerate(flat.equations)
         if haskey(eqinfo, ei)
             var, lifted = eqinfo[ei]
-            ts = get(by_eq, ei, Term[])
-            rhs = if isempty(ts)
-                zero_rhs(m, var)
-            elseif lifted
-                O, G = lifted_ranges(m, ei, var)
-                Dict{String, Any}(
-                    "op" => "faq", "args" => Any[], "output_idx" => Any[O...], "ranges" => G,
-                    "expr" => fold_sum(Any[_ser(t.expr) for t in ts])
-                )
-            else
-                fold_sum(Any[_ser(t.expr) for t in ts])
-            end
-            lhs = Dict{String, Any}("op" => "D", "args" => Any[var], "wrt" => "t")
-            push!(component_model!(models, component_of(var))["equations"], Dict{String, Any}("lhs" => lhs, "rhs" => rhs))
+            ts = probe ? Term[] : get(by_eq, ei, Term[])
+            push!(component_model!(models, component_of(var))["equations"], state_equation(m, ei, var, lifted, ts))
         else
             o = defined_observed(m, eq)
             (o !== nothing && o in live) || continue
@@ -132,6 +147,22 @@ function rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector)
                 component_model!(models, component_of(o))["equations"],
                 Dict{String, Any}("lhs" => _ser(eq.lhs), "rhs" => _ser(eq.rhs))
             )
+        end
+    end
+    if probe
+        v = component_model!(models, PROBE_COMPONENT)
+        for (k, t) in enumerate(terms)
+            x = probe_state(k)
+            # The term's state's declaration (its shape and `default`) and its
+            # `ic` equation, if any, so the new state is initialized as it is.
+            v["variables"][last_segment(x)] = variable_object(m, t.variable, flat.state_variables[t.variable])
+            eq = state_equation(m, t.equation, t.variable, t.lifted, [t])
+            eq["lhs"]["args"] = Any[x]
+            push!(v["equations"], eq)
+            for (y, e) in flat.field_ics
+                y == t.variable || continue
+                push!(v["equations"], Dict{String, Any}("lhs" => Dict{String, Any}("op" => "ic", "args" => Any[x]), "rhs" => _ser(e)))
+            end
         end
     end
     for (x, e) in flat.field_ics
@@ -148,6 +179,23 @@ function rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector)
     dom = derived_domain(flat.domain)
     dom === nothing || (doc["domain"] = dom)
     return doc
+end
+
+"""The equation `D(var) = …` of state `var`, flattened equation `ei`, holding the terms `ts` (§6.1.2): their left fold, inside the lift's `faq` when `lifted`, or the zero right-hand side when there are none."""
+function state_equation(m::PlanModel, ei::Int, var::AbstractString, lifted::Bool, ts::AbstractVector)
+    rhs = if isempty(ts)
+        zero_rhs(m, var)
+    elseif lifted
+        O, G = lifted_ranges(m, ei, var)
+        Dict{String, Any}(
+            "op" => "faq", "args" => Any[], "output_idx" => Any[O...], "ranges" => G,
+            "expr" => fold_sum(Any[_ser(t.expr) for t in ts])
+        )
+    else
+        fold_sum(Any[_ser(t.expr) for t in ts])
+    end
+    lhs = Dict{String, Any}("op" => "D", "args" => Any[var], "wrt" => "t")
+    return Dict{String, Any}("lhs" => lhs, "rhs" => rhs)
 end
 
 last_segment(name::AbstractString) = (i = findlast('.', name); i === nothing ? String(name) : name[nextind(name, i):end])

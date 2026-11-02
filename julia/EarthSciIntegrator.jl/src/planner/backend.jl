@@ -88,13 +88,102 @@ function bind!(b::DiffBackend, ctx)
     return b
 end
 
-function term_bands(b::DiffBackend, ctx, t::Term)
+"""
+    term_band_dicts(b::DiffBackend, ctx, t) -> Vector{Dict{String, Any}}
+
+Term `t`'s bands from its own right-hand-side document (§5.2.2), as
+[`band_json`](@ref) gives them. An EarthSciASTDiff failure is
+`band_model_failed`, naming the term.
+"""
+function term_band_dicts(b::DiffBackend, ctx, t::Term)
     bind!(b, ctx)
     # A term's document is never written, so it is loaded from memory rather
     # than through its bytes.
     flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
     what = "term ($(t.variable), $(t.contribution), $(t.summand))"
-    return BandEntry[BandEntry(band_json(en)) for en in document_bands(flat, what)]
+    return Dict{String, Any}[band_json(en) for en in document_bands(flat, what)]
+end
+
+term_bands(b::DiffBackend, ctx, t::Term) = BandEntry[BandEntry(d) for d in term_band_dicts(b, ctx, t)]
+
+"""
+    probe_band_dicts(b::DiffBackend, ctx, terms) -> Union{Vector{Vector{Dict{String, Any}}}, Nothing}
+
+Every term's bands, as [`band_json`](@ref) gives them, from one probe
+document (§5.2.2, [`probe_document`](@ref)): one EarthSciAST load and
+flatten and one `jacobian_bands` call, whose bands with row
+`probe_state(k)` are term `k`'s, row renamed to its variable. `nothing` when
+EarthSciAST or EarthSciASTDiff fails on the probe document, a failure that
+names no term. Only those calls are guarded: an error in building the probe
+document or in reading its bands is the planner's own and propagates.
+"""
+function probe_band_dicts(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    bind!(b, ctx)
+    doc = probe_document(ctx.model, terms)
+    entries = try
+        document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document")
+    catch e
+        e isa InterruptException && rethrow()
+        e isa PlannerRefusal && e.code != "band_model_failed" && rethrow()
+        @debug "The probe document of $(length(terms)) terms failed; splitting it (§5.2.2)" exception = e
+        return nothing
+    end
+    out = [Dict{String, Any}[] for _ in terms]
+    index = Dict(probe_state(k) => k for k in eachindex(terms))
+    for en in entries
+        d = band_json(en)
+        # Only the probe states have nonzero right-hand sides.
+        k = get(index, d["row"], nothing)
+        k === nothing && error("probe document: a band whose row $(d["row"]) is not a probe state")
+        d["row"] = terms[k].variable
+        push!(out[k], d)
+    end
+    return out
+end
+
+"""
+    probe_term_bands(b::DiffBackend, ctx, terms) -> Union{Vector{Vector{BandEntry}}, Nothing}
+
+[`probe_band_dicts`](@ref) as [`BandEntry`](@ref)s.
+"""
+function probe_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    out = probe_band_dicts(b, ctx, terms)
+    return out === nothing ? nothing : [BandEntry[BandEntry(d) for d in x] for x in out]
+end
+
+"""
+    all_term_bands(b::DiffBackend, ctx, terms) -> Vector{Vector{BandEntry}}
+
+Every term's bands from one probe document ([`probe_term_bands`](@ref)).
+A failure on the probe names no term, so the term list is then split in
+halves and each half probed in turn, first half first, down to single terms,
+whose own documents are differentiated ([`term_bands`](@ref)). The first term
+whose own document fails, in term order, refuses with `band_model_failed`
+and that document's message (§5.2.2). Finding it takes about `2 log₂ n`
+probe documents rather than one document per term.
+"""
+function all_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    bind!(b, ctx)
+    out = Vector{Vector{BandEntry}}(undef, length(terms))
+    _term_bands!(out, b, ctx, terms, 1:length(terms))
+    return out
+end
+
+function _term_bands!(out, b::DiffBackend, ctx, terms, r::UnitRange{Int})
+    isempty(r) && return out
+    if length(r) == 1
+        out[only(r)] = term_bands(b, ctx, terms[only(r)])
+        return out
+    end
+    probe = probe_term_bands(b, ctx, terms[r])
+    if probe !== nothing
+        out[r] = probe
+        return out
+    end
+    mid = first(r) + length(r) ÷ 2 - 1
+    _term_bands!(out, b, ctx, terms, first(r):mid)
+    _term_bands!(out, b, ctx, terms, (mid + 1):last(r))
+    return out
 end
 
 """The operator's artifacts, building its right-hand-side document and bands on first use."""

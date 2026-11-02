@@ -27,6 +27,10 @@
     "code": "axes_unresolved",
     "at": "/axes"
   },
+  "band-model-failed": {
+    "code": "band_model_failed",
+    "at": "/model"
+  },
   "bind-dt-without-dt0": {
     "code": "bind_dt_leaf_without_dt0",
     "at": "/schedule/bind_dt"

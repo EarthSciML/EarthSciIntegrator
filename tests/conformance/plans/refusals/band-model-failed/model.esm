@@ -1,0 +1,41 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "band_model_failed",
+    "description": "spec/plan.md §5.2.2: EarthSciASTDiff has no derivative rule for erf, so the third term, (K.y, 0, 1), is band_model_failed. The two terms before it differentiate, so the refusal must be reported against that term, not the first."
+  },
+  "models": {
+    "K": {
+      "variables": {
+        "x": {
+          "type": "unknown",
+          "default": 1
+        },
+        "y": {
+          "type": "unknown",
+          "default": 1
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.5
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["x"], "wrt": "t"},
+          "rhs": {"op": "*", "args": [-1, "k", "x"]}
+        },
+        {
+          "lhs": {"op": "D", "args": ["y"], "wrt": "t"},
+          "rhs": {"op": "+", "args": [{"op": "*", "args": [-1, "k", "y"]}, {"op": "erf", "args": ["x"]}]}
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}
