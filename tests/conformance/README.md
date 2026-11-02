@@ -28,13 +28,24 @@ plans/fixtures/<fixture>/
   expected.md                    a section "## <case>" per case: what the golden must contain
   <case>.expected-plan.json      optional: the case's whole plan.json written by hand in RFC 8785
                                  form, with the derived documents' sha256 set to 64 zeros
-  <case>.golden/                 the golden, once the Julia planner writes it (stage 2):
+  <case>.golden/                 the golden, written by the Julia planner (tools/plan-goldens.jl):
     plan.json
     derived/*.esm
     validation/<operator>.bandvalues.json    Julia's ForwardDiff band values; the harness compares Rust's against them (spec/plan.md §8.2)
 ```
 
-**Goldens.** The Julia planner writes `<case>.golden/`; a reviewer checks it against `expected.md` (and `<case>.expected-plan.json` where there is one) before it is checked in; the Rust planner must then write the same `plan.json` and `derived/*.esm` byte for byte (spec/plan.md §9). `expected.md` describes contents, not bytes: the terms and their provenance and locality, each operator's locality, radius, `writes`, `reads`, structure and stiffness, the resolved schedule, step, partition, precision, derived documents and validation entries.
+**Goldens.** The Julia planner writes `<case>.golden/`; a reviewer checks it against `expected.md` (and `<case>.expected-plan.json` where there is one) before it is checked in; the Rust planner must then write the same `plan.json` and `derived/*.esm` byte for byte (spec/plan.md §9). Every case with a `<case>.run.json` has a golden; a missing one fails both test suites (`julia/EarthSciIntegrator.jl/test/planner_fixtures.jl`, `rust/earthsci-integrator-planner/tests/fixtures.rs`), it is not skipped. Both suites compare `plan.json` and `derived/*.esm` byte for byte and the band values as §8.2 says: the same structural (row, column) set, each value within $10^{-10}$ of its row's largest magnitude. `expected.md` describes contents, not bytes: the terms and their provenance and locality, each operator's locality, radius, `writes`, `reads`, structure and stiffness, the resolved schedule, step, partition, precision, derived documents and validation entries.
+
+**Regenerating the goldens.** From the repository root:
+
+```
+julia --project=julia/EarthSciIntegrator.jl tools/plan-goldens.jl                     # every case, in place
+julia --project=julia/EarthSciIntegrator.jl tools/plan-goldens.jl periodic_stencil    # one fixture
+julia --project=julia/EarthSciIntegrator.jl tools/plan-goldens.jl reseact_shaped/named # one case
+julia --project=julia/EarthSciIntegrator.jl tools/plan-goldens.jl --out OUTDIR        # elsewhere, to diff against the checked-in ones
+```
+
+The script rewrites `plan.json`, `derived/` and `validation/` of each `<case>.golden/`, drops `plan.report.json` (package versions and measured errors, not part of a golden), and compares the plan with `<case>.expected-plan.json` where there is one. A regenerated golden that changes is reviewed against `expected.md` again before it is committed; the Rust planner must then match it.
 
 | Fixture | What it exercises |
 |---|---|

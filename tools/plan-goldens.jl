@@ -3,13 +3,18 @@
 # tests/conformance/plans/fixtures/, the Julia planner's plan directory
 # `<case>.golden/` (plan.json, derived/*.esm, validation/*.bandvalues.json).
 #
-#     julia --project=julia/EarthSciIntegrator.jl tools/plan-goldens.jl [OUTDIR] [FIXTURE[/CASE] ...]
+#     julia --project=julia/EarthSciIntegrator.jl tools/plan-goldens.jl [--out OUTDIR] [FIXTURE[/CASE] ...]
 #
 # Without OUTDIR the goldens are written beside the run configs, for review
-# and check-in. With OUTDIR they go to OUTDIR/<fixture>/<case>.golden/. A
+# and check-in. With --out OUTDIR they go to OUTDIR/<fixture>/<case>.golden/. A
 # case with `<case>.expected-plan.json` is compared with it, the derived
 # documents' sha256 values aside (they are zeros there); a difference is
-# printed. `plan.report.json` is written too but is not part of a golden.
+# printed. `write_plan` also writes `plan.report.json`, which carries package
+# versions and measured errors and is not part of a golden; it is removed.
+#
+# The goldens are then reviewed by hand against each fixture's expected.md
+# before they are checked in (spec/plan.md §9). Both test suites compare
+# their planner's output with them, and a case without a golden fails.
 
 using EarthSciIntegrator
 using JSON
@@ -26,7 +31,18 @@ function expected_with_hashes(expected::AbstractString, golden::AbstractDict)
 end
 
 function main(args)
-    outdir = !isempty(args) && !occursin(r"^[a-z_]+(/[a-z0-9_-]+)?$", args[1]) ? popfirst!(args) : nothing
+    outdir = nothing
+    if !isempty(args) && startswith(args[1], "--out")
+        a = popfirst!(args)
+        outdir = a == "--out" ? (isempty(args) ? error("--out needs a directory") : popfirst!(args)) :
+            startswith(a, "--out=") ? a[(length("--out=") + 1):end] : error("unknown option $a")
+    end
+    for a in args
+        p = split(a, "/")
+        ok = length(p) == 1 ? isdir(joinpath(FIXTURES, a)) :
+            length(p) == 2 && isfile(joinpath(FIXTURES, p[1], "$(p[2]).run.json"))
+        ok || error("$a names no fixture or case under $FIXTURES")
+    end
     want = Set(args)
     failures = String[]
     for fixture in sort!(readdir(FIXTURES)), f in sort!(readdir(joinpath(FIXTURES, fixture)))
@@ -46,6 +62,7 @@ function main(args)
                 continue
             end
             write_plan(d, dir; bandvalues = true)
+            rm(joinpath(dir, "plan.report.json"); force = true)
         end
         println("written to $dir ($(round(t; digits = 1)) s)")
         exp = joinpath(FIXTURES, fixture, "$case.expected-plan.json")

@@ -1,8 +1,11 @@
 # The planner on EarthSciASTDiff (spec/plan.md §5.2.2, §5.4, §5.5, §6, §8):
 # every fixture case of tests/conformance/plans/fixtures/ planned with the
 # production backend, checked against its expected.md (the contents it
-# names) and, where there is one, its hand-written expected plan; the derived
+# names) and, where there is one, its hand-written expected plan; against its
+# golden `<case>.golden/` (§9: plan.json and derived/*.esm byte for byte, the
+# band values as §8.2 compares them; a missing golden fails); the derived
 # documents; the band-value files; and the parts the backend is built from.
+# tools/plan-goldens.jl rewrites the goldens.
 
 using EarthSciIntegrator: PlannerRefusal, DiffBackend, jcs, write_plan
 import EarthSciAST, EarthSciASTDiff
@@ -33,6 +36,36 @@ function plans_validate(files)
     python = Sys.which("python3")
     (python !== nothing && success(`$python -c "import jsonschema, referencing"`)) || return nothing
     return success(pipeline(`$python -c $validator $(joinpath(REPO, "spec", "schemas")) $files`; stdout, stderr))
+end
+
+"""
+Why band-value file `got` does not match the golden's `want` (spec/plan.md
+§8.2), or `nothing` when it does: the same samples at the same `t` and `u`,
+the same structural (row, column) key set, and each value within ``10^{-10}
+M_r`` of the golden's, ``M_r`` the largest magnitude in row ``r`` of either.
+"""
+function bandvalues_mismatch(got, want)
+    length(got["samples"]) == length(want["samples"]) || return "$(length(got["samples"])) samples, the golden has $(length(want["samples"]))"
+    for (k, (g, w)) in enumerate(zip(got["samples"], want["samples"]))
+        g["t"] == w["t"] || return "sample $k: t is $(g["t"]), the golden's is $(w["t"])"
+        g["u"] == w["u"] || return "sample $k: u differs from the golden's"
+        G = Dict((e[1], e[2]) => Float64(e[3]) for e in g["entries"])
+        W = Dict((e[1], e[2]) => Float64(e[3]) for e in w["entries"])
+        for key in setdiff(keys(G), keys(W))
+            return "sample $k: $key is in the band pattern, not in the golden"
+        end
+        for key in setdiff(keys(W), keys(G))
+            return "sample $k: $key is in the golden, not in the band pattern"
+        end
+        M = Dict{String, Float64}()
+        for ((r, _), v) in Iterators.flatten((G, W))
+            M[r] = max(get(M, r, 0.0), abs(v))
+        end
+        for (key, v) in G
+            abs(v - W[key]) <= 1.0e-10 * M[key[1]] || return "sample $k: $key is $v, $(W[key]) in the golden"
+        end
+    end
+    return nothing
 end
 
 """Every fixture case, `(fixture, case)`, in code-point order."""
@@ -201,6 +234,23 @@ const PLAN_FILES = String[]
             s = bv["samples"][1]
             @test issorted(s["entries"]; by = e -> (e[1], e[2]))
             @test s["t"] == p["time"]["start"] + (p["time"]["end"] - p["time"]["start"]) * 0.25
+        end
+        # The golden (§9): a missing one is a failure, not a skip.
+        golden = joinpath(PFIX, fixture, "$case.golden")
+        @test isfile(joinpath(golden, "plan.json"))
+        if isfile(joinpath(golden, "plan.json"))
+            @test text == read(joinpath(golden, "plan.json"), String)
+            gd = isdir(joinpath(golden, "derived")) ? sort!(readdir(joinpath(golden, "derived"))) : String[]
+            @test gd == sort!(readdir(joinpath(dir, "derived")))
+            for f in gd
+                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f))
+            end
+            for o in ops
+                path = joinpath(golden, "validation", "$o.bandvalues.json")
+                @test isfile(path)
+                isfile(path) || continue
+                @test bandvalues_mismatch(JSON.parsefile(joinpath(dir, "validation", "$o.bandvalues.json")), JSON.parsefile(path)) === nothing
+            end
         end
         # expected.md's contents.
         for (o, (loc, stiff, cls, extra)) in get(EXPECTED_OPERATORS, key, Dict())
