@@ -3,18 +3,18 @@ name = "earthsci-integrator-planner"
 description = "EarthSciIntegrator planner: operators, locality, structure, plan emission (spec/plan.md)."
 version.workspace = true
 edition.workspace = true
-# earthsci-ast 0.7 needs Rust 1.89.
+# earthsci-ast 0.8 needs Rust 1.89.
 rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
 # The planner does not integrate, but it reads the initial state with
-# `initial_state` (spec/plan.md §4), which earthsci-ast 0.7 builds only with
+# `initial_state` (spec/plan.md §4), which earthsci-ast 0.8 builds only with
 # its `solve` feature, so `solve` stays on; the command-line tool (`cli`) is
 # left out.
-earthsci-ast = { version = "0.7", default-features = false, features = ["solve"] }
-earthsci-astdiff = "0.2"
+earthsci-ast = { version = "0.8", default-features = false, features = ["solve"] }
+earthsci-astdiff = "0.3"
 earthsci-integrator-solvers.workspace = true
 indexmap = "2"
 jsonschema = { version = "0.60", default-features = false }

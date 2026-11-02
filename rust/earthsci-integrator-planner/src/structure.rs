@@ -1,14 +1,14 @@
 //! Pass 4, structure (spec/plan.md §5.4): an operator's band list from
 //! EarthSciASTDiff and what the plan records about it.
 
-use crate::astdiff::{band_entry, FlatView};
+use crate::astdiff::band_entry;
 use crate::axes::Axes;
 use crate::error::{PlanError, Result};
 use crate::locality::{band_reach, Class};
 use crate::model::ModelInfo;
 use crate::operators::Operator;
 use crate::terms::Term;
-use earthsci_astdiff::JacEntry;
+use earthsci_astdiff::{JacEntry, SysView};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
@@ -76,19 +76,20 @@ fn reads_t(names: impl IntoIterator<Item = String>) -> bool {
     names.into_iter().any(|n| n == "t")
 }
 
-/// Pass 4 for one operator: `view` is the flattened view of its
-/// right-hand-side document and `bands` its band list. `state_dependent` is
+/// Pass 4 for one operator: `sv` is EarthSciASTDiff's view of its
+/// flattened right-hand-side document and `bands` its band list. `state_dependent` is
 /// [`ModelInfo::state_dependent`], computed once per model.
 pub fn structure(
     info: &ModelInfo,
     axes: &Axes,
     op: &Operator,
     terms: &[Term],
-    view: &FlatView,
+    sv: &SysView,
     bands: Vec<JacEntry>,
     state_dependent: &BTreeSet<String>,
 ) -> Result<Structure> {
-    let ctx = view.ctx().map_err(|e| PlanError::Internal(e.0))?;
+    let ctx = earthsci_astdiff::ctx_of(sv)
+        .map_err(|e| PlanError::Internal(format!("ctx_of: {}", e.0)))?;
     let class = earthsci_astdiff::detect_structure(&bands, &ctx).to_string();
 
     // linear_in_u: no coefficient reads a state, or an observed whose
@@ -116,12 +117,11 @@ pub fn structure(
         });
 
     let block = if op.locality.class == Class::Pointwise && class == "block_diagonal" {
-        let plan =
-            earthsci_astdiff::plan_factorization(&bands, &view.sysview(), &ctx, Some(&class))
-                .map_err(|e| PlanError::Internal(format!("plan_factorization: {}", e.0)))?
-                .ok_or_else(|| {
-                    PlanError::Internal("plan_factorization gave no block_diagonal plan".into())
-                })?;
+        let plan = earthsci_astdiff::plan_factorization(&bands, sv, &ctx, Some(&class))
+            .map_err(|e| PlanError::Internal(format!("plan_factorization: {}", e.0)))?
+            .ok_or_else(|| {
+                PlanError::Internal("plan_factorization gave no block_diagonal plan".into())
+            })?;
         let plan = earthsci_astdiff::serialize_plan(&plan);
         Some(block_of(plan.clone()).ok_or_else(|| {
             PlanError::Internal(format!("serialize_plan gave no block LU: {plan}"))

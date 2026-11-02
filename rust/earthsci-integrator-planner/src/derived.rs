@@ -4,23 +4,25 @@
 //! `stable_json` (§2.2). The right-hand-side document (§6.1) declares the
 //! flattened model's states, parameters and live observeds in models named
 //! after their components and holds one operator's terms; the Jacobian
-//! document (§6.2) zeroes every state equation and adds the band fields
-//! `_jacobian.J_k` that EarthSciASTDiff's evaluation document builds.
+//! document (§6.2) is EarthSciASTDiff's evaluation document of it, which
+//! zeroes every state equation and adds the band fields `JacobianEval.J_k`.
 
-use crate::astdiff::FlatView;
 use crate::error::{PlanError, Result};
 use crate::model::{defined_observed, differentiated, lifted_ranges, node, ModelInfo};
 use crate::terms::{component_of, Term};
-use earthsci_ast::{Expr, ModelVariable, VariableType};
-use earthsci_astdiff::JacEntry;
+use earthsci_ast::{Domain, Expr, ModelVariable, VariableType};
+use earthsci_astdiff::{JacEntry, SysView};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The esm version a derived document declares (§6.1).
 pub const ESM_VERSION: &str = "1.3.0";
 
-/// The model the Jacobian document adds for its band fields (§6.2, §6.1.4).
-pub const JACOBIAN_MODEL: &str = crate::model::RESERVED_COMPONENT;
+/// The model the Jacobian document adds for its band fields (§6.2), and the
+/// top-level component name a model may not use (§6.1.4). EarthSciASTDiff's
+/// `evaluation_document` chooses it and exports no constant for it, so
+/// [`jacobian_document`] checks the document it writes against this one.
+pub const JACOBIAN_MODEL: &str = "JacobianEval";
 
 /// A derived document's bytes: EarthSciASTDiff's `stable_json` (§2.2).
 pub fn to_bytes(doc: &Value) -> Vec<u8> {
@@ -176,7 +178,7 @@ pub fn live_observeds(info: &ModelInfo, names: &BTreeSet<String>) -> BTreeSet<St
         .collect()
 }
 
-/// The parts both documents share: every state and parameter, the live
+/// The right-hand-side document's component tree: every state and parameter, the live
 /// observeds, the state equations (right-hand sides from `rhs`), the live
 /// observeds' definitions and every `ic` equation (§6.1.1–§6.1.2).
 fn tree(info: &ModelInfo, live: &BTreeSet<String>, rhs: &dyn Fn(usize, &str) -> Value) -> Tree {
@@ -214,27 +216,52 @@ fn tree(info: &ModelInfo, live: &BTreeSet<String>, rhs: &dyn Fn(usize, &str) -> 
 }
 
 /// The top-level keys of a derived document (§6.1).
-fn document(info: &ModelInfo, name: &str, models: Value, extra_sets: &Map<String, Value>) -> Value {
-    let mut sets: Map<String, Value> = info
+fn document(info: &ModelInfo, name: &str, models: Value) -> Value {
+    let sets: Map<String, Value> = info
         .index_sets
         .iter()
         .map(|(k, n)| (k.clone(), json!({"kind": "interval", "size": n})))
         .collect();
-    for (k, v) in extra_sets {
-        sets.entry(k.clone()).or_insert_with(|| v.clone());
-    }
     let mut out = Map::new();
     out.insert("esm".into(), json!(ESM_VERSION));
     out.insert("metadata".into(), json!({"name": name}));
     out.insert("index_sets".into(), Value::Object(sets));
-    if let Some(d) = &info.flat.domain {
-        out.insert(
-            "domain".into(),
-            serde_json::to_value(d).unwrap_or(Value::Null),
-        );
+    if let Some(d) = &info.domain {
+        out.insert("domain".into(), d.clone());
     }
     out.insert("models".into(), models);
     Value::Object(out)
+}
+
+/// A derived document's `domain` (§6.1), built as EarthSciASTDiff builds the
+/// evaluation document's, so both documents carry the same one: `temporal`
+/// holding the `start`, `end` and `reference_time` the source gives, then
+/// `element_type` and `array_type` when given, each as EarthSciAST
+/// serializes it. No `independent_variable`: the derived equations are
+/// written with respect to `t`. `None` when nothing is left; an internal
+/// error when EarthSciAST cannot serialize the domain.
+pub fn domain_json(domain: &Domain) -> Result<Option<Value>> {
+    let src = serde_json::to_value(domain)
+        .map_err(|e| PlanError::Internal(format!("serializing the flattened domain: {e}")))?;
+    let given = |m: &Map<String, Value>, k: &str| m.get(k).filter(|v| !v.is_null()).cloned();
+    let mut out = Map::new();
+    if let Some(Value::Object(tmp)) = src.get("temporal") {
+        let t: Map<String, Value> = ["start", "end", "reference_time"]
+            .iter()
+            .filter_map(|k| given(tmp, k).map(|v| (k.to_string(), v)))
+            .collect();
+        if !t.is_empty() {
+            out.insert("temporal".into(), Value::Object(t));
+        }
+    }
+    if let Value::Object(src) = &src {
+        for k in ["element_type", "array_type"] {
+            if let Some(v) = given(src, k) {
+                out.insert(k.into(), v);
+            }
+        }
+    }
+    Ok((!out.is_empty()).then_some(Value::Object(out)))
 }
 
 /// The right-hand-side document of an operator named `name` whose terms are
@@ -251,59 +278,114 @@ pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
         let ts = by_eq.get(&i).map(Vec::as_slice).unwrap_or(&[]);
         state_rhs(info, i, x, ts)
     };
-    document(info, name, tree(info, &live, &rhs).to_json(), &Map::new())
+    document(info, name, tree(info, &live, &rhs).to_json())
 }
 
-/// The Jacobian document of an operator named `name` (§6.2): its band list
-/// is `entries`, from `view`, the flattened view of its right-hand-side
-/// document. Band `k` (1-based) is the field `_jacobian.J_k`.
-pub fn jacobian_document(
-    info: &ModelInfo,
-    name: &str,
-    view: &FlatView,
-    entries: &[JacEntry],
-) -> Result<Value> {
-    // Observeds referenced, directly or transitively, by a band coefficient.
-    let mut names = BTreeSet::new();
-    for en in entries {
-        names.extend(
-            earthsci_ast::free_variables(&en.band.coef)
-                .into_iter()
-                .filter(|n| info.is_name(n)),
-        );
+/// The Jacobian document of an operator (§6.2): EarthSciASTDiff's
+/// evaluation document (`evaluation_document`, coefficient hoisting off) of
+/// `sv`, the view of the operator's flattened right-hand-side document, for
+/// its band list `entries`, without its `ic` equations. Band `k` (1-based)
+/// is the field `JacobianEval.J_k`; the document's `esm` version and
+/// `metadata.name` are EarthSciASTDiff's.
+pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
+    let (mut doc, fields) = earthsci_astdiff::evaluation_document(sv, entries, false, 0)
+        .map_err(|e| PlanError::Internal(format!("evaluation_document: {}", e.0)))?;
+    // Band `k` is the field `J_k` (§6.2).
+    let want: Vec<String> = (1..=entries.len()).map(|k| format!("J_{k}")).collect();
+    if fields != want {
+        return Err(PlanError::Internal(format!(
+            "evaluation_document wrote the band fields {fields:?} for {} bands",
+            entries.len()
+        )));
     }
-    let live = live_observeds(info, &names);
-    let mut tree = tree(info, &live, &|_, x| zero(info, x));
+    let Some(Value::Object(models)) = doc.get_mut("models") else {
+        return Err(PlanError::Internal(
+            "evaluation_document wrote no models".into(),
+        ));
+    };
+    // EarthSciASTDiff names the model; §6.1.4 reserves the name it uses.
+    if !models.contains_key(JACOBIAN_MODEL) {
+        return Err(PlanError::Internal(format!(
+            "evaluation_document wrote no model {JACOBIAN_MODEL}: its models are {:?}",
+            models.keys().collect::<Vec<_>>()
+        )));
+    }
+    models.values_mut().for_each(drop_ic);
+    Ok(doc)
+}
 
-    // The band fields as EarthSciASTDiff's evaluation document builds them,
-    // coefficient hoisting off, each `J_k` moved to `_jacobian`.
-    let sv = view.sysview();
-    let (eval, fields) = earthsci_astdiff::evaluation_document(&sv, entries, false, 0)
-        .map_err(|e| PlanError::Internal(format!("evaluation document: {}", e.0)))?;
-    let model = &eval["models"]["JacobianEval"];
-    let fields: BTreeSet<&str> = fields.iter().map(String::as_str).collect();
-    let jac = tree.0.entry(JACOBIAN_MODEL.to_string()).or_default();
-    for (k, v) in model["variables"].as_object().into_iter().flatten() {
-        if fields.contains(k.as_str()) {
-            jac.variables.insert(k.clone(), v.clone());
-        }
+/// Removes the `ic` equations of a model and of its subsystems.
+fn drop_ic(model: &mut Value) {
+    if let Some(Value::Array(eqs)) = model.get_mut("equations") {
+        eqs.retain(|eq| eq["lhs"]["op"] != "ic");
     }
-    for eq in model["equations"].as_array().into_iter().flatten() {
-        let lhs = &eq["lhs"];
-        let target = lhs["args"][0].as_str().unwrap_or_default();
-        if lhs["op"] == "D" && fields.contains(target) {
-            let mut eq = eq.clone();
-            eq["lhs"]["args"][0] = json!(format!("{JACOBIAN_MODEL}.{target}"));
-            jac.equations.push(eq);
-        }
+    if let Some(Value::Object(subs)) = model.get_mut("subsystems") {
+        subs.values_mut().for_each(drop_ic);
     }
-    // Index sets for contracted dimensions, under EarthSciASTDiff's names.
-    let extra: Map<String, Value> = eval["index_sets"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter(|(k, _)| !info.index_sets.contains_key(*k))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    Ok(document(info, name, tree.to_json(), &extra))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::astdiff::FlatView;
+
+    fn domain(v: Value) -> Domain {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn domain_keeps_what_evaluation_reads() {
+        let d = domain(json!({
+            "independent_variable": "time",
+            "temporal": {"start": "2020-01-01T00:00:00Z", "reference_time": "2019-12-31T00:00:00Z"},
+            "element_type": "Float64",
+            "array_type": "Array",
+        }));
+        assert_eq!(
+            domain_json(&d).unwrap(),
+            Some(json!({
+                "temporal": {"start": "2020-01-01T00:00:00Z", "reference_time": "2019-12-31T00:00:00Z"},
+                "element_type": "Float64",
+                "array_type": "Array",
+            }))
+        );
+        // Nothing left: no `domain`.
+        assert_eq!(
+            domain_json(&domain(json!({"independent_variable": "t"}))).unwrap(),
+            None
+        );
+        assert_eq!(domain_json(&domain(json!({"temporal": {}}))).unwrap(), None);
+    }
+
+    /// The right-hand-side document's `domain` is the Jacobian document's,
+    /// EarthSciASTDiff's evaluation document of the same source.
+    #[test]
+    fn domain_matches_evaluation_document() {
+        let src = json!({
+            "esm": "1.3.0",
+            "metadata": {"name": "d"},
+            "domain": {
+                "independent_variable": "t",
+                "temporal": {"start": "2020-01-01T00:00:00Z", "end": "2020-01-02T00:00:00Z"},
+                "element_type": "Float64",
+            },
+            "models": {"M": {
+                "variables": {"x": {"type": "unknown", "default": 1.0}, "k": {"type": "parameter", "default": 2.0}},
+                "equations": [{"lhs": {"op": "D", "args": ["x"], "wrt": "t"},
+                               "rhs": {"op": "*", "args": [{"op": "-", "args": ["k"]}, "x"]}}],
+            }},
+        });
+        let view = FlatView::new(&src.to_string()).unwrap();
+        let ours = domain_json(view.flat.domain.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            ours,
+            Some(json!({
+                "temporal": {"start": "2020-01-01T00:00:00Z", "end": "2020-01-02T00:00:00Z"},
+                "element_type": "Float64",
+            }))
+        );
+        let sv = view.sysview().unwrap();
+        let jac = jacobian_document(&sv, &crate::astdiff::bands(&sv).unwrap()).unwrap();
+        assert_eq!(jac.get("domain").cloned(), ours);
+    }
 }
