@@ -88,15 +88,26 @@ jobs:
         with:
           workspaces: rust
       # rustfmt and clippy run in lint.yml, on a pinned toolchain.
+      # The M2 end-to-end cases (spec/toy-problems.md §4) run in
+      # earthsci-integrator's conformance_m2 test: each is planned, built
+      # from its plan and checked with toy_equivalence.
       - run: cargo test --manifest-path rust/Cargo.toml --workspace
         env:
           EARTHSCI_RESULTS_DIR: ${{ github.workspace }}/rust-results
+          EARTHSCI_M2_RESULTS_DIR: ${{ github.workspace }}/rust-m2-results
       - name: Upload conformance result files
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: rust-m1-results
           path: rust-results/
+          if-no-files-found: ignore
+      - name: Upload M2 result files
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-m2-results
+          path: rust-m2-results/
           if-no-files-found: ignore
 
   cross-language:

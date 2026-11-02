@@ -243,7 +243,17 @@ fn build_leaf<T: Scalar>(
     }
     let tab =
         tableau(&alg).ok_or_else(|| Error::Config(format!("leaf {id}: unknown alg {alg:?}")))?;
-    let structure = Structure::common(ops.iter().map(|o| o.structure()));
+    let mut structure = Structure::common(ops.iter().map(|o| o.structure()));
+    // A dense_lu leaf on operators that can also store dense (a plan's,
+    // operator-interface.md §8.3) stores dense: the entries are the same.
+    let dense_lu = match l.linsolve.as_ref() {
+        Some(serde_json::Value::String(s)) => s == "dense_lu",
+        Some(serde_json::Value::Object(m)) => m.contains_key("dense_lu"),
+        _ => false,
+    };
+    if dense_lu && ops.iter().all(|o| o.dense_storage()) {
+        structure = Structure::Dense;
+    }
     // The implicit families' options (run-config §4.2, §4.5).
     if l.theta.is_some() && tab.family != Family::Theta {
         return Err(Error::Config(format!(
@@ -485,13 +495,10 @@ fn imex_partition(
         match m.get(key) {
             None => Ok(None),
             Some(Value::String(s)) => Ok(Some(vec![s.clone()])),
-            Some(Value::Array(a)) if a.is_empty() => Err(Error::Config(format!(
-                "leaf {id}: imex.{key} is empty{}",
-                if key == "implicit" {
-                    " (an empty implicit part would make IMEX Euler forward Euler)"
-                } else {
-                    ""
-                }
+            // An empty explicit part is how a resolved plan writes "every
+            // term implicit" (spec/plan.md §7.1).
+            Some(Value::Array(a)) if a.is_empty() && key == "implicit" => Err(Error::Config(format!(
+                "leaf {id}: imex.implicit is empty (an empty implicit part would make IMEX Euler forward Euler)"
             ))),
             Some(Value::Array(a)) => a
                 .iter()
@@ -980,6 +987,18 @@ impl<T: Scalar> RunSpec<T> {
                 "a toy problem's operators exist under their names; the run config has no operators key (spec/toy-problems.md)".into(),
             ));
         }
+        Self::with_problem(problem, rc, tspan, saveat)
+    }
+
+    /// Builds a run of `rc`'s schedule and step against a problem already
+    /// built: a toy problem, or the operators of a plan
+    /// ([`crate::planned`]). `rc.model` and `rc.operators` are not read.
+    pub fn with_problem(
+        problem: ToyProblem<T>,
+        rc: &RunConfig,
+        tspan: (f64, f64),
+        saveat: Option<&[f64]>,
+    ) -> Result<Self, Error> {
         for (k, v) in [
             ("partition", &rc.partition),
             ("precision", &rc.precision),
@@ -1089,7 +1108,7 @@ impl<T: Scalar> RunSpec<T> {
                 }
             };
             let mut dofs: Vec<usize> = (0..problem.n)
-                .filter(|&j| problem.variables[j] == name)
+                .filter(|&j| problem.variables[j] == *name)
                 .collect();
             if dofs.is_empty() {
                 return Err(Error::Config(format!(

@@ -82,6 +82,12 @@ pub trait Operator<T: Scalar>: Send + Sync {
     fn provides(&self, call: Call) -> bool {
         matches!(call, Call::Rhs | Call::JvpU | Call::VjpU)
     }
+    /// Whether `jac` also accumulates into `dense` storage when the
+    /// operator's structure is `block_diagonal`, so that a `dense_lu` leaf
+    /// can use it. The hand-written toy operators store per block only.
+    fn dense_storage(&self) -> bool {
+        false
+    }
 
     /// `out += f_k(u, p, t)`.
     fn rhs(&self, out: &mut [T], u: &[T], p: &[f64], t: f64);

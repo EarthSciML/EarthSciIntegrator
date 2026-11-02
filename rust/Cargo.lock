@@ -423,6 +423,9 @@ dependencies = [
 name = "earthsci-integrator"
 version = "0.0.1"
 dependencies = [
+ "earthsci-ast",
+ "earthsci-astdiff",
+ "earthsci-integrator-planner",
  "earthsci-integrator-solvers",
  "serde",
  "serde_json",

@@ -17,7 +17,7 @@ pub struct ToyProblem<T: Scalar> {
     /// Length of the state vector.
     pub n: usize,
     /// Parameter names, in `p` order.
-    pub param_names: Vec<&'static str>,
+    pub param_names: Vec<String>,
     /// Parameter values.
     pub p: Vec<f64>,
     /// Initial state.
@@ -25,7 +25,7 @@ pub struct ToyProblem<T: Scalar> {
     /// The problem's interval.
     pub tspan: (f64, f64),
     /// Variable name of each DOF.
-    pub variables: Vec<&'static str>,
+    pub variables: Vec<String>,
     /// Cell index of each DOF (0-based) for problems with the index set `cell`.
     pub cells: Option<Vec<usize>>,
     /// Term operators by name.
@@ -56,11 +56,11 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
         "forced_decay" => ToyProblem {
             name: name.into(),
             n: 1,
-            param_names: vec!["k", "omega"],
+            param_names: names(&["k", "omega"]),
             p: vec![2.0, 3.0],
             u0: vec![1.0],
             tspan: (0.0, 2.0),
-            variables: vec!["u"],
+            variables: names(&["u"]),
             cells: None,
             operators: vec![Arc::new(Decay)],
             maps: vec![],
@@ -71,11 +71,11 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             ToyProblem {
                 name: name.into(),
                 n: 2,
-                param_names: vec!["mu"],
+                param_names: names(&["mu"]),
                 p: vec![if stiff { 1000.0 } else { 1.0 }],
                 u0: vec![2.0, 0.0],
                 tspan: (0.0, if stiff { 1.0 } else { 6.3 }),
-                variables: vec!["y", "z"],
+                variables: names(&["y", "z"]),
                 cells: None,
                 operators: vec![Arc::new(Oscillator)],
                 maps: vec![],
@@ -85,11 +85,11 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
         "robertson" => ToyProblem {
             name: name.into(),
             n: 3,
-            param_names: vec!["k1", "k2", "k3"],
+            param_names: names(&["k1", "k2", "k3"]),
             p: vec![0.04, 3e7, 1e4],
             u0: vec![1.0, 0.0, 0.0],
             tspan: (0.0, 40.0),
-            variables: vec!["y1", "y2", "y3"],
+            variables: names(&["y1", "y2", "y3"]),
             cells: None,
             operators: vec![Arc::new(Kinetics)],
             maps: vec![],
@@ -106,7 +106,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             {
                 for c in 0..nc {
                     u0[s * nc + c] = x0;
-                    variables.push(v);
+                    variables.push(v.to_string());
                     cells.push(c);
                 }
             }
@@ -118,7 +118,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             ToyProblem {
                 name: name.into(),
                 n: 3 * nc,
-                param_names: vec!["j0", "k", "omega"],
+                param_names: names(&["j0", "k", "omega"]),
                 p: vec![1e-2, 4.4e-4, 2.0 * PI / 3600.0],
                 u0,
                 tspan: (0.0, 3600.0),
@@ -140,14 +140,14 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             }
             for v in ["A", "B"] {
                 for c in 0..nc {
-                    variables.push(v);
+                    variables.push(v.to_string());
                     cells.push(c);
                 }
             }
             ToyProblem {
                 name: name.into(),
                 n: 2 * nc,
-                param_names: vec!["v", "k1", "k2"],
+                param_names: names(&["v", "k1", "k2"]),
                 p: vec![1.0, 50.0, 25.0],
                 u0,
                 tspan: (0.0, 0.5),
@@ -161,11 +161,11 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
         "source_decay_map" => ToyProblem {
             name: name.into(),
             n: 1,
-            param_names: vec!["a", "r"],
+            param_names: names(&["a", "r"]),
             p: vec![1.0, 0.5],
             u0: vec![0.0],
             tspan: (0.0, 4.0),
-            variables: vec!["u"],
+            variables: names(&["u"]),
             cells: None,
             operators: vec![Arc::new(Source)],
             maps: vec![Arc::new(DecayMap)],
@@ -178,6 +178,10 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
         }
     };
     Ok(pb)
+}
+
+fn names(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
 }
 
 /// `forced_decay`'s exact solution (spec/toy-problems.md §1.1) for
