@@ -20,3 +20,4 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 # every build, so it cannot go unnoticed).
 [workspace.dependencies]
 earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.0.1" }
+earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.0.1" }

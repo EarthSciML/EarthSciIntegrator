@@ -1,8 +1,11 @@
 # The planner on EarthSciASTDiff (spec/plan.md §5.2.2, §5.4, §5.5, §6, §8):
 # every fixture case of tests/conformance/plans/fixtures/ planned with the
 # production backend, checked against its expected.md (the contents it
-# names) and, where there is one, its hand-written expected plan; the derived
+# names) and, where there is one, its hand-written expected plan; against its
+# golden `<case>.golden/` (§9: plan.json and derived/*.esm byte for byte, the
+# band values as §8.2 compares them; a missing golden fails); the derived
 # documents; the band-value files; and the parts the backend is built from.
+# tools/plan-goldens.jl rewrites the goldens.
 
 using EarthSciIntegrator: PlannerRefusal, DiffBackend, jcs, write_plan
 import EarthSciAST, EarthSciASTDiff
@@ -33,6 +36,52 @@ function plans_validate(files)
     python = Sys.which("python3")
     (python !== nothing && success(`$python -c "import jsonschema, referencing"`)) || return nothing
     return success(pipeline(`$python -c $validator $(joinpath(REPO, "spec", "schemas")) $files`; stdout, stderr))
+end
+
+"""
+Why the golden's band-value file `want` for operator `o` of plan draft `d`
+does not match the Julia planner's bands (spec/plan.md §8.2), or `nothing`
+when it does. As the Rust harness does, the band Jacobian is evaluated at
+each sample's own `t` and `u`, so this run need not reproduce the golden's
+sampled states bit for bit; it must have the file's structural (row, column)
+key set, and each value must be within ``10^{-10} M_r`` of the file's,
+``M_r`` the largest magnitude in row ``r`` of either. The file itself must
+have the form §8.2 gives it: one sample per quantile of §5.5.1 at that
+quantile's `t`, a `u` naming every DOF and nothing else, and no (row,
+column) listed twice.
+"""
+function golden_bandvalues_mismatch(d, o, want)
+    b, ctx = d.ctx.backend, d.ctx
+    L = EarthSciIntegrator.layout!(b, ctx)
+    B = EarthSciIntegrator.jac_built!(b, ctx, ctx.ops[o])
+    t0, tf = ctx.time
+    quantiles = (0.25, 0.5, 0.75)
+    samples = want["samples"]
+    length(samples) == length(quantiles) || return "$(length(samples)) samples, §5.5.1 has $(length(quantiles))"
+    for (k, (s, q)) in enumerate(zip(samples, quantiles))
+        s["t"] == t0 + (tf - t0) * q || return "sample $k: t is $(s["t"]), quantile $q of the interval is $(t0 + (tf - t0) * q)"
+        Set(keys(s["u"])) == Set(L.names) || return "sample $k: u does not name exactly the model's DOFs"
+        u = Float64[s["u"][n] for n in L.names]
+        JB = EarthSciIntegrator.band_jacobian(B, b.ops[o].points, u, Float64(s["t"]))
+        G = Dict((L.names[r], L.names[c]) => v for ((r, c), v) in JB)
+        W = Dict{Tuple{String, String}, Float64}()
+        for e in s["entries"]
+            haskey(W, (e[1], e[2])) && return "sample $k: ($(e[1]), $(e[2])) is listed twice"
+            W[(e[1], e[2])] = Float64(e[3])
+        end
+        extra = setdiff(keys(G), keys(W))
+        isempty(extra) || return "sample $k: $(first(extra)) is in the band pattern, not in the golden"
+        absent = setdiff(keys(W), keys(G))
+        isempty(absent) || return "sample $k: $(first(absent)) is in the golden, not in the band pattern"
+        M = Dict{String, Float64}()
+        for ((r, _), v) in Iterators.flatten((G, W))
+            M[r] = max(get(M, r, 0.0), abs(v))
+        end
+        for (key, v) in G
+            abs(v - W[key]) <= 1.0e-10 * M[key[1]] || return "sample $k: $key is $v, $(W[key]) in the golden"
+        end
+    end
+    return nothing
 end
 
 """Every fixture case, `(fixture, case)`, in code-point order."""
@@ -202,6 +251,46 @@ const PLAN_FILES = String[]
             @test issorted(s["entries"]; by = e -> (e[1], e[2]))
             @test s["t"] == p["time"]["start"] + (p["time"]["end"] - p["time"]["start"]) * 0.25
         end
+        # The golden (§9): a missing one is a failure, not a skip.
+        golden = joinpath(PFIX, fixture, "$case.golden")
+        @test isfile(joinpath(golden, "plan.json"))
+        if isfile(joinpath(golden, "plan.json"))
+            @test text == read(joinpath(golden, "plan.json"), String)
+            gd = isdir(joinpath(golden, "derived")) ? sort!(readdir(joinpath(golden, "derived"))) : String[]
+            @test gd == sort!(readdir(joinpath(dir, "derived")))
+            for f in gd
+                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f))
+            end
+            for o in ops
+                path = joinpath(golden, "validation", "$o.bandvalues.json")
+                @test isfile(path)
+                isfile(path) || continue
+                @test golden_bandvalues_mismatch(d, o, JSON.parsefile(path)) === nothing
+            end
+            # The comparison itself, on one case: a state one ulp off still
+            # passes; a changed value, a missing or doubled entry, a dropped
+            # sample, a shifted t and a u without every DOF fail.
+            if key == "pointwise_chemistry/auto"
+                o = only(ops)
+                want = JSON.parsefile(joinpath(golden, "validation", "$o.bandvalues.json"))
+                bad(f) = (w = deepcopy(want); f(w); golden_bandvalues_mismatch(d, o, w) !== nothing)
+                function nudge!(w)
+                    u = w["samples"][1]["u"]
+                    for n in keys(u)
+                        u[n] = nextfloat(Float64(u[n]))
+                    end
+                    return
+                end
+                @test !bad(nudge!)
+                @test bad(w -> (e = w["samples"][2]["entries"][1]; e[3] = Float64(e[3]) * (1 + 1.0e-6) + 1.0e-12))
+                @test bad(w -> pop!(w["samples"][1]["entries"]))
+                @test bad(w -> push!(w["samples"][1]["entries"], w["samples"][1]["entries"][1]))
+                @test bad(w -> pop!(w["samples"]))
+                @test bad(w -> empty!(w["samples"]))
+                @test bad(w -> (w["samples"][1]["t"] += 1.0))
+                @test bad(w -> delete!(w["samples"][3]["u"], first(keys(w["samples"][3]["u"]))))
+            end
+        end
         # expected.md's contents.
         for (o, (loc, stiff, cls, extra)) in get(EXPECTED_OPERATORS, key, Dict())
             op = p["operators"][o]
@@ -343,6 +432,81 @@ const PLAN_FILES = String[]
         d2 = EarthSciIntegrator.plan(cfg; backend = b)
         @test b.ctx === d2.ctx && b.ops["kinetics"] !== a1
         @test EarthSciIntegrator.plan_json(d2) == EarthSciIntegrator.plan_json(d1)
+    end
+
+    @testset "the probe document gives each term's own bands (§5.2.2): $fixture/$case" for (fixture, case) in fixture_cases()
+        inp = EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json"))
+        b = DiffBackend()
+        ctx = EarthSciIntegrator.plan_context(inp, b)
+        m = ctx.model
+        terms = EarthSciIntegrator.build_terms(m)
+        probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms)
+        # The probe itself succeeds, so planning does not split it.
+        @test probe !== nothing
+        # Band for band, in order, every field `serialize_band` writes (but
+        # `coef`) equals each term's bands from its own document.
+        @test probe == [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
+        # all_term_bands gives the same, every field of every BandEntry.
+        fields(x) = ntuple(i -> getfield(x, i), fieldcount(typeof(x)))
+        @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms)] ==
+            [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
+        # The probe states are declared with their equation state's index sets.
+        doc = EarthSciIntegrator.probe_document(m, terms)
+        vars = doc["models"]["JacobianEval"]["variables"]
+        @test length(vars) == length(terms)
+        for (k, t) in enumerate(terms)
+            @test get(vars["term_$k"], "shape", nothing) == (haskey(m.shapes, t.variable) ? m.shapes[t.variable] : nothing)
+        end
+        # Each has its term's state's `ic` equation, when the state has one.
+        ics = Set(only(e["lhs"]["args"]) for e in doc["models"]["JacobianEval"]["equations"] if e["lhs"]["op"] == "ic")
+        @test ics == Set(EarthSciIntegrator.probe_state(k) for (k, t) in enumerate(terms) if any(p -> first(p) == t.variable, m.flat.field_ics))
+    end
+
+    @testset "band_model_failed names the term that fails, after the probe document fails" begin
+        cfg = joinpath(CONF, "plans", "refusals", "band-model-failed", "run.json")
+        err = try
+            EarthSciIntegrator.plan(cfg); nothing
+        catch e
+            e
+        end
+        @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
+        # The refusal comes from the search: the probe document itself fails.
+        b = DiffBackend()
+        ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(cfg), b)
+        @test EarthSciIntegrator.probe_band_dicts(b, ctx, EarthSciIntegrator.build_terms(ctx.model)) === nothing
+        # The third term, erf(x); the two before it differentiate.
+        @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
+    end
+
+    @testset "the probe document fails exactly when a term's own document fails (§5.2.2)" begin
+        dir = joinpath(CONF, "plans", "refusals")
+        checked = 0
+        for name in sort(collect(keys(JSON.parsefile(joinpath(dir, "expected-codes.json")))))
+            b = DiffBackend()
+            ctx, terms = try
+                inp = EarthSciIntegrator.read_inputs(joinpath(dir, name, "run.json"))
+                EarthSciIntegrator.check_scope(inp.flat)
+                EarthSciIntegrator.check_reserved_names(inp.file)
+                c = EarthSciIntegrator.plan_context(inp, b)
+                c, EarthSciIntegrator.build_terms(c.model)
+            catch e
+                e isa PlannerRefusal || rethrow()
+                continue        # refused before pass 2
+            end
+            isempty(terms) && continue
+            probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms)
+            each = try
+                [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
+            catch e
+                (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
+                nothing
+            end
+            # A probe that succeeds hides no term's failure, and gives its bands.
+            @test (probe === nothing) == (each === nothing)
+            probe === nothing || @test probe == each
+            checked += 1
+        end
+        @test checked > 0
     end
 
     @testset "write_plan removes an earlier plan's files" begin

@@ -3,11 +3,12 @@
 //! must validate against `spec/schemas/plan.schema.json`, and what each
 //! case's `expected.md` lists is checked here (for
 //! `cross_component_term/by-label`, the whole hand-written
-//! `expected-plan.json`). Where a case has a golden (`<case>.golden/`,
-//! written by the Julia planner), `plan.json` and `derived/*.esm` must equal
-//! it byte for byte, and the Rust band values must agree with its
-//! `validation/<op>.bandvalues.json` (§8.2), a missing file being a harness
-//! error.
+//! `expected-plan.json`). Every case has a golden (`<case>.golden/`, written
+//! by the Julia planner with `tools/plan-goldens.jl`): `plan.json` and
+//! `derived/*.esm` must equal it byte for byte, and the Rust band values must
+//! agree with its `validation/<op>.bandvalues.json` (§8.2). A missing golden
+//! or band-value file is a harness error, and so is a fixture case missing
+//! from `CASES`.
 
 mod common;
 
@@ -138,8 +139,36 @@ fn plan_schema() -> jsonschema::Validator {
         .unwrap()
 }
 
+/// `CASES` is every `<case>.run.json` under the fixtures, so `every_case`,
+/// which requires each case's golden, cannot skip one.
+#[test]
+fn every_case_is_listed() {
+    let root = conformance().join("plans/fixtures");
+    let mut found: Vec<(String, String)> = Vec::new();
+    for fixture in std::fs::read_dir(&root).unwrap() {
+        let fixture = fixture.unwrap();
+        if !fixture.file_type().unwrap().is_dir() {
+            continue;
+        }
+        let name = fixture.file_name().to_string_lossy().into_owned();
+        for f in std::fs::read_dir(fixture.path()).unwrap() {
+            let f = f.unwrap().file_name().to_string_lossy().into_owned();
+            if let Some(case) = f.strip_suffix(".run.json") {
+                found.push((name.clone(), case.to_string()));
+            }
+        }
+    }
+    found.sort();
+    let mut listed: Vec<(String, String)> = CASES
+        .iter()
+        .map(|(f, c)| (f.to_string(), c.to_string()))
+        .collect();
+    listed.sort();
+    assert_eq!(found, listed, "CASES must list every fixture case");
+}
+
 /// Every case plans; its plan validates; its derived documents load and
-/// flatten with EarthSciAST; and where a golden exists, the plan equals it.
+/// flatten with EarthSciAST; and the plan equals its golden.
 #[test]
 fn every_case() {
     let schema = plan_schema();
@@ -190,22 +219,32 @@ fn every_case() {
     }
 }
 
-/// The golden of a case, when the Julia planner has written one (§9).
+/// The case's golden, written by the Julia planner (§9); a missing golden is
+/// a harness error.
 fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
     let golden = conformance()
         .join("plans/fixtures")
         .join(fixture)
         .join(format!("{case}.golden"));
-    if !golden.is_dir() {
-        return;
-    }
-    let want = std::fs::read(golden.join("plan.json")).unwrap();
+    let want = std::fs::read(golden.join("plan.json")).unwrap_or_else(|e| {
+        panic!(
+            "harness error: {fixture}/{case} has no golden plan.json at {} \
+             (write it with tools/plan-goldens.jl): {e}",
+            golden.display()
+        )
+    });
     assert!(
         want == plan_bytes,
         "{fixture}/{case}: plan.json differs from the golden"
     );
-    let mut files: Vec<String> = std::fs::read_dir(golden.join("derived"))
-        .unwrap()
+    let derived = golden.join("derived");
+    let mut files: Vec<String> = std::fs::read_dir(&derived)
+        .unwrap_or_else(|e| {
+            panic!(
+                "harness error: {fixture}/{case}: the golden has no {}: {e}",
+                derived.display()
+            )
+        })
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     files.sort();
@@ -231,7 +270,7 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
             .join(format!("{op}.bandvalues.json"));
         let text = std::fs::read(&path).unwrap_or_else(|e| {
             panic!(
-                "harness error: {fixture}/{case} has a golden but no {}: {e}",
+                "harness error: {fixture}/{case}: the golden has no {}: {e}",
                 path.display()
             )
         });
@@ -269,6 +308,30 @@ fn band_value_comparison() {
             .unwrap()
             .pop();
         assert!(compare_band_values(&p, &op, &missing).is_err());
+        // The file's own form: a duplicate entry, a dropped or empty sample
+        // list, a shifted t, and a u without every DOF all fail.
+        let mut twice = file.clone();
+        let first = twice["samples"][0]["entries"][0].clone();
+        twice["samples"][0]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(first);
+        assert!(compare_band_values(&p, &op, &twice).is_err());
+        let mut fewer = file.clone();
+        fewer["samples"].as_array_mut().unwrap().pop();
+        assert!(compare_band_values(&p, &op, &fewer).is_err());
+        assert!(compare_band_values(&p, &op, &json!({"samples": []})).is_err());
+        let mut shifted = file.clone();
+        let t = shifted["samples"][0]["t"].as_f64().unwrap();
+        shifted["samples"][0]["t"] = json!(t + 1.0);
+        assert!(compare_band_values(&p, &op, &shifted).is_err());
+        let mut short = file.clone();
+        let name = p.dofs().element_names()[0].clone();
+        short["samples"][2]["u"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&name);
+        assert!(compare_band_values(&p, &op, &short).is_err());
     }
 }
 
@@ -337,6 +400,65 @@ fn hand_bands_agree() {
                 op.locality, hand.operators[name].locality,
                 "{fixture}/{case} {name}"
             );
+        }
+    }
+}
+
+/// The probe document (§5.2.2) gives every term, band for band and in
+/// order, the bands of its own right-hand-side document, and its probe
+/// states carry their equation states' index sets and `ic` equations.
+#[test]
+fn probe_document_gives_each_terms_bands() {
+    use earthsci_integrator_planner::astdiff::testing;
+    use earthsci_integrator_planner::{derived, model, runconfig, terms};
+    for (fixture, case) in CASES {
+        let rc = runconfig::read(&run_config(fixture, case)).unwrap();
+        let info = model::read(&rc).unwrap();
+        let ts = terms::terms(&info).unwrap();
+        // The probe itself succeeds: planning does not fall back.
+        let probe = testing::probe(&info, &ts)
+            .unwrap()
+            .unwrap_or_else(|m| panic!("{fixture}/{case}: the probe document failed: {m}"));
+        let each = testing::each_term(&info, &ts).unwrap();
+        assert_eq!(probe, each, "{fixture}/{case}");
+        let doc = derived::probe_document(&info, &ts);
+        let probe_model = &doc["models"][derived::PROBE_COMPONENT];
+        let vars = probe_model["variables"].as_object();
+        assert_eq!(
+            vars.map_or(0, |v| v.len()),
+            ts.len(),
+            "{fixture}/{case}: one probe state per term"
+        );
+        let eqs: Vec<&Value> = probe_model["equations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .collect();
+        for (k, t) in ts.iter().enumerate() {
+            let x = derived::probe_state(k);
+            let shape = &info.shapes[&t.variable];
+            let want = if shape.is_empty() {
+                Value::Null
+            } else {
+                json!(shape)
+            };
+            assert_eq!(
+                vars.unwrap()[&format!("term_{}", k + 1)]["shape"],
+                want,
+                "{fixture}/{case} {k}"
+            );
+            let ics = |s: &str| {
+                eqs.iter()
+                    .filter(|e| e["lhs"]["op"] == "ic" && e["lhs"]["args"][0] == s)
+                    .count()
+            };
+            let want = info
+                .flat
+                .field_ics
+                .iter()
+                .filter(|(s, _)| *s == t.variable)
+                .count();
+            assert_eq!(ics(&x), want, "{fixture}/{case} {k}: ic equations");
         }
     }
 }

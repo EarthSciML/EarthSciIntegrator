@@ -1,16 +1,18 @@
 //! The EarthSciASTDiff seam (spec/plan.md §5.2.2, §5.4): a derived
 //! document loaded and flattened by EarthSciAST and viewed with
 //! EarthSciASTDiff's `sysview_flat`, its band list from
-//! `jacobian_bands_view`, and the [`BandSource`] that gives each term the
-//! bands of its own right-hand-side document.
+//! `jacobian_bands_view`, and the [`BandSource`] that gives every term its
+//! bands from one probe document, searching halves of the term list for
+//! the failing term when the probe fails.
 
 use crate::derived;
-use crate::locality::{BandEntry, BandFailure, BandSource, RowIdx};
+use crate::locality::{BandEntry, BandFailure, BandSource, BandSourceError, RowIdx};
 use crate::model::ModelInfo;
 use crate::terms::Term;
 use earthsci_ast::FlattenedSystem;
 use earthsci_astdiff::{BandError, JacEntry, RIdx, SysView, Wrt};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// A derived document, loaded and flattened by EarthSciAST.
 #[derive(Debug, Clone)]
@@ -85,22 +87,114 @@ pub fn astdiff_message(e: BandError) -> String {
 
 /// Term bands from EarthSciASTDiff (§5.2.2): each term's band list is that
 /// of the right-hand-side document of a hypothetical operator holding only
-/// that term. One document per term: the fixtures are small, and the band
-/// lists are exactly the definition's.
+/// that term. They are computed together from one probe document
+/// ([`derived::probe_document`]): one EarthSciAST load and flatten and one
+/// `jacobian_bands` call, whose bands with row `probe_state(k)` are term
+/// `k`'s, row renamed to its variable. A probe that succeeds gives the
+/// bands. A failure on the probe names no term, so the term list is then
+/// split in halves and each half probed in turn, first half first, down to
+/// single terms, whose own documents are differentiated: the first term
+/// whose own document fails, in term order, is `band_model_failed`, with
+/// that document's message. Finding it takes about `2 log₂ n` probe
+/// documents rather than one document per term.
 pub struct AstDiffBands;
+
+/// A probe's band lists, or EarthSciAST's or EarthSciASTDiff's message.
+type Probe = std::result::Result<Vec<Vec<BandEntry>>, String>;
+
+impl AstDiffBands {
+    /// The probe document's band lists, or EarthSciAST's or
+    /// EarthSciASTDiff's message when it fails on it. A band whose row is
+    /// not a probe state is the planner's own error.
+    fn probe(info: &ModelInfo, terms: &[Term]) -> Result<Probe, BandSourceError> {
+        let entries = match document_bands(&derived::probe_document(info, terms)) {
+            Ok(e) => e,
+            Err(message) => return Ok(Err(message)),
+        };
+        let index: HashMap<String, usize> = (0..terms.len())
+            .map(|k| (derived::probe_state(k), k))
+            .collect();
+        let mut out = vec![Vec::new(); terms.len()];
+        for en in &entries {
+            // Only the probe states have nonzero right-hand sides.
+            let k = *index.get(&en.u).ok_or_else(|| {
+                BandSourceError::Internal(format!(
+                    "the probe document (spec/plan.md §5.2.2) gives a band with row {}, which is not a probe state",
+                    en.u
+                ))
+            })?;
+            let mut b = band_entry(en);
+            b.row = terms[k].variable.clone();
+            out[k].push(b);
+        }
+        Ok(Ok(out))
+    }
+
+    /// Term `t`'s band list from its own right-hand-side document; a
+    /// failure is `band_model_failed` for the term at position `i`.
+    fn own(info: &ModelInfo, t: &Term, i: usize) -> Result<Vec<BandEntry>, BandFailure> {
+        let doc = derived::rhs_document(info, "term", &[t]);
+        let bands = document_bands(&doc).map_err(|message| BandFailure { term: i, message })?;
+        Ok(bands.iter().map(band_entry).collect())
+    }
+
+    /// The band lists of `terms`, the terms from position `first` on, into
+    /// `out`: one probe, or when it fails each half in turn, down to single
+    /// terms' own documents.
+    fn search(
+        info: &ModelInfo,
+        terms: &[Term],
+        first: usize,
+        out: &mut Vec<Vec<BandEntry>>,
+    ) -> Result<(), BandSourceError> {
+        match terms {
+            [] => return Ok(()),
+            [t] => {
+                out.push(Self::own(info, t, first)?);
+                return Ok(());
+            }
+            _ => {}
+        }
+        if let Ok(bands) = Self::probe(info, terms)? {
+            out.extend(bands);
+            return Ok(());
+        }
+        let (a, b) = terms.split_at(terms.len() / 2);
+        Self::search(info, a, first, out)?;
+        Self::search(info, b, first + a.len(), out)
+    }
+}
+
+/// Test access to the parts of [`AstDiffBands`], not part of the planner's
+/// interface.
+#[doc(hidden)]
+pub mod testing {
+    use super::*;
+
+    /// The probe document's band lists, or its failure's message.
+    pub fn probe(info: &ModelInfo, terms: &[Term]) -> Result<Probe, BandSourceError> {
+        AstDiffBands::probe(info, terms)
+    }
+
+    /// Each term's band list from its own right-hand-side document, in term
+    /// order; the first failure is the failing term's.
+    pub fn each_term(info: &ModelInfo, terms: &[Term]) -> Result<Vec<Vec<BandEntry>>, BandFailure> {
+        terms
+            .iter()
+            .enumerate()
+            .map(|(i, t)| AstDiffBands::own(info, t, i))
+            .collect()
+    }
+}
 
 impl BandSource for AstDiffBands {
     fn term_bands(
         &self,
         info: &ModelInfo,
         terms: &[Term],
-    ) -> Result<Option<Vec<Vec<BandEntry>>>, BandFailure> {
+    ) -> Result<Option<Vec<Vec<BandEntry>>>, BandSourceError> {
         let mut out = Vec::with_capacity(terms.len());
-        for (i, t) in terms.iter().enumerate() {
-            let doc = derived::rhs_document(info, "term", &[t]);
-            let bands = document_bands(&doc).map_err(|message| BandFailure { term: i, message })?;
-            out.push(bands.iter().map(band_entry).collect());
-        }
+        Self::search(info, terms, 0, &mut out)?;
         Ok(Some(out))
     }
 }

@@ -207,12 +207,14 @@ fn tree(info: &ModelInfo, live: &BTreeSet<String>, rhs: &dyn Fn(usize, &str) -> 
         }
     }
     for (x, e) in &flat.field_ics {
-        tree.push(
-            x,
-            json!({"lhs": {"op": "ic", "args": [x]}, "rhs": expr_json(e)}),
-        );
+        tree.push(x, ic_equation(x, e));
     }
     tree
+}
+
+/// The `ic` equation of state `x` whose initial value is `e` (§6.1.1).
+fn ic_equation(x: &str, e: &Expr) -> Value {
+    json!({"lhs": {"op": "ic", "args": [x]}, "rhs": expr_json(e)})
 }
 
 /// The top-level keys of a derived document (§6.1).
@@ -267,6 +269,36 @@ pub fn domain_json(domain: &Domain) -> Result<Option<Value>> {
 /// The right-hand-side document of an operator named `name` whose terms are
 /// `terms` (§6.1). Also the document of a single term (§5.2.2).
 pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
+    term_document(info, name, terms, false)
+}
+
+/// The component of the probe document's new states (§5.2.2): the name
+/// §6.1.4 reserves for the Jacobian document, so no name of the model can
+/// clash with them.
+pub const PROBE_COMPONENT: &str = JACOBIAN_MODEL;
+
+/// The probe document's new state for the term at position `k` (0-based)
+/// of the slice passed to [`probe_document`]: `JacobianEval.term_<k+1>`.
+pub fn probe_state(k: usize) -> String {
+    format!("{PROBE_COMPONENT}.term_{}", k + 1)
+}
+
+/// §5.2.2's probe document: §6.1's document of `terms` in which every
+/// state of the model has the zero right-hand side (§6.1.2), and the `k`-th
+/// term is instead the whole right-hand side of a new state
+/// [`probe_state`]`(k)`. That state is declared as its equation's state is
+/// (the same index-set names and `default`), its equation is the one that
+/// state would have holding the term alone (a lifted term inside the same
+/// `faq`), and it has that state's `ic` equations, if any. Its
+/// bands with row `probe_state(k)` are the `k`-th term's bands, row renamed.
+pub fn probe_document(info: &ModelInfo, terms: &[Term]) -> Value {
+    let terms: Vec<&Term> = terms.iter().collect();
+    term_document(info, "probe", &terms, true)
+}
+
+/// [`rhs_document`] (`probe` false) or [`probe_document`] (`probe` true)
+/// of `terms`, so the two documents are built by the same code.
+fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: bool) -> Value {
     let mut by_eq: BTreeMap<usize, Vec<&Term>> = BTreeMap::new();
     let mut names = BTreeSet::new();
     for t in terms {
@@ -275,10 +307,26 @@ pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
     }
     let live = live_observeds(info, &names);
     let rhs = |i: usize, x: &str| {
-        let ts = by_eq.get(&i).map(Vec::as_slice).unwrap_or(&[]);
+        let ts = match by_eq.get(&i) {
+            Some(ts) if !probe => ts.as_slice(),
+            _ => &[],
+        };
         state_rhs(info, i, x, ts)
     };
-    document(info, name, tree(info, &live, &rhs).to_json())
+    let mut tree = tree(info, &live, &rhs);
+    if probe {
+        for (k, t) in terms.iter().enumerate() {
+            let x = probe_state(k);
+            let v = &info.flat.state_variables[&t.variable];
+            tree.declare(&x, variable_json(v, &info.shapes[&t.variable]));
+            let rhs = state_rhs(info, t.equation, &t.variable, &[t]);
+            tree.push(&x, json!({"lhs": d_of(&x), "rhs": rhs}));
+            for (_, e) in info.flat.field_ics.iter().filter(|(s, _)| *s == t.variable) {
+                tree.push(&x, ic_equation(&x, e));
+            }
+        }
+    }
+    document(info, name, tree.to_json())
 }
 
 /// The Jacobian document of an operator (§6.2): EarthSciASTDiff's

@@ -133,48 +133,53 @@ fn every_rosenbrock_method_adaptive_and_controllers() {
     }
 }
 
-/// block_lu with and without pivoting agree with each other to roundoff on
-/// the batched cells, and the adjoint goes through the transposed batched
-/// solve.
+/// block_lu with and without pivoting, and dense_lu on the same
+/// block_diagonal leaf (which the leaf then stores dense), agree with each
+/// other to roundoff on the batched cells, and the adjoint goes through each
+/// transposed solve.
 #[test]
 fn block_lu_pivoting_and_adjoint() {
-    let run = |pivot: bool, adjoint: Option<Value>| {
+    let run = |linsolve: Value, adjoint: Option<Value>| {
         rc(
             "toy:photostationary_cells",
-            json!({"leaf": "photochemistry", "alg": "Rodas4", "linsolve": {"block_lu": {"pivot": pivot}},
+            json!({"leaf": "photochemistry", "alg": "Rodas4", "linsolve": linsolve,
                    "control": {"reltol": 1e-6, "abstol": 1e-6}}),
             600.0,
             adjoint,
         )
     };
-    let a = spec(&run(true, None), (0.0, 1200.0), None);
-    let b = spec(&run(false, None), (0.0, 1200.0), None);
+    let pivot = json!({"block_lu": {"pivot": true}});
+    let solvers = [
+        ("block_lu no pivot", json!({"block_lu": {"pivot": false}})),
+        ("dense_lu", json!("dense_lu")),
+    ];
+    let a = spec(&run(pivot.clone(), None), (0.0, 1200.0), None);
     let fa = a.forward(&a.u0(), &a.problem.p).unwrap();
-    let fb = b.forward(&b.u0(), &b.problem.p).unwrap();
-    let d = fa
-        .final_state()
-        .iter()
-        .zip(fb.final_state())
-        .map(|(x, y)| (x - y).abs() / y.abs())
-        .fold(0.0, f64::max);
-    println!("pivot vs no pivot: max relative difference {d:e}");
-    assert!(d < 1e-9, "{d}");
+    for (what, ls) in &solvers {
+        let b = spec(&run(ls.clone(), None), (0.0, 1200.0), None);
+        let fb = b.forward(&b.u0(), &b.problem.p).unwrap();
+        let d = fa
+            .final_state()
+            .iter()
+            .zip(fb.final_state())
+            .map(|(x, y)| (x - y).abs() / y.abs())
+            .fold(0.0, f64::max);
+        println!("block_lu pivot vs {what}: max relative difference {d:e}");
+        assert!(d < 1e-9, "{what}: {d}");
+    }
     assert_pass(check_invariant(&a, &fa, 1e-12), "invariant");
     // A functional on a few cells only, so the cells' cotangents differ.
     let adj = json!({"functional": {"sum": "O3", "where": {"cell": [3, 5]}, "over": "final"},
                      "wrt": ["u0", "params:numeric"]});
     check_gradient(
-        &run(true, Some(adj.clone())),
+        &run(pivot, Some(adj.clone())),
         (0.0, 1200.0),
         None,
         "block_lu pivot",
     );
-    check_gradient(
-        &run(false, Some(adj)),
-        (0.0, 1200.0),
-        None,
-        "block_lu no pivot",
-    );
+    for (what, ls) in solvers {
+        check_gradient(&run(ls, Some(adj.clone())), (0.0, 1200.0), None, what);
+    }
 }
 
 /// The integral functional (spec/adjoint.md §2.1): the quadrature each
@@ -302,9 +307,9 @@ fn rosenbrock_refusals() {
     assert!(matches!(
         err(
             photo,
-            json!({"leaf": "photochemistry", "alg": "Rodas4", "dt": 1, "linsolve": "dense_lu"})
+            json!({"leaf": "photochemistry", "alg": "Rodas4", "dt": 1, "linsolve": {"dense_lu": {"pivot": true}}})
         ),
-        Error::Unimplemented(_)
+        Error::Config(_)
     ));
     assert!(matches!(
         err(

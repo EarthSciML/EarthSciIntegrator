@@ -8,7 +8,7 @@ use crate::astdiff;
 use crate::axes::{self, Axes};
 use crate::derived;
 use crate::error::{codes, refuse, PlanError, Result};
-use crate::locality::{self, BandSource, Class, Locality};
+use crate::locality::{self, BandSource, BandSourceError, Class, Locality};
 use crate::model::{self, ModelInfo};
 use crate::numeric::{self, Dofs, Program, Sample, Sparse};
 use crate::operators::{self, Operator};
@@ -209,7 +209,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 "this band source gives no term bands (spec/plan.md §5.2.2)".into(),
             ))
         }
-        Err(f) => {
+        Err(BandSourceError::Internal(m)) => return Err(PlanError::Internal(m)),
+        Err(BandSourceError::Failed(f)) => {
             let t = terms.get(f.term);
             return Err(refuse(
                 codes::BAND_MODEL_FAILED,
