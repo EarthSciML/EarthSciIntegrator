@@ -4,7 +4,7 @@ The model: reaction system `Chem` (NO2 + hν → NO + O3, rate `j`; NO + O3 → 
 
 ## Common to both cases
 
-**Flattened model (§4).** States `Chem.NO2`, `Chem.NO`, `Chem.O3`, each lifted onto 4 cells; canonical order `Chem.NO`, `Chem.NO2`, `Chem.O3` (12 DOFs). Parameters `Dep.kd`, `Dep.cellw` (shape `["cell"]`), `Chem.j`, `Chem.k`. The lifted states take the shape `["cell"]` from `Dep.cellw`, the first declared shape with extent 4 (§6.1.3).
+**Flattened model (§4).** States `Chem.NO2`, `Chem.NO`, `Chem.O3`, each lifted onto 4 cells; canonical order `Chem.NO`, `Chem.NO2`, `Chem.O3` (12 DOFs). Parameters `Dep.kd`, `Dep.cellw` (shape `["cell"]`), `Chem.j`, `Chem.k`. The lifted states take the shape `["cell"]` that `flatten` records on them, the index set of `Dep.cellw`, which the lift reads at its loop (§6.1.3).
 
 **Axes (§5.2.1).** Default: horizontal `["cell"]`, no vertical axis.
 
@@ -32,7 +32,7 @@ The model: reaction system `Chem` (NO2 + hν → NO + O3, rate `j`; NO + O3 → 
 - `structure.block`: `vars` `["Chem.NO", "Chem.NO2", "Chem.O3"]`, `ordering` `[1, 2, 3]` (a full 3 × 3 pattern gives every candidate the same Markowitz cost, and the first wins), `pattern` and `lu_pattern` all nine pairs `[1,1] … [3,3]`.
 - `stiffness`: per case below.
 
-**Derived documents (§6).** `derived/<op>.rhs.esm` declares models `Chem` (unknowns `NO`, `NO2`, `O3`, shape `["cell"]`, defaults 5.5, 10.5, 40.5; parameters `j`, `k`) and `Dep` (parameters `cellw`, `kd`); index set `cell` of size 4. Each species equation is `D(Chem.X) = faq{output_idx ["i"], ranges {"i": {"from": "cell"}}, expr: (t1 + t2) + t3}` (ranges built from the shape `["cell"]`, §6.1.2), the fold of that species' three terms. No `ic` equations (none in the model). `derived/<op>.jacobian.esm` adds model `_jacobian` with one `J_k` per band, each of shape `["cell"]`.
+**Derived documents (§6).** `derived/<op>.rhs.esm` declares models `Chem` (unknowns `NO`, `NO2`, `O3`, shape `["cell"]`, defaults 5.5, 10.5, 40.5; parameters `j`, `k`) and `Dep` (parameters `cellw`, `kd`); index set `cell` of size 4. Each species equation is `D(Chem.X) = faq{output_idx ["i"], ranges {"i": {"from": "cell"}}, expr: (t1 + t2) + t3}` (ranges built from the shape `["cell"]`, §6.1.2), the fold of that species' three terms. No `ic` equations (none in the model). `derived/<op>.jacobian.esm` (EarthSciASTDiff's evaluation document, §6.2) zeroes the species equations and adds model `JacobianEval` with one `J_k` per band, each of shape `["cell"]`.
 
 **Validation (§8).** `[{"check": "rhs_sum", "passed": true}, {"check": "band_model", "operator": <op>, "passed": true}, {"check": "non_empty", "operator": <op>, "passed": true}]`.
 

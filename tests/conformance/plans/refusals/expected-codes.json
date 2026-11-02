@@ -39,10 +39,6 @@
     "code": "duplicate_node_id",
     "at": "/schedule/sequence/1/id"
   },
-  "lift-shape-unresolved": {
-    "code": "lift_shape_unresolved",
-    "at": "/model"
-  },
   "map-operator": {
     "code": "unsupported_map_operator",
     "at": "/operators/decay"

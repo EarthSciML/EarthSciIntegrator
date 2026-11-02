@@ -58,7 +58,7 @@ DOCUMENTS = [
 ]
 PLAN_FIXTURES = FIXTURES / "plans" / "fixtures"
 REFUSALS = FIXTURES / "plans" / "refusals"
-ESM_VERSION = "0.7.0"  # EarthSciAST, esm 1.3.0 (spec/plan.md §0.2)
+ESM_VERSION = "0.8.0"  # EarthSciAST, esm 1.3.0 (spec/plan.md §0.2)
 
 
 def load(path):

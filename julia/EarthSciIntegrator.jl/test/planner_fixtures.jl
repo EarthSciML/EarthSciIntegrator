@@ -176,10 +176,14 @@ const PLAN_FILES = String[]
             @test x["sha256"] == bytes2hex(EarthSciIntegrator.sha256(bytes))
             doc = JSON.parse(String(copy(bytes)))
             @test EarthSciASTDiff.stable_json(doc) == String(bytes)
-            @test doc["esm"] == "1.3.0" && doc["metadata"] == Dict("name" => x["operator"])
-            if x["kind"] == "jacobian"
+            if x["kind"] == "rhs"
+                @test doc["esm"] == "1.3.0" && doc["metadata"] == Dict("name" => x["operator"])
+            else
+                # EarthSciASTDiff's evaluation document, as it writes it (§6.2).
+                @test doc["esm"] == "1.1.0" && doc["metadata"] == Dict("name" => "JacobianEval")
+                @test !occursin("\"op\":\"ic\"", String(copy(bytes)))
                 nb = length(p["operators"][x["operator"]]["structure"]["bands"])
-                @test sort(collect(keys(doc["models"]["_jacobian"]["variables"]))) == sort(["J_$k" for k in 1:nb])
+                @test sort(collect(keys(doc["models"]["JacobianEval"]["variables"]))) == sort(["J_$k" for k in 1:nb])
             end
         end
         # §8: the validation entries, and the band-value files (§8.2).
@@ -248,10 +252,45 @@ const PLAN_FILES = String[]
             e
         end
         @test err isa PlannerRefusal && err.code == "validation_band_model_failed" && err.at == "/model"
+        # An operator that reads a state but has no band is `non_empty`'s
+        # refusal, although `band_model` would fail on it too: `non_empty`
+        # runs first (§8.1).
+        a.entries = EarthSciASTDiff.JacEntry[]
+        a.points = NTuple{4, Int}[]
+        err = try
+            EarthSciIntegrator.derived_and_validation(b, ctx); nothing
+        catch e
+            e
+        end
+        @test err isa PlannerRefusal && err.code == "validation_empty_operator" && err.at == "/model"
         # rhs_sum's measure (§8.1): an exact zero passes.
         @test EarthSciIntegrator._rhs_sum_error(0.0, [0.0, 0.0]) == 0.0
         @test EarthSciIntegrator._rhs_sum_error(1.0, [0.5, 0.5]) == 0.0
         @test EarthSciIntegrator._rhs_sum_error(1.0, [1.0, 1.0e-3]) ≈ 1.0e-3 / 1.001
+    end
+
+    @testset "the derived documents' domain" begin
+        # No fixture has a domain: robertson with one. Both documents carry
+        # `temporal`'s start, end and reference_time and `element_type` as
+        # given, and not `independent_variable`.
+        dir = mktempdir()
+        doc = JSON.parsefile(joinpath(REPO, "tests", "conformance", "toys", "robertson.esm"))
+        doc["domain"] = Dict(
+            "independent_variable" => "t", "element_type" => "Float64",
+            "temporal" => Dict("start" => "2020-01-01T00:00:00Z", "reference_time" => "2020-01-01T00:00:00Z")
+        )
+        write(joinpath(dir, "model.esm"), JSON.json(doc))
+        cfg = JSON.parsefile(joinpath(PFIX, "toy_robertson", "rodas4.run.json"))
+        cfg["model"] = "model.esm"
+        write(joinpath(dir, "run.json"), JSON.json(cfg))
+        d = EarthSciIntegrator.plan(joinpath(dir, "run.json"))
+        a = d.ctx.backend.ops["kinetics"]
+        want = Dict(
+            "element_type" => "Float64",
+            "temporal" => Dict("start" => "2020-01-01T00:00:00Z", "reference_time" => "2020-01-01T00:00:00Z")
+        )
+        @test JSON.parse(a.rhs.bytes)["domain"] == want
+        @test JSON.parse(a.jac.bytes)["domain"] == want
     end
 
     @testset "a backend planned again starts afresh" begin

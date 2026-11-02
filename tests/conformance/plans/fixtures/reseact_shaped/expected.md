@@ -12,7 +12,7 @@ Grid `lon × lat × lev` = 8 × 3 × 4 (96 cells, 288 DOFs). `solver`: `stiffnes
 
 ## Common to both cases
 
-**Flattened model.** States `Chem.NO2`, `Chem.NO`, `Chem.O3`, lifted; canonical order `Chem.NO`, `Chem.NO2`, `Chem.O3`. Their shape is `["lon", "lat", "lev"]`, from `Transport.c`, the first declared shape with extents (8, 3, 4) (§6.1.3). Each species equation has four contributions, origins `Chem`, `Dep`, `Transport`, `Mix`.
+**Flattened model.** States `Chem.NO2`, `Chem.NO`, `Chem.O3`, lifted; canonical order `Chem.NO`, `Chem.NO2`, `Chem.O3`. Their shape is `["lon", "lat", "lev"]`, the one `flatten` records on them, named by the operands the lift reads at its loops (§6.1.3). Each species equation has four contributions, origins `Chem`, `Dep`, `Transport`, `Mix`.
 
 **Terms.** Six per species, eighteen in all. For species X, in order:
 
