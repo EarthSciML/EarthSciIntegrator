@@ -6,8 +6,9 @@
 # spec/plan.md §4): state names sorted by code point, each array's cells
 # column-major. A leaf advances only its own state, the union of its
 # operators' `writes` in canonical order (§8.2): its operators are bound to
-# it as `LeafOperator`s, which fill every other state from the model state
-# at the start of the invocation, so those are constants of the leaf.
+# it as `LeafOperator`s, which the interpreter binds to the model state at
+# the start of each invocation (`with_background`) and which fill every
+# other state from it, so those are constants of the leaf.
 
 """A workspace of a [`PlanDocument`](@ref): EarthSciAST's, and the slot, output and parameter buffers of one call."""
 struct DocWorkspace{W}
@@ -305,6 +306,16 @@ depends_on_t(o::LeafOperator) = o.op.depends_on_t
 linear_in_u(o::LeafOperator) = o.op.linear_in_u
 writes(o::LeafOperator, N) = o.writes
 ft_refused_on_rosenbrock(::LeafOperator) = true
+
+"""
+`op` bound to a leaf invocation that starts from the model state `u`
+([`with_background`](@ref)): its background, and a fresh buffer pool.
+"""
+function with_background(o::LeafOperator, u)
+    eltype(u) === Float64 ||
+        throw(UnsupportedError("operator $(o.op.name): replaying a leaf of planned operators with dual numbers is not implemented"))
+    return LeafOperator(o.op, LeafState(o.leaf.dofs, o.leaf.loc, copy(u)), o.writes, o.points, o.structure, Vector{Float64}[], ReentrantLock())
+end
 
 """`f(full)`, with `full` the model state: the leaf's `x` at its DOFs, the background elsewhere."""
 function with_full_state(f, o::LeafOperator, x)
