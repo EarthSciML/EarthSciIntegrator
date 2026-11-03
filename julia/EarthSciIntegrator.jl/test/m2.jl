@@ -257,19 +257,22 @@ EarthSciIntegrator.depends_on_t(::M2TimeDependentOp) = true
         end
         @test err isa ConfigError && occursin("stale", err.msg)
         rm(stale; recursive = true)
-        # An adjoint through a leaf that advances part of the model state is
-        # not implemented at M2.
+        # An adjoint with respect to parameters needs vjp_p, which a planned
+        # operator does not provide at M2 (§8.3). With respect to u0 it is
+        # accepted: the leaf writes every state.
         cfg = Dict{String, Any}(
             "esm_integrator" => "0.1.0", "step" => Dict("dt" => 2),
             "schedule" => Dict("leaf" => "decay", "alg" => "Heun", "dt" => 0.1),
-            "adjoint" => Dict("functional" => Dict("sum" => "Decay.u", "over" => "final"), "wrt" => ["u0"]),
+            "adjoint" => Dict("functional" => Dict("sum" => "Decay.u", "over" => "final"), "wrt" => ["params:numeric"]),
         )
         err = try
             build_run(cfg; tspan = (0, 2), prob = pp.prob); nothing
         catch e
             e
         end
-        @test err isa UnsupportedError && occursin("adjoint", err.msg)
+        @test err isa ConfigError && occursin("decay", err.msg) && occursin("vjp_p", err.msg)
+        cfg["adjoint"]["wrt"] = ["u0"]
+        @test build_run(cfg; tspan = (0, 2), prob = pp.prob).wrt_u0
     end
 end
 
@@ -360,6 +363,160 @@ end
     # The leaf's Jacobian has no column for Z: dropped, not stored (§8.3).
     op = only(chem.ops.ops)
     @test all(((_, r, c),) -> 1 <= r <= 8 && 1 <= c <= 8, op.points)
+end
+
+# A model whose states do not share one shape: X, Y and W over 4 cells, Z a
+# scalar. chem writes X and Y and reads only them, decay writes Z, and push
+# writes W and reads Z (W' = -W + Z). The Rust tests plan the same document
+# (rust/earthsci-integrator/tests/leaf_state_m2.rs).
+function mixed_shapes_plan()
+    dir = joinpath(M2_PLANS, "mixed_shapes")
+    rm(dir; force = true, recursive = true)
+    mkpath(dir)
+    fa(e) = Dict("op" => "faq", "args" => [], "output_idx" => ["i"], "ranges" => Dict("i" => Dict("from" => "cell")), "expr" => e)
+    ix(v) = Dict("op" => "index", "args" => [v, "i"])
+    D(x) = Dict("op" => "D", "args" => [x], "wrt" => "t")
+    doc = Dict(
+        "esm" => "1.3.0", "metadata" => Dict("name" => "mixed_shapes"),
+        "index_sets" => Dict("cell" => Dict("kind" => "interval", "size" => 4)),
+        "models" => Dict(
+            "Box" => Dict(
+                "variables" => Dict(
+                    "X" => Dict("type" => "unknown", "shape" => ["cell"], "default" => 1),
+                    "Y" => Dict("type" => "unknown", "shape" => ["cell"], "default" => 0.5),
+                    "W" => Dict("type" => "unknown", "shape" => ["cell"], "default" => 0.75),
+                    "Z" => Dict("type" => "unknown", "default" => 2),
+                    "k" => Dict("type" => "parameter", "default" => 3.5),
+                    "c" => Dict("type" => "parameter", "default" => 0.25),
+                ),
+                "equations" => [
+                    Dict("lhs" => D("X"), "rhs" => fa(Dict("op" => "*", "args" => [-1, "k", ix("X")]))),
+                    Dict("lhs" => D("Y"), "rhs" => fa(Dict("op" => "-", "args" => [Dict("op" => "*", "args" => ["k", ix("X")]), ix("Y")]))),
+                    Dict("lhs" => D("W"), "rhs" => fa(Dict("op" => "+", "args" => [Dict("op" => "*", "args" => [-1, ix("W")]), "Z"]))),
+                    Dict("lhs" => D("Z"), "rhs" => Dict("op" => "*", "args" => [-1, "c", "Z"])),
+                ],
+            ),
+        ),
+    )
+    write(joinpath(dir, "mixed_shapes.esm"), JSON.json(doc))
+    ctl = Dict("dt_scope" => "global", "reltol" => 1.0e-8, "abstol" => 1.0e-10)
+    block = Dict("block_lu" => Dict("pivot" => false))
+    cfg = Dict(
+        "esm_integrator" => "0.1.0", "model" => "mixed_shapes.esm",
+        "operators" => Dict(
+            "chem" => Dict("select" => Dict("variables" => ["Box.X", "Box.Y"])),
+            "decay" => Dict("select" => Dict("variables" => ["Box.Z"])),
+            "push" => Dict("select" => Dict("variables" => ["Box.W"])),
+        ),
+        "schedule" => Dict(
+            "sequence" => [
+                Dict("leaf" => "chem", "alg" => "Kvaerno4", "linsolve" => block, "control" => ctl),
+                Dict("leaf" => "decay", "alg" => "Kvaerno4", "linsolve" => block, "control" => ctl),
+                Dict("leaf" => "push", "alg" => "RK4", "dt" => 0.05),
+            ]
+        ),
+        "step" => Dict("dt" => 0.25),
+    )
+    write(joinpath(dir, "run-config.json"), JSON.json(cfg))
+    write_plan(plan(joinpath(dir, "run-config.json"); tspan = [0, 1]), joinpath(dir, "plan"))
+    return joinpath(dir, "plan")
+end
+
+# The mixed-shapes plan, planned once and shared by the testsets below.
+const MIXED_SHAPES = Ref{Any}(nothing)
+function mixed_shapes_problem()
+    MIXED_SHAPES[] === nothing && (MIXED_SHAPES[] = EarthSciIntegrator.plan_problem(mixed_shapes_plan()))
+    return MIXED_SHAPES[]
+end
+
+"""A run config of `schedule` and `adjoint` against the mixed-shapes plan `pp`."""
+function mixed_cfg(pp, schedule; adjoint = nothing)
+    cfg = Dict{String, Any}("esm_integrator" => "0.1.0", "step" => pp.plan["step"], "schedule" => schedule)
+    adjoint === nothing || (cfg["adjoint"] = adjoint)
+    return cfg
+end
+
+# spec/operator-interface.md §8.3: a leaf's storage is block_diagonal when its
+# operators are pointwise with structure.block and its own state variables
+# share one shape, whatever the shapes of the model's other states.
+@testset "block_diagonal over the leaf's own states" begin
+    pp = mixed_shapes_problem()
+    # Canonical order: Box.W, Box.X, Box.Y (4 cells each), Box.Z.
+    @test pp.prob.N == 13
+    # An operator's own structure is that of a leaf of it alone: chem writes
+    # X and Y over 4 cells, decay the scalar Z.
+    @test EarthSciIntegrator.structure(pp.prob.operators["chem"]) == EarthSciIntegrator.BlockDiagonalStructure(4, 2)
+    @test EarthSciIntegrator.structure(pp.prob.operators["decay"]) == EarthSciIntegrator.BlockDiagonalStructure(1, 1)
+    # §8.2: an operator's reads are its bands' columns. The adjoint's check
+    # below rests on them: push reads W and Z.
+    reads(o) = EarthSciIntegrator.reads(pp.prob.operators[o], pp.prob.N)
+    @test reads("chem") == 5:12
+    @test reads("decay") == [13]
+    @test reads("push") == [1, 2, 3, 4, 13]
+    leaves = pp.plan["schedule"]["sequence"]
+    run = build_run(mixed_cfg(pp, Dict("sequence" => leaves)); tspan = pp.prob.tspan, prob = pp.prob)
+    chem, decay, push = run.leaves["root.0"], run.leaves["root.1"], run.leaves["root.2"]
+    @test chem.state.dofs == 5:12
+    @test EarthSciIntegrator.structure(chem.ops) == EarthSciIntegrator.BlockDiagonalStructure(4, 2)
+    @test decay.state.dofs == [13]
+    @test EarthSciIntegrator.structure(decay.ops) == EarthSciIntegrator.BlockDiagonalStructure(1, 1)
+    @test push.state.dofs == 1:4
+    forward!(run)
+    @test run.retcode == "Success"
+    # X(1) = e^{-k}, Z(1) = 2 e^{-c}.
+    @test all(x -> isapprox(x, exp(-3.5); rtol = 1.0e-6), run.u[5:8])
+    @test isapprox(run.u[13], 2 * exp(-0.25); atol = 1.0e-7)
+end
+
+# §1, §8.3: an adjoint with respect to the initial state through a leaf of
+# planned operators that read only the leaf's own states is accepted and agrees
+# with finite differences of the frozen tape; one through a leaf whose operator
+# reads a state the leaf does not advance is refused, and so is one with
+# respect to parameters (planned operators provide no vjp_p at M2).
+@testset "the adjoint through a planned leaf" begin
+    pp = mixed_shapes_problem()
+    leaves = pp.plan["schedule"]["sequence"]
+    wrt_u0 = Dict("functional" => Dict("sum" => "Box.Y", "over" => "final"), "wrt" => ["u0"])
+    ctl = Dict("dt_scope" => "global", "reltol" => 1.0e-8, "abstol" => 1.0e-10)
+    erk = Dict("leaf" => "chem", "alg" => "Tsit5", "control" => ctl)
+    for (what, sch) in ("Kvaerno4" => [leaves[1], leaves[2]], "Tsit5" => [erk, leaves[2]])
+        run = forward!(build_run(mixed_cfg(pp, Dict("sequence" => sch); adjoint = wrt_u0); tspan = pp.prob.tspan, prob = pp.prob))
+        @test run.retcode == "Success"
+        _, ū0, p̄ = gradient(run)
+        # Σ Y(1) does not depend on W or Z: their cotangents pass through the
+        # chem leaf unchanged, and no leaf sends them anything.
+        @test all(==(0.0), ū0[1:4]) && ū0[13] == 0.0
+        # dY(1)/dY₀ = e^{-1}.
+        @test all(y -> isapprox(y, exp(-1); atol = 1.0e-6), ū0[9:12])
+        # Planned operators provide no vjp_p, so the parameter cotangent is
+        # not formed: NaN, never a partial sum.
+        @test all(isnan, p̄)
+        case = Dict("id" => "m2.mixed_shapes.adjoint.$what")
+        check_fd_gradient(case, run, Dict("rtol" => 1.0e-6, "epsilons" => [1.0e-3, 1.0e-4, 1.0e-5]))
+        check_replay(case, run, Dict())
+    end
+    # push reads Z, which its leaf does not advance.
+    err = try
+        build_run(
+            mixed_cfg(pp, leaves[3]; adjoint = Dict("functional" => Dict("sum" => "Box.W", "over" => "final"), "wrt" => ["u0"]));
+            tspan = pp.prob.tspan, prob = pp.prob
+        ); nothing
+    catch e
+        e
+    end
+    @test err isa UnsupportedError &&
+        err.msg == "leaf root.2: operator push may read states the leaf does not advance; the adjoint of a leaf through its constants is not implemented (operator-interface.md §1)"
+    # Parameter gradients need vjp_p. Both chem and decay lack it; the
+    # refusal names the first in schedule order.
+    err = try
+        build_run(
+            mixed_cfg(pp, Dict("sequence" => [leaves[1], leaves[2]]); adjoint = Dict("functional" => Dict("sum" => "Box.Y", "over" => "final"), "wrt" => ["params:numeric"]));
+            tspan = pp.prob.tspan, prob = pp.prob
+        ); nothing
+    catch e
+        e
+    end
+    @test err isa ConfigError && err.msg == "operator 'chem' of leaf root.0 does not provide vjp_p, which the adjoint needs"
 end
 
 @testset "M2 result files validate against result.schema.json" begin
