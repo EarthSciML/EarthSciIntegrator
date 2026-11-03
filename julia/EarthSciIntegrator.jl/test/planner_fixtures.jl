@@ -454,6 +454,11 @@ const PLAN_FILES = String[]
         # `serialize_band`'s dictionary.
         @test [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms] ==
             [map(d -> fields(EarthSciIntegrator.BandEntry(d)), EarthSciIntegrator.term_band_dicts(b, ctx, t)) for t in terms]
+        # So does the probe with more of its shared subexpressions written as
+        # templates, down to every repeated one (§5.2.2).
+        for min_nodes in (1, 2, typemax(Int))
+            @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms; min_nodes) == probe
+        end
         # So do smaller batches (§5.2.2): with a lower bound for a large term,
         # each batch is a consecutive run holding at most one large term.
         sizes = [EarthSciIntegrator.operator_nodes(t.expr, 10^9) for t in terms]
@@ -475,6 +480,21 @@ const PLAN_FILES = String[]
         # Each has its term's state's `ic` equation, when the state has one.
         ics = Set(only(e["lhs"]["args"]) for e in doc["models"]["JacobianEval"]["equations"] if e["lhs"]["op"] == "ic")
         @test ics == Set(EarthSciIntegrator.probe_state(k) for (k, t) in enumerate(terms) if any(p -> first(p) == t.variable, m.flat.field_ics))
+    end
+
+    @testset "shared subexpressions are templates that expand to the terms (§5.2.2)" begin
+        templated = 0
+        for (fixture, case) in fixture_cases()
+            ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json")), DiffBackend())
+            exprs = EarthSciAST.ASTExpr[t.expr for t in EarthSciIntegrator.build_terms(ctx.model)]
+            templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
+            templated += !isempty(templates)
+            reg = Dict{String, EarthSciAST.ASTExpr}(templates)
+            @test length(reg) == length(templates)
+            key(e) = jcs(EarthSciAST.serialize_expression(e))
+            @test key.(EarthSciAST.ASTExpr[EarthSciASTDiff.expand_templates(e, reg) for e in rewritten]) == key.(exprs)
+        end
+        @test templated > 0
     end
 
     @testset "band_model_failed names the term that fails, after the probe document fails" begin
