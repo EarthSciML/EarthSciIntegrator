@@ -29,11 +29,11 @@
       "minProperties": 1,
       "additionalProperties": {
         "type": "object",
-        "required": ["shape", "source", "file_variable", "cadence", "records"],
+        "required": ["shape", "source", "file_variable", "cadence", "records_per_sample"],
         "additionalProperties": false,
         "properties": {
           "cadence": {"enum": ["const", "discrete"], "description": "discrete when the source declares a time-varying temporal block (spec/plan.md §4.1)."},
-          "records": {"enum": [1, 2]},
+          "records_per_sample": {"enum": [1, 2], "description": "The effective value EarthSciAST reports in loader_fields (spec/plan.md §4.1)."},
           "shape": {
             "description": "Index-set names, as the flattened model declares them; [] for a scalar.",
             "type": "array",
