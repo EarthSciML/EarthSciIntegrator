@@ -163,14 +163,14 @@ M2's runtimes also fetch data and run leaves that read it (spec/operator-interfa
 
 **Exact solution.** The blend is linear in $t$ within each hour, so with $\kappa_i(t) = s_i\,k_i(t)$, $u_i(t) = \exp\!\big(-\int_{t_0}^{t} \kappa_i\big)$, the integral a sum of trapezoids $1800\,s_i\,(K_{h,i} + K_{h+1,i})$ over whole hours plus a partial one. The generator evaluates it in binary64 at each output time.
 
-**Cases.** The interval is $[79200, 93600]$ (22:00 on 1 January to 02:00 on 2 January), so the run crosses a file boundary at midnight and forcing epochs begin at 82800, 86400 and 90000; `output.saveat` is 3600, and `step.hit` is `["forcing_refresh", "output"]` (spec/plan.md §7.3):
+**Cases.** The interval is $[79200, 93600]$ (22:00 on 1 January to 02:00 on 2 January), so the run crosses a file boundary at midnight, and forcing epochs begin at 79200 ($t_0$), 82800, 86400, 90000 and 93600 ($t_f$, a refresh time read only by the stages at exactly $t_f$; spec/operator-interface.md §8.4.3), and the last sample needs the 03:00 record of 2 January, which `rate_20160102.nc` holds; `output.saveat` is 3600, and `step.hit` is `["forcing_refresh", "output"]` (spec/plan.md §7.3):
 
 | id | schedule | checks |
 |---|---|---|
 | `m2.data_decay.tsit5` | one adaptive `Tsit5` leaf, `reltol` 1e-8, `abstol` 1e-12 | `reference` at `rtol` 1e-6; `cross_language` with `rtol_steps_differ` |
 | `m2.data_decay.tsit5_dt600` | one `Tsit5` leaf, `dt` 600 | `reference` at `rtol` 1e-7; `cross_language` |
 
-The runtimes' own tests add the check of spec/operator-interface.md §8.4.2 item 3 on this model: each buffer at $t_0$ equals EarthSciAST's `esm_problem` forcing buffer for the same providers, bit for bit. A Rosenbrock case waits for time-derivative documents (U17), since `decay` depends on $t$ through $w$.
+The runtimes' own tests add the check of spec/operator-interface.md §8.4.2 item 3 on this model: each buffer at $t_0$ equals EarthSciAST's `esm_problem` forcing buffer for the same providers, bit for bit. They also run a variant whose initial condition reads data, `ic(u[i]) = Decay.s[i]`, and check that the run starts from $u_i(t_0) = S_i$, the data value, not the default 1.0 (spec/operator-interface.md §8.4.5), and ends at $S_i$ times the exact solution above. An adaptive Tsit5 run also exercises the selection of spec/operator-interface.md §8.4.1: its stages with $c = 1$ land on each hourly boundary, where $w = 0$ and only the new epoch's bracket gives the right rate. A Rosenbrock case waits for time-derivative documents (U17), since `decay` depends on $t$ through $w$.
 
 ### 4.5 `data_monthly`: calendar cadence, a custom substitution and mirrors
 

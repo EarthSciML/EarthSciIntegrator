@@ -112,7 +112,7 @@ Both modes are decided (D40). A `Dual` whose value type is f64 satisfies D13's "
 
 ### 2.4 Steps never straddle discontinuities
 
-Steps never cross a forcing-epoch boundary (architecture §7.5), so $F$ is constant over each step. A stage at exactly $t_{k+1}$ reads epoch $k+1$, consistently in forward and reverse. Maps and event affects happen only between steps. Each step map is therefore smooth in $(u, p, F)$, apart from `ifelse`/`max`/`min` branches inside $f$. Those are differentiated branch-wise with the branch frozen (EarthSciASTDiff spec §3.2).
+Steps never cross a forcing-epoch boundary (architecture §7.5), so $F$ is constant on each step's half-open interval $[t_n, t_n + h)$. A stage at exactly the boundary $t_{k+1}$ that ends a step reads epoch $k+1$ (spec/operator-interface.md §8.4.1), consistently in forward and reverse; for a model that blends two records with a weight that returns to 0 at a record time, that keeps $f$ continuous in $t$ over the closed step. Maps and event affects happen only between steps. Each step map is therefore smooth in $(u, p, F)$, apart from `ifelse`/`max`/`min` branches inside $f$. Those are differentiated branch-wise with the branch frozen (EarthSciASTDiff spec §3.2).
 
 ## 3. Primitives
 

@@ -24,7 +24,7 @@
       "additionalProperties": {"$ref": "#/$defs/operatorPlan"}
     },
     "forcing": {
-      "description": "The model's data-fed parameters, by flattened name (spec/plan.md §4.1, D87). Present only when the model has one. The runtime supplies their values; the plan records what feeds each one, not where the data is.",
+      "description": "The model's used data-fed parameters (read by an operator or an ic equation), by flattened name (spec/plan.md §3, §4.1, D87). Present only when the model has one; a data-fed parameter nothing reads is not listed. The runtime supplies their values; the plan records what feeds each one, not where the data is.",
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {
