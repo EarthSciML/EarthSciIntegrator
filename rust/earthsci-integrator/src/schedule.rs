@@ -254,8 +254,17 @@ fn build_leaf<T: Scalar>(
             "leaf {id}: its operators write nothing"
         )));
     }
+    // The operators' common structure over the model state, which their
+    // jac fills, and the leaf's own over its state vector (§2, §8.3).
     let model_structure = Structure::common(ops.iter().map(|o| o.structure()));
-    let mut structure = leaf_structure(model_structure, &dofs, pb.n);
+    let own = ops
+        .iter()
+        .map(|o| {
+            o.structure_over(&dofs, pb.n)
+                .map_err(|e| Error::Config(format!("leaf {id}: operator {}: {e}", o.name())))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut structure = Structure::common(own);
     // The implicit families' options (run-config §4.2, §4.5).
     if l.theta.is_some() && tab.family != Family::Theta {
         return Err(Error::Config(format!(
@@ -291,22 +300,22 @@ fn build_leaf<T: Scalar>(
                     )))
                 }
             }
+            // The block solve covers ncells·n entries; any others would pass
+            // through it unsolved.
+            if let Structure::BlockDiagonal { ncells, n } = structure {
+                if ncells * n != dofs.len() {
+                    return Err(Error::Config(format!(
+                        "leaf {id}: the operators' block_diagonal structure covers \
+                         {ncells}·{n} DOFs, but the leaf's state has {} (operator-interface.md §2)",
+                        dofs.len()
+                    )));
+                }
+            }
             let ls = linsolve(l.linsolve.as_ref(), structure, id)?;
             // dense_lu factors the same entries whatever the structure, so
             // the leaf stores them dense (operator-interface.md §8.3).
             if matches!(ls, LinsolveKind::DenseLu) {
                 structure = Structure::Dense;
-            }
-            // The block solve covers ncells·n entries; any others would pass
-            // through it unsolved.
-            if let Structure::BlockDiagonal { ncells, n } = model_structure {
-                if ncells * n != pb.n {
-                    return Err(Error::Config(format!(
-                        "leaf {id}: the operators' block_diagonal structure covers \
-                         {ncells}·{n} DOFs, but the state has {} (operator-interface.md §2)",
-                        pb.n
-                    )));
-                }
             }
             if tab.family == Family::Rosenbrock {
                 LeafMethod::Ros(Rosenbrock::from_tableau(tab).map_err(Error::Config)?, ls)
@@ -389,8 +398,8 @@ fn build_leaf<T: Scalar>(
             if !inside {
                 return Err(Error::Unimplemented(format!(
                     "leaf {id}: operator {} may read states the leaf does not advance; the \
-                     adjoint of a leaf through its constants (operator-interface.md §1) is not \
-                     implemented",
+                     adjoint of a leaf through its constants is not implemented \
+                     (operator-interface.md §1)",
                     op.name()
                 )));
             }
@@ -507,7 +516,7 @@ fn build_leaf<T: Scalar>(
 /// is `block_diagonal` over its own species: its state vector, the model
 /// state at `dofs` in ascending order, is species-major with the same cells,
 /// and `n` is the number of its species. Any other is `dense`.
-fn leaf_structure(model: Structure, dofs: &[usize], n_model: usize) -> Structure {
+pub(crate) fn leaf_structure(model: Structure, dofs: &[usize], n_model: usize) -> Structure {
     if dofs.len() == n_model {
         return model;
     }

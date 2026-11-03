@@ -87,6 +87,22 @@ pub trait Operator<T: Scalar>: Send + Sync {
     fn reads(&self) -> Option<Vec<usize>> {
         None
     }
+    /// The operator's structure over a leaf's state vector, the model state
+    /// at `dofs` (ascending) of the `n_model` DOFs (§2, §8.3); the leaf's
+    /// structure is the coarsest its operators share. The default restricts
+    /// [`structure`](Operator::structure), which is over the model state: a
+    /// leaf that writes every DOF has it, one that writes whole species of a
+    /// `block_diagonal` structure is `block_diagonal` over its own species,
+    /// and any other is `dense`. An operator a plan supplies decides from
+    /// the leaf's own state variables instead (§8.3). An error refuses the
+    /// leaf.
+    fn structure_over(&self, dofs: &[usize], n_model: usize) -> Result<Structure, String> {
+        Ok(crate::schedule::leaf_structure(
+            self.structure(),
+            dofs,
+            n_model,
+        ))
+    }
     /// Whether the operator implements `call`.
     fn provides(&self, call: Call) -> bool {
         matches!(call, Call::Rhs | Call::JvpU | Call::VjpU)
