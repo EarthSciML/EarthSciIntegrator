@@ -403,6 +403,7 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     include("conformance.jl")
     include("rosenbrock.jl")
     include("extra.jl")
+    include("leaf_state.jl")
     include("implicit.jl")
     include("planner_pure.jl")
     include("planner.jl")

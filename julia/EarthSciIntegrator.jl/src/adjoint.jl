@@ -15,6 +15,25 @@ Reverse one leaf invocation. `seeds` maps interior output times to
 `∇φ` (point terms of the functional at stops inside the invocation).
 """
 function leaf_adjoint!(entry, λ, p̄, seeds)
+    leaf = entry[2]
+    leaf.state === nothing && return _leaf_adjoint!(entry, λ, p̄, seeds)
+    # A leaf that advances part of the model state is reversed over its own
+    # state vector. The states it does not advance are unchanged by it, and
+    # (as build_run checks) none of its operators reads them, so their
+    # cotangents pass through, with the point terms at its interior stops.
+    S = leaf.state
+    λo = copy(λ)
+    sx = Dict(t => s[S.dofs] for (t, s) in seeds)
+    λx = _leaf_adjoint!(entry, λ[S.dofs], p̄, sx)
+    tb = last(entry[6])
+    for (t, s) in seeds
+        t != tb && any(st -> st[6] == t, entry[7]) && (λo .+= s)
+    end
+    λo[S.dofs] = λx
+    return λo
+end
+
+function _leaf_adjoint!(entry, λ, p̄, seeds)
     _, leaf, _, _, _, stops, states = entry
     tb = last(stops)
     for (u, t, h, pp, mask, tnew, tk1) in Iterators.reverse(states)

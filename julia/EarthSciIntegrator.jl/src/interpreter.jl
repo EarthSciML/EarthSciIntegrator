@@ -147,9 +147,16 @@ function build_run(
     sort!(unique!(bound))
     if haskey(config, "adjoint")
         adj = config["adjoint"]
+        # The reverse of a leaf that advances part of the model state carries
+        # the other states' cotangents through unchanged, which is exact when
+        # no operator of the leaf reads them (spec/operator-interface.md §1).
         for n in nodes
-            n isa LeafNode && n.state !== nothing &&
-                throw(UnsupportedError("leaf $(n.id) advances part of the model state (operators a plan supplies, spec/operator-interface.md §8.2); its adjoint is not implemented at M2"))
+            (n isa LeafNode && n.state !== nothing) || continue
+            for op in n.ops.ops
+                r = reads(op isa PartOperator ? op.op : op, prob.N)
+                (r !== nothing && all(j -> n.state.loc[j] > 0, r)) ||
+                    throw(UnsupportedError("leaf $(n.id) advances part of the model state and operator '$(opname(op))' may read states it does not advance (spec/operator-interface.md §1, §8.2); the adjoint of such a leaf is not implemented"))
+            end
         end
         haskey(adj, "checkpoint") && throw(UnsupportedError("adjoint.checkpoint: M1 checkpoints every macro step in memory"))
         functional = build_functional(adj["functional"], prob)
@@ -166,7 +173,15 @@ function build_run(
             root.method isa ShuOsherERK &&
                 throw(UnsupportedError("a functional over \"time\" on a Shu–Osher leaf ($(root.tab.name)) is not implemented in this stage"))
             w = functional.reduction === :sum ? 1.0 : 1.0 / length(functional.dofs)
-            root = with_integrand(root, Integrand(functional.dofs, w, prob.N))
+            # ψ over the leaf's state vector (spec/operator-interface.md §1).
+            ψdofs, ψN = functional.dofs, prob.N
+            if root.state !== nothing
+                ψdofs = root.state.loc[functional.dofs]
+                all(>(0), ψdofs) ||
+                    throw(UnsupportedError("a functional over \"time\" of states leaf $(root.id) does not advance is not implemented"))
+                ψN = length(root.state.dofs)
+            end
+            root = with_integrand(root, Integrand(ψdofs, w, ψN))
             leaves = Dict{String, LeafNode}(root.id => root)
         end
         for w in adj["wrt"]
@@ -335,9 +350,9 @@ function tape_record(tape::Tape, key::AbstractString, ::Type{R}, ta::Float64, tb
     return rec
 end
 
-function _stops(run::Run, node::LeafNode, ta, tb)
+function _stops(run::Run, node::LeafNode, ta, tb, isroot::Bool = node === run.root)
     stops = Float64[]
-    if node === run.root
+    if isroot
         for τ in run.output_times
             ta < τ < tb && push!(stops, τ)
         end
@@ -348,29 +363,33 @@ end
 
 """The model state `u` with the leaf's state `x` scattered into its DOFs."""
 function _scatter(S::LeafState, u, x)
-    v = copy(u)
+    v = similar(u, promote_type(eltype(u), eltype(x)))
+    copyto!(v, u)
     v[S.dofs] = x
     return v
 end
 
 function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64)
     node.state === nothing && return _advance!(run, ctx, node, u, ta, tb)
-    # A leaf of planned operators advances its own state; every other state is
-    # a constant of the leaf over its interval (spec/operator-interface.md §8.2).
+    # A leaf advances its own state, the union of its operators' writes; every
+    # other state is a constant of the leaf over its interval, read from the
+    # model state at its start (spec/operator-interface.md §1, §8.2). The
+    # leaf bound to that state is what a trace records, so the reverse pass
+    # and the tangent checks see the same constants.
     S = node.state
-    eltype(u) === Float64 ||
-        throw(UnsupportedError("leaf $(node.id): replaying a leaf of planned operators with dual numbers is not implemented"))
-    copyto!(S.background, u)
+    bound = with_background(node, u)
     mode = ctx.mode
     if mode isa ReplayMode
-        mode.trace === nothing ||
-            throw(UnsupportedError("leaf $(node.id): the adjoint of a leaf of planned operators is not implemented at M2"))
-        visit = mode.visit === nothing ? nothing : (t, x) -> mode.visit(t, _scatter(S, u, x))
-        mode = ReplayMode(mode.tape, mode.p, nothing, visit, mode.qacc)
+        # `outer` is bound once, so the closure calls the caller's visit (not
+        # the one it is itself stored in).
+        outer = mode.visit
+        visit = outer === nothing ? nothing : (t, x) -> outer(t, _scatter(S, u, x))
+        mode = ReplayMode(mode.tape, mode.p, mode.trace, visit, mode.qacc)
     end
     sub = ExecCtx(ctx.k, ctx.Δmacro, ctx.occ, mode)
     n0 = length(run.outputs)
-    x = _advance!(run, sub, node, u[S.dofs], ta, tb)
+    # `bound` is a new node; whether the leaf is the root is the original's.
+    x = _advance!(run, sub, bound, u[S.dofs], ta, tb, node === run.root)
     for i in (n0 + 1):length(run.outputs)
         t, xi = run.outputs[i]
         run.outputs[i] = (t, _scatter(S, u, xi))
@@ -378,11 +397,11 @@ function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Fl
     return _scatter(S, u, x)
 end
 
-function _advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64)
+function _advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64, isroot::Bool = node === run.root)
     path = next_path!(ctx, node.id)
     nb = filter(b -> b.second !== :leaf, node.bindings)
     pinv = apply_bindings(_params(run, ctx.mode), nb, 0.0, tb - ta, ctx.Δmacro)
-    stops = _stops(run, node, ta, tb)
+    stops = _stops(run, node, ta, tb, isroot)
     mode = ctx.mode
     if mode isa ForwardMode
         cs = get!(() -> ControllerState(node.tab.controller), mode.controllers, node.id)

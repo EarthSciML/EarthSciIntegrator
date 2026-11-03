@@ -618,3 +618,8 @@ const TOY_MODELS = [
     "toy:forced_decay", "toy:van_der_pol/nonstiff", "toy:van_der_pol/stiff", "toy:robertson",
     "toy:photostationary_cells", "toy:advection_reaction", "toy:source_decay_map",
 ]
+
+# Every hand-written toy operator reads only the DOFs it writes, so a leaf
+# that advances part of the state carries the others' cotangents through
+# unchanged (spec/operator-interface.md §1).
+reads(op::Union{ForcedDecay, Oscillator, Kinetics, Photochemistry, Transport, Reaction, Source}, N) = writes(op, N)
