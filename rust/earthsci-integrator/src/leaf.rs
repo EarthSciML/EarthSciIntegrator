@@ -180,9 +180,6 @@ pub struct LeafSpec<T: Scalar> {
     /// The leaf's own structure and storage, over its state vector: a
     /// `block_diagonal` block has the leaf's species only.
     pub structure: Structure,
-    /// The operators' common structure over the model state, which their
-    /// `jac` fills when the leaf advances part of it.
-    pub model_structure: Structure,
     pub alg: String,
     pub method: LeafMethod,
     pub dt_mode: DtMode,
@@ -1290,48 +1287,30 @@ impl<T: Scalar> Bound<'_, T> {
         }
     }
 
-    /// `out = g` in the leaf's matrix storage, for `g` filling storage over
-    /// the model state (the operators' `jac`): the leaf's rows and columns.
-    fn lift_jac(
+    /// `out = Σ_{k ∈ ops} J_k(u)` in the leaf's matrix storage: the
+    /// operators' `jac` itself when the leaf advances the whole state, and
+    /// otherwise their `jac_over` its DOFs, which fills the leaf's storage
+    /// directly.
+    fn lift_jac<'o>(
         &self,
         out: &mut MatrixStorage<T>,
         u: &[T],
-        g: impl FnOnce(&mut MatrixStorage<T>, &[T]),
-    ) {
+        p: &[f64],
+        t: f64,
+        ops: impl Iterator<Item = &'o Arc<dyn Operator<T>>>,
+    ) where
+        T: 'o,
+    {
         out.clear();
         if !self.leaf.is_partial() {
-            g(out, u);
+            for op in ops {
+                op.jac(out, u, p, t);
+            }
             return;
         }
         let uf = self.full(u);
-        let mut m = MatrixStorage::zeros(self.leaf.model_structure, self.leaf.n_model);
-        g(&mut m, &uf);
-        let d = &self.leaf.dofs;
-        match out {
-            MatrixStorage::Dense { n, .. } => {
-                let n = *n;
-                for b in 0..n {
-                    for a in 0..n {
-                        let v = m.get(d[a], d[b]);
-                        if v != T::zero() {
-                            out.add(a, b, v);
-                        }
-                    }
-                }
-            }
-            MatrixStorage::BlockDiagonal { ncells, n, .. } => {
-                let (nc, n) = (*ncells, *n);
-                for i in 0..n {
-                    for j in 0..n {
-                        for c in 0..nc {
-                            let v = m.get(d[i * nc + c], d[j * nc + c]);
-                            if v != T::zero() {
-                                out.add(i * nc + c, j * nc + c, v);
-                            }
-                        }
-                    }
-                }
-            }
+        for op in ops {
+            op.jac_over(out, &self.leaf.dofs, &uf, p, t);
         }
     }
 
@@ -1364,11 +1343,7 @@ impl<T: Scalar> Bound<'_, T> {
 
     /// `out = Σ_k J_k(u)` in the leaf's matrix storage.
     pub fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
-        self.lift_jac(out, u, |o, uu| {
-            for op in &self.leaf.ops {
-                op.jac(o, uu, p, t);
-            }
-        })
+        self.lift_jac(out, u, p, t, self.leaf.ops.iter())
     }
 
     /// `out = Σ_{k ∈ part} f_k(u, p, t)`.
@@ -1382,11 +1357,7 @@ impl<T: Scalar> Bound<'_, T> {
 
     /// `out = Σ_{k ∈ part} J_k(u)` in the leaf's matrix storage.
     pub fn jac_part(&self, part: Part, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
-        self.lift_jac(out, u, |o, uu| {
-            for op in self.leaf.part_ops(part) {
-                op.jac(o, uu, p, t);
-            }
-        })
+        self.lift_jac(out, u, p, t, self.leaf.part_ops(part))
     }
 
     /// `out += Σ_{k ∈ part} J_k(u)ᵀ w`.

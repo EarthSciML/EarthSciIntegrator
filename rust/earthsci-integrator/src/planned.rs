@@ -102,7 +102,8 @@ pub struct PlannedOperator {
     name: String,
     /// Its structure over the model state (§2): `block_diagonal` when it is
     /// pointwise with `structure.block` and every model state shares one
-    /// shape. Its `jac` fills storage of this structure.
+    /// shape. Its `jac` fills storage of this structure; its `jac_over`
+    /// fills a leaf's storage directly.
     structure: Structure,
     /// Pointwise, with `structure.block`: a leaf of such operators whose own
     /// state variables share a shape is `block_diagonal` (§8.3).
@@ -206,19 +207,30 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
         if !self.blockable {
             return Ok(Structure::Dense);
         }
-        let own: Vec<&Vec<usize>> = self
-            .states
-            .iter()
-            .filter(|(start, _)| dofs.binary_search(start).is_ok())
-            .map(|(_, ext)| ext)
-            .collect();
+        // The leaf's own states: those with a DOF in `dofs`. Each must be
+        // whole (every DOF of it in the leaf) and they must make up the
+        // leaf, so that, states being contiguous in canonical order, the
+        // leaf's state vector is species-major with ncells cells: leaf index
+        // k·ncells + c is cell c of the k-th own state.
+        let mut own: Vec<&Vec<usize>> = Vec::new();
+        let mut whole = 0;
+        for (start, ext) in &self.states {
+            let len: usize = ext.iter().product();
+            let lo = dofs.partition_point(|&j| j < *start);
+            let hi = dofs.partition_point(|&j| j < start + len);
+            if hi > lo {
+                if hi - lo != len {
+                    return Ok(Structure::Dense);
+                }
+                own.push(ext);
+                whole += len;
+            }
+        }
         let Some(&shape) = own.first() else {
             return Ok(Structure::Dense);
         };
         let ncells: usize = shape.iter().product();
-        // The leaf's state is whole variables (it is the union of its
-        // operators' writes), so it is species-major with ncells cells.
-        if own.iter().any(|e| *e != shape) || own.len() * ncells != dofs.len() {
+        if whole != dofs.len() || own.iter().any(|e| *e != shape) {
             return Ok(Structure::Dense);
         }
         // A pointwise operator's entries in the leaf stay inside their cell.
@@ -274,6 +286,34 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
     }
     fn vjp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, w: &[T]) {
         self.jprod(out, u, p, t, w, true)
+    }
+    fn jac_over(&self, out: &mut MatrixStorage<T>, dofs: &[usize], u: &[T], p: &[f64], t: f64) {
+        // Each band point at the leaf's rows and columns, at its leaf
+        // indices; a column outside the leaf is one of its constants. A
+        // block_diagonal leaf's points stay inside their cell (checked by
+        // structure_over), so either storage takes every point.
+        let at: Vec<(usize, usize, usize)> = self
+            .points
+            .iter()
+            .filter_map(|&(k, r, c)| {
+                Some((
+                    k,
+                    dofs.binary_search(&r).ok()?,
+                    dofs.binary_search(&c).ok()?,
+                ))
+            })
+            .collect();
+        let done = self.jacobian.eval(u, p, t, |du| {
+            for &(k, a, b) in &at {
+                out.add(a, b, T::from_f64(du[k]));
+            }
+        });
+        if let Err(e) = done {
+            self.record("Jacobian", e);
+            for &(_, a, b) in &at {
+                out.add(a, b, T::from_f64(f64::NAN));
+            }
+        }
     }
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
         // A block_diagonal operator's points stay inside their cell (checked

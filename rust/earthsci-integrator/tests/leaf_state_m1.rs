@@ -370,3 +370,98 @@ fn a_partial_leaf_reads_its_constants() {
         Ok(_) => panic!("an adjoint through a leaf that reads its constants was accepted"),
     }
 }
+
+/// An operator that says it is `block_diagonal` over 4 cells of 2 species
+/// on a 12-DOF state, which does not cover the state (§2).
+struct Short;
+
+impl Operator<f64> for Short {
+    fn name(&self) -> &str {
+        "short"
+    }
+    fn structure(&self) -> Structure {
+        Structure::BlockDiagonal { ncells: 4, n: 2 }
+    }
+    fn depends_on_t(&self) -> bool {
+        false
+    }
+    fn linear_in_u(&self) -> bool {
+        true
+    }
+    fn writes(&self) -> Vec<usize> {
+        (0..8).collect()
+    }
+    fn provides(&self, call: Call) -> bool {
+        matches!(call, Call::Rhs | Call::JvpU | Call::VjpU | Call::Jac)
+    }
+    fn rhs(&self, out: &mut [f64], u: &[f64], _p: &[f64], _t: f64) {
+        for j in 0..8 {
+            out[j] += -u[j];
+        }
+    }
+    fn jvp_u(&self, out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, v: &[f64]) {
+        for j in 0..8 {
+            out[j] += -v[j];
+        }
+    }
+    fn vjp_u(&self, out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, w: &[f64]) {
+        for j in 0..8 {
+            out[j] += -w[j];
+        }
+    }
+    fn jac(&self, out: &mut MatrixStorage<f64>, _u: &[f64], _p: &[f64], _t: f64) {
+        for j in 0..8 {
+            out.add(j, j, -1.0);
+        }
+    }
+}
+
+/// §2: a leaf whose operator's `block_diagonal` structure does not cover
+/// the model state is refused when it builds, before its Jacobian storage
+/// is filled, even though the leaf writes only the DOFs the structure
+/// covers; an explicit leaf, which never forms the Jacobian, runs.
+#[test]
+fn a_block_structure_short_of_the_model_state_is_refused() {
+    let problem = || ToyProblem {
+        name: "short".into(),
+        n: 12,
+        param_names: vec![],
+        p: vec![],
+        u0: vec![1.0; 12],
+        tspan: (0.0, 1.0),
+        variables: (0..12).map(|j| format!("x{j}")).collect(),
+        cells: None,
+        operators: vec![Arc::new(Short) as Arc<dyn Operator<f64>>],
+        maps: vec![],
+        invariants: vec![],
+    };
+    let rc = |leaf: Value| rc_model("short", leaf, 0.25, None);
+    match RunSpec::with_problem(
+        problem(),
+        &rc(json!({"leaf": "short", "alg": "Rodas4", "dt": 0.05})),
+        (0.0, 1.0),
+        None,
+    ) {
+        Err(Error::Config(m)) => assert_eq!(
+            m,
+            "leaf root: operator short's block_diagonal structure covers 4·2 DOFs, but the \
+             model state has 12 (operator-interface.md §2)"
+        ),
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("a block structure short of the model state was accepted"),
+    }
+    let s = RunSpec::with_problem(
+        problem(),
+        &rc(json!({"leaf": "short", "alg": "RK4", "dt": 0.05})),
+        (0.0, 1.0),
+        None,
+    )
+    .unwrap();
+    let u1 = s
+        .forward(&s.u0(), &s.problem.p)
+        .unwrap()
+        .final_state()
+        .to_vec();
+    assert!((u1[0] - (-1.0f64).exp()).abs() < 1e-6);
+    assert_eq!(u1[8], 1.0);
+}

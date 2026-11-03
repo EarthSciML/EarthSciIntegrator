@@ -24,6 +24,44 @@ use crate::Scalar;
 /// solvers that read them.
 pub use earthsci_integrator_solvers::linalg::{MatrixStorage, Structure};
 
+/// Adds the entries of `m`, storage over the model state, at the rows and
+/// columns `dofs` (ascending) into `out`, storage over the state vector the
+/// model state at `dofs` makes: leaf index `i` is model DOF `dofs[i]`. Only
+/// the entries `out` can hold are read, so a `block_diagonal` `out` takes
+/// each of its cells' blocks.
+pub fn add_restricted<T: crate::Scalar>(
+    out: &mut MatrixStorage<T>,
+    m: &MatrixStorage<T>,
+    d: &[usize],
+) {
+    match out {
+        MatrixStorage::Dense { n, .. } => {
+            let n = *n;
+            for b in 0..n {
+                for a in 0..n {
+                    let v = m.get(d[a], d[b]);
+                    if v != T::zero() {
+                        out.add(a, b, v);
+                    }
+                }
+            }
+        }
+        MatrixStorage::BlockDiagonal { ncells, n, .. } => {
+            let (nc, n) = (*ncells, *n);
+            for i in 0..n {
+                for j in 0..n {
+                    for c in 0..nc {
+                        let v = m.get(d[i * nc + c], d[j * nc + c]);
+                        if v != T::zero() {
+                            out.add(i * nc + c, j * nc + c, v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A call of §3, for refusals that name the missing call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
@@ -129,6 +167,22 @@ pub trait Operator<T: Scalar>: Send + Sync {
     /// (an operator that adds through [`MatrixStorage::add`] fills either).
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
         unimplemented!("{}: jac", self.name())
+    }
+    /// `J_k(u)` at a leaf's rows and columns, added into the leaf's storage
+    /// over its state vector (§4, §8.3): leaf index `i` is model DOF
+    /// `dofs[i]` (ascending), and `u` is the model state. Entries in columns
+    /// outside `dofs` (the leaf's constants) are left out. `out` has the
+    /// structure the leaf's operators share over `dofs`
+    /// ([`structure_over`](Operator::structure_over)), or is dense.
+    ///
+    /// The default fills storage of [`structure`](Operator::structure) over
+    /// the whole model state with [`jac`](Operator::jac) and takes the
+    /// leaf's entries from it, so it costs a model-sized matrix; an operator
+    /// that knows its entries (a plan's, §8) adds them directly.
+    fn jac_over(&self, out: &mut MatrixStorage<T>, dofs: &[usize], u: &[T], p: &[f64], t: f64) {
+        let mut m = MatrixStorage::zeros(self.structure(), u.len());
+        self.jac(&mut m, u, p, t);
+        add_restricted(out, &m, dofs);
     }
     /// `out += ∂f_k/∂t`.
     fn ft(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {

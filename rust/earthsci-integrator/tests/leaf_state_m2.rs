@@ -345,3 +345,158 @@ fn adjoint_through_a_planned_leaf() {
         }
     }
 }
+
+/// A leaf over the mixed-shapes model with `dense_lu` stores its Jacobian
+/// dense and gives the solution the `block_lu` leaf gives; both fill the
+/// leaf's storage from the operators' own band points (no model-sized
+/// matrix), so the two agree to the tolerance.
+#[test]
+fn dense_lu_leaf_over_the_mixed_shapes_model() {
+    let (plan_dir, leaves, step) = mixed_shapes_plan("leaf_state_m2_dense");
+    let run = |chem: Value| {
+        let s = RunSpec::with_problem(
+            problem_of(&plan_dir),
+            &mixed_rc(json!({"sequence": [chem, leaves[1]]}), &step, None),
+            (0.0, 1.0),
+            None,
+        )
+        .unwrap();
+        let st = s.schedule.leaves[0].structure;
+        (
+            st,
+            s.forward(&s.u0(), &s.problem.p)
+                .unwrap()
+                .final_state()
+                .to_vec(),
+        )
+    };
+    let mut dense = leaves[0].clone();
+    dense["linsolve"] = json!("dense_lu");
+    let (sb, ub) = run(leaves[0].clone());
+    let (sd, ud) = run(dense);
+    assert_eq!(sb, Structure::BlockDiagonal { ncells: 4, n: 2 });
+    assert_eq!(sd, Structure::Dense);
+    for (j, (a, b)) in ub.iter().zip(&ud).enumerate() {
+        assert!(
+            (a - b).abs() < 1e-9 * a.abs().max(1.0),
+            "DOF {j}: {a} vs {b}"
+        );
+    }
+}
+
+/// §8.3 on a model whose states do not share one shape: an operator the
+/// plan says is pointwise with `structure.block`, but whose band joins two
+/// cells inside the leaf, cannot be `block_diagonal` there. A leaf that asks
+/// for `block_lu` is refused and says why; an explicit leaf, a `dense_lu`
+/// leaf and one that leaves `linsolve` to the default run it dense.
+#[test]
+fn a_band_that_joins_two_cells_keeps_the_leaf_dense() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("leaf_state_m2_joins");
+    std::fs::create_dir_all(&dir).unwrap();
+    // W' = −W + W(i−1) (W(0) = 0); Z a scalar, so the states do not share
+    // a shape and the plan's load makes no model-wide block check.
+    let shift = json!({"op": "makearray", "args": [], "regions": [[[2, 4]], [[1, 1]]], "values": [
+        {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": [2, 4]},
+         "expr": {"op": "+", "args": [{"op": "*", "args": [-1, ix("W")]},
+                  {"op": "index", "args": ["W", {"op": "-", "args": ["i", 1]}]}]}},
+        {"op": "*", "args": [-1, {"op": "index", "args": ["W", 1]}]},
+    ]});
+    let doc = json!({
+        "esm": "1.3.0", "metadata": {"name": "joins"},
+        "index_sets": {"cell": {"kind": "interval", "size": 4}},
+        "models": {"Box": {
+            "variables": {
+                "W": {"type": "unknown", "shape": ["cell"], "default": 1},
+                "Z": {"type": "unknown", "default": 2},
+                "c": {"type": "parameter", "default": 0.25},
+            },
+            "equations": [
+                {"lhs": d("W"), "rhs": shift},
+                {"lhs": d("Z"), "rhs": {"op": "*", "args": [-1, "c", "Z"]}},
+            ],
+        }},
+    });
+    std::fs::write(dir.join("joins.esm"), serde_json::to_vec(&doc).unwrap()).unwrap();
+    let rc = json!({
+        "esm_integrator": "0.1.0", "model": "joins.esm",
+        "operators": {
+            "shift": {"select": {"variables": ["Box.W"]}},
+            "decay": {"select": {"variables": ["Box.Z"]}},
+        },
+        "schedule": {"sequence": [
+            {"leaf": "shift", "alg": "RK4", "dt": 0.05},
+            {"leaf": "decay", "alg": "RK4", "dt": 0.05},
+        ]},
+        "step": {"dt": 0.25},
+    });
+    let rc_path = dir.join("joins.run.json");
+    std::fs::write(&rc_path, serde_json::to_vec_pretty(&rc).unwrap()).unwrap();
+    let plan_dir = dir.join("joins.plan");
+    let _ = std::fs::remove_dir_all(&plan_dir);
+    let options = Options {
+        time: Some(json!({"start": 0, "end": 1})),
+    };
+    plan(&rc_path, &options, &AstDiffBands)
+        .and_then(|p| p.write(&plan_dir))
+        .unwrap();
+    // Say shift is pointwise with structure.block, which its band is not.
+    let pj_path = plan_dir.join("plan.json");
+    let mut pj: Value = serde_json::from_str(&std::fs::read_to_string(&pj_path).unwrap()).unwrap();
+    let op = &mut pj["operators"]["shift"];
+    assert_ne!(op["locality"]["class"], "pointwise", "{}", op["locality"]);
+    op["locality"] = json!({"class": "pointwise"});
+    op["structure"]["block"] = json!({
+        "vars": ["Box.W"], "ordering": [1], "pattern": [[1, 1]], "lu_pattern": [[1, 1]],
+    });
+    std::fs::write(&pj_path, serde_json::to_vec_pretty(&pj).unwrap()).unwrap();
+    let step = pj["step"].clone();
+    let rc_of = |leaf: Value| {
+        RunConfig::from_value(&json!({
+            "esm_integrator": "0.1.0", "model": "joins.esm",
+            "schedule": leaf, "step": step,
+        }))
+        .unwrap()
+    };
+    let build =
+        |leaf: Value| RunSpec::with_problem(problem_of(&plan_dir), &rc_of(leaf), (0.0, 1.0), None);
+
+    let ctl = json!({"dt_scope": "global", "reltol": 1e-8, "abstol": 1e-10});
+    let reference = {
+        let s = build(json!({"leaf": "shift", "alg": "RK4", "dt": 0.01})).unwrap();
+        s.forward(&s.u0(), &s.problem.p)
+            .unwrap()
+            .final_state()
+            .to_vec()
+    };
+    for (what, leaf) in [
+        (
+            "dense_lu",
+            json!({"leaf": "shift", "alg": "Kvaerno4", "linsolve": "dense_lu", "control": ctl}),
+        ),
+        (
+            "default linsolve",
+            json!({"leaf": "shift", "alg": "Kvaerno4", "control": ctl}),
+        ),
+    ] {
+        let s = build(leaf).unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_eq!(s.schedule.leaves[0].structure, Structure::Dense, "{what}");
+        let u1 = s
+            .forward(&s.u0(), &s.problem.p)
+            .unwrap()
+            .final_state()
+            .to_vec();
+        for (j, (a, b)) in u1.iter().zip(&reference).enumerate() {
+            assert!((a - b).abs() < 1e-6, "{what}: DOF {j}: {a} vs {b}");
+        }
+    }
+    match build(json!({"leaf": "shift", "alg": "Kvaerno4", "linsolve": "block_lu", "control": ctl}))
+    {
+        Err(Error::Config(m)) => assert!(
+            m.starts_with("leaf root: operator shift: structure.block, but its band entry")
+                && m.contains("joins two cells"),
+            "{m}"
+        ),
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("a block_lu leaf whose band joins two cells was accepted"),
+    }
+}

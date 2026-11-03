@@ -254,17 +254,23 @@ fn build_leaf<T: Scalar>(
             "leaf {id}: its operators write nothing"
         )));
     }
-    // The operators' common structure over the model state, which their
-    // jac fills, and the leaf's own over its state vector (§2, §8.3).
-    let model_structure = Structure::common(ops.iter().map(|o| o.structure()));
-    let own = ops
-        .iter()
-        .map(|o| {
-            o.structure_over(&dofs, pb.n)
-                .map_err(|e| Error::Config(format!("leaf {id}: operator {}: {e}", o.name())))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut structure = Structure::common(own);
+    // The leaf's structure over its state vector: the coarsest its
+    // operators share there (§2, §8.3). An operator that cannot be
+    // block_diagonal over it (its band joins two cells) leaves the leaf
+    // dense; that refuses the leaf only when it asks for block_lu, since an
+    // explicit leaf never forms the Jacobian and dense_lu stores it dense.
+    let mut block_err = None;
+    let mut over = Vec::with_capacity(ops.len());
+    for o in &ops {
+        match o.structure_over(&dofs, pb.n) {
+            Ok(s) => over.push(s),
+            Err(e) => {
+                over.push(Structure::Dense);
+                block_err.get_or_insert_with(|| format!("leaf {id}: operator {}: {e}", o.name()));
+            }
+        }
+    }
+    let mut structure = Structure::common(over);
     // The implicit families' options (run-config §4.2, §4.5).
     if l.theta.is_some() && tab.family != Family::Theta {
         return Err(Error::Config(format!(
@@ -300,18 +306,37 @@ fn build_leaf<T: Scalar>(
                     )))
                 }
             }
-            // The block solve covers ncells·n entries; any others would pass
-            // through it unsolved.
-            if let Structure::BlockDiagonal { ncells, n } = structure {
-                if ncells * n != dofs.len() {
-                    return Err(Error::Config(format!(
-                        "leaf {id}: the operators' block_diagonal structure covers \
-                         {ncells}·{n} DOFs, but the leaf's state has {} (operator-interface.md §2)",
-                        dofs.len()
-                    )));
+            // An operator's jac fills storage of its structure over the
+            // model state, so a block_diagonal one must cover every DOF of
+            // it (operator-interface.md §2).
+            for o in &ops {
+                if let Structure::BlockDiagonal { ncells, n } = o.structure() {
+                    if ncells * n != pb.n {
+                        return Err(Error::Config(format!(
+                            "leaf {id}: operator {}'s block_diagonal structure covers \
+                             {ncells}·{n} DOFs, but the model state has {} \
+                             (operator-interface.md §2)",
+                            o.name(),
+                            pb.n
+                        )));
+                    }
                 }
             }
-            let ls = linsolve(l.linsolve.as_ref(), structure, id)?;
+            let ls = linsolve(l.linsolve.as_ref(), structure, id).map_err(|e| {
+                // block_lu asked of a leaf an operator kept dense: say why.
+                let asks_block = matches!(
+                    linsolve(
+                        l.linsolve.as_ref(),
+                        Structure::BlockDiagonal { ncells: 1, n: 1 },
+                        id
+                    ),
+                    Ok(LinsolveKind::BlockLu { .. })
+                );
+                match &block_err {
+                    Some(b) if asks_block => Error::Config(b.clone()),
+                    _ => e,
+                }
+            })?;
             // dense_lu factors the same entries whatever the structure, so
             // the leaf stores them dense (operator-interface.md §8.3).
             if matches!(ls, LinsolveKind::DenseLu) {
@@ -491,7 +516,6 @@ fn build_leaf<T: Scalar>(
         dofs,
         n_model: pb.n,
         structure,
-        model_structure,
         alg,
         method,
         dt_mode,
