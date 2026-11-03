@@ -100,7 +100,17 @@ impl Document {
 /// An operator built from a plan (§8).
 pub struct PlannedOperator {
     name: String,
+    /// Its structure over the model state (§2): `block_diagonal` when it is
+    /// pointwise with `structure.block` and every model state shares one
+    /// shape. Its `jac` fills storage of this structure; its `jac_over`
+    /// fills a leaf's storage directly.
     structure: Structure,
+    /// Pointwise, with `structure.block`: a leaf of such operators whose own
+    /// state variables share a shape is `block_diagonal` (§8.3).
+    blockable: bool,
+    /// Every model state's first canonical DOF and extents, in canonical
+    /// order (§8.2).
+    states: Vec<(usize, Vec<usize>)>,
     depends_on_t: bool,
     linear_in_u: bool,
     /// Canonical DOFs written, ascending.
@@ -188,6 +198,58 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
     fn writes(&self) -> Vec<usize> {
         self.writes.clone()
     }
+    fn structure_over(&self, dofs: &[usize], _n_model: usize) -> Result<Structure, String> {
+        // §8.3: block_diagonal when every operator of the leaf is pointwise
+        // with structure.block and the leaf's own state variables (those
+        // with a DOF in `dofs`) are all arrays of one shape (ncells its
+        // cells) or all scalars (ncells = 1), n being their number. The
+        // model's other states do not matter.
+        if !self.blockable {
+            return Ok(Structure::Dense);
+        }
+        // The leaf's own states: those with a DOF in `dofs`. Each must be
+        // whole (every DOF of it in the leaf) and they must make up the
+        // leaf, so that, states being contiguous in canonical order, the
+        // leaf's state vector is species-major with ncells cells: leaf index
+        // k·ncells + c is cell c of the k-th own state.
+        let mut own: Vec<&Vec<usize>> = Vec::new();
+        let mut whole = 0;
+        for (start, ext) in &self.states {
+            let len: usize = ext.iter().product();
+            let lo = dofs.partition_point(|&j| j < *start);
+            let hi = dofs.partition_point(|&j| j < start + len);
+            if hi > lo {
+                if hi - lo != len {
+                    return Ok(Structure::Dense);
+                }
+                own.push(ext);
+                whole += len;
+            }
+        }
+        let Some(&shape) = own.first() else {
+            return Ok(Structure::Dense);
+        };
+        let ncells: usize = shape.iter().product();
+        if whole != dofs.len() || own.iter().any(|e| *e != shape) {
+            return Ok(Structure::Dense);
+        }
+        // A pointwise operator's entries in the leaf stay inside their cell.
+        let loc = |j: usize| dofs.binary_search(&j).ok();
+        for &(_, r, c) in &self.points {
+            if let (Some(lr), Some(lc)) = (loc(r), loc(c)) {
+                if lr % ncells != lc % ncells {
+                    return Err(format!(
+                        "structure.block, but its band entry ({r}, {c}) joins two cells \
+                         (operator-interface.md §8.3)"
+                    ));
+                }
+            }
+        }
+        Ok(Structure::BlockDiagonal {
+            ncells,
+            n: own.len(),
+        })
+    }
     fn reads(&self) -> Option<Vec<usize>> {
         // The columns of the Jacobian's band points: the DOFs the right-hand
         // side depends on.
@@ -224,6 +286,34 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
     }
     fn vjp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, w: &[T]) {
         self.jprod(out, u, p, t, w, true)
+    }
+    fn jac_over(&self, out: &mut MatrixStorage<T>, dofs: &[usize], u: &[T], p: &[f64], t: f64) {
+        // Each band point at the leaf's rows and columns, at its leaf
+        // indices; a column outside the leaf is one of its constants. A
+        // block_diagonal leaf's points stay inside their cell (checked by
+        // structure_over), so either storage takes every point.
+        let at: Vec<(usize, usize, usize)> = self
+            .points
+            .iter()
+            .filter_map(|&(k, r, c)| {
+                Some((
+                    k,
+                    dofs.binary_search(&r).ok()?,
+                    dofs.binary_search(&c).ok()?,
+                ))
+            })
+            .collect();
+        let done = self.jacobian.eval(u, p, t, |du| {
+            for &(k, a, b) in &at {
+                out.add(a, b, T::from_f64(du[k]));
+            }
+        });
+        if let Err(e) = done {
+            self.record("Jacobian", e);
+            for &(_, a, b) in &at {
+                out.add(a, b, T::from_f64(f64::NAN));
+            }
+        }
     }
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
         // A block_diagonal operator's points stay inside their cell (checked
@@ -612,14 +702,15 @@ fn build_operator(
         points.extend(scatter.into_iter().map(|(off, r, c)| (base + off, r, c)));
     }
 
-    // §8.3: block_diagonal when the operator is pointwise with
-    // structure.block and the states are all arrays of one shape (ncells
-    // the cells of that shape) or all scalars (ncells = 1), with n the
-    // number of states. A leaf of such operators that writes only some of
-    // the states is block_diagonal over its own (schedule::leaf_structure).
-    let pointwise = entry["locality"]["class"].as_str() == Some("pointwise");
+    // The structure over the model state: block_diagonal when the operator
+    // is pointwise with structure.block and the model's states are all
+    // arrays of one shape (ncells the cells of that shape) or all scalars
+    // (ncells = 1), with n the number of states. A leaf's own structure
+    // looks at its own states only (structure_over, §8.3).
+    let blockable =
+        entry["locality"]["class"].as_str() == Some("pointwise") && st.get("block").is_some();
     let structure = match ncells {
-        Some(ncells) if pointwise && st.get("block").is_some() => {
+        Some(ncells) if blockable => {
             if let Some((_, r, c)) = points.iter().find(|(_, r, c)| r % ncells != c % ncells) {
                 return Err(bad(format!(
                     "structure.block, but its band entry ({r}, {c}) joins two cells"
@@ -635,6 +726,8 @@ fn build_operator(
     Ok(PlannedOperator {
         name: name.to_string(),
         structure,
+        blockable,
+        states: dofs.states.values().cloned().collect(),
         depends_on_t,
         linear_in_u,
         writes,
