@@ -497,7 +497,7 @@ const PLAN_FILES = String[]
         @test templated > 0
     end
 
-    @testset "band_model_failed names the term that fails, after the probe document fails" begin
+    @testset "band_model_failed names the term whose derivative fails, in pass 4" begin
         cfg = joinpath(CONF, "plans", "refusals", "band-model-failed", "run.json")
         err = try
             EarthSciIntegrator.plan(cfg); nothing
@@ -505,22 +505,22 @@ const PLAN_FILES = String[]
             e
         end
         @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
-        # The refusal comes from the search: the probe document itself fails.
+        # Pass 2 reads the terms' structure only, which takes no derivative:
+        # the probe succeeds, in batches of any size, with every term's own
+        # structure.
         b = DiffBackend()
         ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(cfg), b)
-        @test EarthSciIntegrator.probe_band_dicts(b, ctx, EarthSciIntegrator.build_terms(ctx.model)) === nothing
-        # The third term, erf(x); the two before it differentiate.
-        @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
-        # In batches of any size, the same term refuses with the same message.
         terms = EarthSciIntegrator.build_terms(ctx.model)
+        each = [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
+        @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms) == each
+        fields(x) = ntuple(i -> getfield(x, i), fieldcount(typeof(x)))
         for large in (0, 1, 3)
-            e2 = try
-                EarthSciIntegrator.all_term_bands(b, ctx, terms; large); nothing
-            catch e
-                e
-            end
-            @test e2 isa PlannerRefusal && e2.code == err.code && e2.msg == err.msg
+            @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms; large)] ==
+                [map(d -> fields(EarthSciIntegrator.BandEntry(d)), x) for x in each]
         end
+        # The operator's document fails in pass 4, and the refusal names its
+        # third term, erf(x), with that term's own document's message.
+        @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
     end
 
     @testset "the probe document fails exactly when a term's own document fails (§5.2.2)" begin

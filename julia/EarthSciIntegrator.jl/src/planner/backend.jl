@@ -22,15 +22,17 @@ function DerivedDocument(doc::AbstractDict{String, Any})
 end
 
 """
-    document_bands(flat, what) -> Vector{EarthSciASTDiff.JacEntry}
+    document_bands(flat, what; coefficients = true) -> Vector{EarthSciASTDiff.JacEntry}
 
 EarthSciASTDiff's state Jacobian of a right-hand-side document, loaded,
-flattened (`flat`) and viewed with `sysview` (§5.2.2, §5.4). An
+flattened (`flat`) and viewed with `sysview` (§5.2.2, §5.4). With
+`coefficients = false`, its structure-only entries (esm-jacobian-spec §2.1),
+which carry no coefficient: the pattern pass 2 reads (§5.2.2). An
 EarthSciASTDiff refusal is `band_model_failed` at `/model`, naming `what`.
 """
-function document_bands(flat::EarthSciAST.FlattenedSystem, what::AbstractString)
+function document_bands(flat::EarthSciAST.FlattenedSystem, what::AbstractString; coefficients::Bool = true)
     try
-        return EarthSciASTDiff.jacobian_bands(EarthSciASTDiff.sysview(flat); wrt = :states)
+        return EarthSciASTDiff.jacobian_bands(EarthSciASTDiff.sysview(flat); wrt = :states, coefficients)
     catch e
         e isa PlannerRefusal && rethrow()
         refuse("band_model_failed", "/model", "EarthSciASTDiff refused to differentiate $what: " * sprint(showerror, e))
@@ -47,8 +49,8 @@ end
     BandEntry(en::EarthSciASTDiff.JacEntry, row = en.u)
 
 The [`BandEntry`](@ref) of `BandEntry(band_json(en))`, with row `row`, read
-from the entry's fields so that its coefficient, which pass 2 never reads, is
-not serialized (§5.2.2).
+from the entry's fields, so that a full entry's coefficient is not
+serialized. Pass 2's entries are structure-only (§5.2.2) and have none.
 """
 function BandEntry(en::EarthSciASTDiff.JacEntry, row::AbstractString = en.u)
     b = en.band
@@ -119,14 +121,14 @@ function term_band_dicts(b::DiffBackend, ctx, t::Term)
     # than through its bytes.
     flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
     what = "term ($(t.variable), $(t.contribution), $(t.summand))"
-    return Dict{String, Any}[band_json(en) for en in document_bands(flat, what)]
+    return Dict{String, Any}[band_json(en) for en in document_bands(flat, what; coefficients = false)]
 end
 
 function term_bands(b::DiffBackend, ctx, t::Term)
     bind!(b, ctx)
     flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
     what = "term ($(t.variable), $(t.contribution), $(t.summand))"
-    return BandEntry[BandEntry(en) for en in document_bands(flat, what)]
+    return BandEntry[BandEntry(en) for en in document_bands(flat, what; coefficients = false)]
 end
 
 """
@@ -160,9 +162,8 @@ end
     probe_term_bands(b::DiffBackend, ctx, terms) -> Union{Vector{Vector{BandEntry}}, Nothing}
 
 [`probe_band_dicts`](@ref) as [`BandEntry`](@ref)s, read from EarthSciASTDiff's
-entries without serializing their coefficients. Nothing of the probe is kept
-once it returns: its flattened document and its entries, coefficients
-included, are garbage.
+structure-only entries. Nothing of the probe is kept once it returns: its
+flattened document and its entries are garbage.
 """
 function probe_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
     entries = _probe_entries(b, ctx, terms)
@@ -186,7 +187,7 @@ function _probe_entries(b::DiffBackend, ctx, terms::AbstractVector{Term}; min_no
     bind!(b, ctx)
     doc = probe_document(ctx.model, terms; min_nodes)
     return try
-        document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document")
+        document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document"; coefficients = false)
     catch e
         e isa InterruptException && rethrow()
         e isa PlannerRefusal && e.code != "band_model_failed" && rethrow()
@@ -253,10 +254,11 @@ end
 """
     all_term_bands(b::DiffBackend, ctx, terms; large = LARGE_TERM_NODES) -> Vector{Vector{BandEntry}}
 
-Every term's bands, from one probe document per batch ([`probe_batches`](@ref),
-[`probe_term_bands`](@ref)), in batch order. Each batch's bands are kept
-without their coefficients, and the batch's probe is dropped before the next
-one is built, so only one large term's coefficients are held at a time.
+Every term's bands, EarthSciASTDiff's structure-only entries (§5.2.2), from
+one probe document per batch ([`probe_batches`](@ref),
+[`probe_term_bands`](@ref)), in batch order. The batch's probe is dropped
+before the next one is built, so only one large term's probe is held at a
+time.
 A failure on a batch's probe names no term, so that batch is then split in
 halves and each half probed in turn, first half first, down to single terms,
 whose own documents are differentiated ([`term_bands`](@ref)). The first term
@@ -270,7 +272,7 @@ function all_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term}; large:
     batches = probe_batches(terms; large)
     for (i, r) in enumerate(batches)
         _term_bands!(out, b, ctx, terms, r)
-        # Free the batch's coefficients before the next batch is probed.
+        # Free the batch's probe before the next batch is probed.
         i < length(batches) && GC.gc()
     end
     return out
@@ -298,7 +300,19 @@ function artifacts!(b::DiffBackend, ctx, op::PlanOperator)
     bind!(b, ctx)
     haskey(b.ops, op.name) && return b.ops[op.name]
     d = DerivedDocument(rhs_document(ctx.model, op.name, op.terms))
-    entries = document_bands(d.flat, "operator $(op.name)")
+    entries = try
+        document_bands(d.flat, "operator $(op.name)")
+    catch e
+        (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
+        # Pass 2 read the terms' structure only, which takes no derivative;
+        # a term whose derivative fails is reported here, against the first
+        # such term of the operator, with its own document's message (§5.2.2).
+        for t in op.terms
+            flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
+            document_bands(flat, "term ($(t.variable), $(t.contribution), $(t.summand))")
+        end
+        rethrow()
+    end
     dicts = Dict{String, Any}[band_json(en) for en in entries]
     a = OperatorArtifacts(
         d, entries, dicts, BandEntry[BandEntry(x) for x in dicts], EarthSciASTDiff.sysview(d.flat),
