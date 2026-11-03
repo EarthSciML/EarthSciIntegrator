@@ -369,8 +369,8 @@ end
 # scalar. chem writes X and Y and reads only them, decay writes Z, and push
 # writes W and reads Z (W' = -W + Z). The Rust tests plan the same document
 # (rust/earthsci-integrator/tests/leaf_state_m2.rs).
-function mixed_shapes_plan(name)
-    dir = joinpath(M2_PLANS, name)
+function mixed_shapes_plan()
+    dir = joinpath(M2_PLANS, "mixed_shapes")
     rm(dir; force = true, recursive = true)
     mkpath(dir)
     fa(e) = Dict("op" => "faq", "args" => [], "output_idx" => ["i"], "ranges" => Dict("i" => Dict("from" => "cell")), "expr" => e)
@@ -422,6 +422,13 @@ function mixed_shapes_plan(name)
     return joinpath(dir, "plan")
 end
 
+# The mixed-shapes plan, planned once and shared by the testsets below.
+const MIXED_SHAPES = Ref{Any}(nothing)
+function mixed_shapes_problem()
+    MIXED_SHAPES[] === nothing && (MIXED_SHAPES[] = EarthSciIntegrator.plan_problem(mixed_shapes_plan()))
+    return MIXED_SHAPES[]
+end
+
 """A run config of `schedule` and `adjoint` against the mixed-shapes plan `pp`."""
 function mixed_cfg(pp, schedule; adjoint = nothing)
     cfg = Dict{String, Any}("esm_integrator" => "0.1.0", "step" => pp.plan["step"], "schedule" => schedule)
@@ -433,9 +440,19 @@ end
 # operators are pointwise with structure.block and its own state variables
 # share one shape, whatever the shapes of the model's other states.
 @testset "block_diagonal over the leaf's own states" begin
-    pp = EarthSciIntegrator.plan_problem(mixed_shapes_plan("mixed_shapes_block"))
+    pp = mixed_shapes_problem()
     # Canonical order: Box.W, Box.X, Box.Y (4 cells each), Box.Z.
     @test pp.prob.N == 13
+    # An operator's own structure is that of a leaf of it alone: chem writes
+    # X and Y over 4 cells, decay the scalar Z.
+    @test EarthSciIntegrator.structure(pp.prob.operators["chem"]) == EarthSciIntegrator.BlockDiagonalStructure(4, 2)
+    @test EarthSciIntegrator.structure(pp.prob.operators["decay"]) == EarthSciIntegrator.BlockDiagonalStructure(1, 1)
+    # §8.2: an operator's reads are its bands' columns. The adjoint's check
+    # below rests on them: push reads W and Z.
+    reads(o) = EarthSciIntegrator.reads(pp.prob.operators[o], pp.prob.N)
+    @test reads("chem") == 5:12
+    @test reads("decay") == [13]
+    @test reads("push") == [1, 2, 3, 4, 13]
     leaves = pp.plan["schedule"]["sequence"]
     run = build_run(mixed_cfg(pp, Dict("sequence" => leaves)); tspan = pp.prob.tspan, prob = pp.prob)
     chem, decay, push = run.leaves["root.0"], run.leaves["root.1"], run.leaves["root.2"]
@@ -457,7 +474,7 @@ end
 # reads a state the leaf does not advance is refused, and so is one with
 # respect to parameters (planned operators provide no vjp_p at M2).
 @testset "the adjoint through a planned leaf" begin
-    pp = EarthSciIntegrator.plan_problem(mixed_shapes_plan("mixed_shapes_adjoint"))
+    pp = mixed_shapes_problem()
     leaves = pp.plan["schedule"]["sequence"]
     wrt_u0 = Dict("functional" => Dict("sum" => "Box.Y", "over" => "final"), "wrt" => ["u0"])
     ctl = Dict("dt_scope" => "global", "reltol" => 1.0e-8, "abstol" => 1.0e-10)
@@ -465,12 +482,15 @@ end
     for (what, sch) in ("Kvaerno4" => [leaves[1], leaves[2]], "Tsit5" => [erk, leaves[2]])
         run = forward!(build_run(mixed_cfg(pp, Dict("sequence" => sch); adjoint = wrt_u0); tspan = pp.prob.tspan, prob = pp.prob))
         @test run.retcode == "Success"
-        _, ū0, _ = gradient(run)
+        _, ū0, p̄ = gradient(run)
         # Σ Y(1) does not depend on W or Z: their cotangents pass through the
         # chem leaf unchanged, and no leaf sends them anything.
         @test all(==(0.0), ū0[1:4]) && ū0[13] == 0.0
         # dY(1)/dY₀ = e^{-1}.
         @test all(y -> isapprox(y, exp(-1); atol = 1.0e-6), ū0[9:12])
+        # Planned operators provide no vjp_p, so the parameter cotangent is
+        # not formed: NaN, never a partial sum.
+        @test all(isnan, p̄)
         case = Dict("id" => "m2.mixed_shapes.adjoint.$what")
         check_fd_gradient(case, run, Dict("rtol" => 1.0e-6, "epsilons" => [1.0e-3, 1.0e-4, 1.0e-5]))
         check_replay(case, run, Dict())
@@ -486,7 +506,8 @@ end
     end
     @test err isa UnsupportedError &&
         err.msg == "leaf root.2: operator push may read states the leaf does not advance; the adjoint of a leaf through its constants is not implemented (operator-interface.md §1)"
-    # Parameter gradients need vjp_p.
+    # Parameter gradients need vjp_p. Both chem and decay lack it; the
+    # refusal names the first in schedule order.
     err = try
         build_run(
             mixed_cfg(pp, Dict("sequence" => [leaves[1], leaves[2]]); adjoint = Dict("functional" => Dict("sum" => "Box.Y", "over" => "final"), "wrt" => ["params:numeric"]));
@@ -495,7 +516,7 @@ end
     catch e
         e
     end
-    @test err isa ConfigError && occursin("chem", err.msg) && occursin("vjp_p", err.msg)
+    @test err isa ConfigError && err.msg == "operator 'chem' of leaf root.0 does not provide vjp_p, which the adjoint needs"
 end
 
 @testset "M2 result files validate against result.schema.json" begin

@@ -154,7 +154,7 @@ function build_run(
         for n in nodes
             (n isa LeafNode && n.state !== nothing) || continue
             for op in n.ops.ops
-                r = reads(op isa PartOperator ? op.op : op, prob.N)
+                r = reads(op, prob.N)
                 (r !== nothing && all(j -> n.state.loc[j] > 0, r)) ||
                     throw(UnsupportedError("leaf $(n.id): operator $(opname(op)) may read states the leaf does not advance; the adjoint of a leaf through its constants is not implemented (operator-interface.md §1)"))
             end
@@ -209,8 +209,11 @@ function build_run(
         # operator-interface.md §3: vjp_p is required when an adjoint is taken
         # with respect to p; a Rosenbrock adjoint needs hess_u, and hess_p with
         # respect to p, and ft_vjp_u, ft_vjp_p for operators that depend on t
-        # when the method forms f_t (spec/adjoint.md §3).
-        for leaf in values(leaves), op in leaf.ops.ops
+        # when the method forms f_t (spec/adjoint.md §3). The leaves are checked
+        # in schedule order, so that the refusal names the first operator
+        # missing a call, whatever the order of the `leaves` Dict.
+        in_order = [leaves[n.id] for n in nodes if haskey(leaves, n.id)]
+        for leaf in in_order, op in leaf.ops.ops
             need = isempty(wrt_p) ? Symbol[] : [:vjp_p]
             # hess_u is zero for an operator linear in u, and is not called
             # for it (operator-interface.md §3).

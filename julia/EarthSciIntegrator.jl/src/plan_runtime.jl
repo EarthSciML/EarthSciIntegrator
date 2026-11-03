@@ -211,7 +211,11 @@ depends_on_t(op::PlannedOperator) = op.depends_on_t
 linear_in_u(op::PlannedOperator) = op.linear_in_u
 writes(op::PlannedOperator, N) = op.writes
 # The columns of the band points that land on a DOF: the DOFs the right-hand
-# side depends on (spec/operator-interface.md §8.3). Ghost reads are left out.
+# side depends on (spec/operator-interface.md §8.2). Ghost reads are left out.
+# They are as complete as the bands, which the operator's jac, jvp_u and vjp_u
+# also rest on: a dependence the planner's bands miss would make vjp_u wrong
+# for a leaf over every state too, so the bands' completeness is the planner's
+# to guarantee (esm-jacobian-spec), not something this check can add.
 reads(op::PlannedOperator, N) = sort!(unique!(Int[c for (_, _, c) in op.points]))
 # §8.3: a Rosenbrock leaf on a planned operator that depends on t is refused,
 # whatever the method's dᵢ.
@@ -309,7 +313,7 @@ depends_on_t(o::LeafOperator) = o.op.depends_on_t
 linear_in_u(o::LeafOperator) = o.op.linear_in_u
 writes(o::LeafOperator, N) = o.writes
 # Model-state DOFs, as the adjoint's check compares them with the leaf's (§1).
-reads(o::LeafOperator, N) = reads(o.op, length(o.leaf.loc))
+reads(o::LeafOperator, N) = reads(o.op, N)
 ft_refused_on_rosenbrock(::LeafOperator) = true
 
 """
@@ -570,17 +574,22 @@ function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDoc
 end
 
 """
-The structure of a planned operator (spec/operator-interface.md §8.3):
-`block_diagonal` when it is pointwise with `structure.block` and the model's
-states are all arrays of one shape (`ncells` its cells) or all scalars
-(`ncells` = 1), with `n` the number of states; otherwise `dense`.
+The structure of a planned operator: the structure a leaf of this operator
+alone has (spec/operator-interface.md §8.3). It is `block_diagonal` when the
+operator is pointwise with `structure.block` and the state variables it
+writes are all arrays of one shape (`ncells` its cells) or all scalars
+(`ncells` = 1), with `n` the number of those variables; otherwise `dense`.
+The model's other states do not matter. A leaf of several planned operators
+takes its structure from all of its state variables ([`bind_planned_leaf`](@ref)).
 """
 function planned_structure(entry, L::DofLayout)
     st = entry["structure"]
     entry["locality"]["class"] == "pointwise" && haskey(st, "block") || return DenseStructure()
-    exts = collect(values(L.extents))
+    vars = unique(String.(entry["writes"]))
+    isempty(vars) && return DenseStructure()
+    exts = [L.extents[x] for x in vars]
     all(==(first(exts)), exts) || return DenseStructure()
-    return BlockDiagonalStructure(prod(first(exts); init = 1), length(exts))
+    return BlockDiagonalStructure(prod(first(exts); init = 1), length(vars))
 end
 
 """

@@ -80,8 +80,11 @@ end
 
 The discrete adjoint gradient of the run's functional on the frozen tape
 (spec/adjoint.md §2.2): `ū₀ = λ(t₀)` (§6.2) and `p̄` over every parameter,
-with bind_dt-bound parameters set to zero (§5.8). Needs [`forward!`](@ref)
-first. Point terms are added on reaching their output times (§2.1).
+with bind_dt-bound parameters set to zero (§5.8). An entry of `p̄` is NaN
+when some leaf's operators do not provide the parameter calls its adjoint
+needs (planned operators at M2, operator-interface.md §8.3); [`build_run`](@ref)
+refuses such a run when `wrt` names a parameter, so only entries outside
+`wrt` can be NaN. Needs [`forward!`](@ref) first. Point terms are added on reaching their output times (§2.1).
 """
 function gradient(run::Run)
     run.retcode == "Success" || error("gradient needs a successful forward run (retcode $(run.retcode))")

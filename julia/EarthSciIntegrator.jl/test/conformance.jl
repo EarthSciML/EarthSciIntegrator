@@ -261,7 +261,9 @@ function check_fd_gradient(case, run, chk)
     δu = run.wrt_u0 ? direction(rng, u0dir) : zeros(length(run.u0))
     δp = zeros(length(run.p))
     δp[run.wrt_p] .= direction(rng, run.p[run.wrt_p])
-    D = dot(ū0, δu) + dot(p̄, δp)
+    # Only the parameters in wrt are differentiated: p̄ need not be formed for
+    # the others (it is NaN through a leaf whose operators provide no vjp_p).
+    D = dot(ū0, δu) + dot(p̄[run.wrt_p], δp[run.wrt_p])
     # Implicit stages are converged to roundoff on these replays (spec/adjoint.md
     # §7.2): the adjoint is the exact implicit-function derivative, while central
     # differences of a loosely converged Newton carry an error of order tol/ε.

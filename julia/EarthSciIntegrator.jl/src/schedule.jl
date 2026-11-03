@@ -241,8 +241,11 @@ binds_to_leaf(::AbstractOperator) = false
 """
     reads(op, N) -> Vector{Int} or nothing
 
-The 1-based DOFs of an `N`-vector state that `f_k` may depend on, when the
-operator knows them; `nothing` (the default) when it does not. A leaf that
+The 1-based DOFs of the `N`-vector model state that `f_k` may depend on,
+when the operator knows them; `nothing` (the default) when it does not. An
+operator wrapped to act on a leaf's state vector ([`PartOperator`](@ref), a
+planned leaf's `LeafOperator`) forwards to the operator it wraps, so its
+reads are still model-state DOFs. A leaf that
 advances part of the state needs them for its adjoint: the states it does
 not advance are its constants (§1), and their cotangents pass through it
 unchanged only when no operator of the leaf reads them.
@@ -282,6 +285,8 @@ depends_on_t(o::PartOperator) = depends_on_t(o.op)
 linear_in_u(o::PartOperator) = linear_in_u(o.op)
 writes(o::PartOperator, N) = o.writes
 provides(o::PartOperator, call::Symbol) = provides(o.op, call)
+# reads, unlike writes, are DOFs of the model state, the wrapped operator's (§1).
+reads(o::PartOperator, N) = reads(o.op, N)
 ft_refused_on_rosenbrock(o::PartOperator) = ft_refused_on_rosenbrock(o.op)
 
 """
@@ -592,7 +597,7 @@ for one that advances the whole state.
 """
 function with_background(l::LeafNode, u)
     l.state === nothing && return l
-    rebind(s::OperatorSum) = OperatorSum(map(o -> with_background(o, u), s.ops))
+    rebind(s::OperatorSum) = OperatorSum(map(o -> with_background(o, u), s.ops), s.forms_p)
     imex = l.imex === nothing ? nothing :
         (l.imex[1] === nothing ? nothing : rebind(l.imex[1]), rebind(l.imex[2]))
     return LeafNode(
