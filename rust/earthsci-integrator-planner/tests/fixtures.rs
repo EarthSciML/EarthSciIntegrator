@@ -409,7 +409,7 @@ fn hand_bands_agree() {
 /// states carry their equation states' index sets and `ic` equations.
 #[test]
 fn probe_document_gives_each_terms_bands() {
-    use earthsci_integrator_planner::astdiff::testing;
+    use earthsci_integrator_planner::astdiff::{self, testing};
     use earthsci_integrator_planner::{derived, model, runconfig, terms};
     for (fixture, case) in CASES {
         let rc = runconfig::read(&run_config(fixture, case)).unwrap();
@@ -421,6 +421,36 @@ fn probe_document_gives_each_terms_bands() {
             .unwrap_or_else(|m| panic!("{fixture}/{case}: the probe document failed: {m}"));
         let each = testing::each_term(&info, &ts).unwrap();
         assert_eq!(probe, each, "{fixture}/{case}");
+        // So do smaller batches: with a lower bound for a large term, each
+        // batch is a consecutive run holding at most one large term.
+        let sizes: Vec<u64> = ts
+            .iter()
+            .map(|t| astdiff::operator_nodes(&t.expr, 1_000_000_000))
+            .collect();
+        let mut sorted = sizes.clone();
+        sorted.sort_unstable();
+        let median = sorted.get(sorted.len().saturating_sub(1) / 2).copied();
+        for large in [Some(0), Some(1), median].into_iter().flatten() {
+            let batches = astdiff::probe_batches(&ts, large);
+            let covered: Vec<usize> = batches.iter().flat_map(|r| r.clone()).collect();
+            assert_eq!(
+                covered,
+                (0..ts.len()).collect::<Vec<_>>(),
+                "{fixture}/{case}"
+            );
+            for (i, r) in batches.iter().enumerate() {
+                let n = sizes[r.clone()].iter().filter(|&&s| s > large).count();
+                assert!(
+                    n <= 1 && (i == 0 || n == 1),
+                    "{fixture}/{case} {large}: {batches:?}"
+                );
+            }
+            assert_eq!(
+                testing::in_batches(&info, &ts, large).unwrap(),
+                each,
+                "{fixture}/{case}: batches with large = {large}"
+            );
+        }
         let doc = derived::probe_document(&info, &ts);
         let probe_model = &doc["models"][derived::PROBE_COMPONENT];
         let vars = probe_model["variables"].as_object();

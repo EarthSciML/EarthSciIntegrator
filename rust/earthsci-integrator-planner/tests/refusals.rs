@@ -6,7 +6,7 @@ mod common;
 use common::conformance;
 use earthsci_integrator_planner::astdiff::{testing, AstDiffBands};
 use earthsci_integrator_planner::error::codes;
-use earthsci_integrator_planner::locality::NoBands;
+use earthsci_integrator_planner::locality::{BandSourceError, NoBands};
 use earthsci_integrator_planner::{model, plan, runconfig, terms, Options, PlanError};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -65,7 +65,15 @@ fn band_model_failed_names_its_term() {
     // The refusal comes from the fallback, not from the probe.
     let probe = testing::probe(&info, &ts).unwrap();
     assert!(probe.is_err(), "the probe document differentiates");
-    assert_eq!(testing::each_term(&info, &ts).unwrap_err().term, 2);
+    let failure = testing::each_term(&info, &ts).unwrap_err();
+    assert_eq!(failure.term, 2);
+    // In batches of any size, the same term fails with the same message.
+    for large in [0, 1, 3] {
+        match testing::in_batches(&info, &ts, large) {
+            Err(BandSourceError::Failed(f)) => assert_eq!(f, failure, "large = {large}"),
+            other => panic!("large = {large}: want the third term's failure, got {other:?}"),
+        }
+    }
     match plan(&path, &Options::default(), &AstDiffBands) {
         Err(PlanError::Refused(r)) => {
             assert_eq!(
