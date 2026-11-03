@@ -21,3 +21,10 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 [workspace.dependencies]
 earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.0.1" }
 earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.0.1" }
+
+# EarthSciASTDiff's structure-only mode (`jacobian_structure_view`,
+# esm-jacobian-spec §2.1), which pass 2 reads (spec/plan.md §5.2.2), is not
+# released yet: EarthSciML/EarthSciASTDiff#59. Remove this once a release
+# has it, and raise the planner's `earthsci-astdiff` requirement to it.
+[patch.crates-io]
+earthsci-astdiff = { git = "https://github.com/EarthSciML/EarthSciASTDiff", branch = "feat/structure-only-bands" }

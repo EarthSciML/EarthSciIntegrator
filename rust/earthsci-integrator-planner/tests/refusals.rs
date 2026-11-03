@@ -6,7 +6,7 @@ mod common;
 use common::conformance;
 use earthsci_integrator_planner::astdiff::{testing, AstDiffBands};
 use earthsci_integrator_planner::error::codes;
-use earthsci_integrator_planner::locality::{BandSourceError, NoBands};
+use earthsci_integrator_planner::locality::NoBands;
 use earthsci_integrator_planner::{model, plan, runconfig, terms, Options, PlanError};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -53,26 +53,27 @@ fn refusal_fixtures() {
     assert_eq!(passed, expected.as_object().unwrap().len());
 }
 
-/// `band_model_failed` (§5.2.2) is reported against the term it concerns:
-/// the probe document fails, and the term documents find the third term,
-/// whose `erf` has no derivative rule.
+/// `band_model_failed` (§5.2.2) is reported against the term it concerns.
+/// Pass 2 reads the terms' structure only, which takes no derivative, so
+/// the probe and every term's own structure succeed; the operator's
+/// document fails in pass 4, and the terms' own documents find the third
+/// term, whose `erf` has no derivative rule.
 #[test]
 fn band_model_failed_names_its_term() {
     let path = conformance().join("plans/refusals/band-model-failed/run.json");
     let rc = runconfig::read(&path).unwrap();
     let info = model::read(&rc).unwrap();
     let ts = terms::terms(&info).unwrap();
-    // The refusal comes from the fallback, not from the probe.
     let probe = testing::probe(&info, &ts).unwrap();
-    assert!(probe.is_err(), "the probe document differentiates");
-    let failure = testing::each_term(&info, &ts).unwrap_err();
-    assert_eq!(failure.term, 2);
-    // In batches of any size, the same term fails with the same message.
+    assert!(probe.is_ok(), "the probe document's structure fails");
+    let each = testing::each_term(&info, &ts).unwrap();
+    assert_eq!(probe.unwrap(), each);
     for large in [0, 1, 3] {
-        match testing::in_batches(&info, &ts, large) {
-            Err(BandSourceError::Failed(f)) => assert_eq!(f, failure, "large = {large}"),
-            other => panic!("large = {large}: want the third term's failure, got {other:?}"),
-        }
+        assert_eq!(
+            testing::in_batches(&info, &ts, large).unwrap(),
+            each,
+            "large = {large}"
+        );
     }
     match plan(&path, &Options::default(), &AstDiffBands) {
         Err(PlanError::Refused(r)) => {

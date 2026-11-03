@@ -10,7 +10,7 @@ use crate::locality::{BandEntry, BandFailure, BandSource, BandSourceError, RowId
 use crate::model::ModelInfo;
 use crate::terms::Term;
 use earthsci_ast::{Expr, ExpressionNode, FlattenedSystem};
-use earthsci_astdiff::{BandError, JacEntry, RIdx, SysView, Wrt};
+use earthsci_astdiff::{BandError, JacEntry, RIdx, StructureEntry, SysView, Wrt};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -52,6 +52,22 @@ pub fn bands(sv: &SysView) -> Result<Vec<JacEntry>, BandError> {
     earthsci_astdiff::jacobian_bands_view(sv, Wrt::States, None)
 }
 
+/// The state Jacobian's structure-only entries of the view `sv`
+/// (`jacobian_structure_view`, `wrt = states`; esm-jacobian-spec §2.1):
+/// the pattern pass 2 reads (§5.2.2), without coefficients.
+pub fn structure(sv: &SysView) -> Result<Vec<StructureEntry>, BandError> {
+    earthsci_astdiff::jacobian_structure_view(sv, Wrt::States, None)
+}
+
+fn row_idx(ridx: &[RIdx]) -> Vec<RowIdx> {
+    ridx.iter()
+        .map(|r| match r {
+            RIdx::Name(n) => RowIdx::Name(n.clone()),
+            RIdx::Fixed(i) => RowIdx::Fixed(*i),
+        })
+        .collect()
+}
+
 /// A band entry as the locality rules read it (§5.2.3).
 pub fn band_entry(en: &JacEntry) -> BandEntry {
     let b = &en.band;
@@ -59,14 +75,20 @@ pub fn band_entry(en: &JacEntry) -> BandEntry {
         row: en.u.clone(),
         col: en.v.clone(),
         rows: b.rows.clone(),
-        row_idx: b
-            .ridx
-            .iter()
-            .map(|r| match r {
-                RIdx::Name(n) => RowIdx::Name(n.clone()),
-                RIdx::Fixed(i) => RowIdx::Fixed(*i),
-            })
-            .collect(),
+        row_idx: row_idx(&b.ridx),
+        col_idx: b.cidx.clone(),
+        contracted: b.contracted.clone(),
+    }
+}
+
+/// A structure-only entry as the locality rules read it (§5.2.3).
+pub fn structure_entry(en: &StructureEntry) -> BandEntry {
+    let b = &en.band;
+    BandEntry {
+        row: en.u.clone(),
+        col: en.v.clone(),
+        rows: b.rows.clone(),
+        row_idx: row_idx(&b.ridx),
         col_idx: b.cidx.clone(),
         contracted: b.contracted.clone(),
     }
@@ -79,6 +101,15 @@ pub fn document_bands(doc: &Value) -> Result<Vec<JacEntry>, String> {
     let view = FlatView::of_document(doc)?;
     let sv = view.sysview().map_err(astdiff_message)?;
     bands(&sv).map_err(astdiff_message)
+}
+
+/// The structure-only entries of the document `doc` (§5.2.2): loaded,
+/// flattened, viewed and read for its pattern. A failure anywhere is a
+/// message for `band_model_failed`.
+pub fn document_structure(doc: &Value) -> Result<Vec<StructureEntry>, String> {
+    let view = FlatView::of_document(doc)?;
+    let sv = view.sysview().map_err(astdiff_message)?;
+    structure(&sv).map_err(astdiff_message)
 }
 
 /// An EarthSciASTDiff failure as a `band_model_failed` message.
@@ -139,11 +170,12 @@ pub fn probe_batches(terms: &[Term], large: u64) -> Vec<Range<usize>> {
 /// of the right-hand-side document of a hypothetical operator holding only
 /// that term. They are computed in batches ([`probe_batches`]), one probe
 /// document per batch ([`derived::probe_document`]): one EarthSciAST load
-/// and flatten and one `jacobian_bands` call, whose bands with row
-/// `probe_state(k)` are the batch's term `k`'s, row renamed to its
-/// variable. Each batch's bands are kept without their coefficients, and
+/// and flatten and one call for EarthSciASTDiff's structure-only entries
+/// (`jacobian_structure_view`, which carry no coefficient), whose entries
+/// with row `probe_state(k)` are the batch's term `k`'s, row renamed to its
+/// variable. Each batch's bands are kept as [`BandEntry`] values, and
 /// its probe is dropped before the next batch is built, so only one large
-/// term's coefficients are held at a time. A probe that succeeds gives the
+/// term's probe is held at a time. A probe that succeeds gives the
 /// batch's bands. A failure on it names no term, so the batch is then split
 /// in halves and each half probed in turn, first half first, down to
 /// single terms, whose own documents are differentiated: the first term
@@ -172,10 +204,11 @@ impl AstDiffBands {
         terms: &[Term],
         min_nodes: u64,
     ) -> Result<Probe, BandSourceError> {
-        let entries = match document_bands(&derived::probe_document_with(info, terms, min_nodes)) {
-            Ok(e) => e,
-            Err(message) => return Ok(Err(message)),
-        };
+        let entries =
+            match document_structure(&derived::probe_document_with(info, terms, min_nodes)) {
+                Ok(e) => e,
+                Err(message) => return Ok(Err(message)),
+            };
         let index: HashMap<String, usize> = (0..terms.len())
             .map(|k| (derived::probe_state(k), k))
             .collect();
@@ -188,7 +221,7 @@ impl AstDiffBands {
                     en.u
                 ))
             })?;
-            let mut b = band_entry(en);
+            let mut b = structure_entry(en);
             b.row = terms[k].variable.clone();
             out[k].push(b);
         }
@@ -199,8 +232,9 @@ impl AstDiffBands {
     /// failure is `band_model_failed` for the term at position `i`.
     fn own(info: &ModelInfo, t: &Term, i: usize) -> Result<Vec<BandEntry>, BandFailure> {
         let doc = derived::rhs_document(info, "term", &[t]);
-        let bands = document_bands(&doc).map_err(|message| BandFailure { term: i, message })?;
-        Ok(bands.iter().map(band_entry).collect())
+        let entries =
+            document_structure(&doc).map_err(|message| BandFailure { term: i, message })?;
+        Ok(entries.iter().map(structure_entry).collect())
     }
 
     /// The band lists of `terms`, the terms from position `first` on, into

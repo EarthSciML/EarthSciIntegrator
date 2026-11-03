@@ -261,8 +261,29 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         let sv = view
             .sysview()
             .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
-        let band_list =
-            astdiff::bands(&sv).map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let band_list = match astdiff::bands(&sv) {
+            Ok(b) => b,
+            Err(e) => {
+                // Pass 2 read the terms' structure only, which takes no
+                // derivative; a term whose derivative fails is reported
+                // here, against the first such term of the operator, with
+                // its own document's message (§5.2.2).
+                for t in &ts {
+                    let own = derived::rhs_document(&info, "term", &[t]);
+                    if let Err(m) = astdiff::document_bands(&own) {
+                        return Err(refuse(
+                            codes::BAND_MODEL_FAILED,
+                            "/model",
+                            format!(
+                                "term ({}, {}, {}): {m}",
+                                t.variable, t.contribution, t.summand
+                            ),
+                        ));
+                    }
+                }
+                return Err(band_model_failed(astdiff::astdiff_message(e)));
+            }
+        };
         let st = structure::structure(&info, &axes, op, &terms, &sv, band_list, &state_dependent)?;
         jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
