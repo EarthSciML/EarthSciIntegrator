@@ -450,6 +450,21 @@ const PLAN_FILES = String[]
         fields(x) = ntuple(i -> getfield(x, i), fieldcount(typeof(x)))
         @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms)] ==
             [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
+        # A BandEntry read from EarthSciASTDiff's entry equals one read from
+        # `serialize_band`'s dictionary.
+        @test [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms] ==
+            [map(d -> fields(EarthSciIntegrator.BandEntry(d)), EarthSciIntegrator.term_band_dicts(b, ctx, t)) for t in terms]
+        # So do smaller batches (§5.2.2): with a lower bound for a large term,
+        # each batch is a consecutive run holding at most one large term.
+        sizes = [EarthSciIntegrator.operator_nodes(t.expr, 10^9) for t in terms]
+        for large in unique!([0, 1, sort(sizes)[cld(length(sizes), 2)]])
+            batches = EarthSciIntegrator.probe_batches(terms; large)
+            @test reduce(vcat, collect.(batches); init = Int[]) == collect(eachindex(terms))
+            @test all(r -> count(>(large), sizes[r]) <= 1, batches)
+            @test all(i -> count(>(large), sizes[batches[i]]) == 1, 2:length(batches))
+            @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms; large)] ==
+                [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
+        end
         # The probe states are declared with their equation state's index sets.
         doc = EarthSciIntegrator.probe_document(m, terms)
         vars = doc["models"]["JacobianEval"]["variables"]
@@ -476,6 +491,16 @@ const PLAN_FILES = String[]
         @test EarthSciIntegrator.probe_band_dicts(b, ctx, EarthSciIntegrator.build_terms(ctx.model)) === nothing
         # The third term, erf(x); the two before it differentiate.
         @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
+        # In batches of any size, the same term refuses with the same message.
+        terms = EarthSciIntegrator.build_terms(ctx.model)
+        for large in (0, 1, 3)
+            e2 = try
+                EarthSciIntegrator.all_term_bands(b, ctx, terms; large); nothing
+            catch e
+                e
+            end
+            @test e2 isa PlannerRefusal && e2.code == err.code && e2.msg == err.msg
+        end
     end
 
     @testset "the probe document fails exactly when a term's own document fails (§5.2.2)" begin

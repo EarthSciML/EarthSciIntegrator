@@ -43,6 +43,24 @@ function band_json(en)
     return Dict{String, Any}(String(k) => v for (k, v) in d if k != "coef")
 end
 
+"""
+    BandEntry(en::EarthSciASTDiff.JacEntry, row = en.u)
+
+The [`BandEntry`](@ref) of `BandEntry(band_json(en))`, with row `row`, read
+from the entry's fields so that its coefficient, which pass 2 never reads, is
+not serialized (§5.2.2).
+"""
+function BandEntry(en::EarthSciASTDiff.JacEntry, row::AbstractString = en.u)
+    b = en.band
+    return BandEntry(
+        String(row), String(en.v), Tuple{Int, Int}[(Int(lo), Int(hi)) for (lo, hi) in b.rows],
+        Union{String, Int}[x isa AbstractString ? String(x) : Int(x) for x in b.ridx],
+        Any[EarthSciAST.serialize_expression(c) for c in b.cidx],
+        Tuple{String, Int, Int}[(String(n), Int(lo), Int(hi)) for (n, lo, hi) in b.contracted],
+        b.guard === nothing ? nothing : EarthSciAST.serialize_expression(b.guard)
+    )
+end
+
 """An operator's artifacts: its right-hand-side document, its bands (as EarthSciASTDiff's entries, `serialize_band`'s dictionaries without `coef`, and [`BandEntry`](@ref)s), and, once needed, its Jacobian document and the built documents."""
 mutable struct OperatorArtifacts
     rhs::DerivedDocument
@@ -104,7 +122,12 @@ function term_band_dicts(b::DiffBackend, ctx, t::Term)
     return Dict{String, Any}[band_json(en) for en in document_bands(flat, what)]
 end
 
-term_bands(b::DiffBackend, ctx, t::Term) = BandEntry[BandEntry(d) for d in term_band_dicts(b, ctx, t)]
+function term_bands(b::DiffBackend, ctx, t::Term)
+    bind!(b, ctx)
+    flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
+    what = "term ($(t.variable), $(t.contribution), $(t.summand))"
+    return BandEntry[BandEntry(en) for en in document_bands(flat, what)]
+end
 
 """
     probe_band_dicts(b::DiffBackend, ctx, terms) -> Union{Vector{Vector{Dict{String, Any}}}, Nothing}
@@ -118,16 +141,8 @@ names no term. Only those calls are guarded: an error in building the probe
 document or in reading its bands is the planner's own and propagates.
 """
 function probe_band_dicts(b::DiffBackend, ctx, terms::AbstractVector{Term})
-    bind!(b, ctx)
-    doc = probe_document(ctx.model, terms)
-    entries = try
-        document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document")
-    catch e
-        e isa InterruptException && rethrow()
-        e isa PlannerRefusal && e.code != "band_model_failed" && rethrow()
-        @debug "The probe document of $(length(terms)) terms failed; splitting it (§5.2.2)" exception = e
-        return nothing
-    end
+    entries = _probe_entries(b, ctx, terms)
+    entries === nothing && return nothing
     out = [Dict{String, Any}[] for _ in terms]
     index = Dict(probe_state(k) => k for k in eachindex(terms))
     for en in entries
@@ -144,28 +159,119 @@ end
 """
     probe_term_bands(b::DiffBackend, ctx, terms) -> Union{Vector{Vector{BandEntry}}, Nothing}
 
-[`probe_band_dicts`](@ref) as [`BandEntry`](@ref)s.
+[`probe_band_dicts`](@ref) as [`BandEntry`](@ref)s, read from EarthSciASTDiff's
+entries without serializing their coefficients. Nothing of the probe is kept
+once it returns: its flattened document and its entries, coefficients
+included, are garbage.
 """
 function probe_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
-    out = probe_band_dicts(b, ctx, terms)
-    return out === nothing ? nothing : [BandEntry[BandEntry(d) for d in x] for x in out]
+    entries = _probe_entries(b, ctx, terms)
+    entries === nothing && return nothing
+    out = [BandEntry[] for _ in terms]
+    index = Dict(probe_state(k) => k for k in eachindex(terms))
+    for en in entries
+        k = get(index, en.u, nothing)
+        k === nothing && error("probe document: a band whose row $(en.u) is not a probe state")
+        push!(out[k], BandEntry(en, terms[k].variable))
+    end
+    return out
 end
 
 """
-    all_term_bands(b::DiffBackend, ctx, terms) -> Vector{Vector{BandEntry}}
+The probe document's entries (EarthSciASTDiff's `JacEntry`s), or `nothing`
+when EarthSciAST or EarthSciASTDiff fails on it.
+"""
+function _probe_entries(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    bind!(b, ctx)
+    doc = probe_document(ctx.model, terms)
+    return try
+        document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document")
+    catch e
+        e isa InterruptException && rethrow()
+        e isa PlannerRefusal && e.code != "band_model_failed" && rethrow()
+        @debug "The probe document of $(length(terms)) terms failed; splitting it (§5.2.2)" exception = e
+        nothing
+    end
+end
 
-Every term's bands from one probe document ([`probe_term_bands`](@ref)).
-A failure on the probe names no term, so the term list is then split in
+"""
+    LARGE_TERM_NODES
+
+A term is **large** when its expression has more than this many operator
+nodes, every occurrence counted (§5.2.2): the probe holds at most one large
+term at a time.
+"""
+const LARGE_TERM_NODES = 10_000
+
+"""
+    operator_nodes(e, limit) -> Int
+
+The number of operator nodes of `e`, every occurrence counted, in every
+Expression-valued child, or `limit + 1` when it exceeds `limit`. A node
+reached through several parents is counted once per path but walked once.
+"""
+function operator_nodes(e, limit::Int)
+    memo = IdDict{EarthSciAST.OpExpr, Int}()
+    return min(_operator_nodes(e, memo, limit), limit + 1)
+end
+
+function _operator_nodes(e, memo::IdDict{EarthSciAST.OpExpr, Int}, limit::Int)
+    e isa EarthSciAST.OpExpr || return 0
+    n = get(memo, e, nothing)
+    n === nothing || return n
+    c = 1
+    EarthSciAST.map_children(e) do x
+        c = min(c + _operator_nodes(x, memo, limit), limit + 1)
+        x
+    end
+    return memo[e] = c
+end
+
+"""
+    probe_batches(terms; large = LARGE_TERM_NODES) -> Vector{UnitRange{Int}}
+
+§5.2.2's batches: consecutive runs of `terms`, in term order, each holding at
+most one large term (more than `large` operator nodes). A batch ends just
+before a large term when it already holds one.
+"""
+function probe_batches(terms::AbstractVector{Term}; large::Int = LARGE_TERM_NODES)
+    out = UnitRange{Int}[]
+    start, seen = 1, false
+    for (k, t) in enumerate(terms)
+        operator_nodes(t.expr, large) > large || continue
+        if seen
+            push!(out, start:(k - 1))
+            start = k
+        end
+        seen = true
+    end
+    isempty(terms) || push!(out, start:length(terms))
+    return out
+end
+
+"""
+    all_term_bands(b::DiffBackend, ctx, terms; large = LARGE_TERM_NODES) -> Vector{Vector{BandEntry}}
+
+Every term's bands, from one probe document per batch ([`probe_batches`](@ref),
+[`probe_term_bands`](@ref)), in batch order. Each batch's bands are kept
+without their coefficients, and the batch's probe is dropped before the next
+one is built, so only one large term's coefficients are held at a time.
+A failure on a batch's probe names no term, so that batch is then split in
 halves and each half probed in turn, first half first, down to single terms,
 whose own documents are differentiated ([`term_bands`](@ref)). The first term
 whose own document fails, in term order, refuses with `band_model_failed`
-and that document's message (§5.2.2). Finding it takes about `2 log₂ n`
-probe documents rather than one document per term.
+and that document's message (§5.2.2): the batches are consecutive and taken
+in order, so it is the first such term of the whole list.
 """
-function all_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
+function all_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term}; large::Int = LARGE_TERM_NODES)
     bind!(b, ctx)
     out = Vector{Vector{BandEntry}}(undef, length(terms))
-    _term_bands!(out, b, ctx, terms, 1:length(terms))
+    batches = probe_batches(terms; large)
+    for (i, r) in enumerate(batches)
+        _term_bands!(out, b, ctx, terms, r)
+        # Free the batch's coefficients before the next batch is probed.
+        i < length(batches) && GC.gc()
+    end
     return out
 end
 
