@@ -1,2 +1,6 @@
-# Planner goldens are compared byte for byte (spec/plan.md §9): never convert line endings.
-tests/conformance/plans/fixtures/**/*.golden/** -text
+# Planner fixtures: never convert line endings. The goldens' plan.json and
+# derived/*.esm are compared byte for byte (spec/plan.md §9), and plan.json
+# records the SHA-256 of each input's bytes (§7.7): model.esm, <case>.run.json,
+# and the toy models some fixtures load from tests/conformance/toys/.
+tests/conformance/plans/fixtures/** -text
+tests/conformance/toys/** -text
