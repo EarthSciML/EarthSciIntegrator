@@ -411,6 +411,7 @@ fn hand_bands_agree() {
 fn probe_document_gives_each_terms_bands() {
     use earthsci_integrator_planner::astdiff::{self, testing};
     use earthsci_integrator_planner::{derived, model, runconfig, terms};
+    let mut templated = 0;
     for (fixture, case) in CASES {
         let rc = runconfig::read(&run_config(fixture, case)).unwrap();
         let info = model::read(&rc).unwrap();
@@ -450,6 +451,21 @@ fn probe_document_gives_each_terms_bands() {
                 each,
                 "{fixture}/{case}: batches with large = {large}"
             );
+        }
+        // So does the probe with more of its shared subexpressions written
+        // as templates, down to every repeated one (§5.2.2).
+        for min_nodes in [1, 2, u64::MAX] {
+            let p = testing::probe_with(&info, &ts, min_nodes)
+                .unwrap()
+                .unwrap_or_else(|m| panic!("{fixture}/{case} {min_nodes}: {m}"));
+            assert_eq!(p, each, "{fixture}/{case}: templates of {min_nodes} nodes");
+        }
+        let doc = derived::probe_document_with(&info, &ts, 1);
+        if doc["models"][derived::PROBE_COMPONENT]
+            .get("expression_templates")
+            .is_some()
+        {
+            templated += 1;
         }
         let doc = derived::probe_document(&info, &ts);
         let probe_model = &doc["models"][derived::PROBE_COMPONENT];
@@ -491,6 +507,8 @@ fn probe_document_gives_each_terms_bands() {
             assert_eq!(ics(&x), want, "{fixture}/{case} {k}: ic equations");
         }
     }
+    // Some fixture has repeated subexpressions, so templates were tested.
+    assert!(templated > 0);
 }
 
 #[test]

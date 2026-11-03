@@ -162,7 +162,17 @@ impl AstDiffBands {
     /// EarthSciASTDiff's message when it fails on it. A band whose row is
     /// not a probe state is the planner's own error.
     fn probe(info: &ModelInfo, terms: &[Term]) -> Result<Probe, BandSourceError> {
-        let entries = match document_bands(&derived::probe_document(info, terms)) {
+        Self::probe_with(info, terms, derived::PROBE_TEMPLATE_MIN_NODES)
+    }
+
+    /// [`Self::probe`] of the probe document whose templates have at least
+    /// `min_nodes` operator nodes ([`derived::probe_document_with`]).
+    fn probe_with(
+        info: &ModelInfo,
+        terms: &[Term],
+        min_nodes: u64,
+    ) -> Result<Probe, BandSourceError> {
+        let entries = match document_bands(&derived::probe_document_with(info, terms, min_nodes)) {
             Ok(e) => e,
             Err(message) => return Ok(Err(message)),
         };
@@ -244,6 +254,16 @@ pub mod testing {
     /// The probe document's band lists, or its failure's message.
     pub fn probe(info: &ModelInfo, terms: &[Term]) -> Result<Probe, BandSourceError> {
         AstDiffBands::probe(info, terms)
+    }
+
+    /// The band lists of the probe document whose templates have at least
+    /// `min_nodes` operator nodes, or its failure's message.
+    pub fn probe_with(
+        info: &ModelInfo,
+        terms: &[Term],
+        min_nodes: u64,
+    ) -> Result<Probe, BandSourceError> {
+        AstDiffBands::probe_with(info, terms, min_nodes)
     }
 
     /// Every term's band list, in batches whose large terms have more than
