@@ -210,6 +210,9 @@ structure(op::PlannedOperator) = op.structure
 depends_on_t(op::PlannedOperator) = op.depends_on_t
 linear_in_u(op::PlannedOperator) = op.linear_in_u
 writes(op::PlannedOperator, N) = op.writes
+# The columns of the band points that land on a DOF: the DOFs the right-hand
+# side depends on (spec/operator-interface.md §8.3). Ghost reads are left out.
+reads(op::PlannedOperator, N) = sort!(unique!(Int[c for (_, _, c) in op.points]))
 # §8.3: a Rosenbrock leaf on a planned operator that depends on t is refused,
 # whatever the method's dᵢ.
 ft_refused_on_rosenbrock(::PlannedOperator) = true
@@ -305,6 +308,8 @@ structure(o::LeafOperator) = o.structure
 depends_on_t(o::LeafOperator) = o.op.depends_on_t
 linear_in_u(o::LeafOperator) = o.op.linear_in_u
 writes(o::LeafOperator, N) = o.writes
+# Model-state DOFs, as the adjoint's check compares them with the leaf's (§1).
+reads(o::LeafOperator, N) = reads(o.op, length(o.leaf.loc))
 ft_refused_on_rosenbrock(::LeafOperator) = true
 
 """

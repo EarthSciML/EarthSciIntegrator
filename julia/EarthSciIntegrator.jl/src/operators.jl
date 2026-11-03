@@ -270,10 +270,31 @@ for call in (:rhs!, :ft!, :jac!)
         return out
     end
 end
-for call in (:jvp_u!, :vjp_u!, :vjp_p!, :hess_u!, :hess_p!, :ft_vjp_u!, :ft_vjp_p!)
+for call in (:jvp_u!, :vjp_u!, :ft_vjp_u!)
     @eval function $call(s::OperatorSum, out, u, p, t, x)
         for op in s.ops
             $call(op, out, u, p, t, x)
+        end
+        return out
+    end
+end
+# hess_u is zero for an operator linear in u, which need not provide it
+# (operator-interface.md §3).
+function hess_u!(s::OperatorSum, out, u, p, t, x)
+    for op in s.ops
+        linear_in_u(op) || hess_u!(op, out, u, p, t, x)
+    end
+    return out
+end
+# The parameter cotangents: an adjoint with respect to p is refused when the
+# run is built unless every operator provides the calls it needs (§3), so an
+# operator that does not provide one is in an adjoint with respect to u0
+# only, whose parameter cotangent is not used.
+for call in (:vjp_p!, :hess_p!, :ft_vjp_p!)
+    name = QuoteNode(Symbol(string(call)[1:(end - 1)]))
+    @eval function $call(s::OperatorSum, out, u, p, t, x)
+        for op in s.ops
+            provides(op, $name) && $call(op, out, u, p, t, x)
         end
         return out
     end

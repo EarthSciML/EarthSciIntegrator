@@ -150,12 +150,13 @@ function build_run(
         # The reverse of a leaf that advances part of the model state carries
         # the other states' cotangents through unchanged, which is exact when
         # no operator of the leaf reads them (spec/operator-interface.md §1).
+        # A leaf of planned operators that writes every DOF passes trivially.
         for n in nodes
             (n isa LeafNode && n.state !== nothing) || continue
             for op in n.ops.ops
                 r = reads(op isa PartOperator ? op.op : op, prob.N)
                 (r !== nothing && all(j -> n.state.loc[j] > 0, r)) ||
-                    throw(UnsupportedError("leaf $(n.id) advances part of the model state and operator '$(opname(op))' may read states it does not advance (spec/operator-interface.md §1, §8.2); the adjoint of such a leaf is not implemented"))
+                    throw(UnsupportedError("leaf $(n.id): operator $(opname(op)) may read states the leaf does not advance; the adjoint of a leaf through its constants is not implemented (operator-interface.md §1)"))
             end
         end
         haskey(adj, "checkpoint") && throw(UnsupportedError("adjoint.checkpoint: M1 checkpoints every macro step in memory"))
@@ -211,13 +212,15 @@ function build_run(
         # when the method forms f_t (spec/adjoint.md §3).
         for leaf in values(leaves), op in leaf.ops.ops
             need = isempty(wrt_p) ? Symbol[] : [:vjp_p]
+            # hess_u is zero for an operator linear in u, and is not called
+            # for it (operator-interface.md §3).
             if leaf.method isa IMEXEulerMethod && leaf.method.linearized && op in leaf.imex[2].ops
                 # The linearized step's adjoint is a one-stage Rosenbrock adjoint (D43).
-                push!(need, :hess_u)
+                linear_in_u(op) || push!(need, :hess_u)
                 isempty(wrt_p) || push!(need, :hess_p)
             end
             if leaf.method isa RosenbrockMethod
-                push!(need, :hess_u)
+                linear_in_u(op) || push!(need, :hess_u)
                 isempty(wrt_p) || push!(need, :hess_p)
                 if leaf.method.uses_ft && depends_on_t(op)
                     push!(need, :ft_vjp_u)

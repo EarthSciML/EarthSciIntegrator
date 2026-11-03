@@ -139,7 +139,7 @@ The documents are in [`../tests/conformance/toys/`](../tests/conformance/toys/),
 - `id` is the M1 case's `id` prefixed with `m2.`, so the two suites' result files (§3) never carry the same `case`;
 - `model` is the problem's document, relative to the cases file, and `operators` defines the problem's operators by the selectors of §4.1, so the M1 schedule's operator names resolve;
 - every leaf's `control.dt_scope` is `global`, as at M1, where the planner would resolve pointwise leaves to `cell` (D17);
-- `adjoint` is removed and the only check is `toy_equivalence` (§4.3): planned operators do not yet provide `vjp_p` or second-order calls (spec/operator-interface.md §8.3);
+- `adjoint` is removed and the only check is `toy_equivalence` (§4.3): planned operators provide no `vjp_p` or second-order calls at M2, so they support only the adjoints of spec/operator-interface.md §8.3 (with respect to the initial state), which each implementation's own tests check;
 - `layout` lists the variables of §4.1's last column.
 
 Left out: `source_decay_map` (maps), and every case with a Rosenbrock leaf on a time-dependent problem (`forced_decay`, `photostationary_cells`), since planned operators have no `ft` at M2 (spec/plan.md §10 item 4; U17 restores them). That leaves 41 of the 51 M1 cases.
