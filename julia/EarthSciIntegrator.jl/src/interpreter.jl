@@ -109,10 +109,18 @@ function build_run(
     for k in keys(step)
         k in ("dt", "hit") || throw(UnsupportedError("step.$k is not implemented in this stage"))
     end
-    # A plan writes `hit` always, `[]` by default (spec/plan.md §7.3).
+    # A plan writes `hit` always, `[]` by default (spec/plan.md §7.3). Its
+    # entries name tstop sources (spec/run-config.md §5). The output times
+    # are always tstops here, so `output` asks for nothing more; the other
+    # sources are not implemented.
     hit = get(step, "hit", Any[])
-    hit isa AbstractVector || throw(ConfigError("step.hit must be a list of times, not $(repr(hit))"))
-    isempty(hit) || throw(UnsupportedError("step.hit with entries is not implemented in this stage"))
+    (hit isa AbstractVector && all(h -> h isa AbstractString, hit)) ||
+        throw(ConfigError("step.hit must be a list of tstop sources (forcing_refresh, output, restart, events), not $(repr(hit))"))
+    for h in hit
+        h in ("forcing_refresh", "output", "restart", "events") ||
+            throw(ConfigError("step.hit: unknown tstop source '$h' (forcing_refresh, output, restart or events)"))
+        h == "output" || throw(UnsupportedError("step.hit '$h' is not implemented in this stage"))
+    end
     haskey(step, "dt") || throw(UnsupportedError("a step without dt (macro steps from the root leaf's accepted steps, D49) is not implemented in this stage"))
     dt = parse_duration(step["dt"], prob, "step.dt")
     t0, tf = Float64(tspan[1]), Float64(tspan[2])
@@ -370,9 +378,7 @@ end
 """The model state `u` with the leaf's state `x` scattered into its DOFs."""
 function _scatter(S::LeafState, u, x)
     v = similar(u, promote_type(eltype(u), eltype(x)))
-    copyto!(v, u)
-    v[S.dofs] = x
-    return v
+    return place!(copyto!(v, u), S.dofs, x)
 end
 
 function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64)

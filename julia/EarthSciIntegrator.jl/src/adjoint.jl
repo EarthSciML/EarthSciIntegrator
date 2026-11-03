@@ -11,8 +11,9 @@
 """
     leaf_adjoint!(entry, λ, p̄, seeds) -> λ
 
-Reverse one leaf invocation. `seeds` maps interior output times to
-`∇φ` (point terms of the functional at stops inside the invocation).
+Reverse one leaf invocation. `seeds` maps output times to `∇φ`; the point
+terms at the invocation's interior stops are added, each once, at the state
+the forward pass reached it with (the last step that ends at it).
 """
 function leaf_adjoint!(entry, λ, p̄, seeds)
     leaf = entry[2]
@@ -21,24 +22,32 @@ function leaf_adjoint!(entry, λ, p̄, seeds)
     # state vector. The states it does not advance are unchanged by it, and
     # (as build_run checks) none of its operators reads them, so their
     # cotangents pass through, with the point terms at its interior stops.
+    # Only the seeds at those stops matter (`_leaf_adjoint!` adds no other).
     S = leaf.state
+    stops, states = entry[6], entry[7]
+    tb = last(stops)
     λo = copy(λ)
-    sx = Dict(t => s[S.dofs] for (t, s) in seeds)
-    λx = _leaf_adjoint!(entry, λ[S.dofs], p̄, sx)
-    tb = last(entry[6])
-    for (t, s) in seeds
-        t != tb && any(st -> st[6] == t, entry[7]) && (λo .+= s)
+    sx = Dict{Float64, Vector{Float64}}()
+    for τ in stops
+        (τ != tb && haskey(seeds, τ) && any(st -> st[6] == τ, states)) || continue
+        sx[τ] = seeds[τ][S.dofs]
+        λo .+= seeds[τ]
     end
-    λo[S.dofs] = λx
+    λo[S.dofs] = _leaf_adjoint!(entry, λ[S.dofs], p̄, sx)
     return λo
 end
 
 function _leaf_adjoint!(entry, λ, p̄, seeds)
     _, leaf, _, _, _, stops, states = entry
     tb = last(stops)
+    seeded = Set{Float64}()
     for (u, t, h, pp, mask, tnew, tk1) in Iterators.reverse(states)
-        if tnew != tb && haskey(seeds, tnew)
+        # The first step met in reverse that ends at an interior output time
+        # is the last forward step to it; a later zero-length step at that
+        # stop (methods.md §10) does not add the point term again.
+        if tnew != tb && haskey(seeds, tnew) && !(tnew in seeded)
             λ = λ .+ seeds[tnew]
+            push!(seeded, tnew)
         end
         ts = next_stop(stops, t)
         _, isstop = stop_rule(t, h, ts)

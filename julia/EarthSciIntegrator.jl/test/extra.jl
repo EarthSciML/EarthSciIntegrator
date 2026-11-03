@@ -138,6 +138,22 @@ const ADAPTIVE_EXPLICIT = ["Heun", "RK4", "BS3", "Tsit5", "SSPRK43"]
         @test run.root.tol.dofs == collect(1:64) && length(run.root.tol.abstol) == 64
         forward!(run)
         @test run.u[65:128] == run.u0[65:128]
+        # The same operator advancing the whole state, with the error norm
+        # over all 128 DOFs, takes different steps: the leaf-sized norm is
+        # what sets the step sequence above.
+        l = run.root
+        whole = EarthSciIntegrator.Tolerances(l.tol.reltol, fill(1.0e-10, 128))
+        @test whole.dofs == collect(1:128)
+        ops = EarthSciIntegrator.OperatorSum([run.prob.operators["transport"]])
+        lw = EarthSciIntegrator.LeafNode(
+            l.id, l.opnames, ops, l.tab, l.method, l.dt, whole, l.dt0, l.dtmin, l.dtmax,
+            l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, l.ψ, l.imex, nothing
+        )
+        cs = EarthSciIntegrator.ControllerState(l.tab.controller)
+        ub = EarthSciIntegrator.leaf_forward(lw, cs, copy(run.u0), run.p, 0.0, 0.1, "0/root", 0.1, [0.1])
+        @test ub.record.retcode == "Success"
+        @test ub.record.steps != [s for r in run.tape.records if r isa LeafRecord for s in r.steps]
+        @test ub.u[1:64] ≈ run.u[1:64] rtol = 1.0e-6
     end
     # bind_dt: the leaf's step bound to a parameter, which gets no cotangent.
     run_xcase(

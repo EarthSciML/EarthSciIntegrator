@@ -276,6 +276,36 @@ EarthSciIntegrator.depends_on_t(::M2TimeDependentOp) = true
     end
 end
 
+@testset "planned documents: defaults and per-caller buffers" begin
+    plandir = joinpath(M2_PLANS, "m2.forced_decay.BackwardEuler.fixed")
+    if isfile(joinpath(plandir, "plan.json"))
+        # A parameter default written as an integer agrees with itself: the
+        # consistency check compares the Float64 the parameter vector holds.
+        dir = mktempdir(RESULTS_DIR)
+        cp(plandir, joinpath(dir, "plan"))
+        plan = JSON.parsefile(joinpath(dir, "plan", "plan.json"))
+        for kind in ("rhs", "jacobian")
+            rel = "derived/decay.$kind.esm"
+            f = joinpath(dir, "plan", rel)
+            doc = JSON.parsefile(f)
+            doc["models"]["Decay"]["variables"]["k"]["default"] = 2
+            write(f, JSON.json(doc))
+            plan["derived"][rel]["sha256"] = bytes2hex(EarthSciIntegrator.sha256(read(f)))
+        end
+        write(joinpath(dir, "plan", "plan.json"), JSON.json(plan))
+        pp = EarthSciIntegrator.plan_problem(joinpath(dir, "plan"))
+        @test pp.prob.p[findfirst(==("Decay.k"), pp.prob.pnames)] === 2.0
+        rm(dir; recursive = true)
+        # Two callers holding workspaces at once get their own auxiliary
+        # buffers, as well as their slot buffers.
+        d = EarthSciIntegrator.plan_problem(plandir).prob.operators["decay"].rhs
+        w1, w2 = EarthSciIntegrator._acquire(d), EarthSciIntegrator._acquire(d)
+        @test w1.aux !== w2.aux && w1.U !== w2.U && w1.du !== w2.du
+        EarthSciIntegrator._release(d, w1)
+        EarthSciIntegrator._release(d, w2)
+    end
+end
+
 # spec/operator-interface.md §8.2: a leaf of planned operators advances the
 # union of its operators' writes; every other state is a constant of the leaf,
 # and a block-diagonal leaf's block size is the number of its own states.

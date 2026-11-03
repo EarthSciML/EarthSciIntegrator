@@ -192,3 +192,45 @@ ls_push_relax() = ToyProblem(
     end
     @test err isa UnsupportedError && occursin("push", err.msg)
 end
+
+@testset "leaf options on states the leaf does not advance" begin
+    # A per-variable abstol or nonnegative list that also names B, which the
+    # transport leaf does not advance, is accepted (the planner accepts it):
+    # the entries on B are dropped, since B is a constant of the leaf.
+    prob = toy_problem("toy:advection_reaction")
+    sch = Dict(
+        "leaf" => "transport", "alg" => "Tsit5",
+        "control" => Dict("reltol" => 1.0e-6, "abstol" => Dict("A" => 1.0e-9, "B" => 1.0e-3)),
+        "domain" => Dict("nonnegative" => ["A", "B"]),
+    )
+    r = build_run(ls_cfg(sch; dt = 0.1); tspan = (0.0, 0.1), prob)
+    @test r.root.tol.abstol == fill(1.0e-9, LS_NC)
+    @test r.root.nonnegative == collect(1:LS_NC)
+    @test forward!(r).retcode == "Success"
+    sch["domain"] = Dict("nonnegative" => ["B"])
+    @test isempty(build_run(ls_cfg(sch; dt = 0.1); tspan = (0.0, 0.1), prob).root.nonnegative)
+end
+
+@testset "step.hit" begin
+    prob = toy_problem("toy:advection_reaction")
+    sch = Dict("leaf" => "transport", "alg" => "RK4", "dt" => 0.01)
+    function hit_run(hit)
+        cfg = ls_cfg(sch; dt = 0.05)
+        cfg["step"] = Dict{String, Any}("dt" => 0.05, "hit" => hit)
+        return try
+            build_run(cfg; tspan = (0.0, 0.1), saveat = [0.05, 0.1], prob)
+        catch e
+            e
+        end
+    end
+    # The output times are always tstops, so `output` is accepted (a plan
+    # writes it, spec/plan.md §7.3), and runs as a run without it does.
+    r = hit_run(["output"])
+    @test r isa EarthSciIntegrator.Run
+    @test forward!(r).u == forward!(hit_run(Any[])).u
+    @test hit_run(["events"]) isa UnsupportedError
+    err = hit_run(["forcing_records"])
+    @test err isa ConfigError && occursin("tstop source", err.msg)
+    err = hit_run([0.05])
+    @test err isa ConfigError && occursin("tstop sources", err.msg)
+end

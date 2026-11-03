@@ -10,13 +10,26 @@
 # the start of each invocation (`with_background`) and which fill every
 # other state from it, so those are constants of the leaf.
 
-"""A workspace of a [`PlanDocument`](@ref): EarthSciAST's, and the slot, output and parameter buffers of one call."""
+"""
+A workspace of a [`PlanDocument`](@ref) for one caller: EarthSciAST's, the
+slot, output and parameter buffers, and the auxiliary buffer and forcing set
+the program's `rhs!` is given. Nothing a call writes is shared between
+callers.
+"""
 struct DocWorkspace{W}
     ws::W
     U::Vector{Float64}
     du::Vector{Float64}
     P::Vector{Float64}
+    aux::Vector{Float64}
+    fs::EarthSciAST.ForcingSet
 end
+
+"""A new workspace for program `prog`, with `nslots` slots and `npar` parameters."""
+DocWorkspace(prog, nslots::Integer, npar::Integer) = DocWorkspace(
+    EarthSciAST.rhs_workspace(prog), zeros(nslots), zeros(nslots), zeros(npar),
+    zeros(EarthSciAST.tile_layout(prog).n_aux), EarthSciAST.default_forcing_set(prog)
+)
 
 """
     PlanDocument
@@ -27,15 +40,14 @@ maps each canonical DOF to its slot in the program's `u`, `pidx` each of the
 program's parameters to its index in the model's parameter vector (§8.2),
 and `nslots` is the length of the program's `u`. `slots` maps each state
 element name to its slot, from the program's state layout, which the build
-checks the problem's `var_map` and `u0` agree with. Workspaces are kept in a
-pool, one per concurrent caller (EarthSciAST's `rhs_workspace`), so one
-document serves every thread.
+checks the problem's `var_map` and `u0` agree with. Workspaces
+([`DocWorkspace`](@ref), everything a call writes) are kept in a pool, one per
+concurrent caller, so one document serves every thread, and every plan that
+shares it through a cache.
 """
 struct PlanDocument{P, W}
     path::String
     prog::P
-    fs::EarthSciAST.ForcingSet
-    aux::Vector{Float64}
     nslots::Int
     perm::Vector{Int}
     pidx::Vector{Int}
@@ -47,7 +59,7 @@ end
 
 """`d` with another `path` (the plan directory's own, for a document a cache built for another plan), `perm` or `pidx`."""
 _with(d::PlanDocument; path = d.path, perm = d.perm, pidx = d.pidx) =
-    PlanDocument(String(path), d.prog, d.fs, d.aux, d.nslots, perm, pidx, d.slots, d.u0, d.pool, d.lock)
+    PlanDocument(String(path), d.prog, d.nslots, perm, pidx, d.slots, d.u0, d.pool, d.lock)
 
 """
 The slot of every state element of program `prog` in its `u`, from its state
@@ -93,12 +105,9 @@ function build_plan_document(path::AbstractString, opname::AbstractString, tspan
     end
     length(prob.var_map) == nslots ||
         throw(ConfigError("operator '$opname': $(basename(path)): the problem names $(length(prob.var_map)) of the program's $nslots states"))
-    ws = EarthSciAST.rhs_workspace(prog)
-    npar = length(EarthSciAST.parameters(prog))
-    w = DocWorkspace(ws, zeros(nslots), zeros(nslots), zeros(npar))
+    w = DocWorkspace(prog, nslots, length(EarthSciAST.parameters(prog)))
     return PlanDocument(
-        String(path), prog, EarthSciAST.default_forcing_set(prog), zeros(EarthSciAST.tile_layout(prog).n_aux),
-        nslots, Int[], Int[], slots, Float64.(prob.u0), [w], ReentrantLock()
+        String(path), prog, nslots, Int[], Int[], slots, Float64.(prob.u0), [w], ReentrantLock()
     )
 end
 
@@ -123,7 +132,7 @@ function _acquire(d::PlanDocument{P, W}) where {P, W}
         isempty(d.pool) ? nothing : pop!(d.pool)
     end
     w === nothing || return w
-    return DocWorkspace{W}(EarthSciAST.rhs_workspace(d.prog), zeros(d.nslots), zeros(d.nslots), zeros(length(d.pidx)))
+    return DocWorkspace(d.prog, d.nslots, length(d.pidx))::DocWorkspace{W}
 end
 _release(d::PlanDocument, w::DocWorkspace) = lock(() -> push!(d.pool, w), d.lock)
 
@@ -156,7 +165,7 @@ function evaluate(f, d::PlanDocument, u, p, t)
         @inbounds for j in eachindex(d.pidx)
             P[j] = p[d.pidx[j]]
         end
-        EarthSciAST.rhs!(w.du, d.prog, w.ws, U, d.aux, P, Float64(t), d.fs)
+        EarthSciAST.rhs!(w.du, d.prog, w.ws, U, w.aux, P, Float64(t), w.fs)
         return f(w.du)
     finally
         _release(d, w)
@@ -295,7 +304,9 @@ its calls take and return leaf-sized vectors. `writes` are leaf indices,
 row, col)` with `k` the point's index in the operator's band points and the
 leaf's row and column (an entry in a column outside the leaf's DOFs is
 dropped, §8.3), and `structure` the leaf's storage (§8.3): its block size is
-the number of the leaf's state variables.
+the number of the leaf's state variables. `background` is the model state of
+the invocation it is bound to ([`with_background`](@ref)). `pool` holds the
+model-sized buffers of concurrent calls, shared by every invocation's binding.
 """
 struct LeafOperator{O <: PlannedOperator} <: AbstractOperator
     op::O
@@ -303,6 +314,7 @@ struct LeafOperator{O <: PlannedOperator} <: AbstractOperator
     writes::Vector{Int}
     points::Vector{NTuple{3, Int}}
     structure::Structure
+    background::Vector{Float64}
     pool::Vector{Vector{Float64}}
     lock::ReentrantLock
 end
@@ -318,24 +330,23 @@ ft_refused_on_rosenbrock(::LeafOperator) = true
 
 """
 `op` bound to a leaf invocation that starts from the model state `u`
-([`with_background`](@ref)): its background, and a fresh buffer pool.
+([`with_background`](@ref)), which it holds as its background (not a copy:
+the leaf's `with_background` copies `u` once for all of its operators). The
+buffer pool is kept.
 """
 function with_background(o::LeafOperator, u)
     eltype(u) === Float64 ||
         throw(UnsupportedError("operator $(o.op.name): replaying a leaf of planned operators with dual numbers is not implemented"))
-    return LeafOperator(o.op, LeafState(o.leaf.dofs, o.leaf.loc, copy(u)), o.writes, o.points, o.structure, Vector{Float64}[], ReentrantLock())
+    return LeafOperator(o.op, o.leaf, o.writes, o.points, o.structure, u, o.pool, o.lock)
 end
 
 """`f(full)`, with `full` the model state: the leaf's `x` at its DOFs, the background elsewhere."""
 function with_full_state(f, o::LeafOperator, x)
+    _check_f64(x, o.background)
     full = lock(() -> isempty(o.pool) ? nothing : pop!(o.pool), o.lock)
-    full === nothing && (full = similar(o.leaf.background))
+    full === nothing && (full = similar(o.background))
     try
-        _check_f64(x, o.leaf.background)
-        copyto!(full, o.leaf.background)
-        @inbounds for (i, d) in enumerate(o.leaf.dofs)
-            full[d] = x[i]
-        end
+        place!(copyto!(full, o.background), o.leaf.dofs, x)
         return f(full)
     finally
         lock(() -> push!(o.pool, full), o.lock)
@@ -402,20 +413,15 @@ of the leaf's state variables; otherwise `dense` (§8.3).
 function bind_planned_leaf(ops, prob, id)
     all(o -> o isa PlannedOperator, ops) ||
         throw(ConfigError("leaf $id mixes operators a plan supplies with others"))
-    N = prob.N
-    dofs = sort!(unique!(reduce(vcat, (o.writes for o in ops); init = Int[])))
-    isempty(dofs) && throw(ConfigError("leaf $id: its operators write nothing"))
-    loc = zeros(Int, N)
-    loc[dofs] = 1:length(dofs)
-    leaf = LeafState(dofs, loc, copy(prob.u0))
+    leaf = leaf_state(ops, prob.N, id)
+    loc = leaf.loc
     L = first(ops).layout
     vars = [x for x in sort!(collect(keys(L.offset))) if loc[L.offset[x] + 1] > 0]
-    exts = [L.extents[x] for x in vars]
-    st = all(o -> o.blockable, ops) && all(==(first(exts)), exts) ?
-        BlockDiagonalStructure(prod(first(exts); init = 1), length(vars)) : DenseStructure()
+    st = all(o -> o.blockable, ops) ? block_structure(L, vars) : DenseStructure()
+    bg = copy(prob.u0)
     bound = map(ops) do o
         pts = NTuple{3, Int}[(k, loc[r], loc[c]) for (k, (_, r, c)) in enumerate(o.points) if loc[c] > 0]
-        LeafOperator(o, leaf, loc[o.writes], pts, st, Vector{Float64}[], ReentrantLock())
+        LeafOperator(o, leaf, loc[o.writes], pts, st, bg, Vector{Float64}[], ReentrantLock())
     end
     return AbstractOperator[bound...], leaf
 end
@@ -519,8 +525,11 @@ function plan_problem(dir::AbstractString; cache::Union{Nothing, AbstractDict} =
     for n in names, d in built[n], s in EarthSciAST.parameters(d.prog)
         s.default === nothing &&
             throw(ConfigError("operator '$n': parameter $(s.name) of $(basename(d.path)) has no default (spec/operator-interface.md §8.2)"))
-        v = get!(defaults, s.name, s.default)
-        v === s.default ||
+        # Defaults are compared as the Float64 the parameter vector holds, so
+        # an integer default (1) agrees with itself and with 1.0.
+        dv = Float64(s.default)
+        v = get!(defaults, s.name, dv)
+        v === dv ||
             throw(ConfigError("operator '$n': parameter $(s.name) has default $(s.default) in $(basename(d.path)) and $v in another derived document"))
     end
     pnames = sort!(collect(keys(defaults)))
@@ -585,7 +594,16 @@ takes its structure from all of its state variables ([`bind_planned_leaf`](@ref)
 function planned_structure(entry, L::DofLayout)
     st = entry["structure"]
     entry["locality"]["class"] == "pointwise" && haskey(st, "block") || return DenseStructure()
-    vars = unique(String.(entry["writes"]))
+    return block_structure(L, unique(String.(entry["writes"])))
+end
+
+"""
+The storage of a pointwise state over the state variables `vars` of layout
+`L` (spec/operator-interface.md §8.3): `block_diagonal` when they are all
+arrays of one shape (`ncells` its cells) or all scalars (`ncells` = 1), with
+`n` the number of variables; otherwise (or with none) `dense`.
+"""
+function block_structure(L::DofLayout, vars)
     isempty(vars) && return DenseStructure()
     exts = [L.extents[x] for x in vars]
     all(==(first(exts)), exts) || return DenseStructure()
