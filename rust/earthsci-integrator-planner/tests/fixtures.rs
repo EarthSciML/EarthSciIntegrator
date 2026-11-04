@@ -421,8 +421,9 @@ fn probe_document_gives_each_terms_bands() {
             .unwrap_or_else(|m| panic!("{fixture}/{case}: the probe document failed: {m}"));
         let each = testing::each_term(&info, &ts).unwrap();
         assert_eq!(probe, each, "{fixture}/{case}");
-        // So do smaller batches: with a lower bound for a large term, each
-        // batch is a consecutive run holding at most one large term.
+        // So do smaller batches (§5.2.2): with a lower bound, each batch is a
+        // consecutive run within the bound in all, or a single term, and it
+        // ends only where the next term would take it over the bound.
         let sizes: Vec<u64> = ts
             .iter()
             .map(|t| astdiff::operator_nodes(&t.expr, 1_000_000_000))
@@ -430,7 +431,13 @@ fn probe_document_gives_each_terms_bands() {
         let mut sorted = sizes.clone();
         sorted.sort_unstable();
         let median = sorted.get(sorted.len().saturating_sub(1) / 2).copied();
-        for large in [Some(0), Some(1), median].into_iter().flatten() {
+        let all: u64 = sizes.iter().sum();
+        let mut bounds: Vec<u64> = [Some(0), Some(1), median, Some(all)]
+            .into_iter()
+            .flatten()
+            .collect();
+        bounds.dedup();
+        for large in bounds {
             let batches = astdiff::probe_batches(&ts, large);
             let covered: Vec<usize> = batches.iter().flat_map(|r| r.clone()).collect();
             assert_eq!(
@@ -438,11 +445,17 @@ fn probe_document_gives_each_terms_bands() {
                 (0..ts.len()).collect::<Vec<_>>(),
                 "{fixture}/{case}"
             );
-            for (i, r) in batches.iter().enumerate() {
-                let n = sizes[r.clone()].iter().filter(|&&s| s > large).count();
+            let total = |r: &std::ops::Range<usize>| sizes[r.clone()].iter().sum::<u64>();
+            for r in &batches {
                 assert!(
-                    n <= 1 && (i == 0 || n == 1),
-                    "{fixture}/{case} {large}: {batches:?}"
+                    r.len() == 1 || total(r) <= large,
+                    "{fixture}/{case} {large}: {batches:?} goes over the bound"
+                );
+            }
+            for w in batches.windows(2) {
+                assert!(
+                    total(&w[0]) + sizes[w[1].start] > large,
+                    "{fixture}/{case} {large}: {batches:?} ends early"
                 );
             }
             assert_eq!(

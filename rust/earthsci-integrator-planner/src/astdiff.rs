@@ -86,9 +86,9 @@ pub fn astdiff_message(e: BandError) -> String {
     format!("EarthSciASTDiff: {}", e.0)
 }
 
-/// A term is large when its expression has more than this many operator
-/// nodes, every occurrence counted (§5.2.2): a probe holds at most one
-/// large term.
+/// The most operator nodes, every occurrence counted, that a probe batch's
+/// terms hold in all, unless the batch is a single term (§5.2.2). A term
+/// with more (a large term) is therefore a batch by itself.
 pub const LARGE_TERM_NODES: u64 = 10_000;
 
 /// The number of operator nodes of `e`, every occurrence counted, in every
@@ -122,23 +122,25 @@ fn capped_nodes(e: &Expr, memo: &mut HashMap<*const ExpressionNode, u64>, cap: u
     c
 }
 
-/// §5.2.2's batches: consecutive runs of `terms`, in term order, each
-/// holding at most one large term (more than `large` operator nodes). A
-/// batch ends just before a large term when it already holds one.
+/// §5.2.2's batches: consecutive runs of `terms`, in term order, whose
+/// terms hold at most `large` operator nodes in all, unless the run is a
+/// single term. A batch ends just before a term that would take its total
+/// over `large`, so a large term (more than `large` operator nodes) is a
+/// batch by itself.
 pub fn probe_batches(terms: &[Term], large: u64) -> Vec<Range<usize>> {
     // One memo for every term: the interner shares subtrees between terms.
     let (cap, mut memo) = (large.saturating_add(1), HashMap::new());
     let mut out = Vec::new();
-    let (mut start, mut seen) = (0, false);
+    // Each count is capped at `large + 1`, which decides `total + n > large`
+    // as the uncapped count would.
+    let (mut start, mut total) = (0, 0u64);
     for (k, t) in terms.iter().enumerate() {
-        if capped_nodes(&t.expr, &mut memo, cap) <= large {
-            continue;
-        }
-        if seen {
+        let n = capped_nodes(&t.expr, &mut memo, cap);
+        if k > start && total.saturating_add(n) > large {
             out.push(start..k);
-            start = k;
+            (start, total) = (k, 0);
         }
-        seen = true;
+        total = total.saturating_add(n);
     }
     if !terms.is_empty() {
         out.push(start..terms.len());
@@ -153,8 +155,9 @@ pub fn probe_batches(terms: &[Term], large: u64) -> Vec<Range<usize>> {
 /// and flatten and one `jacobian_bands` call, whose bands with row
 /// `probe_state(k)` are the batch's term `k`'s, row renamed to its
 /// variable. Each batch's bands are kept without their coefficients, and
-/// its probe is dropped before the next batch is built, so only one large
-/// term's coefficients are held at a time. A probe that succeeds gives the
+/// its probe is dropped before the next batch is built, so only one
+/// batch's coefficients are held at a time: of one large term, or of terms
+/// with at most [`LARGE_TERM_NODES`] operator nodes in all. A probe that succeeds gives the
 /// batch's bands. A failure on it names no term, so the batch is then split
 /// in halves and each half probed in turn, first half first, down to
 /// single terms, whose own documents are differentiated: the first term
@@ -268,8 +271,9 @@ pub mod testing {
         AstDiffBands::probe(info, terms)
     }
 
-    /// Every term's band list, in batches whose large terms have more than
-    /// `large` operator nodes; the first failure is the failing term's.
+    /// Every term's band list, in batches whose terms hold at most `large`
+    /// operator nodes in all, unless a batch is a single term; the first
+    /// failure is the failing term's.
     pub fn in_batches(
         info: &ModelInfo,
         terms: &[Term],
