@@ -24,6 +24,21 @@ use crate::Scalar;
 /// solvers that read them.
 pub use earthsci_integrator_solvers::linalg::{MatrixStorage, Structure};
 
+/// What an operator's [`jac_over`](Operator::jac_over) keeps between calls
+/// for one leaf. The leaf owns it, one per operator, and passes the same
+/// one to every call, so an operator, which holds no state of its own,
+/// computes what depends only on the leaf's DOFs once (§4, §8.3). It
+/// starts empty.
+#[derive(Debug, Default)]
+pub struct JacOverScratch<T> {
+    /// The default `jac_over`'s storage of the operator's structure over
+    /// the model state, cleared and refilled at each call.
+    pub model: Option<MatrixStorage<T>>,
+    /// An operator's entries at the leaf's rows and columns, as
+    /// `(entry, leaf row, leaf column)`, for one that knows them (a plan's).
+    pub points: Option<Vec<(usize, usize, usize)>>,
+}
+
 /// Adds the entries of `m`, storage over the model state, at the rows and
 /// columns `dofs` (ascending) into `out`, storage over the state vector the
 /// model state at `dofs` makes: leaf index `i` is model DOF `dofs[i]`. Only
@@ -175,14 +190,29 @@ pub trait Operator<T: Scalar>: Send + Sync {
     /// structure the leaf's operators share over `dofs`
     /// ([`structure_over`](Operator::structure_over)), or is dense.
     ///
+    /// `scratch` is the leaf's for this operator, kept across calls
+    /// ([`JacOverScratch`]): `dofs` is the same at every call with it.
+    ///
     /// The default fills storage of [`structure`](Operator::structure) over
     /// the whole model state with [`jac`](Operator::jac) and takes the
-    /// leaf's entries from it, so it costs a model-sized matrix; an operator
+    /// leaf's entries from it, so it fills a model-sized matrix, though it
+    /// allocates it only once per leaf (in `scratch.model`); an operator
     /// that knows its entries (a plan's, §8) adds them directly.
-    fn jac_over(&self, out: &mut MatrixStorage<T>, dofs: &[usize], u: &[T], p: &[f64], t: f64) {
-        let mut m = MatrixStorage::zeros(self.structure(), u.len());
-        self.jac(&mut m, u, p, t);
-        add_restricted(out, &m, dofs);
+    fn jac_over(
+        &self,
+        out: &mut MatrixStorage<T>,
+        dofs: &[usize],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        scratch: &mut JacOverScratch<T>,
+    ) {
+        let m = scratch
+            .model
+            .get_or_insert_with(|| MatrixStorage::zeros(self.structure(), u.len()));
+        m.clear();
+        self.jac(m, u, p, t);
+        add_restricted(out, m, dofs);
     }
     /// `out += ∂f_k/∂t`.
     fn ft(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {

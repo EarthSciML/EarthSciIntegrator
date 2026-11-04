@@ -271,6 +271,18 @@ fn build_leaf<T: Scalar>(
         }
     }
     let mut structure = Structure::common(over);
+    // A block_diagonal leaf's blocks must cover its state vector, so no
+    // entry passes through block_lu unsolved (§2); an operator's
+    // structure_over that says otherwise refuses the leaf.
+    if let Structure::BlockDiagonal { ncells, n } = structure {
+        if ncells * n != dofs.len() {
+            return Err(Error::Config(format!(
+                "leaf {id}: its operators' block_diagonal structure covers {ncells}·{n} \
+                 DOFs, but the leaf's state vector has {} (operator-interface.md §2, §8.3)",
+                dofs.len()
+            )));
+        }
+    }
     // The implicit families' options (run-config §4.2, §4.5).
     if l.theta.is_some() && tab.family != Family::Theta {
         return Err(Error::Config(format!(
@@ -306,10 +318,13 @@ fn build_leaf<T: Scalar>(
                     )))
                 }
             }
-            // An operator's jac fills storage of its structure over the
-            // model state, so a block_diagonal one must cover every DOF of
-            // it (operator-interface.md §2).
-            for o in &ops {
+            // A leaf that advances part of the state forms its Jacobian
+            // with jac_over, whose default fills storage of the operator's
+            // structure over the model state, so a block_diagonal one must
+            // cover every DOF of it (operator-interface.md §2). A leaf that
+            // writes every DOF calls jac into the leaf's own storage, which
+            // the check above covers.
+            for o in ops.iter().filter(|_| dofs.len() != pb.n) {
                 if let Structure::BlockDiagonal { ncells, n } = o.structure() {
                     if ncells * n != pb.n {
                         return Err(Error::Config(format!(
@@ -528,8 +543,10 @@ fn build_leaf<T: Scalar>(
         domain,
         binds,
         integrand: None,
+        integrand_const: Vec::new(),
         imex_implicit,
         work: Default::default(),
+        bound_work: Default::default(),
     })
 }
 
@@ -767,6 +784,8 @@ pub enum AdjRecord<T> {
         /// The model state at the invocation's start, the leaf's constants,
         /// when the leaf advances part of it (operator-interface.md §1).
         background: Option<Vec<T>>,
+        /// The invocation's length `t1 − t0`.
+        span: f64,
     },
     Map {
         map: usize,
@@ -894,7 +913,6 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     record_stages: self.adj.is_some(),
                     tight_newton: self.tight_newton,
                 };
-                let background = (self.adj.is_some() && leaf.is_partial()).then(|| u.to_vec());
                 let out = leaf.invoke(u, &mut self.persist[*idx], &call)?;
                 self.rhs_calls += out.rhs_calls;
                 self.integral += out.integral;
@@ -925,7 +943,8 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     adj.push(AdjRecord::Leaf {
                         leaf: *idx,
                         steps: out.stage_data,
-                        background,
+                        background: out.background,
+                        span: t1 - t0,
                     });
                 }
             }
@@ -1278,21 +1297,20 @@ impl<T: Scalar> RunSpec<T> {
                             )));
                         }
                     }
-                    // ψ over the leaf's state vector. A DOF the leaf does not
-                    // advance would add a constant the leaf's adjoint does
-                    // not carry.
+                    // ψ over the leaf's state vector, and its DOFs the leaf
+                    // does not advance, constants of the leaf whose part of
+                    // the integral is w·u_j·(t1 − t0) per invocation
+                    // (operator-interface.md §1).
                     let leaf = &mut schedule.leaves[*idx];
-                    let local = dofs
-                        .iter()
-                        .map(|j| leaf.dofs.binary_search(j).ok())
-                        .collect::<Option<Vec<usize>>>()
-                        .ok_or_else(|| {
-                            Error::Unimplemented(format!(
-                                "a functional over \"time\" of states leaf {id} does not \
-                                 advance (operator-interface.md §1)"
-                            ))
-                        })?;
+                    let (mut local, mut consts) = (Vec::new(), Vec::new());
+                    for &j in &dofs {
+                        match leaf.dofs.binary_search(&j) {
+                            Ok(i) => local.push(i),
+                            Err(_) => consts.push(j),
+                        }
+                    }
                     leaf.integrand = Some((local, weight));
+                    leaf.integrand_const = consts;
                     vec![]
                 }
                 o => return Err(Error::Config(format!("functional over {o:?}"))),

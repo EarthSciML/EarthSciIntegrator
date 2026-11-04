@@ -16,7 +16,7 @@
 //! parameters in code-point order of their names, at their defaults.
 
 use crate::config::RunConfig;
-use crate::operator::{Call, MatrixStorage, Operator, Structure};
+use crate::operator::{Call, JacOverScratch, MatrixStorage, Operator, Structure};
 use crate::toy::ToyProblem;
 use crate::{Error, Scalar};
 use earthsci_ast::{esm_problem, rhs_program, Compiler, ProblemInput, ProblemOptions, RhsProgram};
@@ -287,30 +287,40 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
     fn vjp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, w: &[T]) {
         self.jprod(out, u, p, t, w, true)
     }
-    fn jac_over(&self, out: &mut MatrixStorage<T>, dofs: &[usize], u: &[T], p: &[f64], t: f64) {
+    fn jac_over(
+        &self,
+        out: &mut MatrixStorage<T>,
+        dofs: &[usize],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        scratch: &mut JacOverScratch<T>,
+    ) {
         // Each band point at the leaf's rows and columns, at its leaf
         // indices; a column outside the leaf is one of its constants. A
         // block_diagonal leaf's points stay inside their cell (checked by
-        // structure_over), so either storage takes every point.
-        let at: Vec<(usize, usize, usize)> = self
-            .points
-            .iter()
-            .filter_map(|&(k, r, c)| {
-                Some((
-                    k,
-                    dofs.binary_search(&r).ok()?,
-                    dofs.binary_search(&c).ok()?,
-                ))
-            })
-            .collect();
+        // structure_over), so either storage takes every point. They depend
+        // only on the leaf's DOFs, so they are found at the first call.
+        let at = scratch.points.get_or_insert_with(|| {
+            self.points
+                .iter()
+                .filter_map(|&(k, r, c)| {
+                    Some((
+                        k,
+                        dofs.binary_search(&r).ok()?,
+                        dofs.binary_search(&c).ok()?,
+                    ))
+                })
+                .collect()
+        });
         let done = self.jacobian.eval(u, p, t, |du| {
-            for &(k, a, b) in &at {
+            for &(k, a, b) in at.iter() {
                 out.add(a, b, T::from_f64(du[k]));
             }
         });
         if let Err(e) = done {
             self.record("Jacobian", e);
-            for &(_, a, b) in &at {
+            for &(_, a, b) in at.iter() {
                 out.add(a, b, T::from_f64(f64::NAN));
             }
         }

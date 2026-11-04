@@ -109,9 +109,13 @@ impl<T: Scalar> RunSpec<T> {
                         leaf,
                         steps,
                         background,
+                        span,
                     } => {
                         let l = &self.schedule.leaves[*leaf];
                         leaf_adjoint(l, steps, background.as_deref(), &mut lam, &mut pbar, &bound)?;
+                        // The integrand's part over states the leaf does not
+                        // advance (spec/adjoint.md §2.1).
+                        l.psi_const_adjoint(&mut lam, *span);
                     }
                     AdjRecord::Map {
                         map,

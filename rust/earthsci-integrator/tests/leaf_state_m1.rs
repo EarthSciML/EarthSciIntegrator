@@ -465,3 +465,223 @@ fn a_block_structure_short_of_the_model_state_is_refused() {
     assert!((u1[0] - (-1.0f64).exp()).abs() < 1e-6);
     assert_eq!(u1[8], 1.0);
 }
+
+/// A functional over `time` of a state the root leaf does not advance:
+/// `B` is a constant of the transport leaf, so its part of the integral is
+/// `Σ B·(t1 − t0)` per invocation, and its cotangent gains `t1 − t0`
+/// (spec/adjoint.md §2.1; operator-interface.md §1).
+#[test]
+fn a_functional_over_time_of_states_the_leaf_does_not_advance() {
+    let ctl = json!({"reltol": 1e-8, "abstol": 1e-10});
+    for (what, sch) in [
+        (
+            "SSPRK43",
+            json!({"leaf": "transport", "alg": "SSPRK43", "control": ctl}),
+        ),
+        (
+            "Rodas4",
+            json!({"leaf": "transport", "alg": "Rodas4", "dt": 0.005}),
+        ),
+    ] {
+        let r = rc_model(
+            "toy:advection_reaction",
+            sch,
+            0.01,
+            Some(
+                json!({"functional": {"sum": "B", "over": "time"}, "wrt": ["u0", "params:numeric"]}),
+            ),
+        );
+        let s = RunSpec::<f64>::new(&r, (0.0, 0.02), None).unwrap();
+        let u0 = s.u0();
+        let p = s.problem.p.clone();
+        let fwd = s.forward(&u0, &p).unwrap();
+        let sum_b: f64 = u0[NC..].iter().sum();
+        let j = s.functional_value(&fwd).unwrap();
+        assert!(
+            (j - 0.02 * sum_b).abs() <= 1e-14 * sum_b.abs().max(1.0),
+            "{what}: J = {j}"
+        );
+        let g = s.gradient(&fwd, &p).unwrap();
+        assert!(g.u0[..NC].iter().all(|&x| x == 0.0), "{what}: dJ/dA0");
+        assert!(
+            g.u0[NC..].iter().all(|&x| (x - 0.02).abs() < 1e-15),
+            "{what}: dJ/dB0 = {:?}",
+            &g.u0[NC..NC + 2]
+        );
+        for (o, k) in [
+            (check_fd(&s, &fwd, &g, 1e-6, &[1e-3, 1e-4, 1e-5]), "fd"),
+            (check_replay(&s, &fwd, &u0, &p), "replay"),
+        ] {
+            match o {
+                Outcome::Pass(m) => println!("{what} {k}: {m}"),
+                other => panic!("{what} {k}: {other:?}"),
+            }
+        }
+    }
+}
+
+/// An operator over the four DOFs 8..12 of the 12-DOF `short` state,
+/// `dense`: `x' = −2x`.
+struct DenseTail;
+
+impl Operator<f64> for DenseTail {
+    fn name(&self) -> &str {
+        "tail"
+    }
+    fn structure(&self) -> Structure {
+        Structure::Dense
+    }
+    fn depends_on_t(&self) -> bool {
+        false
+    }
+    fn linear_in_u(&self) -> bool {
+        true
+    }
+    fn writes(&self) -> Vec<usize> {
+        (8..12).collect()
+    }
+    fn provides(&self, call: Call) -> bool {
+        matches!(call, Call::Rhs | Call::JvpU | Call::VjpU | Call::Jac)
+    }
+    fn rhs(&self, out: &mut [f64], u: &[f64], _p: &[f64], _t: f64) {
+        for j in 8..12 {
+            out[j] += -2.0 * u[j];
+        }
+    }
+    fn jvp_u(&self, out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, v: &[f64]) {
+        for j in 8..12 {
+            out[j] += -2.0 * v[j];
+        }
+    }
+    fn vjp_u(&self, out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, w: &[f64]) {
+        for j in 8..12 {
+            out[j] += -2.0 * w[j];
+        }
+    }
+    fn jac(&self, out: &mut MatrixStorage<f64>, _u: &[f64], _p: &[f64], _t: f64) {
+        for j in 8..12 {
+            out.add(j, j, -2.0);
+        }
+    }
+}
+
+/// §2: a leaf that writes every DOF stores its Jacobian in its own
+/// storage, the operators' common structure, so an operator whose
+/// `block_diagonal` structure covers part of the state is not refused
+/// there: with a `dense` operator the leaf is dense and runs.
+#[test]
+fn a_short_block_structure_runs_in_a_leaf_that_writes_every_dof() {
+    let problem = ToyProblem {
+        name: "short".into(),
+        n: 12,
+        param_names: vec![],
+        p: vec![],
+        u0: vec![1.0; 12],
+        tspan: (0.0, 1.0),
+        variables: (0..12).map(|j| format!("x{j}")).collect(),
+        cells: None,
+        operators: vec![
+            Arc::new(Short) as Arc<dyn Operator<f64>>,
+            Arc::new(DenseTail) as Arc<dyn Operator<f64>>,
+        ],
+        maps: vec![],
+        invariants: vec![],
+    };
+    let r = rc_model(
+        "short",
+        json!({"leaf": ["short", "tail"], "alg": "Rodas4", "dt": 0.05}),
+        0.25,
+        None,
+    );
+    let s = RunSpec::with_problem(problem, &r, (0.0, 1.0), None).unwrap();
+    assert_eq!(s.schedule.leaves[0].structure, Structure::Dense);
+    let u1 = s
+        .forward(&s.u0(), &s.problem.p)
+        .unwrap()
+        .final_state()
+        .to_vec();
+    assert!((u1[0] - (-1.0f64).exp()).abs() < 1e-6, "{}", u1[0]);
+    assert!((u1[8] - (-2.0f64).exp()).abs() < 1e-6, "{}", u1[8]);
+}
+
+/// An operator whose `structure_over` says the leaf is `block_diagonal`
+/// with blocks that do not cover its state vector.
+struct OverShort;
+
+impl Operator<f64> for OverShort {
+    fn name(&self) -> &str {
+        "overshort"
+    }
+    fn structure(&self) -> Structure {
+        Structure::Dense
+    }
+    fn structure_over(&self, _dofs: &[usize], _n_model: usize) -> Result<Structure, String> {
+        Ok(Structure::BlockDiagonal { ncells: 1, n: 2 })
+    }
+    fn depends_on_t(&self) -> bool {
+        false
+    }
+    fn linear_in_u(&self) -> bool {
+        true
+    }
+    fn writes(&self) -> Vec<usize> {
+        (0..4).collect()
+    }
+    fn provides(&self, call: Call) -> bool {
+        matches!(call, Call::Rhs | Call::JvpU | Call::VjpU | Call::Jac)
+    }
+    fn rhs(&self, out: &mut [f64], u: &[f64], _p: &[f64], _t: f64) {
+        for j in 0..4 {
+            out[j] += -u[j];
+        }
+    }
+    fn jvp_u(&self, out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, v: &[f64]) {
+        for j in 0..4 {
+            out[j] += -v[j];
+        }
+    }
+    fn vjp_u(&self, out: &mut [f64], _u: &[f64], _p: &[f64], _t: f64, w: &[f64]) {
+        for j in 0..4 {
+            out[j] += -w[j];
+        }
+    }
+    fn jac(&self, out: &mut MatrixStorage<f64>, _u: &[f64], _p: &[f64], _t: f64) {
+        for j in 0..4 {
+            out.add(j, j, -1.0);
+        }
+    }
+}
+
+/// §2, §8.3: a leaf whose structure is `block_diagonal` with blocks that
+/// do not cover its state vector is refused when it builds.
+#[test]
+fn a_block_leaf_structure_short_of_the_leaf_state_is_refused() {
+    let problem = ToyProblem {
+        name: "overshort".into(),
+        n: 4,
+        param_names: vec![],
+        p: vec![],
+        u0: vec![1.0; 4],
+        tspan: (0.0, 1.0),
+        variables: (0..4).map(|j| format!("x{j}")).collect(),
+        cells: None,
+        operators: vec![Arc::new(OverShort) as Arc<dyn Operator<f64>>],
+        maps: vec![],
+        invariants: vec![],
+    };
+    let r = rc_model(
+        "overshort",
+        json!({"leaf": "overshort", "alg": "Rodas4", "dt": 0.05}),
+        0.25,
+        None,
+    );
+    match RunSpec::with_problem(problem, &r, (0.0, 1.0), None) {
+        Err(Error::Config(m)) => assert_eq!(
+            m,
+            "leaf root: its operators' block_diagonal structure covers 1·2 DOFs, but the \
+             leaf's state vector has 4 (operator-interface.md §2, §8.3)"
+        ),
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("a block leaf structure short of the leaf's state was accepted"),
+    }
+}
