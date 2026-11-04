@@ -46,19 +46,18 @@ end
 """
     BandEntry(en::EarthSciASTDiff.JacEntry, row = en.u)
 
-The [`BandEntry`](@ref) of `BandEntry(band_json(en))`, with row `row`, read
-from the entry's fields so that its coefficient, which pass 2 never reads, is
-not serialized (§5.2.2).
+The [`BandEntry`](@ref) of `BandEntry(band_json(en))`, with row `row`. Its
+coefficient, which pass 2 never reads (§5.2.2), is replaced by the literal 0
+before `serialize_band` writes the entry, so it is never serialized; every
+other field is read through `serialize_band`, as for the operator's bands.
 """
 function BandEntry(en::EarthSciASTDiff.JacEntry, row::AbstractString = en.u)
-    b = en.band
-    return BandEntry(
-        String(row), String(en.v), Tuple{Int, Int}[(Int(lo), Int(hi)) for (lo, hi) in b.rows],
-        Union{String, Int}[x isa AbstractString ? String(x) : Int(x) for x in b.ridx],
-        Any[EarthSciAST.serialize_expression(c) for c in b.cidx],
-        Tuple{String, Int, Int}[(String(n), Int(lo), Int(hi)) for (n, lo, hi) in b.contracted],
-        b.guard === nothing ? nothing : EarthSciAST.serialize_expression(b.guard)
-    )
+    # `_rebuild` copies every field of the band but the ones it is given, so a
+    # change to `Band`'s fields fails here rather than diverging silently.
+    band = EarthSciASTDiff._rebuild(en.band; coef = EarthSciAST.IntExpr(0))
+    d = band_json(EarthSciASTDiff.JacEntry(en.u, en.v, band))
+    d["row"] = String(row)
+    return BandEntry(d)
 end
 
 """An operator's artifacts: its right-hand-side document, its bands (as EarthSciASTDiff's entries, `serialize_band`'s dictionaries without `coef`, and [`BandEntry`](@ref)s), and, once needed, its Jacobian document and the built documents."""
@@ -113,20 +112,18 @@ Term `t`'s bands from its own right-hand-side document (§5.2.2), as
 [`band_json`](@ref) gives them. An EarthSciASTDiff failure is
 `band_model_failed`, naming the term.
 """
-function term_band_dicts(b::DiffBackend, ctx, t::Term)
+term_band_dicts(b::DiffBackend, ctx, t::Term) =
+    Dict{String, Any}[band_json(en) for en in _term_entries(b, ctx, t)]
+
+term_bands(b::DiffBackend, ctx, t::Term) = BandEntry[BandEntry(en) for en in _term_entries(b, ctx, t)]
+
+"""Term `t`'s own document's entries (EarthSciASTDiff's `JacEntry`s)."""
+function _term_entries(b::DiffBackend, ctx, t::Term)
     bind!(b, ctx)
     # A term's document is never written, so it is loaded from memory rather
     # than through its bytes.
     flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
-    what = "term ($(t.variable), $(t.contribution), $(t.summand))"
-    return Dict{String, Any}[band_json(en) for en in document_bands(flat, what)]
-end
-
-function term_bands(b::DiffBackend, ctx, t::Term)
-    bind!(b, ctx)
-    flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
-    what = "term ($(t.variable), $(t.contribution), $(t.summand))"
-    return BandEntry[BandEntry(en) for en in document_bands(flat, what)]
+    return document_bands(flat, "term ($(t.variable), $(t.contribution), $(t.summand))")
 end
 
 """
@@ -141,19 +138,11 @@ names no term. Only those calls are guarded: an error in building the probe
 document or in reading its bands is the planner's own and propagates.
 """
 function probe_band_dicts(b::DiffBackend, ctx, terms::AbstractVector{Term})
-    entries = _probe_entries(b, ctx, terms)
-    entries === nothing && return nothing
-    out = [Dict{String, Any}[] for _ in terms]
-    index = Dict(probe_state(k) => k for k in eachindex(terms))
-    for en in entries
+    return _probe_bands(b, ctx, terms, Dict{String, Any}) do en, row
         d = band_json(en)
-        # Only the probe states have nonzero right-hand sides.
-        k = get(index, d["row"], nothing)
-        k === nothing && error("probe document: a band whose row $(d["row"]) is not a probe state")
-        d["row"] = terms[k].variable
-        push!(out[k], d)
+        d["row"] = row
+        d
     end
-    return out
 end
 
 """
@@ -164,15 +153,26 @@ entries without serializing their coefficients. Nothing of the probe is kept
 once it returns: its flattened document and its entries, coefficients
 included, are garbage.
 """
-function probe_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
+probe_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term}) =
+    _probe_bands(BandEntry, b, ctx, terms, BandEntry)
+
+"""
+    _probe_bands(convert, b, ctx, terms, T) -> Union{Vector{Vector{T}}, Nothing}
+
+Every term's bands from the probe document of `terms`, each entry turned into
+a `T` by `convert(entry, row)`, `row` the term's variable; `nothing` when
+EarthSciAST or EarthSciASTDiff fails on the probe document.
+"""
+function _probe_bands(convert, b::DiffBackend, ctx, terms::AbstractVector{Term}, ::Type{T}) where {T}
     entries = _probe_entries(b, ctx, terms)
     entries === nothing && return nothing
-    out = [BandEntry[] for _ in terms]
+    out = [T[] for _ in terms]
     index = Dict(probe_state(k) => k for k in eachindex(terms))
     for en in entries
+        # Only the probe states have nonzero right-hand sides.
         k = get(index, en.u, nothing)
         k === nothing && error("probe document: a band whose row $(en.u) is not a probe state")
-        push!(out[k], BandEntry(en, terms[k].variable))
+        push!(out[k], convert(en, terms[k].variable))
     end
     return out
 end
@@ -197,9 +197,9 @@ end
 """
     LARGE_TERM_NODES
 
-A term is **large** when its expression has more than this many operator
-nodes, every occurrence counted (§5.2.2): the probe holds at most one large
-term at a time.
+The most operator nodes, every occurrence counted, that a probe batch's terms
+hold in all, unless the batch is a single term (§5.2.2). A term with more
+(a **large** term) is therefore a batch by itself.
 """
 const LARGE_TERM_NODES = 10_000
 
@@ -220,9 +220,11 @@ function _operator_nodes(e, memo::IdDict{EarthSciAST.OpExpr, Int}, limit::Int)
     n = get(memo, e, nothing)
     n === nothing || return n
     c = 1
-    EarthSciAST.map_children(e) do x
-        c = min(c + _operator_nodes(x, memo, limit), limit + 1)
-        x
+    # `foreach_child` visits every Expression-valued field without allocating;
+    # once the count passes `limit`, the remaining children are not walked.
+    EarthSciAST.foreach_child(e) do x
+        c > limit || (c = min(c + _operator_nodes(x, memo, limit), limit + 1))
+        nothing
     end
     return memo[e] = c
 end
@@ -230,20 +232,21 @@ end
 """
     probe_batches(terms; large = LARGE_TERM_NODES) -> Vector{UnitRange{Int}}
 
-§5.2.2's batches: consecutive runs of `terms`, in term order, each holding at
-most one large term (more than `large` operator nodes). A batch ends just
-before a large term when it already holds one.
+§5.2.2's batches: consecutive runs of `terms`, in term order, whose terms hold
+at most `large` operator nodes in all, unless the run is a single term. A
+batch ends just before a term that would take its total over `large`, so a
+large term (more than `large` operator nodes) is a batch by itself.
 """
 function probe_batches(terms::AbstractVector{Term}; large::Int = LARGE_TERM_NODES)
     out = UnitRange{Int}[]
-    start, seen = 1, false
+    start, total = 1, 0
     for (k, t) in enumerate(terms)
-        operator_nodes(t.expr, large) > large || continue
-        if seen
+        n = operator_nodes(t.expr, large)
+        if k > start && total + n > large
             push!(out, start:(k - 1))
-            start = k
+            start, total = k, 0
         end
-        seen = true
+        total += n
     end
     isempty(terms) || push!(out, start:length(terms))
     return out
@@ -254,8 +257,8 @@ end
 
 Every term's bands, from one probe document per batch ([`probe_batches`](@ref),
 [`probe_term_bands`](@ref)), in batch order. Each batch's bands are kept
-without their coefficients, and the batch's probe is dropped before the next
-one is built, so only one large term's coefficients are held at a time.
+without their coefficients, and nothing else of the batch's probe is kept,
+so its coefficients are garbage before the next batch is built.
 A failure on a batch's probe names no term, so that batch is then split in
 halves and each half probed in turn, first half first, down to single terms,
 whose own documents are differentiated ([`term_bands`](@ref)). The first term
@@ -266,11 +269,8 @@ in order, so it is the first such term of the whole list.
 function all_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term}; large::Int = LARGE_TERM_NODES)
     bind!(b, ctx)
     out = Vector{Vector{BandEntry}}(undef, length(terms))
-    batches = probe_batches(terms; large)
-    for (i, r) in enumerate(batches)
+    for r in probe_batches(terms; large)
         _term_bands!(out, b, ctx, terms, r)
-        # Free the batch's coefficients before the next batch is probed.
-        i < length(batches) && GC.gc()
     end
     return out
 end

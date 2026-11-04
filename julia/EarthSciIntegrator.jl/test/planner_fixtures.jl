@@ -454,14 +454,16 @@ const PLAN_FILES = String[]
         # `serialize_band`'s dictionary.
         @test [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms] ==
             [map(d -> fields(EarthSciIntegrator.BandEntry(d)), EarthSciIntegrator.term_band_dicts(b, ctx, t)) for t in terms]
-        # So do smaller batches (§5.2.2): with a lower bound for a large term,
-        # each batch is a consecutive run holding at most one large term.
+        # So do smaller batches (§5.2.2): with a lower bound, each batch is a
+        # consecutive run within the bound in all, or a single term, and it
+        # ends only where the next term would take it over the bound.
         sizes = [EarthSciIntegrator.operator_nodes(t.expr, 10^9) for t in terms]
-        for large in unique!([0, 1, sort(sizes)[cld(length(sizes), 2)]])
+        median = isempty(sizes) ? 0 : sort(sizes)[cld(length(sizes), 2)]
+        for large in unique!([0, 1, median, sum(sizes; init = 0)])
             batches = EarthSciIntegrator.probe_batches(terms; large)
             @test reduce(vcat, collect.(batches); init = Int[]) == collect(eachindex(terms))
-            @test all(r -> count(>(large), sizes[r]) <= 1, batches)
-            @test all(i -> count(>(large), sizes[batches[i]]) == 1, 2:length(batches))
+            @test all(r -> length(r) == 1 || sum(sizes[r]) <= large, batches)
+            @test all(i -> sum(sizes[batches[i]]) + sizes[first(batches[i + 1])] > large, 1:(length(batches) - 1))
             @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms; large)] ==
                 [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
         end
