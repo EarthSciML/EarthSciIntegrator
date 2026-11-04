@@ -110,7 +110,7 @@ const PROBE_COMPONENT = "JacobianEval"
 probe_state(k::Integer) = "$PROBE_COMPONENT.term_$k"
 
 """
-    probe_document(m, terms) -> Dict
+    probe_document(m, terms; min_nodes = PROBE_TEMPLATE_MIN_NODES) -> Dict
 
 §5.2.2's probe document: §6.1's document of the terms `terms` in which every
 state of the model has the zero right-hand side (§6.1.2), and the `k`-th term
@@ -119,6 +119,14 @@ of the shape of its equation's state (the same index-set names), written as
 that state's equation would hold it alone (a lifted term inside the same
 `faq`). Its bands with row `probe_state(k)` are the `k`-th term's bands,
 row renamed.
+
+The subexpressions the terms share are written once each, as the
+zero-parameter templates `shared_k` in `expression_templates` of the
+component `JacobianEval`, and every place they occur, in the terms and in
+other templates' bodies, as an `apply_expression_template` reference to one
+([`shared_templates`](@ref), whose `min_nodes` this passes on; the planner
+always uses the default). The references expand to exactly the terms, so
+the templates change no band.
 """
 probe_document(m::PlanModel, terms::AbstractVector; min_nodes::Int = PROBE_TEMPLATE_MIN_NODES) =
     _rhs_document(m, "probe", terms, true; min_nodes)
@@ -138,27 +146,33 @@ const MAX_TEMPLATE_CHAIN = 32
 """
     shared_templates(exprs; min_nodes = PROBE_TEMPLATE_MIN_NODES) -> (templates, rewritten)
 
-§5.2.2's shared subexpressions of `exprs`: every subexpression that occurs
-at least twice in them, counting every occurrence, and has at least
-`min_nodes` operator nodes, is named as a zero-parameter template, `shared_k`
-(`k` from 1, children before parents), and each of its occurrences, in
-`exprs` and in other templates' bodies, is replaced by an
-`apply_expression_template` reference to it, except that a subexpression
-whose template would end a chain of more than [`MAX_TEMPLATE_CHAIN`](@ref)
-templates is left in place. Expanding every reference gives `exprs` back,
-structurally. Subexpressions are compared structurally; the walk is
-memoized on node identity, so it costs time in proportion to the distinct
-nodes of `exprs` rather than to their size as trees.
+§5.2.2's shared subexpressions of `exprs`, named as zero-parameter templates
+`shared_k` and replaced, where they occur, by `apply_expression_template`
+references to them. Expanding every reference gives `exprs` back,
+structurally.
 
-`templates` is a vector of `name => body` pairs; `rewritten` is `exprs` with
-the references.
+Subexpressions are compared structurally and chosen outermost first, so a
+subexpression inside a template counts once however often the template is
+referenced. A subexpression becomes a template when it has at least
+`min_nodes` operator nodes, every occurrence counted, and occurs at least
+twice in what is written: in `exprs` (written in place, as they are) and in
+the templates' bodies, each body written once. A subexpression of a
+template's body that occurs nowhere else therefore stays in that body. A
+subexpression below [`MAX_TEMPLATE_CHAIN`](@ref) templates, on some path
+from an expression of `exprs` down to it, is written in place: the chain of
+templates each referencing the next is then never longer than EarthSciAST
+loads.
+
+The walk is memoized on node identity, so it costs time in proportion to
+the distinct nodes of `exprs` rather than to their size as trees.
+`templates` is a vector of `name => body` pairs (`k` from 1, outermost
+first); `rewritten` is `exprs` with the references.
 """
 function shared_templates(exprs::AbstractVector; min_nodes::Int = PROBE_TEMPLATE_MIN_NODES)
     sat(a, b) = a > typemax(Int) - b ? typemax(Int) : a + b
     idof = IdDict{EarthSciAST.OpExpr, Int}()
     ids = Dict{String, Int}()
     rep = EarthSciAST.OpExpr[]
-    nodes = Int[]
     kids = Vector{Int}[]
     # Structural ids, children before parents: a node's key is its JCS form
     # with each operator child replaced by a name holding the child's id.
@@ -176,7 +190,6 @@ function shared_templates(exprs::AbstractVector; min_nodes::Int = PROBE_TEMPLATE
         key = jcs(_ser(shell))
         id = get!(ids, key) do
             push!(rep, e)
-            push!(nodes, foldl((a, c) -> sat(a, nodes[c]), cs; init = 1))
             push!(kids, cs)
             length(rep)
         end
@@ -184,25 +197,33 @@ function shared_templates(exprs::AbstractVector; min_nodes::Int = PROBE_TEMPLATE
     end
     roots = [intern(e) for e in exprs]
     n = length(rep)
-    # Occurrences, every one counted: parents have larger ids than children.
-    occ = zeros(Int, n)
+    # Whether a subexpression has at least `min_nodes` operator nodes, by the
+    # walk `operator_nodes` makes, its count capped at `cap` (low enough that
+    # the walk's sums cannot overflow).
+    sizes = IdDict{EarthSciAST.OpExpr, Int}()
+    cap = min(min_nodes, typemax(Int) >> 2)
+    large(id) = _operator_nodes(rep[id], sizes, cap - 1) >= min_nodes
+    # Templates, outermost first: parents have larger ids than their
+    # children, so a node's references and the templates above it are all
+    # known when it is reached. `refs` counts the node's references in what
+    # is written: a template's body is written once, any other node's once
+    # for each of its own references. `above` is the most templates on a
+    # path from a root down to the node.
+    refs = zeros(Int, n)
+    above = zeros(Int, n)
     for r in roots
-        r == 0 || (occ[r] = sat(occ[r], 1))
+        r == 0 || (refs[r] = sat(refs[r], 1))
     end
-    for id in n:-1:1, c in kids[id]
-        occ[c] = sat(occ[c], occ[id])
-    end
-    # Templates, children first, within the chain bound.
     name = Vector{Union{Nothing, String}}(nothing, n)
-    chain = zeros(Int, n)
     k = 0
-    for id in 1:n
-        d = maximum((chain[c] for c in kids[id]); init = 0)
-        if occ[id] >= 2 && nodes[id] >= min_nodes && d < MAX_TEMPLATE_CHAIN
-            name[id] = "shared_$(k += 1)"
-            d += 1
+    for id in n:-1:1
+        t = refs[id] >= 2 && above[id] < MAX_TEMPLATE_CHAIN && large(id)
+        t && (name[id] = "shared_$(k += 1)")
+        each = t ? 1 : refs[id]
+        for c in kids[id]
+            refs[c] = sat(refs[c], each)
+            above[c] = max(above[c], above[id] + t)
         end
-        chain[id] = d
     end
     # Rewrite, memoized on node identity.
     memo = IdDict{EarthSciAST.OpExpr, EarthSciAST.ASTExpr}()
@@ -216,7 +237,7 @@ function shared_templates(exprs::AbstractVector; min_nodes::Int = PROBE_TEMPLATE
         end
     end
     rewritten = EarthSciAST.ASTExpr[rw(e) for e in exprs]
-    templates = Pair{String, EarthSciAST.ASTExpr}[name[id] => body(rep[id]) for id in 1:n if name[id] !== nothing]
+    templates = Pair{String, EarthSciAST.ASTExpr}[name[id] => body(rep[id]) for id in n:-1:1 if name[id] !== nothing]
     return templates, rewritten
 end
 

@@ -140,8 +140,8 @@ EarthSciAST or EarthSciASTDiff fails on the probe document, a failure that
 names no term. Only those calls are guarded: an error in building the probe
 document or in reading its bands is the planner's own and propagates.
 """
-function probe_band_dicts(b::DiffBackend, ctx, terms::AbstractVector{Term}; min_nodes::Int = PROBE_TEMPLATE_MIN_NODES)
-    entries = _probe_entries(b, ctx, terms; min_nodes)
+function probe_band_dicts(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    entries = _probe_entries(b, ctx, terms)
     entries === nothing && return nothing
     out = [Dict{String, Any}[] for _ in terms]
     index = Dict(probe_state(k) => k for k in eachindex(terms))
@@ -179,12 +179,11 @@ end
 
 """
 The probe document's entries (EarthSciASTDiff's `JacEntry`s), or `nothing`
-when EarthSciAST or EarthSciASTDiff fails on it. Its templates have at
-least `min_nodes` operator nodes ([`shared_templates`](@ref)).
+when EarthSciAST or EarthSciASTDiff fails on it.
 """
-function _probe_entries(b::DiffBackend, ctx, terms::AbstractVector{Term}; min_nodes::Int = PROBE_TEMPLATE_MIN_NODES)
+function _probe_entries(b::DiffBackend, ctx, terms::AbstractVector{Term})
     bind!(b, ctx)
-    doc = probe_document(ctx.model, terms; min_nodes)
+    doc = probe_document(ctx.model, terms)
     return try
         document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document")
     catch e

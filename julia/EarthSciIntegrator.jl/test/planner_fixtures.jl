@@ -454,10 +454,18 @@ const PLAN_FILES = String[]
         # `serialize_band`'s dictionary.
         @test [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms] ==
             [map(d -> fields(EarthSciIntegrator.BandEntry(d)), EarthSciIntegrator.term_band_dicts(b, ctx, t)) for t in terms]
-        # So does the probe with more of its shared subexpressions written as
-        # templates, down to every repeated one (§5.2.2).
-        for min_nodes in (1, 2, typemax(Int))
-            @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms; min_nodes) == probe
+        # The probe document's bands are the same, in order, with none of its
+        # shared subexpressions written as templates and with more of them,
+        # down to every repeated one (§5.2.2).
+        doc_bands(min_nodes) = map(
+            EarthSciIntegrator.band_json,
+            EarthSciIntegrator.document_bands(
+                EarthSciAST.flatten(EarthSciAST.load_document(EarthSciIntegrator.probe_document(m, terms; min_nodes))), "the probe document"
+            )
+        )
+        plain = doc_bands(typemax(Int))
+        for min_nodes in (1, 2, EarthSciIntegrator.PROBE_TEMPLATE_MIN_NODES)
+            @test doc_bands(min_nodes) == plain
         end
         # So do smaller batches (§5.2.2): with a lower bound for a large term,
         # each batch is a consecutive run holding at most one large term.
@@ -495,6 +503,84 @@ const PLAN_FILES = String[]
             @test key.(EarthSciAST.ASTExpr[EarthSciASTDiff.expand_templates(e, reg) for e in rewritten]) == key.(exprs)
         end
         @test templated > 0
+    end
+
+    @testset "a subexpression inside a template is a template only when it is shared outside it (§5.2.2)" begin
+        E(x) = EarthSciAST.expression_from_json(x)
+        key(e) = jcs(EarthSciAST.serialize_expression(e))
+        isref(e) = e isa EarthSciAST.OpExpr && e.op == "apply_expression_template"
+        inner = Dict("op" => "*", "args" => ["a", Dict("op" => "+", "args" => ["b", "c"])])
+        outer = Dict("op" => "-", "args" => [inner, "d"])
+        # `outer` occurs twice (two distinct but equal nodes); `inner` and its
+        # parts only inside it, so only `outer` is a template.
+        exprs = EarthSciAST.ASTExpr[E(outer), E(Dict("op" => "exp", "args" => [outer]))]
+        templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
+        @test first.(templates) == ["shared_1"]
+        @test key(last(only(templates))) == key(E(outer))
+        @test isref(rewritten[1]) && isref(only(rewritten[2].args))
+        # When `inner` also occurs on its own, it is a template too, and
+        # `outer`'s body references it.
+        exprs = vcat(exprs, E(Dict("op" => "sin", "args" => [inner])))
+        templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
+        reg = Dict{String, EarthSciAST.ASTExpr}(templates)
+        @test length(templates) == 2
+        @test isref(reg["shared_1"].args[1])
+        @test key.(EarthSciAST.ASTExpr[EarthSciASTDiff.expand_templates(e, reg) for e in rewritten]) == key.(exprs)
+        # Below `min_nodes` operator nodes, nothing is a template.
+        @test isempty(first(EarthSciIntegrator.shared_templates(exprs; min_nodes = 4)))
+    end
+
+    @testset "the chain of templates stops at EarthSciAST's limit, outermost first (§5.2.2)" begin
+        # 40 nested levels, each the sum of two copies of the one below: every
+        # level below the top occurs twice in what is written.
+        x = EarthSciAST.VarExpr("JacobianEval.chain")
+        e = x
+        for _ in 1:40
+            e = EarthSciAST.OpExpr("+", EarthSciAST.ASTExpr[e, e])
+        end
+        templates, rewritten = EarthSciIntegrator.shared_templates(EarthSciAST.ASTExpr[e]; min_nodes = 1)
+        reg = Dict{String, EarthSciAST.ASTExpr}(templates)
+        isref(y) = y isa EarthSciAST.OpExpr && y.op == "apply_expression_template"
+        function refs(y, out = String[])
+            y isa EarthSciAST.OpExpr || return out
+            isref(y) ? push!(out, y.name) : EarthSciAST.map_children(c -> (refs(c, out); c), y)
+            return out
+        end
+        depth = Dict{String, Int}()
+        chain(nm) = get!(() -> 1 + maximum(chain.(refs(reg[nm])); init = 0), depth, nm)
+        @test length(templates) == EarthSciIntegrator.MAX_TEMPLATE_CHAIN == 32
+        @test maximum(chain(nm) for (nm, _) in templates) == 32
+        # The outermost levels are the templates: the top's two arguments are
+        # references, and the innermost levels are written in place.
+        @test all(isref, only(rewritten).args)
+        @test isempty(refs(reg["shared_32"]))
+        # (Not compared with `e` by serializing: as a tree it has 2^41 nodes.)
+        # EarthSciAST loads a probe document holding them, and refuses one
+        # more template on the chain.
+        ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(joinpath(PFIX, first(fixture_cases())[1], "$(first(fixture_cases())[2]).run.json")), DiffBackend())
+        terms = EarthSciIntegrator.build_terms(ctx.model)
+        function with_chain(templates, rhs)
+            doc = EarthSciIntegrator.probe_document(ctx.model, terms)
+            v = doc["models"]["JacobianEval"]
+            v["variables"]["chain"] = Dict{String, Any}("type" => v["variables"]["term_1"]["type"], "default" => 0.0)
+            ts = get!(v, "expression_templates", Dict{String, Any}())
+            for (nm, body) in templates
+                ts[nm] = Dict{String, Any}("params" => Any[], "body" => EarthSciAST.serialize_expression(body))
+            end
+            lhs = Dict{String, Any}("op" => "D", "args" => Any["JacobianEval.chain"], "wrt" => "t")
+            push!(v["equations"], Dict{String, Any}("lhs" => lhs, "rhs" => EarthSciAST.serialize_expression(rhs)))
+            return doc
+        end
+        @test EarthSciAST.flatten(EarthSciAST.load_document(with_chain(templates, only(rewritten)))) !== nothing
+        ref(nm) = EarthSciAST.OpExpr("apply_expression_template", EarthSciAST.ASTExpr[]; name = nm, bindings = Dict{String, EarthSciAST.ASTExpr}())
+        longer = vcat(templates, ["one_more" => EarthSciAST.OpExpr("+", EarthSciAST.ASTExpr[ref("shared_1"), x])])
+        err = try
+            EarthSciAST.load_document(with_chain(longer, ref("one_more")))
+            nothing
+        catch ex
+            ex
+        end
+        @test err !== nothing && occursin("MAX_TEMPLATE_EXPANSION_DEPTH", sprint(showerror, err))
     end
 
     @testset "band_model_failed names the term that fails, after the probe document fails" begin
