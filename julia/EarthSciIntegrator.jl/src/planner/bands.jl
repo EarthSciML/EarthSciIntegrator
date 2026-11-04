@@ -268,7 +268,7 @@ raises [`PlannerStageError`](@ref) where it needs the value.
 Methods:
 - `term_bands(backend, ctx, term) -> Union{Vector{BandEntry}, Nothing}`
 - `all_term_bands(backend, ctx, terms)`: every term's `term_bands`, in term
-  order; [`DiffBackend`](@ref) computes them from one probe document
+  order; [`DiffBackend`](@ref) computes them from one probe document per batch
 - `operator_structure(backend, ctx, op) -> Union{AbstractDict, Nothing}` (the
   plan's `structure` object)
 - `gershgorin_bound(backend, ctx, op) -> Union{Float64, Nothing}` (`max_s ρ(u_s, p, t_s)`)
