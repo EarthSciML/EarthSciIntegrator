@@ -3,7 +3,7 @@ name = "earthsci-integrator"
 description = "EarthSciIntegrator core: operator interface, toy problems, schedule interpreter, tape and adjoint."
 version.workspace = true
 edition.workspace = true
-# earthsci-ast 0.8 needs Rust 1.89.
+# earthsci-ast 0.9 needs Rust 1.89.
 rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
@@ -12,9 +12,9 @@ repository.workspace = true
 # Operators supplied by a plan (spec/operator-interface.md §8): their
 # right-hand sides are EarthSciAST's reentrant `rhs_program`, and the initial
 # state is EarthSciAST's `initial_state`, which needs its `solve` feature.
-earthsci-ast = { version = "0.8", default-features = false, features = ["solve"] }
+earthsci-ast = { version = "0.9", default-features = false, features = ["solve"] }
 # Reading the plan's band positions (esm-jacobian-spec §4).
-earthsci-astdiff = "0.3"
+earthsci-astdiff = "0.4"
 # The planner's canonical order, derived-document evaluation and band
 # scatter (its `numeric` module), shared so that a plan is read the way it
 # was checked.

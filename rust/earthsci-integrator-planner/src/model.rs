@@ -265,7 +265,7 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         .contains("\"table_lookup\"")
     {
         return Err(PlanError::NotYetImplemented(
-            "lowering table_lookup inside each contribution (spec/plan.md §4 step 5) has no public Rust entry point in EarthSciAST 0.8".into(),
+            "lowering table_lookup inside each contribution (spec/plan.md §4 step 5) has no public Rust entry point in EarthSciAST 0.9".into(),
         ));
     }
 

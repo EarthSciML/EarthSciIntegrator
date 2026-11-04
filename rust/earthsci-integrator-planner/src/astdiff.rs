@@ -128,7 +128,8 @@ pub fn document_structure(doc: &Value) -> Result<Vec<StructureEntry>, String> {
 
 /// Which of EarthSciASTDiff's state Jacobians a search reads: the
 /// structure-only entries pass 2 reads (§5.2.2), or the full band list
-/// pass 4 reads (§5.4), whose failures pass 2 cannot see.
+/// pass 4 reads (§5.4), which can fail where the structure-only entries
+/// do not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// `jacobian_structure_view`: no derivative, no coefficient.
@@ -237,10 +238,12 @@ pub fn probe_batches(terms: &[Term], large: u64) -> Vec<Range<usize>> {
 /// takes about `2 log₂ n` probe documents rather than one document per
 /// term, on top of one probe per batch.
 ///
-/// This search reads structure only, so it cannot find a failure only a
-/// derivative shows (`underivable_operator`, such as `erf`). Such a term
-/// fails its operator's document in pass 4, where `plan` finds it with
-/// [`first_failing_term`]: the same search in [`Mode::Full`].
+/// This search reads structure only. EarthSciASTDiff's structure-only mode
+/// refuses what the full mode refuses (an operator with no derivative rule,
+/// such as `erf`; esm-jacobian-spec §2.1), so such a term is found here. A
+/// failure that only the full mode meets fails its operator's document in
+/// pass 4, where `plan` finds it with [`first_failing_term`]: the same
+/// search in [`Mode::Full`].
 pub struct AstDiffBands;
 
 /// A probe's band lists, or EarthSciAST's or EarthSciASTDiff's message.

@@ -54,10 +54,11 @@ fn refusal_fixtures() {
 }
 
 /// `band_model_failed` (§5.2.2) is reported against the term it concerns.
-/// Pass 2 reads the terms' structure only, which takes no derivative, so
-/// the probe and every term's own structure succeed; the operator's
-/// document fails in pass 4, and the full-mode search of its terms finds
-/// the third term, whose `erf` has no derivative rule.
+/// The third term's `erf` has no derivative rule, and EarthSciASTDiff's
+/// structure-only mode refuses what the full mode refuses (esm-jacobian-spec
+/// §2.1, EarthSciASTDiff 0.4.0), so pass 2's probe fails and its halving
+/// search names the third term. The full mode finds the same term, and so
+/// does pass 4's search when it is run alone.
 #[test]
 fn band_model_failed_names_its_term() {
     let path = conformance().join("plans/refusals/band-model-failed/run.json");
@@ -65,29 +66,28 @@ fn band_model_failed_names_its_term() {
     let info = model::read(&rc).unwrap();
     let ts = terms::terms(&info).unwrap();
     let probe = testing::probe(&info, &ts).unwrap();
-    assert!(probe.is_ok(), "the probe document's structure fails");
-    let each = testing::each_term(&info, &ts, Mode::Structure).unwrap();
-    assert_eq!(probe.unwrap(), each);
-    for large in [0, 1, 3] {
-        assert_eq!(
-            testing::in_batches(&info, &ts, large, Mode::Structure).unwrap(),
-            each,
-            "large = {large}"
-        );
-    }
-    // In full mode the same halving search, in every batch size, finds
-    // the third term, as each term's own document does.
-    let full = match testing::each_term(&info, &ts, Mode::Full) {
-        Err(BandSourceError::Failed(f)) => f,
-        other => panic!("want the third term's failure, got {other:?}"),
-    };
-    assert_eq!(full.term, 2);
-    for large in [0, 1, 3] {
-        match testing::in_batches(&info, &ts, large, Mode::Full) {
-            Err(BandSourceError::Failed(f)) => assert_eq!(f, full, "large = {large}"),
-            other => panic!("large = {large}: want the third term's failure, got {other:?}"),
+    assert!(probe.is_err(), "the probe document's structure succeeds");
+    let mut found = None;
+    for mode in [Mode::Structure, Mode::Full] {
+        // The same halving search, in every batch size and in either mode,
+        // finds the third term, as each term's own document does.
+        let each = match testing::each_term(&info, &ts, mode) {
+            Err(BandSourceError::Failed(f)) => f,
+            other => panic!("{mode:?}: want the third term's failure, got {other:?}"),
+        };
+        assert_eq!(each.term, 2);
+        for large in [0, 1, 3] {
+            match testing::in_batches(&info, &ts, large, mode) {
+                Err(BandSourceError::Failed(f)) => assert_eq!(f, each, "{mode:?}, large = {large}"),
+                other => panic!(
+                    "{mode:?}, large = {large}: want the third term's failure, got {other:?}"
+                ),
+            }
         }
+        assert!(found.as_ref().is_none_or(|f| *f == each));
+        found = Some(each);
     }
+    let full = found.unwrap();
     assert_eq!(astdiff::first_failing_term(&info, &ts), Some(full.clone()));
     // Every term here has one operator node, so the bounds 0 and 1 give
     // single-term batches, 2 gives [t0, t1] [t2], and 3 one batch of all
