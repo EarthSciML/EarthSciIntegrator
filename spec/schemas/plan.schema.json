@@ -23,6 +23,27 @@
       "propertyNames": {"$ref": "run-config.schema.json#/$defs/operatorName"},
       "additionalProperties": {"$ref": "#/$defs/operatorPlan"}
     },
+    "forcing": {
+      "description": "The model's used data-fed parameters (read by an operator or an ic equation), by flattened name (spec/plan.md §3, §4.1, D87). Present only when the model has one; a data-fed parameter nothing reads is not listed. The runtime supplies their values; the plan records what feeds each one, not where the data is.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["shape", "source", "file_variable", "cadence", "records_per_sample"],
+        "additionalProperties": false,
+        "properties": {
+          "cadence": {"enum": ["const", "discrete"], "description": "discrete when the source declares a time-varying temporal block (spec/plan.md §4.1)."},
+          "records_per_sample": {"enum": [1, 2], "description": "The effective value EarthSciAST reports in loader_fields (spec/plan.md §4.1)."},
+          "shape": {
+            "description": "Index-set names, as the flattened model declares them; [] for a scalar.",
+            "type": "array",
+            "items": {"$ref": "run-config.schema.json#/$defs/identifier"}
+          },
+          "source": {"type": "string", "minLength": 1},
+          "file_variable": {"type": "string", "minLength": 1}
+        }
+      }
+    },
     "schedule": {
       "description": "The resolved schedule: the run-config grammar with every 'auto' replaced and every leaf's options made explicit (spec/plan.md §3). Every node has an id.",
       "allOf": [{"$ref": "#/$defs/resolvedNode"}, {"$ref": "#/$defs/noAuto"}]
@@ -151,6 +172,10 @@
         },
         "writes": {"$ref": "#/$defs/sortedNames"},
         "reads": {"$ref": "#/$defs/sortedNames"},
+        "forcing": {
+          "description": "The data-fed parameters among reads (spec/plan.md §5.3, D87). Present only when non-empty.",
+          "allOf": [{"$ref": "#/$defs/sortedNames"}, {"minItems": 1}]
+        },
         "terms": {
           "description": "The operator's terms (spec/plan.md §5.1), in flattened-equation order, then contribution, then summand.",
           "type": "array",

@@ -147,3 +147,49 @@ Left out: `source_decay_map` (maps), and every case with a Rosenbrock leaf on a 
 ### 4.3 The `toy_equivalence` check
 
 A runtime writes an M2 case's result file (§3) with `u` in the case's `layout`: the listed variables' cells, each variable column-major, in the listed order. That is §1's layout. The check compares this result file with the same implementation's result file for the M1 case named by `against`, by the rule of the `cross_language` check (§2.1) with the check's `rtol` and `rtol_steps_differ`: states agree to `rtol` relative to each component's largest magnitude when the step sequences agree, and to `rtol_steps_differ` when they differ, in count or in any accepted step's $t$ or $h$. Only states and step sequences are compared, not tape paths; an M1 gradient case's `functional` and `gradient` have no counterpart in its M2 run. The two runs evaluate the same equations in a different order of floating-point operations (the hand-written right-hand side against EarthSciAST's compiled one, and species order inside a `block_lu` block), so step sequences may differ in adaptive runs, as between languages.
+
+### 4.4 Cases with data input (D87)
+
+M2's runtimes also fetch data and run leaves that read it (spec/operator-interface.md §8.4). Three problems with no M1 counterpart gate this, each with an exact solution, so their checks are against a reference rather than `toy_equivalence`. Together they exercise everything an esm data source can declare that reseact.esm uses, and the rest of esm-spec §8: `data_decay` the two-record bracket across a file boundary (this section), `data_monthly` calendar cadence, a custom substitution and mirrors (§4.5), `data_points` a points source with codes, a record filter and a discovered extent (§4.6). Their data files are small, checked in beside each model with the generator that writes them and the reference result files; CI regenerates them and compares decoded values (not bytes, which the HDF5 library stamps) and references.
+
+**`data_decay`** (`tests/conformance/toys/data_decay.esm`). Model `Decay`, `domain.temporal.reference_time` `2016-01-01T00:00:00Z`, index sets `x` (3) and `rec` (2):
+
+- state `u[x]`, $u(t_0) = 1$; one operator `decay` = `{"components": "Decay"}`, pointwise;
+- `Decay.F_k[rec, x]`, a data-fed parameter (`default` 1.0e-4) from source `Rate`: `kind` `grid`, `url_template` `data/data_decay/rate_{date:%Y%m%d}.nc`, `temporal` `{"start": "2016-01-01T00:00:00Z", "frequency": "PT1H", "file_period": "P1D", "records_per_file": 24, "time_variable": "time"}`, `metadata.esio_format` `"netcdf"`, `file_variable` `K`, and `update.from.records_per_sample` 2 (spec/plan.md §4.1);
+- `Decay.s[x]`, a data-fed parameter (`default` 1.0) from source `Scale`, a `static` source with no `temporal` (`const`), file `data/data_decay/scale.nc`, `file_variable` `S`;
+- the observed weight `Decay.w` $= \mathrm{frac}(t/3600)$, and $u_i' = -s_i\,\big((1 - w)\,F_k[1, i] + w\,F_k[2, i]\big)\,u_i$.
+
+**Data.** Two daily files, `rate_20160101.nc` and `rate_20160102.nc`, each with `K(time, x)` for the 24 hourly records of its day (CF `time` in `hours since 2016-01-01 00:00:00`), and `scale.nc` with `S(x)`. All are netCDF-4, a few kilobytes, checked in under `tests/conformance/toys/data/data_decay/` with their generator `make_data.py`, which also writes the reference result file. The values are $K_{h,i} = 10^{-4}\,(1 + i/2 + (h \bmod 5)/4)$ for hour $h$ counted from the origin and $i = 0, 1, 2$, and $S_i = 1 + i/4$. CI regenerates the files and compares their decoded values (not their bytes, which the HDF5 library stamps) and the reference.
+
+**Exact solution.** The blend is linear in $t$ within each hour, so with $\kappa_i(t) = s_i\,k_i(t)$, $u_i(t) = \exp\!\big(-\int_{t_0}^{t} \kappa_i\big)$, the integral a sum of trapezoids $1800\,s_i\,(K_{h,i} + K_{h+1,i})$ over whole hours plus a partial one. The generator evaluates it in binary64 at each output time.
+
+**Cases.** The interval is $[79200, 93600]$ (22:00 on 1 January to 02:00 on 2 January), so the run crosses a file boundary at midnight, and forcing epochs begin at 79200 ($t_0$), 82800, 86400, 90000 and 93600 ($t_f$, a refresh time read only by the stages at exactly $t_f$; spec/operator-interface.md §8.4.3), and the last sample needs the 03:00 record of 2 January, which `rate_20160102.nc` holds; `output.saveat` is 3600, and `step.hit` is `["forcing_refresh", "output"]` (spec/plan.md §7.3):
+
+| id | schedule | checks |
+|---|---|---|
+| `m2.data_decay.tsit5` | one adaptive `Tsit5` leaf, `reltol` 1e-8, `abstol` 1e-12 | `reference` at `rtol` 1e-6; `cross_language` with `rtol_steps_differ` |
+| `m2.data_decay.tsit5_dt600` | one `Tsit5` leaf, `dt` 600 | `reference` at `rtol` 1e-7; `cross_language` |
+
+The runtimes' own tests add the check of spec/operator-interface.md §8.4.2 item 3 on this model: each buffer at $t_0$ equals EarthSciAST's `esm_problem` forcing buffer for the same providers, bit for bit. They also run a variant whose initial condition reads data, `ic(u[i]) = Decay.s[i]`, and check that the run starts from $u_i(t_0) = S_i$, the data value, not the default 1.0 (spec/operator-interface.md §8.4.5), and ends at $S_i$ times the exact solution above. An adaptive Tsit5 run also exercises the selection of spec/operator-interface.md §8.4.1: its stages with $c = 1$ land on each hourly boundary, where $w = 0$ and only the new epoch's bracket gives the right rate. A Rosenbrock case waits for time-derivative documents (U17), since `decay` depends on $t$ through $w$.
+
+### 4.5 `data_monthly`: calendar cadence, a custom substitution and mirrors
+
+`tests/conformance/toys/data_monthly.esm` mounts a component file `inventory.esm` (model `Inv`, with source `Inventory` and the data-fed parameter) through `{"ref": "data_monthly/inventory.esm", "url_substitutions": {"sector": "point"}}`, so the custom substitution is bound by the model at load (esm-spec §4.7, §8.2). Model `Emis`, `domain.temporal.reference_time` `2016-01-01T00:00:00Z`, index set `x` (3):
+
+- state `c[x]`, $c(t_0) = 0$; one operator `emis`, pointwise; $c_i' = E_i$;
+- `Emis.E[x]`, mapped by `param_to_var` from the data-fed `Inv.E` (which carries the `default` 1.0e-6, since the surviving parameter is the source's declaration, EarthSciAST#634), from source `Inventory`: `kind` `grid`, `url_template` `absent/inv_{sector}_{date:%Y%m}.nc` (no such directory, so the read must fail over), `mirrors` `["inv_{sector}_{date:%Y%m}.nc"]`, `temporal` `{"start": "2016-01-01T00:00:00Z", "frequency": "P1M", "file_period": "P1M", "records_per_file": 1, "time_variable": "time"}`, `metadata.esio_format` `"netcdf"`; `file_variable` `E_day`, `unit_conversion` the expression $1/86400$ (per day to per second), a `select` taking cells 2–4 of the file's 5 along its `x` dimension, one record per sample.
+- **Data.** `inv_point_201601.nc`, `inv_point_201602.nc`, `inv_point_201603.nc`, each `E_day(time, x)` with one record, $E_{m,i} = 10^{-6}\,(m + i)$ for month $m$ = 1, 2, 3 and file cell $i$ = 1…5.
+- **Exact solution.** $E$ is constant within each calendar month, so $c_i(t)$ is the sum over months of $E_{m,i+1}/86400$ times the seconds of the month inside $[t_0, t]$.
+- **Cases.** Interval from 2016-01-20 to 2016-03-10 (`time` given as timestamps, D74), so the run crosses 1 February and 1 March 2016, a 31-day and a 29-day month, and a cadence of fixed length lands on neither; `output.saveat` 1 day; `step.hit` `["forcing_refresh", "output"]`. `m2.data_monthly.tsit5`: one adaptive `Tsit5` leaf; `reference` at `rtol` 1e-10 (the solution is piecewise linear and every month boundary is a tstop), `cross_language` with `rtol_steps_differ`.
+
+### 4.6 `data_points`: a points source with codes, a record filter and an extent
+
+`tests/conformance/toys/data_points.esm`. Model `Src`, index sets `x` (3) and `stn` sized by the metaparameter `N_STN` (default 4):
+
+- state `c[x]`, $c(0) = 0$; one operator `sources`, pointwise; $c_i' = \sum_j \text{rate}_j\,[\text{cell}_j = i]$, a `faq` sum over `stn` of `ifelse` on the code (it reads no state across cells, so the operator is pointwise);
+- source `Stations`: `kind` `points`, no `temporal` (`const`), `url_template` `data_points/stations.csv`, `metadata.esio_format` `"csv"`, `record_filter` `{"require_finite": ["rate"]}`, `extent` `{"metaparameter": "N_STN"}`; data-fed `Src.rate[stn]` (`file_variable` `rate`, `default` 1.0e-3) and `Src.cell[stn]` (`file_variable` `cell`, `codes` mapping the text codes `"a"`, `"b"`, `"c"` to 1, 2, 3, `default` 1.0).
+- **Data.** `stations.csv`, six rows, two with a blank `rate`, so four survive the filter and the discovered extent equals the planned `N_STN`.
+- **Exact solution.** $c_i(t) = t \sum_{j:\,\text{cell}_j = i} \text{rate}_j$.
+- **Cases.** Interval $[0, 3600]$, `output.saveat` 600. `m2.data_points.tsit5`: one adaptive `Tsit5` leaf; `reference` at `rtol` 1e-12, `cross_language`. The runtimes' tests add a variant run with `N_STN` bound to 5 at load, which must be refused before the first step for the extent mismatch (spec/operator-interface.md §8.4.2 item 4).
+
+The Rust CSV reader this case needs arrived with EarthSciIO's document providers (spec/plan.md §10 item 19).
