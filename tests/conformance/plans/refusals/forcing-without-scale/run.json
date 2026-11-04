@@ -1,0 +1,29 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "forced_column's named case on a model whose used data-fed parameter Col.g has no default: forcing_without_scale at /model.",
+  "model": "model.esm",
+  "axes": {
+    "horizontal": [
+      "x"
+    ],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 3600,
+    "hit": [
+      "forcing_refresh"
+    ]
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "default_column",
+        "alg": "TRBDF2",
+        "dt": 600
+      },
+      {
+        "leaf": "default_pointwise"
+      }
+    ]
+  }
+}

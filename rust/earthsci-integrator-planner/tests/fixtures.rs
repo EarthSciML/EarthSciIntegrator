@@ -23,6 +23,7 @@ const CASES: &[(&str, &str)] = &[
     ("column_contraction", "auto"),
     ("cross_component_term", "by-label"),
     ("cross_component_term", "by-owner"),
+    ("forced_column", "named"),
     ("periodic_stencil", "auto"),
     ("periodic_stencil", "partitioned"),
     ("pointwise_chemistry", "auto"),
@@ -398,7 +399,9 @@ fn band_model_catches_errors() {
 /// the same class.
 #[test]
 fn hand_bands_agree() {
-    for (fixture, case) in CASES {
+    // The hand-written bands are written fixture by fixture and have none
+    // for `forced_column`'s column contraction, so it is left out.
+    for (fixture, case) in CASES.iter().filter(|(f, _)| *f != "forced_column") {
         let ours = planned(fixture, case);
         let hand = plan(&run_config(fixture, case), &Options::default(), &HandBands).unwrap();
         assert_eq!(

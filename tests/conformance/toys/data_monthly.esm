@@ -1,0 +1,99 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "data_monthly",
+    "description": "spec/toy-problems.md §4.5: c' = E, E a monthly inventory read through a mirror, a custom substitution bound at the mount, a unit conversion and a select (D87)."
+  },
+  "domain": {
+    "temporal": {
+      "reference_time": "2016-01-01T00:00:00Z"
+    }
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "Emis": {
+      "variables": {
+        "c": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "x"
+          ],
+          "default": 0.0
+        },
+        "E": {
+          "type": "parameter",
+          "units": "1/s",
+          "shape": [
+            "x"
+          ],
+          "default": 0.0
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "c"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "makearray",
+            "args": [],
+            "regions": [
+              [
+                [
+                  1,
+                  3
+                ]
+              ]
+            ],
+            "values": [
+              {
+                "op": "faq",
+                "args": [],
+                "output_idx": [
+                  "i"
+                ],
+                "ranges": {
+                  "i": [
+                    1,
+                    3
+                  ]
+                },
+                "expr": {
+                  "op": "index",
+                  "args": [
+                    "Emis.E",
+                    "i"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "Inv": {
+      "ref": "data_monthly/inventory.esm",
+      "url_substitutions": {
+        "sector": "point"
+      }
+    }
+  },
+  "coupling": [
+    {
+      "type": "variable_map",
+      "from": "Inv.E",
+      "to": "Emis.E",
+      "transform": "param_to_var"
+    }
+  ]
+}

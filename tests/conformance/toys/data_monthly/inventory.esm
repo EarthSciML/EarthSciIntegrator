@@ -1,0 +1,64 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "inventory",
+    "description": "spec/toy-problems.md §4.5: a monthly emission inventory, its files named through the custom substitution {sector} that the mounting document binds."
+  },
+  "data_sources": {
+    "Inventory": {
+      "kind": "grid",
+      "source": {
+        "url_template": "absent/inv_{sector}_{date:%Y%m}.nc",
+        "mirrors": [
+          "inv_{sector}_{date:%Y%m}.nc"
+        ]
+      },
+      "temporal": {
+        "start": "2016-01-01T00:00:00Z",
+        "frequency": "P1M",
+        "file_period": "P1M",
+        "records_per_file": 1,
+        "time_variable": "time"
+      },
+      "metadata": {
+        "esio_format": "netcdf"
+      }
+    }
+  },
+  "models": {
+    "Inv": {
+      "variables": {
+        "E": {
+          "type": "parameter",
+          "units": "1/s",
+          "default": 1e-06,
+          "update": {
+            "kind": "data",
+            "source": "Inventory",
+            "from": {
+              "file_variable": "E_day",
+              "unit_conversion": {
+                "op": "/",
+                "args": [
+                  1.0,
+                  86400.0
+                ]
+              },
+              "select": {
+                "axes": [
+                  {
+                    "range": {
+                      "start": 1,
+                      "stop": 4
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "equations": []
+    }
+  }
+}

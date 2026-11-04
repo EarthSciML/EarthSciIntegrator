@@ -1,0 +1,29 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "forced_column's named case on a model whose data-fed Col.g has a data rule and a schedule rule: unsupported_parameter_update at /model.",
+  "model": "model.esm",
+  "axes": {
+    "horizontal": [
+      "x"
+    ],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 3600,
+    "hit": [
+      "forcing_refresh"
+    ]
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "default_column",
+        "alg": "TRBDF2",
+        "dt": 600
+      },
+      {
+        "leaf": "default_pointwise"
+      }
+    ]
+  }
+}

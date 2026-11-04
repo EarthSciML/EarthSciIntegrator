@@ -50,6 +50,7 @@ DOCUMENTS = [
     ("tests/conformance/m2/cases.json", "cases.schema.json", True),
     ("spec/tableaus/*.json", "tableau.schema.json", False),
     ("tests/conformance/m1/reference/*.json", "result.schema.json", False),
+    ("tests/conformance/m2/reference/*.json", "result.schema.json", True),
     ("spec/planner-errors.json", "planner-errors.schema.json", True),
     ("tests/conformance/plans/fixtures/*/*.run.json", "run-config.schema.json", True),
     ("tests/conformance/plans/refusals/*/run.json", "run-config.schema.json", True),
