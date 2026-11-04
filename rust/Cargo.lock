@@ -411,7 +411,7 @@ dependencies = [
 [[package]]
 name = "earthsci-astdiff"
 version = "0.3.0"
-source = "git+https://github.com/EarthSciML/EarthSciASTDiff?branch=feat%2Fstructure-only-bands#4eed1c327c998ebe10329df69b097efb3cab357e"
+source = "git+https://github.com/EarthSciML/EarthSciASTDiff?rev=4eed1c327c998ebe10329df69b097efb3cab357e#4eed1c327c998ebe10329df69b097efb3cab357e"
 dependencies = [
  "earthsci-ast",
  "indexmap",

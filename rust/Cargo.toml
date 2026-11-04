@@ -26,5 +26,9 @@ earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = 
 # esm-jacobian-spec §2.1), which pass 2 reads (spec/plan.md §5.2.2), is not
 # released yet: EarthSciML/EarthSciASTDiff#59. Remove this once a release
 # has it, and raise the planner's `earthsci-astdiff` requirement to it.
+# The patch names a commit of #59's branch, not the branch, so it still
+# resolves after that branch is merged, moved or deleted. `cargo publish`
+# ignores `[patch]`, so the planner crate cannot be published until that
+# release exists.
 [patch.crates-io]
-earthsci-astdiff = { git = "https://github.com/EarthSciML/EarthSciASTDiff", branch = "feat/structure-only-bands" }
+earthsci-astdiff = { git = "https://github.com/EarthSciML/EarthSciASTDiff", rev = "4eed1c327c998ebe10329df69b097efb3cab357e" }
