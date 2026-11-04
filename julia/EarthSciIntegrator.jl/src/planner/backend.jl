@@ -22,20 +22,46 @@ function DerivedDocument(doc::AbstractDict{String, Any})
 end
 
 """
-    document_bands(flat, what) -> Vector{EarthSciASTDiff.JacEntry}
+    document_bands(flat, what; coefficients = true) -> Vector{EarthSciASTDiff.JacEntry}
 
 EarthSciASTDiff's state Jacobian of a right-hand-side document, loaded,
-flattened (`flat`) and viewed with `sysview` (§5.2.2, §5.4). An
+flattened (`flat`) and viewed with `sysview` (§5.2.2, §5.4). With
+`coefficients = false`, its structure-only entries (esm-jacobian-spec §2.1),
+which carry no coefficient: the pattern pass 2 reads (§5.2.2). An
 EarthSciASTDiff refusal is `band_model_failed` at `/model`, naming `what`.
+An EarthSciASTDiff without the structure-only mode is an error, never a
+refusal ([`require_structure_only`](@ref)).
 """
-function document_bands(flat::EarthSciAST.FlattenedSystem, what::AbstractString)
+function document_bands(flat::EarthSciAST.FlattenedSystem, what::AbstractString; coefficients::Bool = true)
+    coefficients || require_structure_only()
     try
-        return EarthSciASTDiff.jacobian_bands(EarthSciASTDiff.sysview(flat); wrt = :states)
+        return EarthSciASTDiff.jacobian_bands(EarthSciASTDiff.sysview(flat); wrt = :states, coefficients)
     catch e
         e isa PlannerRefusal && rethrow()
         refuse("band_model_failed", "/model", "EarthSciASTDiff refused to differentiate $what: " * sprint(showerror, e))
     end
 end
+
+"""
+    require_structure_only()
+
+Throw an error unless the loaded EarthSciASTDiff has the structure-only mode
+of `jacobian_bands` (the `coefficients` keyword, EarthSciASTDiff#59), which
+pass 2 needs (§5.2.2). EarthSciASTDiff 0.3.0 lacks it; called there, the
+keyword would be a `MethodError` that the probe search would take for a
+model failure, refusing every model as `band_model_failed`.
+"""
+function require_structure_only()
+    STRUCTURE_ONLY[] === nothing &&
+        (STRUCTURE_ONLY[] = hasmethod(EarthSciASTDiff.jacobian_bands, Tuple{EarthSciASTDiff.SysView}, (:coefficients,)))
+    STRUCTURE_ONLY[] || error(
+        "EarthSciASTDiff $(pkgversion(EarthSciASTDiff)) has no structure-only mode " *
+            "(jacobian_bands(...; coefficients = false), EarthSciASTDiff#59), which the planner's pass 2 needs (spec/plan.md §5.2.2); " *
+            "use an EarthSciASTDiff that includes it"
+    )
+    return nothing
+end
+const STRUCTURE_ONLY = Ref{Union{Bool, Nothing}}(nothing)
 
 """A band as `serialize_band` writes it, without `coef` (§5.4)."""
 function band_json(en)
@@ -47,9 +73,11 @@ end
     BandEntry(en::EarthSciASTDiff.JacEntry, row = en.u)
 
 The [`BandEntry`](@ref) of `BandEntry(band_json(en))`, with row `row`. Its
-coefficient, which pass 2 never reads (§5.2.2), is replaced by the literal 0
-before `serialize_band` writes the entry, so it is never serialized; every
-other field is read through `serialize_band`, as for the operator's bands.
+coefficient, which pass 2 never reads (§5.2.2; pass 2's entries are
+structure-only and have none), is replaced by the literal 0 before
+`serialize_band` writes the entry, so a full entry's coefficient is never
+serialized; every other field is read through `serialize_band`, as for the
+operator's bands.
 """
 function BandEntry(en::EarthSciASTDiff.JacEntry, row::AbstractString = en.u)
     # `_rebuild` copies every field of the band but the ones it is given, so a
@@ -106,25 +134,30 @@ function bind!(b::DiffBackend, ctx)
 end
 
 """
-    term_band_dicts(b::DiffBackend, ctx, t) -> Vector{Dict{String, Any}}
+    term_entries(b::DiffBackend, ctx, t; coefficients = false) -> Vector{EarthSciASTDiff.JacEntry}
 
-Term `t`'s bands from its own right-hand-side document (§5.2.2), as
-[`band_json`](@ref) gives them. An EarthSciASTDiff failure is
-`band_model_failed`, naming the term.
+Term `t`'s EarthSciASTDiff entries from its own right-hand-side document
+(§5.2.2): structure-only by default, the full mode with `coefficients =
+true`. An EarthSciASTDiff failure is `band_model_failed`, naming the term.
 """
-term_band_dicts(b::DiffBackend, ctx, t::Term) =
-    Dict{String, Any}[band_json(en) for en in _term_entries(b, ctx, t)]
-
-term_bands(b::DiffBackend, ctx, t::Term) = BandEntry[BandEntry(en) for en in _term_entries(b, ctx, t)]
-
-"""Term `t`'s own document's entries (EarthSciASTDiff's `JacEntry`s)."""
-function _term_entries(b::DiffBackend, ctx, t::Term)
+function term_entries(b::DiffBackend, ctx, t::Term; coefficients::Bool = false)
     bind!(b, ctx)
     # A term's document is never written, so it is loaded from memory rather
     # than through its bytes.
     flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
-    return document_bands(flat, "term ($(t.variable), $(t.contribution), $(t.summand))")
+    return document_bands(flat, "term ($(t.variable), $(t.contribution), $(t.summand))"; coefficients)
 end
+
+"""
+    term_band_dicts(b::DiffBackend, ctx, t; coefficients = false) -> Vector{Dict{String, Any}}
+
+[`term_entries`](@ref) as [`band_json`](@ref) gives them.
+"""
+term_band_dicts(b::DiffBackend, ctx, t::Term; coefficients::Bool = false) =
+    Dict{String, Any}[band_json(en) for en in term_entries(b, ctx, t; coefficients)]
+
+term_bands(b::DiffBackend, ctx, t::Term; coefficients::Bool = false) =
+    BandEntry[BandEntry(en) for en in term_entries(b, ctx, t; coefficients)]
 
 """
     probe_band_dicts(b::DiffBackend, ctx, terms) -> Union{Vector{Vector{Dict{String, Any}}}, Nothing}
@@ -137,8 +170,8 @@ EarthSciAST or EarthSciASTDiff fails on the probe document, a failure that
 names no term. Only those calls are guarded: an error in building the probe
 document or in reading its bands is the planner's own and propagates.
 """
-function probe_band_dicts(b::DiffBackend, ctx, terms::AbstractVector{Term})
-    return _probe_bands(b, ctx, terms, Dict{String, Any}) do en, row
+function probe_band_dicts(b::DiffBackend, ctx, terms::AbstractVector{Term}; coefficients::Bool = false)
+    return _probe_bands(b, ctx, terms, Dict{String, Any}; coefficients) do en, row
         d = band_json(en)
         d["row"] = row
         d
@@ -149,22 +182,23 @@ end
     probe_term_bands(b::DiffBackend, ctx, terms) -> Union{Vector{Vector{BandEntry}}, Nothing}
 
 [`probe_band_dicts`](@ref) as [`BandEntry`](@ref)s, read from EarthSciASTDiff's
-entries without serializing their coefficients. Nothing of the probe is kept
-once it returns: its flattened document and its entries, coefficients
-included, are garbage.
+structure-only entries. Nothing of the probe is kept once it returns: its
+flattened document and its entries are garbage.
 """
-probe_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term}) =
-    _probe_bands(BandEntry, b, ctx, terms, BandEntry)
+probe_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term}; coefficients::Bool = false) =
+    _probe_bands(BandEntry, b, ctx, terms, BandEntry; coefficients)
 
 """
-    _probe_bands(convert, b, ctx, terms, T) -> Union{Vector{Vector{T}}, Nothing}
+    _probe_bands(convert, b, ctx, terms, T; coefficients = false) -> Union{Vector{Vector{T}}, Nothing}
 
 Every term's bands from the probe document of `terms`, each entry turned into
 a `T` by `convert(entry, row)`, `row` the term's variable; `nothing` when
 EarthSciAST or EarthSciASTDiff fails on the probe document.
 """
-function _probe_bands(convert, b::DiffBackend, ctx, terms::AbstractVector{Term}, ::Type{T}) where {T}
-    entries = _probe_entries(b, ctx, terms)
+function _probe_bands(
+        convert, b::DiffBackend, ctx, terms::AbstractVector{Term}, ::Type{T}; coefficients::Bool = false
+    ) where {T}
+    entries = _probe_entries(b, ctx, terms; coefficients)
     entries === nothing && return nothing
     out = [T[] for _ in terms]
     index = Dict(probe_state(k) => k for k in eachindex(terms))
@@ -179,13 +213,16 @@ end
 
 """
 The probe document's entries (EarthSciASTDiff's `JacEntry`s), or `nothing`
-when EarthSciAST or EarthSciASTDiff fails on it.
+when EarthSciAST or EarthSciASTDiff fails on it. Structure-only entries by
+default, the full mode's with `coefficients = true`.
 """
-function _probe_entries(b::DiffBackend, ctx, terms::AbstractVector{Term})
+function _probe_entries(b::DiffBackend, ctx, terms::AbstractVector{Term}; coefficients::Bool = false)
     bind!(b, ctx)
+    # Outside the guard below: a missing mode is no failure of the probe.
+    coefficients || require_structure_only()
     doc = probe_document(ctx.model, terms)
     return try
-        document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document")
+        document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document"; coefficients)
     catch e
         e isa InterruptException && rethrow()
         e isa PlannerRefusal && e.code != "band_model_failed" && rethrow()
@@ -253,12 +290,13 @@ function probe_batches(terms::AbstractVector{Term}; large::Int = LARGE_TERM_NODE
 end
 
 """
-    all_term_bands(b::DiffBackend, ctx, terms; large = LARGE_TERM_NODES) -> Vector{Vector{BandEntry}}
+    all_term_bands(b::DiffBackend, ctx, terms; large = LARGE_TERM_NODES, coefficients = false) -> Vector{Vector{BandEntry}}
 
-Every term's bands, from one probe document per batch ([`probe_batches`](@ref),
-[`probe_term_bands`](@ref)), in batch order. Each batch's bands are kept
-without their coefficients, and nothing else of the batch's probe is kept,
-so its coefficients are garbage before the next batch is built.
+Every term's bands, EarthSciASTDiff's structure-only entries (§5.2.2; the
+full mode's with `coefficients = true`, which only tests use), from one probe
+document per batch ([`probe_batches`](@ref), [`probe_term_bands`](@ref)), in
+batch order. Nothing of a batch's probe is kept once its bands are read, so
+it is garbage before the next batch is built.
 A failure on a batch's probe names no term, so that batch is then split in
 halves and each half probed in turn, first half first, down to single terms,
 whose own documents are differentiated ([`term_bands`](@ref)). The first term
@@ -266,30 +304,65 @@ whose own document fails, in term order, refuses with `band_model_failed`
 and that document's message (§5.2.2): the batches are consecutive and taken
 in order, so it is the first such term of the whole list.
 """
-function all_term_bands(b::DiffBackend, ctx, terms::AbstractVector{Term}; large::Int = LARGE_TERM_NODES)
+function all_term_bands(
+        b::DiffBackend, ctx, terms::AbstractVector{Term}; large::Int = LARGE_TERM_NODES, coefficients::Bool = false
+    )
     bind!(b, ctx)
     out = Vector{Vector{BandEntry}}(undef, length(terms))
     for r in probe_batches(terms; large)
-        _term_bands!(out, b, ctx, terms, r)
+        _term_bands!(out, b, ctx, terms, r; coefficients)
     end
     return out
 end
 
-function _term_bands!(out, b::DiffBackend, ctx, terms, r::UnitRange{Int})
+"""
+    _term_bands!(out, b, ctx, terms, r; coefficients = false)
+
+The bands of `terms[r]` into `out[r]`: one probe of the range, and when it
+fails, the first half then the second, recursively, down to single terms,
+whose own documents are differentiated ([`term_bands`](@ref)), so the first
+term in `r` whose own document fails refuses. `coefficients` picks the mode.
+"""
+function _term_bands!(out, b::DiffBackend, ctx, terms, r::UnitRange{Int}; coefficients::Bool = false)
     isempty(r) && return out
     if length(r) == 1
-        out[only(r)] = term_bands(b, ctx, terms[only(r)])
+        out[only(r)] = term_bands(b, ctx, terms[only(r)]; coefficients)
         return out
     end
-    probe = probe_term_bands(b, ctx, terms[r])
+    probe = probe_term_bands(b, ctx, terms[r]; coefficients)
     if probe !== nothing
         out[r] = probe
         return out
     end
     mid = first(r) + length(r) ÷ 2 - 1
-    _term_bands!(out, b, ctx, terms, first(r):mid)
-    _term_bands!(out, b, ctx, terms, (mid + 1):last(r))
+    _term_bands!(out, b, ctx, terms, first(r):mid; coefficients)
+    _term_bands!(out, b, ctx, terms, (mid + 1):last(r); coefficients)
     return out
+end
+
+"""
+    refuse_failing_term(b::DiffBackend, ctx, terms)
+
+Pass 4's search (§5.2.2), when an operator's own document fails in the full
+mode: pass 2's search ([`all_term_bands`](@ref): the same batches, each
+probed whole and, when it fails, split in halves, first half first, down to
+single terms) in the full mode over the operator's `terms`, in term order.
+The first term whose own document fails refuses, with that document's
+message; that takes about `2 log2(n)` probe documents rather than one per
+term. Returns `nothing` when no term's own document fails, or when the
+search meets an error that is no `band_model_failed` refusal (an EarthSciAST
+failure on a term's own document), so the caller refuses against the
+operator.
+"""
+function refuse_failing_term(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    try
+        all_term_bands(b, ctx, terms; coefficients = true)
+    catch e
+        e isa InterruptException && rethrow()
+        e isa PlannerRefusal && e.code == "band_model_failed" && rethrow()
+        @debug "Pass 4's search for the failing term met an error; refusing against the operator (§5.2.2)" exception = e
+    end
+    return nothing
 end
 
 """The operator's artifacts, building its right-hand-side document and bands on first use."""
@@ -297,7 +370,17 @@ function artifacts!(b::DiffBackend, ctx, op::PlanOperator)
     bind!(b, ctx)
     haskey(b.ops, op.name) && return b.ops[op.name]
     d = DerivedDocument(rhs_document(ctx.model, op.name, op.terms))
-    entries = document_bands(d.flat, "operator $(op.name)")
+    entries = try
+        document_bands(d.flat, "operator $(op.name)")
+    catch e
+        (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
+        # Pass 2 read the terms' structure only, which takes no derivative;
+        # a term whose derivative fails is reported here, against the first
+        # such term of the operator, with its own document's message, and
+        # against the operator when there is none (§5.2.2).
+        refuse_failing_term(b, ctx, op.terms)
+        throw(e)
+    end
     dicts = Dict{String, Any}[band_json(en) for en in entries]
     a = OperatorArtifacts(
         d, entries, dicts, BandEntry[BandEntry(x) for x in dicts], EarthSciASTDiff.sysview(d.flat),
@@ -401,6 +484,28 @@ function stencil_footprint(bands, m::PlanModel, axes::Axes)
     return Any[Any[v...] for v in sort!(collect(vecs))]
 end
 
+"""
+    check_full_locality(op, bands, m, axes)
+
+The class and radius the operator's full band list implies must be no wider
+than its locality, read from its terms' structure-only band lists (§5.2.2:
+the full mode's points are a subset of the structure-only mode's). A wider
+one is an internal planner error, never a refusal; a narrower one is allowed.
+"""
+function check_full_locality(op::PlanOperator, bands, m::PlanModel, axes::Axes)
+    cls, rad = classify_bands(bands, m.shapes, axes, m.sizes)
+    wider = coarser(op.locality, cls) !== op.locality
+    if !wider && cls === :stencil
+        wider = any(X -> rad[X][1] > op.radius[X][1] || rad[X][2] > op.radius[X][2], axes.horizontal)
+    end
+    wider && error(
+        "operator $(op.name): its full band list implies locality $cls" * (rad === nothing ? "" : " with radius $rad") *
+            ", wider than $(op.locality)" * (op.radius === nothing ? "" : " with radius $(op.radius)") *
+            " from its terms' structure-only band lists (spec/plan.md §5.2.2: the full mode's points are a subset of the structure-only mode's)"
+    )
+    return nothing
+end
+
 function operator_structure(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
     m, axes = ctx.model, ctx.axes
@@ -412,6 +517,10 @@ function operator_structure(b::DiffBackend, ctx, op::PlanOperator)
         "bands" => Any[a.band_dicts...]
     )
     loc = need_locality(op)
+    check_full_locality(op, a.bands, m, axes)
+    # The footprint and the bandwidth read the pattern the locality and radius
+    # were read from: the operator's terms' band lists (§5.2.2, §5.4).
+    pattern() = BandEntry[x for t in op.terms for x in something(t.bands, BandEntry[])]
     if loc === :pointwise && cls === :block_diagonal
         p = EarthSciASTDiff.serialize_plan(EarthSciASTDiff.plan_factorization(a.entries, a.sv; structure = cls))
         s["block"] = Dict{String, Any}(
@@ -419,10 +528,10 @@ function operator_structure(b::DiffBackend, ctx, op::PlanOperator)
             "pattern" => p["pattern"], "lu_pattern" => p["lu_pattern"]
         )
     elseif loc === :column
-        kl, ku = column_bandwidth(a.bands, m, axes)
+        kl, ku = column_bandwidth(pattern(), m, axes)
         s["column"] = Dict{String, Any}("axis" => axes.vertical, "kl" => kl, "ku" => ku)
     elseif loc === :stencil
-        s["stencil"] = Dict{String, Any}("footprint" => stencil_footprint(a.bands, m, axes))
+        s["stencil"] = Dict{String, Any}("footprint" => stencil_footprint(pattern(), m, axes))
     end
     return s
 end
