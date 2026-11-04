@@ -94,33 +94,44 @@ pub const LARGE_TERM_NODES: u64 = 10_000;
 /// The number of operator nodes of `e`, every occurrence counted, in every
 /// expression-bearing child, or `limit + 1` when it exceeds `limit`. A node
 /// reached through several parents is counted once per path but walked
-/// once.
+/// once, and the walk stops as soon as the count passes `limit`.
 pub fn operator_nodes(e: &Expr, limit: u64) -> u64 {
-    fn walk(e: &Expr, memo: &mut HashMap<*const ExpressionNode, u64>, cap: u64) -> u64 {
-        let Expr::Operator(node) = e else {
-            return 0;
-        };
-        let key = std::sync::Arc::as_ptr(node);
-        if let Some(&n) = memo.get(&key) {
-            return n;
-        }
-        let mut c = 1u64;
-        node.for_each_child(&mut |x| c = (c + walk(x, memo, cap)).min(cap));
-        memo.insert(key, c);
-        c
+    capped_nodes(e, &mut HashMap::new(), limit.saturating_add(1))
+}
+
+/// `min(operator nodes of e, cap)`, memoized by node in `memo`. Every value
+/// in `memo` is capped at the same `cap`, so one memo can be shared across
+/// many calls with that cap. A node's walk stops once its count reaches
+/// `cap`; its memoized value is then `cap`, which is still exact.
+fn capped_nodes(e: &Expr, memo: &mut HashMap<*const ExpressionNode, u64>, cap: u64) -> u64 {
+    let Expr::Operator(node) = e else {
+        return 0;
+    };
+    let key = std::sync::Arc::as_ptr(node);
+    if let Some(&n) = memo.get(&key) {
+        return n;
     }
-    let cap = limit.saturating_add(1);
-    walk(e, &mut HashMap::new(), cap)
+    let mut c = 1u64.min(cap);
+    if c < cap {
+        node.any_child(&mut |x| {
+            c = (c + capped_nodes(x, memo, cap)).min(cap);
+            c >= cap
+        });
+    }
+    memo.insert(key, c);
+    c
 }
 
 /// §5.2.2's batches: consecutive runs of `terms`, in term order, each
 /// holding at most one large term (more than `large` operator nodes). A
 /// batch ends just before a large term when it already holds one.
 pub fn probe_batches(terms: &[Term], large: u64) -> Vec<Range<usize>> {
+    // One memo for every term: the interner shares subtrees between terms.
+    let (cap, mut memo) = (large.saturating_add(1), HashMap::new());
     let mut out = Vec::new();
     let (mut start, mut seen) = (0, false);
     for (k, t) in terms.iter().enumerate() {
-        if operator_nodes(&t.expr, large) <= large {
+        if capped_nodes(&t.expr, &mut memo, cap) <= large {
             continue;
         }
         if seen {
@@ -149,9 +160,10 @@ pub fn probe_batches(terms: &[Term], large: u64) -> Vec<Range<usize>> {
 /// single terms, whose own documents are differentiated: the first term
 /// whose own document fails, in term order, is `band_model_failed`, with
 /// that document's message. The batches are consecutive and taken in
-/// order, so that is the first such term of the whole list. Finding it
-/// takes about `2 log₂ n` probe documents rather than one document per
-/// term.
+/// order, so that is the first such term of the whole list. Within a
+/// failing batch of `n` terms, finding it takes about `2 log₂ n` probe
+/// documents rather than one document per term, on top of one probe per
+/// batch.
 pub struct AstDiffBands;
 
 /// A probe's band lists, or EarthSciAST's or EarthSciASTDiff's message.
@@ -226,8 +238,18 @@ impl AstDiffBands {
         terms: &[Term],
         large: u64,
     ) -> Result<Vec<Vec<BandEntry>>, BandSourceError> {
+        Self::in_ranges(info, terms, probe_batches(terms, large))
+    }
+
+    /// Every term's band list, one batch after another, the batches being
+    /// `batches`: consecutive ranges covering `terms` in order.
+    fn in_ranges(
+        info: &ModelInfo,
+        terms: &[Term],
+        batches: Vec<Range<usize>>,
+    ) -> Result<Vec<Vec<BandEntry>>, BandSourceError> {
         let mut out = Vec::with_capacity(terms.len());
-        for r in probe_batches(terms, large) {
+        for r in batches {
             let first = r.start;
             Self::search(info, &terms[r], first, &mut out)?;
         }
@@ -254,6 +276,16 @@ pub mod testing {
         large: u64,
     ) -> Result<Vec<Vec<BandEntry>>, BandSourceError> {
         AstDiffBands::batched(info, terms, large)
+    }
+
+    /// Every term's band list, in the given batches: consecutive ranges
+    /// covering `terms` in order. The first failure is the failing term's.
+    pub fn in_given_batches(
+        info: &ModelInfo,
+        terms: &[Term],
+        batches: Vec<Range<usize>>,
+    ) -> Result<Vec<Vec<BandEntry>>, BandSourceError> {
+        AstDiffBands::in_ranges(info, terms, batches)
     }
 
     /// Each term's band list from its own right-hand-side document, in term

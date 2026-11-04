@@ -67,11 +67,23 @@ fn band_model_failed_names_its_term() {
     assert!(probe.is_err(), "the probe document differentiates");
     let failure = testing::each_term(&info, &ts).unwrap_err();
     assert_eq!(failure.term, 2);
-    // In batches of any size, the same term fails with the same message.
-    for large in [0, 1, 3] {
+    // Every term here has one operator node, so a node bound gives either
+    // single-term batches (0) or one batch of all three (1 or more).
+    for large in [0, 1] {
         match testing::in_batches(&info, &ts, large) {
             Err(BandSourceError::Failed(f)) => assert_eq!(f, failure, "large = {large}"),
             other => panic!("large = {large}: want the third term's failure, got {other:?}"),
+        }
+    }
+    // Batches given directly, so that a failing probe's halves search also
+    // runs in a later batch, from a term other than the first: [t0] [t1, t2]
+    // reaches the third term only through the batch's offset.
+    let batches: [&[std::ops::Range<usize>]; 3] =
+        [&[0..1, 1..3], &[0..2, 2..3], &[0..1, 1..2, 2..3]];
+    for b in batches {
+        match testing::in_given_batches(&info, &ts, b.to_vec()) {
+            Err(BandSourceError::Failed(f)) => assert_eq!(f, failure, "batches {b:?}"),
+            other => panic!("batches {b:?}: want the third term's failure, got {other:?}"),
         }
     }
     match plan(&path, &Options::default(), &AstDiffBands) {
