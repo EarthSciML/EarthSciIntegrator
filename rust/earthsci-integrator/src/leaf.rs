@@ -1495,7 +1495,7 @@ impl<T: Scalar> Bound<'_, T> {
         mu.iter().flat_map(|&(m, w)| [m, w]).collect()
     }
     fn pairs<'m>(x: &[&'m [T]]) -> Vec<MuPair<'m, T>> {
-        x.chunks_exact(2).map(|c| (c[0], c[1])).collect()
+        x.as_chunks::<2>().0.iter().map(|&[m, w]| (m, w)).collect()
     }
 
     /// `out += Σ_{k ∈ part} ∇_u Σ_i μ_iᵀ J_k(u) w_i` (zero for operators linear in `u`).
