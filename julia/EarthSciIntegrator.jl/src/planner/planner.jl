@@ -65,13 +65,14 @@ backend), is a [`PlannerStageError`](@ref). Write the result with
 """
 function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend = DiffBackend())
     inp = read_inputs(config_path)                       # §4 steps 1–5
-    check_scope(inp.flat)                                # step 6
+    check_scope(inp.flat, inp.file)                      # step 6
     check_reserved_names(inp.file)                       # step 7
     ctx = plan_context(inp, backend; tspan)              # step 8: lifted shapes (§6.1.3), then axes and time
     m, config, axes = ctx.model, ctx.config, ctx.axes
     # Passes 1 and 2, interleaved (§4 "Order of refusals", D81): terms and
     # owners, each term's locality, selection, then operator classes.
     ctx.terms = build_terms(m)
+    mark_used_forcing!(m, ctx.terms)                     # §4.1
     term_localities!(ctx, ctx.terms)
     ctx.ops = select_operators(m, ctx.terms, config)
     opnames = sort!(collect(keys(ctx.ops)))
@@ -81,6 +82,7 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
     for o in opnames                                   # pass 3
         dof_sets!(m, ctx.ops[o])
     end
+    check_forcing_scale(m)                             # §4.1, after pass 3
     for o in opnames                                   # pass 4
         ctx.ops[o].structure = operator_structure(backend, ctx, ctx.ops[o])
     end
@@ -137,9 +139,9 @@ function check_reserved_names(file::EarthSciAST.EsmFile)
 end
 
 """The plan's object for an operator (§3, §5)."""
-function operator_json(op::PlanOperator, stiff)
+function operator_json(m::PlanModel, op::PlanOperator, stiff)
     op.structure === nothing && throw(PlannerStageError("operator $(op.name)'s structure (§5.4) needs EarthSciASTDiff"))
-    return Dict{String, Any}(
+    d = Dict{String, Any}(
         "kind" => "rhs",
         "locality" => locality_json(op),
         "writes" => op.writes,
@@ -147,6 +149,22 @@ function operator_json(op::PlanOperator, stiff)
         "terms" => Any[term_json(t) for t in op.terms],
         "structure" => op.structure,
         "stiffness" => Dict{String, Any}("class" => String(stiff[1]), "source" => stiff[2])
+    )
+    f = forcing_among(m, op.reads)
+    isempty(f) || (d["forcing"] = f)               # §5.3
+    return d
+end
+
+"""The plan's `forcing` (§3): each used data-fed parameter's shape, source, file variable, cadence and records per sample; `nothing` when there is none."""
+function forcing_json(m::PlanModel)
+    names = used_forcing(m)
+    isempty(names) && return nothing
+    return Dict{String, Any}(
+        n => Dict{String, Any}(
+            "shape" => Any[m.forcing[n].shape...], "source" => m.forcing[n].source,
+            "file_variable" => m.forcing[n].file_variable, "cadence" => m.forcing[n].cadence,
+            "records_per_sample" => m.forcing[n].records_per_sample
+        ) for n in names
     )
 end
 
@@ -163,7 +181,7 @@ function plan_dict(d::PlanDraft)
         "esm_integrator" => String(ctx.config["esm_integrator"]),
         "inputs" => inputs_json(ctx.inputs),
         "time" => Dict{String, Any}("start" => ctx.time[1], "end" => ctx.time[2]),
-        "operators" => Dict{String, Any}(n => operator_json(op, d.stiffness[n]) for (n, op) in ctx.ops),
+        "operators" => Dict{String, Any}(n => operator_json(ctx.model, op, d.stiffness[n]) for (n, op) in ctx.ops),
         "schedule" => d.schedule,
         "step" => d.step,
         "partition" => d.partition,
@@ -171,6 +189,8 @@ function plan_dict(d::PlanDraft)
         "derived" => derived,
         "validation" => validation
     )
+    fj = forcing_json(ctx.model)
+    fj === nothing || (out["forcing"] = fj)
     haskey(ctx.config, "adjoint") && (out["checkpoint_schedule"] = Dict{String, Any}("kind" => "all", "macro_steps" => 0))
     return out
 end

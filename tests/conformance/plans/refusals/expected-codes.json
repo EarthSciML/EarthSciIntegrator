@@ -19,6 +19,10 @@
     "code": "auto_strategy_unavailable",
     "at": "/schedule"
   },
+  "auto-stiffness-reads-forcing": {
+    "code": "auto_stiffness_reads_forcing",
+    "at": "/schedule"
+  },
   "axes-too-many": {
     "code": "axes_unresolved",
     "at": "/axes"
@@ -35,6 +39,10 @@
     "code": "bind_dt_leaf_without_dt0",
     "at": "/schedule/bind_dt"
   },
+  "data-update-with-schedule": {
+    "code": "unsupported_parameter_update",
+    "at": "/model"
+  },
   "discrete-event": {
     "code": "unsupported_event",
     "at": "/model"
@@ -42,6 +50,18 @@
   "duplicate-node-id": {
     "code": "duplicate_node_id",
     "at": "/schedule/sequence/1/id"
+  },
+  "forcing-records-invalid": {
+    "code": "forcing_records_invalid",
+    "at": "/model"
+  },
+  "forcing-refresh-not-hit": {
+    "code": "forcing_refresh_not_hit",
+    "at": "/step/hit"
+  },
+  "forcing-without-scale": {
+    "code": "forcing_without_scale",
+    "at": "/model"
   },
   "map-operator": {
     "code": "unsupported_map_operator",

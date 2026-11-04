@@ -1,0 +1,29 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "forced_column's named case with step.hit lacking forcing_refresh, although the column operator reads the discrete data-fed Met.T (spec/plan.md §7.3): forcing_refresh_not_hit at /step/hit.",
+  "model": "../../fixtures/forced_column/model.esm",
+  "axes": {
+    "horizontal": [
+      "x"
+    ],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 3600,
+    "hit": [
+      "output"
+    ]
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "default_column",
+        "alg": "TRBDF2",
+        "dt": 600
+      },
+      {
+        "leaf": "default_pointwise"
+      }
+    ]
+  }
+}

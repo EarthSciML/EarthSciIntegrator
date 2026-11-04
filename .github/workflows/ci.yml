@@ -36,6 +36,12 @@ jobs:
           python tests/conformance/m1/make_cases.py
           python tests/conformance/m2/make_cases.py
           git diff --exit-code tests/conformance/m1/cases.json tests/conformance/m2/cases.json
+      # The data-input cases' files and references (spec/toy-problems.md §4.4):
+      # regenerated and compared by decoded value, since HDF5 stamps the bytes.
+      - name: Data-input files and references match their generator
+        run: |
+          pip install netCDF4 numpy
+          python tests/conformance/toys/make_data.py --check
       # The packages read copies of spec/ data from their own directories,
       # since a registered or published package cannot reach spec/.
       - name: Package data copies match spec/

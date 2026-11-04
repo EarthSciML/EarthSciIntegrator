@@ -93,17 +93,18 @@ mutable struct DiffBackend <: PlanBackend
     layout::Union{Nothing, DofLayout}
     model::Union{Nothing, BuiltDocument}
     samples::Union{Nothing, Vector{Tuple{Float64, Vector{Float64}}}}
+    forcing::Union{Nothing, Vector{Dict{String, Vector{Float64}}}}
     bandvalues::Dict{String, Any}
     report::Dict{String, Any}
 end
-DiffBackend() = DiffBackend(nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}())
+DiffBackend() = DiffBackend(nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}())
 
 """Bind `b` to the planning context `ctx`, dropping everything derived from another one."""
 function bind!(b::DiffBackend, ctx)
     b.ctx === ctx && return b
     b.ctx = ctx
     empty!(b.ops)
-    b.layout = b.model = b.samples = nothing
+    b.layout = b.model = b.samples = b.forcing = nothing
     empty!(b.bandvalues)
     empty!(b.report)
     return b
@@ -366,7 +367,9 @@ end
 """The operator's Jacobian document (§6.2), built on first use."""
 function jacobian_document!(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
-    a.jac === nothing && (a.jac = DerivedDocument(jacobian_document(a.rhs.flat, a.entries)))
+    # §6.2 item 5: the right-hand-side document's stubs, so the data-fed
+    # parameters keep their data rules (EarthSciASTDiff#55).
+    a.jac === nothing && (a.jac = DerivedDocument(jacobian_document(a.rhs.flat, a.entries; data_sources = a.rhs.file.data_sources)))
     return a.jac
 end
 
@@ -376,8 +379,50 @@ layout!(b::DiffBackend, ctx) = (bind!(b, ctx); b.layout === nothing ? (b.layout 
 function model_built!(b::DiffBackend, ctx)
     bind!(b, ctx)
     b.model === nothing || return b.model
-    return b.model = build_document(ctx.model.flat, layout!(b, ctx), ctx.time)
+    return b.model = build_document(model_with_forcing_defaults(ctx.model), layout!(b, ctx), ctx.time)
 end
+
+"""
+The flattened model with every unused data-fed parameter's `default` set to
+1 (§4: the planner's build binds each used one to its `default`, nonzero by
+§4.1, and each unused one to 1, which nothing reads).
+"""
+function model_with_forcing_defaults(m::PlanModel)
+    flat = m.flat
+    any(n -> !(n in m.used_forcing), keys(m.forcing)) || return flat
+    ps = copy(flat.parameters)
+    for n in keys(m.forcing)
+        n in m.used_forcing && continue
+        v = ps[n]
+        ps[n] = EarthSciAST.ModelVariable(
+            v.type; default = 1.0, description = v.description, units = v.units, default_units = v.default_units,
+            shape = v.shape, location = v.location, distribution = v.distribution, update = v.update,
+            element_type = v.element_type
+        )
+    end
+    return EarthSciAST.FlattenedSystem(flat; parameters = ps)
+end
+
+"""
+§5.5.1's sampled forcing values, one dictionary per sampled state: every used
+data-fed parameter's values by name, and every unused one's, all 1 (the
+flattened model's program has a slot for each; nothing reads an unused one).
+Empty dictionaries for a model without data-fed parameters.
+"""
+function forcing_samples!(b::DiffBackend, ctx)
+    bind!(b, ctx)
+    b.forcing === nothing || return b.forcing
+    m = ctx.model
+    used = used_forcing(m)
+    F = sampled_forcing(used, Dict(n => default_array(m.flat, n) for n in used))
+    for n in keys(m.forcing), f in F
+        n in m.used_forcing || (f[n] = ones(length(default_array(model_with_forcing_defaults(m), n))))
+    end
+    return b.forcing = F
+end
+
+"""The forcing `F` of sampled state `s` a document is given (§8): `nothing` when the model has no data-fed parameters."""
+sample_forcing(b::DiffBackend, ctx, s::Int) = isempty(ctx.model.forcing) ? nothing : forcing_samples!(b, ctx)[s]
 
 """The three sampled states of §5.5.1, from the flattened model's initial state."""
 function samples!(b::DiffBackend, ctx)
@@ -513,11 +558,26 @@ end
 # ---------------------------------------------------------------------------
 # Pass 5: the Gershgorin bound (§5.4, §5.5.2)
 
+"""Whether a band coefficient of the operator references a data-fed parameter, directly or through an observed's definition, transitively (§5.5.2 rule 4)."""
+function jacobian_reads_forcing(b::DiffBackend, ctx, op::PlanOperator)
+    m = ctx.model
+    isempty(m.forcing) && return false
+    a = artifacts!(b, ctx, op)
+    names = Set{String}(n for en in a.entries for n in EarthSciAST.free_variables(en.band.coef))
+    any(n -> is_forcing(m, n), names) && return true
+    for o in live_observeds(m, names), r in get(m.observed_rhs, o, ASTExpr[])
+        any(n -> is_forcing(m, n), EarthSciAST.free_variables(r)) && return true
+    end
+    return false
+end
+
 function gershgorin_bound(b::DiffBackend, ctx, op::PlanOperator)
     B = jac_built!(b, ctx, op)
     a = b.ops[op.name]
     rows = state_dofs(layout!(b, ctx), op.writes)
-    ρ = maximum(gershgorin(band_jacobian(B, a.points, u, t), rows) for (t, u) in samples!(b, ctx))
+    ρ = maximum(
+        gershgorin(band_jacobian(B, a.points, u, t, sample_forcing(b, ctx, s)), rows) for (s, (t, u)) in enumerate(samples!(b, ctx))
+    )
     get!(b.report, "gershgorin", Dict{String, Any}())[op.name] = ρ
     return ρ
 end
@@ -550,9 +610,10 @@ function derived_and_validation(b::DiffBackend, ctx)
     S = samples!(b, ctx)
     M = model_built!(b, ctx)
     worst = 0.0
-    for (t, u) in S
-        f = eval_rhs(M, u, t)
-        fk = [eval_rhs(rhs_built!(b, ctx, ctx.ops[o]), u, t) for o in names]
+    for (s, (t, u)) in enumerate(S)
+        F = sample_forcing(b, ctx, s)
+        f = eval_rhs(M, u, t, F)
+        fk = [eval_rhs(rhs_built!(b, ctx, ctx.ops[o]), u, t, F) for o in names]
         for n in eachindex(f)
             e = _rhs_sum_error(f[n], [x[n] for x in fk])
             worst = max(worst, e)
@@ -599,9 +660,10 @@ function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
     worst = 0.0
     samples = Any[]
     jrows = sort!(collect(union(Set(rows), (r for (r, _) in pattern))))
-    for (t, u) in samples!(b, ctx)
-        JB = band_jacobian(B, a.points, u, t)
-        JI = forwarddiff_jacobian(R, u, t, jrows; keep = pattern)
+    for (s, (t, u)) in enumerate(samples!(b, ctx))
+        F = sample_forcing(b, ctx, s)
+        JB = band_jacobian(B, a.points, u, t, F)
+        JI = forwarddiff_jacobian(R, u, t, jrows; keep = pattern, F)
         cols = Dict{Int, Set{Int}}(r => Set{Int}() for r in rows)
         for J in (JB, JI), (r, c) in keys(J)
             haskey(cols, r) && push!(cols[r], c)
@@ -628,12 +690,14 @@ function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
             end
         end
         entries = sort!([(L.names[r], L.names[c], JI[(r, c)]) for (r, c) in pattern]; by = e -> (e[1], e[2]))
-        push!(
-            samples, Dict{String, Any}(
-                "t" => t, "u" => Dict{String, Any}(L.names[n] => u[n] for n in eachindex(u)),
-                "entries" => Any[Any[e...] for e in entries]
-            )
+        sample = Dict{String, Any}(
+            "t" => t, "u" => Dict{String, Any}(L.names[n] => u[n] for n in eachindex(u)),
+            "entries" => Any[Any[e...] for e in entries]
         )
+        # §8.2: the sampled forcing values at every element of the canonical
+        # forcing order (the used data-fed parameters only).
+        F === nothing || (sample["forcing"] = forcing_element_values(ctx.model, F))
+        push!(samples, sample)
     end
     get!(b.report, "band_model", Dict{String, Any}())[op.name] = worst
     b.bandvalues[op.name] = Dict{String, Any}("samples" => samples)
@@ -649,6 +713,18 @@ function non_empty_check(b::DiffBackend, ctx, op::PlanOperator)
         "operator $(op.name) has no band although its terms reference a state"
     )
     return
+end
+
+"""The values of `F` at every element of the used data-fed parameters, by element name (`x[i,j,…]`, a scalar's bare name; §8.2)."""
+function forcing_element_values(m::PlanModel, F)
+    out = Dict{String, Any}()
+    for n in used_forcing(m)
+        ext = Int[m.sizes[X] for X in m.forcing[n].shape]
+        for (i, c) in enumerate(cells(ext))
+            out[element_name(n, c)] = F[n][i]
+        end
+    end
+    return out
 end
 
 """The derived documents' bytes by plan-relative path (`derived/<op>.<kind>.esm`)."""

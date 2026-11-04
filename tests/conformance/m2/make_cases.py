@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Generate cases.json, the M2 end-to-end cases (spec/toy-problems.md §4).
 
+The data-input cases (§4.4–§4.6) come last; their reference results are
+written by ../toys/make_data.py.
+
 Each M2 case is an M1 case (../m1/cases.json) run on the .esm version of its
 toy problem (../toys/): the planner plans it, the runtime executes the plan,
 and the result is compared with the same implementation's result for the M1
@@ -108,9 +111,97 @@ def m2_case(m1):
     return case
 
 
+# The cases with data input (spec/toy-problems.md §4.4–§4.6): no M1
+# counterpart, so their checks are against the exact solution, written as a
+# reference result by ../toys/make_data.py.
+def data_cases():
+    def leaf(op, **kw):
+        node = {"leaf": op, "alg": "Tsit5"}
+        node.update(kw)
+        return node
+
+    def case(cid, model, op, comp, schedule, tspan, saveat, layout, checks):
+        rc = {
+            "esm_integrator": "0.1.0",
+            "model": model,
+            "operators": {op: {"select": {"components": comp}}},
+            "schedule": schedule,
+            # The run's one macro step; forcing_refresh makes every forcing
+            # epoch boundary a tstop (spec/plan.md §7.3).
+            "step": {"dt": tspan[1] - tspan[0], "hit": ["forcing_refresh", "output"]},
+        }
+        return {
+            "id": cid,
+            "run_config": rc,
+            "tspan": tspan,
+            "saveat": saveat,
+            "layout": layout,
+            "checks": checks,
+        }
+
+    adaptive = {"reltol": 1e-8, "abstol": 1e-12, "dt_scope": "global"}
+    decay_t = [79200, 93600]
+    decay_out = [82800, 86400, 90000, 93600]
+    return [
+        case(
+            "m2.data_decay.tsit5",
+            "../toys/data_decay.esm",
+            "decay",
+            "Decay",
+            leaf("decay", control=dict(adaptive)),
+            decay_t,
+            decay_out,
+            ["Decay.u"],
+            [
+                {"check": "reference", "rtol": 1e-6},
+                {"check": "cross_language", "rtol": 1e-10, "rtol_steps_differ": 1e-6},
+            ],
+        ),
+        case(
+            "m2.data_decay.tsit5_dt600",
+            "../toys/data_decay.esm",
+            "decay",
+            "Decay",
+            leaf("decay", dt=600, control={"dt_scope": "global"}),
+            decay_t,
+            decay_out,
+            ["Decay.u"],
+            [{"check": "reference", "rtol": 1e-7}, {"check": "cross_language", "rtol": 1e-10}],
+        ),
+        case(
+            # 2016-01-20 to 2016-03-10, in seconds from the model's time
+            # origin, 2016-01-01T00:00:00Z.
+            "m2.data_monthly.tsit5",
+            "../toys/data_monthly.esm",
+            "emis",
+            "Emis",
+            leaf("emis", control=dict(adaptive)),
+            [1641600, 5961600],
+            [86400 * k for k in range(20, 70)],
+            ["Emis.c"],
+            [
+                {"check": "reference", "rtol": 1e-10},
+                {"check": "cross_language", "rtol": 1e-10, "rtol_steps_differ": 1e-8},
+            ],
+        ),
+        case(
+            "m2.data_points.tsit5",
+            "../toys/data_points.esm",
+            "sources",
+            "Src",
+            leaf("sources", control=dict(adaptive)),
+            [0, 3600],
+            [600 * k for k in range(1, 7)],
+            ["Src.c"],
+            [{"check": "reference", "rtol": 1e-12}, {"check": "cross_language", "rtol": 1e-10}],
+        ),
+    ]
+
+
 def main():
     m1 = json.loads((HERE.parent / "m1" / "cases.json").read_text())
     cases = [c for c in (m2_case(c) for c in m1["cases"]) if c is not None]
+    cases += data_cases()
     doc = {
         "esm_integrator": m1["esm_integrator"],
         "generated_by": "tests/conformance/m2/make_cases.py",

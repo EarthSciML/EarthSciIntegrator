@@ -1,0 +1,167 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "data_points",
+    "description": "spec/toy-problems.md §4.6: c_i' = the sum of the rates of the stations in cell i, read from a CSV points source with a code map, a record filter and an extent that sizes the station index set (D87)."
+  },
+  "metaparameters": {
+    "N_STN": {
+      "type": "integer",
+      "default": 4
+    }
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 3
+    },
+    "stn": {
+      "kind": "interval",
+      "size": "N_STN"
+    }
+  },
+  "data_sources": {
+    "Stations": {
+      "kind": "points",
+      "source": {
+        "url_template": "data_points/stations.csv"
+      },
+      "metadata": {
+        "esio_format": "csv"
+      },
+      "record_filter": {
+        "require_finite": [
+          "rate"
+        ]
+      },
+      "extent": {
+        "metaparameter": "N_STN"
+      }
+    }
+  },
+  "models": {
+    "Src": {
+      "variables": {
+        "c": {
+          "type": "unknown",
+          "units": "1",
+          "shape": [
+            "x"
+          ],
+          "default": 0.0
+        },
+        "rate": {
+          "type": "parameter",
+          "units": "1/s",
+          "shape": [
+            "stn"
+          ],
+          "default": 0.001,
+          "update": {
+            "kind": "data",
+            "source": "Stations",
+            "from": {
+              "file_variable": "rate"
+            }
+          }
+        },
+        "cell": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "stn"
+          ],
+          "default": 1.0,
+          "update": {
+            "kind": "data",
+            "source": "Stations",
+            "from": {
+              "file_variable": "cell",
+              "codes": {
+                "map": {
+                  "a": 1,
+                  "b": 2,
+                  "c": 3
+                }
+              }
+            }
+          }
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "c"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "makearray",
+            "args": [],
+            "regions": [
+              [
+                [
+                  1,
+                  3
+                ]
+              ]
+            ],
+            "values": [
+              {
+                "op": "faq",
+                "args": [],
+                "output_idx": [
+                  "i"
+                ],
+                "ranges": {
+                  "i": [
+                    1,
+                    3
+                  ]
+                },
+                "expr": {
+                  "op": "faq",
+                  "args": [],
+                  "output_idx": [],
+                  "ranges": {
+                    "j": {
+                      "from": "stn"
+                    }
+                  },
+                  "expr": {
+                    "op": "ifelse",
+                    "args": [
+                      {
+                        "op": "==",
+                        "args": [
+                          {
+                            "op": "index",
+                            "args": [
+                              "Src.cell",
+                              "j"
+                            ]
+                          },
+                          "i"
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "Src.rate",
+                          "j"
+                        ]
+                      },
+                      0.0
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

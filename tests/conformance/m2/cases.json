@@ -1869,6 +1869,267 @@
      "rtol": 1e-10
     }
    ]
+  },
+  {
+   "id": "m2.data_decay.tsit5",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/data_decay.esm",
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    },
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Tsit5",
+     "control": {
+      "reltol": 1e-08,
+      "abstol": 1e-12,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 14400,
+     "hit": [
+      "forcing_refresh",
+      "output"
+     ]
+    }
+   },
+   "tspan": [
+    79200,
+    93600
+   ],
+   "saveat": [
+    82800,
+    86400,
+    90000,
+    93600
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "reference",
+     "rtol": 1e-06
+    },
+    {
+     "check": "cross_language",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-06
+    }
+   ]
+  },
+  {
+   "id": "m2.data_decay.tsit5_dt600",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/data_decay.esm",
+    "operators": {
+     "decay": {
+      "select": {
+       "components": "Decay"
+      }
+     }
+    },
+    "schedule": {
+     "leaf": "decay",
+     "alg": "Tsit5",
+     "dt": 600,
+     "control": {
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 14400,
+     "hit": [
+      "forcing_refresh",
+      "output"
+     ]
+    }
+   },
+   "tspan": [
+    79200,
+    93600
+   ],
+   "saveat": [
+    82800,
+    86400,
+    90000,
+    93600
+   ],
+   "layout": [
+    "Decay.u"
+   ],
+   "checks": [
+    {
+     "check": "reference",
+     "rtol": 1e-07
+    },
+    {
+     "check": "cross_language",
+     "rtol": 1e-10
+    }
+   ]
+  },
+  {
+   "id": "m2.data_monthly.tsit5",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/data_monthly.esm",
+    "operators": {
+     "emis": {
+      "select": {
+       "components": "Emis"
+      }
+     }
+    },
+    "schedule": {
+     "leaf": "emis",
+     "alg": "Tsit5",
+     "control": {
+      "reltol": 1e-08,
+      "abstol": 1e-12,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 4320000,
+     "hit": [
+      "forcing_refresh",
+      "output"
+     ]
+    }
+   },
+   "tspan": [
+    1641600,
+    5961600
+   ],
+   "saveat": [
+    1728000,
+    1814400,
+    1900800,
+    1987200,
+    2073600,
+    2160000,
+    2246400,
+    2332800,
+    2419200,
+    2505600,
+    2592000,
+    2678400,
+    2764800,
+    2851200,
+    2937600,
+    3024000,
+    3110400,
+    3196800,
+    3283200,
+    3369600,
+    3456000,
+    3542400,
+    3628800,
+    3715200,
+    3801600,
+    3888000,
+    3974400,
+    4060800,
+    4147200,
+    4233600,
+    4320000,
+    4406400,
+    4492800,
+    4579200,
+    4665600,
+    4752000,
+    4838400,
+    4924800,
+    5011200,
+    5097600,
+    5184000,
+    5270400,
+    5356800,
+    5443200,
+    5529600,
+    5616000,
+    5702400,
+    5788800,
+    5875200,
+    5961600
+   ],
+   "layout": [
+    "Emis.c"
+   ],
+   "checks": [
+    {
+     "check": "reference",
+     "rtol": 1e-10
+    },
+    {
+     "check": "cross_language",
+     "rtol": 1e-10,
+     "rtol_steps_differ": 1e-08
+    }
+   ]
+  },
+  {
+   "id": "m2.data_points.tsit5",
+   "run_config": {
+    "esm_integrator": "0.1.0",
+    "model": "../toys/data_points.esm",
+    "operators": {
+     "sources": {
+      "select": {
+       "components": "Src"
+      }
+     }
+    },
+    "schedule": {
+     "leaf": "sources",
+     "alg": "Tsit5",
+     "control": {
+      "reltol": 1e-08,
+      "abstol": 1e-12,
+      "dt_scope": "global"
+     }
+    },
+    "step": {
+     "dt": 3600,
+     "hit": [
+      "forcing_refresh",
+      "output"
+     ]
+    }
+   },
+   "tspan": [
+    0,
+    3600
+   ],
+   "saveat": [
+    600,
+    1200,
+    1800,
+    2400,
+    3000,
+    3600
+   ],
+   "layout": [
+    "Src.c"
+   ],
+   "checks": [
+    {
+     "check": "reference",
+     "rtol": 1e-12
+    },
+    {
+     "check": "cross_language",
+     "rtol": 1e-10
+    }
+   ]
   }
  ]
 }
