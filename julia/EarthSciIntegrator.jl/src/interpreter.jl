@@ -182,15 +182,17 @@ function build_run(
             root.method isa ShuOsherERK &&
                 throw(UnsupportedError("a functional over \"time\" on a Shu–Osher leaf ($(root.tab.name)) is not implemented in this stage"))
             w = functional.reduction === :sum ? 1.0 : 1.0 / length(functional.dofs)
-            # ψ over the leaf's state vector (spec/operator-interface.md §1).
-            ψdofs, ψN = functional.dofs, prob.N
+            # ψ over the leaf's state vector, and its DOFs the leaf does not
+            # advance: constants of the leaf, whose part of the integral is
+            # w·uⱼ·(t₁ − t₀) per invocation (spec/operator-interface.md §1).
+            ψdofs, ψN, held = functional.dofs, prob.N, Int[]
             if root.state !== nothing
-                ψdofs = root.state.loc[functional.dofs]
-                all(>(0), ψdofs) ||
-                    throw(UnsupportedError("a functional over \"time\" of states leaf $(root.id) does not advance is not implemented"))
+                loc = root.state.loc
+                ψdofs = [loc[j] for j in functional.dofs if loc[j] > 0]
+                held = sort!([j for j in functional.dofs if loc[j] == 0])
                 ψN = length(root.state.dofs)
             end
-            root = with_integrand(root, Integrand(ψdofs, w, ψN))
+            root = with_integrand(root, Integrand(ψdofs, w, ψN; held))
             leaves = Dict{String, LeafNode}(root.id => root)
         end
         for w in adj["wrt"]
@@ -400,8 +402,12 @@ function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Fl
     end
     sub = ExecCtx(ctx.k, ctx.Δmacro, ctx.occ, mode)
     n0 = length(run.outputs)
+    # The integrand's part over states the leaf does not advance, constant
+    # over [ta, tb] (spec/adjoint.md §2.1), added to the invocation's q.
+    ψ = node.ψ
+    qheld = (ψ === nothing || isempty(ψ.held)) ? nothing : held_integral(ψ, u, tb - ta)
     # `bound` is a new node; whether the leaf is the root is the original's.
-    x = _advance!(run, sub, bound, u[S.dofs], ta, tb, node === run.root)
+    x = _advance!(run, sub, bound, u[S.dofs], ta, tb, node === run.root; qheld)
     for i in (n0 + 1):length(run.outputs)
         t, xi = run.outputs[i]
         run.outputs[i] = (t, _scatter(S, u, xi))
@@ -409,7 +415,10 @@ function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Fl
     return _scatter(S, u, x)
 end
 
-function _advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64, isroot::Bool = node === run.root)
+function _advance!(
+        run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64, isroot::Bool = node === run.root;
+        qheld = nothing
+    )
     path = next_path!(ctx, node.id)
     nb = filter(b -> b.second !== :leaf, node.bindings)
     pinv = apply_bindings(_params(run, ctx.mode), nb, 0.0, tb - ta, ctx.Δmacro)
@@ -423,7 +432,7 @@ function _advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::F
             run.accepted += out.record.accepted
             run.rejected += out.record.rejected
             run.nf += out.nf
-            run.q += out.q
+            run.q += qheld === nothing ? out.q : out.q + qheld
             append!(run.outputs, out.interior)
         end
         out.record.retcode == "Success" ||
@@ -431,11 +440,11 @@ function _advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::F
         return out.u
     else
         rec = tape_record(mode.tape, path, LeafRecord, ta, tb)
-        mode.trace === nothing && return leaf_replay(node, u, pinv, rec, stops; visit = mode.visit, qacc = mode.qacc)
+        mode.trace === nothing && return leaf_replay(node, u, pinv, rec, stops; visit = mode.visit, qacc = mode.qacc, qheld)
         # The per-step states the reverse pass needs are recorded on this replay.
         states = []
         push!(mode.trace, (:leaf, node, rec, copy(u), pinv, stops, states))
-        return leaf_replay(node, u, pinv, rec, stops; states, visit = mode.visit, qacc = mode.qacc)
+        return leaf_replay(node, u, pinv, rec, stops; states, visit = mode.visit, qacc = mode.qacc, qheld)
     end
 end
 

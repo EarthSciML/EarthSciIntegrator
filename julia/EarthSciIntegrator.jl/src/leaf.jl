@@ -272,10 +272,13 @@ stage 1 was evaluated at (`tₙ₋₁ + hₙ₋₁` when it was reused, spec/met
 with a `bind_dt: "leaf"` parameter only when `hₙ = hₙ₋₁`, as in
 [`leaf_forward`](@ref)); `visit(tₙ₊₁, uₙ₊₁)` is called
 after every step. The record's clips are checked first ([`check_clips`](@ref)).
+With `qacc`, the invocation's increment of the integrated functional, plus
+`qheld` (its part over states the leaf does not advance) when given, is added
+to `qacc[]`.
 """
 function leaf_replay(
         leaf::LeafNode, u0, p, rec::LeafRecord, stops::Vector{Float64}; states = nothing, visit = nothing,
-        qacc = nothing
+        qacc = nothing, qheld = nothing
     )
     check_clips(leaf, rec)
     u = copy(u0)
@@ -310,7 +313,7 @@ function leaf_replay(
         end
         visit === nothing || visit(tnew, u)
     end
-    qacc === nothing || leaf.ψ === nothing || (qacc[] = qacc[] + qinv)
+    qacc === nothing || leaf.ψ === nothing || (qacc[] = qacc[] + (qheld === nothing ? qinv : qinv + qheld))
     return u
 end
 

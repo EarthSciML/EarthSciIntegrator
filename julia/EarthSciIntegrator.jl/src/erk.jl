@@ -123,16 +123,23 @@ of a functional over `time`, integrated as the auxiliary state q with
 q' = ψ(u) by the leaf that carries it (spec/adjoint.md §2.1). q is not part of
 the error norm, so whether a gradient is requested does not change the steps.
 `w` is ∇ψ.
+
+`dofs` index the leaf's state vector. `held` are the integrand's DOFs the
+leaf does not advance, as model-state indices, ascending: constants of the
+leaf (spec/operator-interface.md §1), so each invocation over `[t₀, t₁]`
+adds `weight·uⱼ·(t₁ − t₀)` to q, and its adjoint adds `weight·(t₁ − t₀)` to
+`λⱼ` ([`held_integral`](@ref)). Empty for a leaf that advances the whole state.
 """
 struct Integrand
     dofs::Vector{Int}
     weight::Float64
     w::Vector{Float64}
+    held::Vector{Int}
 end
-function Integrand(dofs::Vector{Int}, weight::Float64, N::Integer)
+function Integrand(dofs::Vector{Int}, weight::Float64, N::Integer; held::Vector{Int} = Int[])
     w = zeros(N)
     w[dofs] .= weight
-    return Integrand(dofs, weight, w)
+    return Integrand(dofs, weight, w, held)
 end
 function (ψ::Integrand)(x)
     s = zero(eltype(x))
@@ -140,6 +147,22 @@ function (ψ::Integrand)(x)
         s = s + x[j]
     end
     return ψ.weight == 1 ? s : s * ψ.weight
+end
+
+"""
+    held_integral(ψ, u, span)
+
+The integrand's part over the states the leaf does not advance, integrated
+over an invocation of length `span` from the model state `u`:
+`weight·Σ_{j ∈ held} uⱼ·span`, with the sum in ascending DOF order as ψ's
+(spec/adjoint.md §2.1). Those states are constant over the invocation.
+"""
+function held_integral(ψ::Integrand, u, span)
+    s = zero(eltype(u))
+    for j in ψ.held
+        s = s + ψ.weight * u[j]
+    end
+    return s * span
 end
 
 # ---------------------------------------------------------------------------

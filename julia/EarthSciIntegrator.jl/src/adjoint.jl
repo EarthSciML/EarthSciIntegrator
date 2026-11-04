@@ -34,6 +34,16 @@ function leaf_adjoint!(entry, λ, p̄, seeds)
         λo .+= seeds[τ]
     end
     λo[S.dofs] = _leaf_adjoint!(entry, λ[S.dofs], p̄, sx)
+    # The integrand's part over states the leaf does not advance,
+    # w·uⱼ·(t₁ − t₀) per invocation, adds w·(t₁ − t₀) to their cotangents
+    # (spec/adjoint.md §2.1).
+    ψ = leaf.ψ
+    if ψ !== nothing && !isempty(ψ.held)
+        span = entry[3].dt
+        for j in ψ.held
+            λo[j] += ψ.weight * span
+        end
+    end
     return λo
 end
 
