@@ -62,8 +62,11 @@ function parse_linsolve(x, s::Structure, id)
         s isa BlockDiagonalStructure ||
             throw(ConfigError("leaf $id: linsolve block_lu needs a block_diagonal leaf (operator-interface.md §2); its operators' structure is dense"))
         for k in keys(opts)
-            k == "pivot" || throw(UnsupportedError("leaf $id: block_lu option '$k' is not implemented in this stage"))
+            k in ("pivot", "refine") || throw(UnsupportedError("leaf $id: block_lu option '$k' is not implemented in this stage"))
         end
+        # A plan writes every option explicitly (spec/plan.md §7.1), refine 0 included.
+        get(opts, "refine", 0) == 0 ||
+            throw(UnsupportedError("leaf $id: block_lu refine = $(opts["refine"]) (iterative refinement) is not implemented in this stage"))
         return LinsolveSpec(:block_lu, Bool(get(opts, "pivot", true)))
     else
         throw(UnsupportedError("leaf $id: linsolve '$kind' is not implemented in this stage (dense_lu and block_lu are)"))

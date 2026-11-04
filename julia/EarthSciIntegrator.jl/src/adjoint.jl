@@ -11,15 +11,43 @@
 """
     leaf_adjoint!(entry, λ, p̄, seeds) -> λ
 
-Reverse one leaf invocation. `seeds` maps interior output times to
-`∇φ` (point terms of the functional at stops inside the invocation).
+Reverse one leaf invocation. `seeds` maps output times to `∇φ`; the point
+terms at the invocation's interior stops are added, each once, at the state
+the forward pass reached it with (the last step that ends at it).
 """
 function leaf_adjoint!(entry, λ, p̄, seeds)
+    leaf = entry[2]
+    leaf.state === nothing && return _leaf_adjoint!(entry, λ, p̄, seeds)
+    # A leaf that advances part of the model state is reversed over its own
+    # state vector. The states it does not advance are unchanged by it, and
+    # (as build_run checks) none of its operators reads them, so their
+    # cotangents pass through, with the point terms at its interior stops.
+    # Only the seeds at those stops matter (`_leaf_adjoint!` adds no other).
+    S = leaf.state
+    stops, states = entry[6], entry[7]
+    tb = last(stops)
+    λo = copy(λ)
+    sx = Dict{Float64, Vector{Float64}}()
+    for τ in stops
+        (τ != tb && haskey(seeds, τ) && any(st -> st[6] == τ, states)) || continue
+        sx[τ] = seeds[τ][S.dofs]
+        λo .+= seeds[τ]
+    end
+    λo[S.dofs] = _leaf_adjoint!(entry, λ[S.dofs], p̄, sx)
+    return λo
+end
+
+function _leaf_adjoint!(entry, λ, p̄, seeds)
     _, leaf, _, _, _, stops, states = entry
     tb = last(stops)
+    seeded = Set{Float64}()
     for (u, t, h, pp, mask, tnew, tk1) in Iterators.reverse(states)
-        if tnew != tb && haskey(seeds, tnew)
+        # The first step met in reverse that ends at an interior output time
+        # is the last forward step to it; a later zero-length step at that
+        # stop (methods.md §10) does not add the point term again.
+        if tnew != tb && haskey(seeds, tnew) && !(tnew in seeded)
             λ = λ .+ seeds[tnew]
+            push!(seeded, tnew)
         end
         ts = next_stop(stops, t)
         _, isstop = stop_rule(t, h, ts)
@@ -61,8 +89,11 @@ end
 
 The discrete adjoint gradient of the run's functional on the frozen tape
 (spec/adjoint.md §2.2): `ū₀ = λ(t₀)` (§6.2) and `p̄` over every parameter,
-with bind_dt-bound parameters set to zero (§5.8). Needs [`forward!`](@ref)
-first. Point terms are added on reaching their output times (§2.1).
+with bind_dt-bound parameters set to zero (§5.8). An entry of `p̄` is NaN
+when some leaf's operators do not provide the parameter calls its adjoint
+needs (planned operators at M2, operator-interface.md §8.3); [`build_run`](@ref)
+refuses such a run when `wrt` names a parameter, so only entries outside
+`wrt` can be NaN. Needs [`forward!`](@ref) first. Point terms are added on reaching their output times (§2.1).
 """
 function gradient(run::Run)
     run.retcode == "Success" || error("gradient needs a successful forward run (retcode $(run.retcode))")

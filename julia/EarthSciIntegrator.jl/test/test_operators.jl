@@ -133,3 +133,36 @@ end
         @test fd.exact(0.0) ≈ fd.u0
     end
 end
+
+# operator-interface.md §3: an operator that does not depend on t need not
+# provide ft, ft_vjp_u or ft_vjp_p, nor one linear in u hess_u; a leaf's sum
+# does not call them. A sum whose operators do not all provide a parameter
+# call writes NaN for it rather than a partial sum.
+struct SumOpT <: AbstractOperator end      # x' = t x: provides every call
+EarthSciIntegrator.depends_on_t(::SumOpT) = true
+EarthSciIntegrator.rhs!(::SumOpT, out, u, p, t) = (out[1] += t * u[1]; out)
+EarthSciIntegrator.ft!(::SumOpT, out, u, p, t) = (out[1] += u[1]; out)
+EarthSciIntegrator.ft_vjp_u!(::SumOpT, out, u, p, t, ν) = (out[1] += ν[1]; out)
+EarthSciIntegrator.ft_vjp_p!(::SumOpT, out, u, p, t, ν) = out
+EarthSciIntegrator.vjp_p!(::SumOpT, out, u, p, t, w) = out
+EarthSciIntegrator.hess_u!(::SumOpT, out, u, p, t, μ) = out
+EarthSciIntegrator.hess_p!(::SumOpT, out, u, p, t, μ) = out
+struct SumOpLinear <: AbstractOperator end  # x' = -x: autonomous, linear, no p calls
+EarthSciIntegrator.linear_in_u(::SumOpLinear) = true
+EarthSciIntegrator.depends_on_t(::SumOpLinear) = false
+EarthSciIntegrator.rhs!(::SumOpLinear, out, u, p, t) = (out[1] -= u[1]; out)
+
+@testset "OperatorSum skips calls an operator need not provide" begin
+    s = OperatorSum([SumOpT(), SumOpLinear()])
+    u, ν = [2.0], [3.0]
+    @test EarthSciIntegrator.ft!(s, zeros(1), u, Float64[], 0.5) == [2.0]
+    @test EarthSciIntegrator.ft_vjp_u!(s, zeros(1), u, Float64[], 0.5, ν) == [3.0]
+    @test EarthSciIntegrator.hess_u!(s, zeros(1), u, Float64[], 0.5, [(ν, ν)]) == [0.0]
+    @test s.forms_p == (vjp_p = false, hess_p = false, ft_vjp_p = true)
+    @test all(isnan, EarthSciIntegrator.vjp_p!(s, zeros(2), u, [1.0, 2.0], 0.5, ν))
+    @test all(isnan, EarthSciIntegrator.hess_p!(s, zeros(2), u, [1.0, 2.0], 0.5, [(ν, ν)]))
+    @test EarthSciIntegrator.ft_vjp_p!(s, zeros(2), u, [1.0, 2.0], 0.5, ν) == zeros(2)
+    s1 = OperatorSum([SumOpT()])
+    @test s1.forms_p == (vjp_p = true, hess_p = true, ft_vjp_p = true)
+    @test EarthSciIntegrator.vjp_p!(s1, zeros(2), u, [1.0, 2.0], 0.5, ν) == zeros(2)
+end
