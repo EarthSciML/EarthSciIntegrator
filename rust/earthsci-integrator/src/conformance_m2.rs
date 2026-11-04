@@ -7,7 +7,8 @@
 //! with `u` in the case's `layout`.
 
 use crate::conformance::{self, Outcome, Paths};
-use crate::planned::load_plan;
+use crate::forcing::DataOptions;
+use crate::planned::load_plan_with;
 use crate::schedule::RunSpec;
 use crate::tape::{Tape, TapeRecord};
 use serde::Deserialize;
@@ -61,7 +62,17 @@ pub struct RunResult {
 /// the case's interval and output times, and returns the result with `u` in
 /// the case's `layout`.
 pub fn run_plan(case: &Case, plan_dir: &Path) -> Result<RunResult, String> {
-    let lp = load_plan::<f64>(plan_dir).map_err(|e| e.to_string())?;
+    run_plan_with(case, plan_dir, &DataOptions::default())
+}
+
+/// [`run_plan`] with the data options `data` (the plan's model, for a plan
+/// with `forcing`; spec/operator-interface.md §8.4).
+pub fn run_plan_with(
+    case: &Case,
+    plan_dir: &Path,
+    data: &DataOptions,
+) -> Result<RunResult, String> {
+    let lp = load_plan_with::<f64>(plan_dir, data).map_err(|e| e.to_string())?;
     let tspan = (case.tspan[0], case.tspan[1]);
     if lp.tspan != tspan {
         return Err(format!(
@@ -77,9 +88,14 @@ pub fn run_plan(case: &Case, plan_dir: &Path) -> Result<RunResult, String> {
                 .ok_or_else(|| format!("layout variable {v} is not a state of the plan"))?,
         );
     }
-    let spec =
-        RunSpec::<f64>::with_problem(lp.problem, &lp.run_config, tspan, case.saveat.as_deref())
-            .map_err(|e| e.to_string())?;
+    let spec = RunSpec::<f64>::with_problem_and_tstops(
+        lp.problem,
+        &lp.run_config,
+        tspan,
+        case.saveat.as_deref(),
+        lp.timeline.refresh_times(),
+    )
+    .map_err(|e| e.to_string())?;
     let u0 = spec.u0();
     let p = spec.problem.p.clone();
     let fwd = spec.forward(&u0, &p).map_err(|e| e.to_string())?;

@@ -238,6 +238,34 @@ impl ModelInfo {
     }
 }
 
+/// The names the `ic` equations of the flattened model `flat` read,
+/// directly or through observed definitions, transitively (spec/plan.md
+/// §4.1; spec/operator-interface.md §8.4.5).
+pub fn ic_reads(flat: &FlattenedSystem) -> BTreeSet<String> {
+    let defs: BTreeMap<&str, &Expr> = flat
+        .equations
+        .iter()
+        .filter_map(|eq| defined_observed(&eq.lhs).map(|o| (o, &eq.rhs)))
+        .collect();
+    let names = |e: &Expr| {
+        let mut out = Vec::new();
+        collect_strings(&serde_json::to_value(e).unwrap_or(Value::Null), &mut |s| {
+            out.push(s.to_string())
+        });
+        out
+    };
+    let mut out = BTreeSet::new();
+    let mut todo: Vec<String> = flat.field_ics.iter().flat_map(|(_, e)| names(e)).collect();
+    while let Some(n) = todo.pop() {
+        if out.insert(n.clone()) {
+            if let Some(d) = defs.get(n.as_str()) {
+                todo.extend(names(d));
+            }
+        }
+    }
+    out
+}
+
 /// Every string value in a serialized expression (object keys excluded).
 pub(crate) fn collect_strings(v: &Value, f: &mut impl FnMut(&str)) {
     match v {

@@ -1063,6 +1063,10 @@ pub struct RunSpec<T: Scalar> {
     pub macro_dt: f64,
     /// Output times, ascending.
     pub output_times: Vec<f64>,
+    /// The times a root leaf that substeps stops at, ascending: the output
+    /// times and the other tstops (the plan's forcing epochs,
+    /// spec/operator-interface.md §8.4.3).
+    pub stop_times: Vec<f64>,
     /// Macro-step boundaries `t0 … t_f`.
     pub bounds: Vec<f64>,
     /// The reason for each macro step's size.
@@ -1117,6 +1121,22 @@ impl<T: Scalar> RunSpec<T> {
         rc: &RunConfig,
         tspan: (f64, f64),
         saveat: Option<&[f64]>,
+    ) -> Result<Self, Error> {
+        Self::with_problem_and_tstops(problem, rc, tspan, saveat, &[])
+    }
+
+    /// [`RunSpec::with_problem`] with further tstops `tstops` inside
+    /// `(t0, t_f]` that are not output times: a plan's `forcing_refresh`
+    /// times (spec/run-config.md §5, spec/operator-interface.md §8.4.3).
+    /// Like output times, each must fall on a macro-step boundary under a
+    /// fixed `step.dt`, or inside a root leaf that substeps to land on it
+    /// (rule 9).
+    pub fn with_problem_and_tstops(
+        problem: ToyProblem<T>,
+        rc: &RunConfig,
+        tspan: (f64, f64),
+        saveat: Option<&[f64]>,
+        tstops: &[f64],
     ) -> Result<Self, Error> {
         for (k, v) in [
             ("partition", &rc.partition),
@@ -1331,7 +1351,16 @@ impl<T: Scalar> RunSpec<T> {
         // Macro-step boundaries t0 + k·dt, the last one t_f exactly by the stop
         // rule of spec/methods.md §10 (multiplied, not accumulated); a boundary
         // within the landing tolerance of a tstop is that tstop (run-config §5).
-        let mut tstops = out_times.clone();
+        let extra: Vec<f64> = tstops
+            .iter()
+            .copied()
+            .filter(|&x| x > tspan.0 && x <= tspan.1)
+            .collect();
+        let mut stop_times = out_times.clone();
+        stop_times.extend(&extra);
+        stop_times.sort_by(f64::total_cmp);
+        stop_times.dedup();
+        let mut tstops = stop_times.clone();
         if let Some(f) = &functional {
             tstops.extend(&f.times);
             tstops.sort_by(f64::total_cmp);
@@ -1339,7 +1368,7 @@ impl<T: Scalar> RunSpec<T> {
         }
         let (bounds, reasons) = macro_bounds(tspan.0, tspan.1, macro_dt, &tstops);
         let is_bound = |x: f64| bounds.binary_search_by(|b| b.total_cmp(&x)).is_ok();
-        for &x in &out_times {
+        for &x in &stop_times {
             // Output times are tstops: macro-step boundaries under a fixed
             // step.dt (run-config §8 rule 9), or stops inside the interval of a
             // root leaf that substeps (spec/methods.md §10). A "step" or
@@ -1355,7 +1384,7 @@ impl<T: Scalar> RunSpec<T> {
                 };
                 if !substeps {
                     return Err(Error::Config(format!(
-                        "output time {x} is not a multiple of step.dt = {macro_dt}, and the schedule root is not a leaf that substeps to land on it (run-config §4.2, §8 rule 9)"
+                        "tstop {x} is not a multiple of step.dt = {macro_dt}, and the schedule root is not a leaf that substeps to land on it (run-config §4.2, §8 rule 9)"
                     )));
                 }
             }
@@ -1375,6 +1404,7 @@ impl<T: Scalar> RunSpec<T> {
             tspan,
             macro_dt,
             output_times: out_times,
+            stop_times,
             bounds,
             reasons,
             functional,
@@ -1533,7 +1563,7 @@ impl<T: Scalar> RunSpec<T> {
         adj: Option<&mut Vec<AdjRecord<T>>>,
         tight_newton: bool,
     ) -> Result<MacroOut<T>, Error> {
-        let ot = &self.output_times;
+        let ot = &self.stop_times;
         let stops = ot[ot.partition_point(|&x| x <= t0)..ot.partition_point(|&x| x < t1)].to_vec();
         let mut ex = Exec {
             sched: &self.schedule,
@@ -1557,7 +1587,16 @@ impl<T: Scalar> RunSpec<T> {
         }
         Ok(MacroOut {
             records: ex.tape_out,
-            stop_states: ex.stop_states,
+            // Only output times are reported; the other stops are tstops.
+            stop_states: ex
+                .stop_states
+                .into_iter()
+                .filter(|(t, _)| {
+                    self.output_times
+                        .binary_search_by(|x| x.total_cmp(t))
+                        .is_ok()
+                })
+                .collect(),
             rhs_calls: ex.rhs_calls,
             integral: ex.integral,
         })

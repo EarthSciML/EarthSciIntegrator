@@ -17,6 +17,7 @@ pub mod adjoint;
 pub mod config;
 pub mod conformance;
 pub mod conformance_m2;
+pub mod forcing;
 pub mod leaf;
 pub mod operator;
 pub mod planned;

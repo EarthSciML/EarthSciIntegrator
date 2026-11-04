@@ -510,7 +510,7 @@ pub fn checkpoint(rc: &RunConfig, info: &ModelInfo, root: &Node) -> Result<Optio
     Ok(Some(json!({"kind": "all", "macro_steps": 0})))
 }
 
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
