@@ -5,7 +5,7 @@
 //! implicit method (SDIRK/ESDIRK, the θ-method, IMEX Euler). All share the
 //! step loop below (landing on stops, control, domain, return codes).
 
-use crate::operator::{Call, MatrixStorage, MuPair, Operator, Structure};
+use crate::operator::{Call, JacOverScratch, MatrixStorage, MuPair, Operator, Structure};
 use crate::tape::{LeafPersist, Retcode};
 use crate::{Error, Scalar};
 use earthsci_integrator_solvers::controller::{Controller, Decision};
@@ -19,6 +19,7 @@ use earthsci_integrator_solvers::norm::{error_norm, Tolerances};
 use earthsci_integrator_solvers::rosenbrock::{RosForm, RosOutcome, RosWork, Rosenbrock};
 use earthsci_integrator_solvers::scalar::eps_f64;
 use earthsci_integrator_solvers::{NormFn, RhsFn};
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 /// The leaf's method.
@@ -170,30 +171,50 @@ pub struct LeafSpec<T: Scalar> {
     /// Node id.
     pub id: String,
     pub ops: Vec<Arc<dyn Operator<T>>>,
-    /// The leaf's DOFs: the union of its operators' writes, ascending.
+    /// The leaf's DOFs: the union of its operators' writes, ascending, as
+    /// model-state indices. The leaf's state vector is the model state at
+    /// these DOFs, in this order (operator-interface.md §1, §8.2): leaf
+    /// index `i` is model DOF `dofs[i]`.
     pub dofs: Vec<usize>,
+    /// The length of the model state.
+    pub n_model: usize,
+    /// The leaf's own structure and storage, over its state vector: a
+    /// `block_diagonal` block has the leaf's species only.
     pub structure: Structure,
     pub alg: String,
     pub method: LeafMethod,
     pub dt_mode: DtMode,
+    /// Tolerances over the leaf's state vector.
     pub tol: Tolerances,
     pub controller: Option<Controller>,
     pub dt0: Option<f64>,
     pub dtmin: f64,
     pub dtmax: Option<f64>,
     pub maxiters: Option<u64>,
+    /// The domain, its DOFs as indices into the leaf's state vector.
     pub domain: Option<DomainSpec>,
     /// `(parameter index, binding)`.
     pub binds: Vec<(usize, BindKind)>,
     /// The integrand `ψ(u) = Σ_{j ∈ dofs} w·u_j` of a functional over
-    /// `time`, as `(dofs, w)`, when this leaf integrates its auxiliary state
+    /// `time`, as `(dofs, w)` with `dofs` indices into the leaf's state
+    /// vector, when this leaf integrates its auxiliary state
     /// (spec/adjoint.md §2.1, D26).
     pub integrand: Option<(Vec<usize>, f64)>,
+    /// The DOFs of the integrand of a functional over `time` that the leaf
+    /// does not advance, as model-state indices, ascending: constants of
+    /// the leaf, so each invocation over `[t0, t1]` adds `w·u_j·(t1 − t0)`
+    /// to the integral, and its adjoint adds `w·(t1 − t0)` to `λ_j`
+    /// (spec/adjoint.md §2.1; operator-interface.md §1). The weight is the
+    /// integrand's. Empty unless the leaf integrates a functional.
+    pub integrand_const: Vec<usize>,
     /// IMEX Euler: per operator, whether it is in the implicit part
     /// (run-config §4.5); empty for other methods.
     pub imex_implicit: Vec<bool>,
     /// Workspaces kept across invocations, one per invocation in flight.
     pub work: Mutex<Vec<LeafWork<T>>>,
+    /// The model-state buffers of [`Bound`], kept across invocations, one
+    /// per invocation in flight.
+    pub bound_work: Mutex<Vec<BoundWork<T>>>,
 }
 
 /// A leaf's step workspace: the method's, and the stored
@@ -363,6 +384,10 @@ pub struct LeafOutcome<T> {
     pub stage_data: Vec<StepData<T>>,
     /// The state on landing at each interior stop.
     pub stop_states: Vec<(f64, Vec<T>)>,
+    /// The model state at the invocation's start, the leaf's constants,
+    /// when stages are recorded and the leaf advances part of the state
+    /// (operator-interface.md §1).
+    pub background: Option<Vec<T>>,
 }
 
 impl<T: Scalar> LeafSpec<T> {
@@ -393,40 +418,76 @@ impl<T: Scalar> LeafSpec<T> {
         buf
     }
 
-    /// `out = Σ_k f_k(u, p, t)`, operators in declared order (operator-interface.md §3).
-    pub fn rhs(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
-        out.iter_mut().for_each(|x| *x = T::zero());
-        for op in &self.ops {
-            op.rhs(out, u, p, t);
+    /// Whether the leaf advances only part of the model state: its
+    /// operators' writes are not every DOF (operator-interface.md §1, §8.2).
+    pub fn is_partial(&self) -> bool {
+        self.dofs.len() != self.n_model
+    }
+
+    /// The leaf's state vector: the model state `u` at the leaf's DOFs.
+    pub fn gather(&self, u: &[T]) -> Vec<T> {
+        self.dofs.iter().map(|&j| u[j]).collect()
+    }
+
+    /// Writes the leaf's state vector `x` into the model state `u`.
+    pub fn scatter(&self, u: &mut [T], x: &[T]) {
+        for (&j, &v) in self.dofs.iter().zip(x) {
+            u[j] = v;
         }
     }
 
-    /// `out = Σ_k J_k(u)ᵀ w`.
-    pub fn vjp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, w: &[T]) {
-        out.iter_mut().for_each(|x| *x = T::zero());
-        for op in &self.ops {
-            op.vjp_u(out, u, p, t, w);
+    /// The leaf's calls for one invocation, with `background` the model
+    /// state at its start: the constants of every DOF the leaf does not
+    /// advance (operator-interface.md §1).
+    ///
+    /// Its model-state buffers come from a pool the leaf keeps, so an
+    /// invocation copies the background once and allocates nothing more
+    /// sized to the model state.
+    pub fn bound<'a>(&'a self, background: &[T]) -> Bound<'a, T> {
+        let mut w = self
+            .bound_work
+            .lock()
+            .ok()
+            .and_then(|mut v| v.pop())
+            .unwrap_or_else(|| BoundWork::new(self.ops.len()));
+        w.state.clear();
+        if self.is_partial() {
+            w.state.extend_from_slice(background);
+            w.out.resize(self.n_model, T::zero());
+        }
+        Bound {
+            leaf: self,
+            w: RefCell::new(Some(w)),
         }
     }
 
-    /// `out += Σ_k f_{k,p}(u)ᵀ w`.
-    pub fn vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, w: &[T]) {
-        for op in &self.ops {
-            op.vjp_p(out, u, p, t, w);
+    /// `w·Σ_j u_j` over the integrand's DOFs the leaf does not advance, in
+    /// the model state `u`: the integrand's constant part.
+    fn psi_const(&self, u: &[T]) -> f64 {
+        let Some((_, w)) = &self.integrand else {
+            return 0.0;
+        };
+        let mut s = 0.0;
+        for &j in &self.integrand_const {
+            s += w * u[j].to_f64();
+        }
+        s
+    }
+
+    /// The adjoint of the integrand's constant part over an invocation of
+    /// length `span`: `λ_j += w·span` for each of its DOFs the leaf does not
+    /// advance (spec/adjoint.md §2.1).
+    pub fn psi_const_adjoint(&self, lam: &mut [f64], span: f64) {
+        if let Some((_, w)) = &self.integrand {
+            for &j in &self.integrand_const {
+                lam[j] += w * span;
+            }
         }
     }
 
     /// Whether every operator provides `vjp_p`, so parameter cotangents are formed.
     pub fn has_vjp_p(&self) -> bool {
         self.ops.iter().all(|o| o.provides(Call::VjpP))
-    }
-
-    /// `out = Σ_k J_k(u)` in the leaf's matrix storage.
-    pub fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
-        out.clear();
-        for op in &self.ops {
-            op.jac(out, u, p, t);
-        }
     }
 
     /// Whether operator `k` is in `part` (every operator outside IMEX Euler).
@@ -447,66 +508,6 @@ impl<T: Scalar> LeafSpec<T> {
             .map(|(_, o)| o)
     }
 
-    /// `out = Σ_{k ∈ part} f_k(u, p, t)`.
-    pub fn rhs_part(&self, part: Part, out: &mut [T], u: &[T], p: &[f64], t: f64) {
-        out.iter_mut().for_each(|x| *x = T::zero());
-        for op in self.part_ops(part) {
-            op.rhs(out, u, p, t);
-        }
-    }
-
-    /// `out = Σ_{k ∈ part} J_k(u)` in the leaf's matrix storage.
-    pub fn jac_part(&self, part: Part, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
-        out.clear();
-        for op in self.part_ops(part) {
-            op.jac(out, u, p, t);
-        }
-    }
-
-    /// `out += Σ_{k ∈ part} J_k(u)ᵀ w`.
-    pub fn vjp_u_part(&self, part: Part, out: &mut [T], u: &[T], p: &[f64], t: f64, w: &[T]) {
-        for op in self.part_ops(part) {
-            op.vjp_u(out, u, p, t, w);
-        }
-    }
-
-    /// `out += Σ_{k ∈ part} f_{k,p}(u)ᵀ w`.
-    pub fn vjp_p_part(&self, part: Part, out: &mut [f64], u: &[T], p: &[f64], t: f64, w: &[T]) {
-        for op in self.part_ops(part) {
-            op.vjp_p(out, u, p, t, w);
-        }
-    }
-
-    /// `out += Σ_{k ∈ part} ∇_u Σ_i μ_iᵀ J_k(u) w_i` (zero for operators linear in `u`).
-    pub fn hess_u_part(
-        &self,
-        part: Part,
-        out: &mut [T],
-        u: &[T],
-        p: &[f64],
-        t: f64,
-        mu: &[MuPair<'_, T>],
-    ) {
-        for op in self.part_ops(part).filter(|o| !o.linear_in_u()) {
-            op.hess_u(out, u, p, t, mu);
-        }
-    }
-
-    /// `out += Σ_{k ∈ part} ∇_p Σ_i μ_iᵀ J_k(u) w_i`.
-    pub fn hess_p_part(
-        &self,
-        part: Part,
-        out: &mut [f64],
-        u: &[T],
-        p: &[f64],
-        t: f64,
-        mu: &[MuPair<'_, T>],
-    ) {
-        for op in self.part_ops(part) {
-            op.hess_p(out, u, p, t, mu);
-        }
-    }
-
     /// Whether the leaf forms `f_t` for its Rosenbrock method: some `d_i ≠ 0`
     /// and some operator depends on `t` (spec/methods.md §4.2). At M1 there
     /// is no forcing, so explicit dependence is the only kind.
@@ -514,42 +515,6 @@ impl<T: Scalar> LeafSpec<T> {
         match &self.method {
             LeafMethod::Ros(m, _) => m.uses_ft() && self.ops.iter().any(|o| o.depends_on_t()),
             LeafMethod::Erk(_) | LeafMethod::Imp(..) => false,
-        }
-    }
-
-    /// `out = Σ_k ∂f_k/∂t` over the operators that depend on `t`.
-    pub fn ft(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
-        out.iter_mut().for_each(|x| *x = T::zero());
-        for op in self.ops.iter().filter(|o| o.depends_on_t()) {
-            op.ft(out, u, p, t);
-        }
-    }
-
-    /// `out += Σ_k ∇_u Σ_i μ_iᵀ J_k(u) w_i` (zero for operators linear in `u`).
-    pub fn hess_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, mu: &[MuPair<'_, T>]) {
-        for op in self.ops.iter().filter(|o| !o.linear_in_u()) {
-            op.hess_u(out, u, p, t, mu);
-        }
-    }
-
-    /// `out += Σ_k ∇_p Σ_i μ_iᵀ J_k(u) w_i`.
-    pub fn hess_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, mu: &[MuPair<'_, T>]) {
-        for op in &self.ops {
-            op.hess_p(out, u, p, t, mu);
-        }
-    }
-
-    /// `out += Σ_k ∇_u (νᵀ ∂f_k/∂t)` over the operators that depend on `t`.
-    pub fn ft_vjp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, nu: &[T]) {
-        for op in self.ops.iter().filter(|o| o.depends_on_t()) {
-            op.ft_vjp_u(out, u, p, t, nu);
-        }
-    }
-
-    /// `out += Σ_k ∇_p (νᵀ ∂f_k/∂t)` over the operators that depend on `t`.
-    pub fn ft_vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, nu: &[T]) {
-        for op in self.ops.iter().filter(|o| o.depends_on_t()) {
-            op.ft_vjp_p(out, u, p, t, nu);
         }
     }
 
@@ -819,18 +784,47 @@ impl<T: Scalar> LeafSpec<T> {
         }
     }
 
-    /// Runs one invocation over `[t0, t1]`, updating `u` and the persistent state.
+    /// Runs one invocation over `[t0, t1]`, updating the model state `u` and
+    /// the persistent state.
+    ///
+    /// The leaf advances its own state vector, `u` at its DOFs; every other
+    /// DOF is a constant of the leaf over the invocation and is left as it
+    /// was, bit for bit (operator-interface.md §1, §8.2). The outcome's step
+    /// data, clip masks (spec/tape.md §2) and domain are over the leaf's
+    /// state vector; the states at interior stops are model states.
     pub fn invoke(
         &self,
         u: &mut [T],
         persist: &mut LeafPersist,
         call: &LeafCall<'_>,
     ) -> Result<LeafOutcome<T>, Error> {
-        let mut w = self.take_work(u.len())?;
+        if !self.is_partial() {
+            let bg: &[T] = &[];
+            let mut w = self.take_work(u.len())?;
+            w.m.reset_nf();
+            let out = self.invoke_with(&mut w, u, bg, persist, call);
+            self.put_work(w);
+            return out;
+        }
+        // `u` is the background until the leaf's state is written back.
+        let mut x = self.gather(u);
+        let mut w = self.take_work(x.len())?;
         w.m.reset_nf();
-        let out = self.invoke_with(&mut w, u, persist, call);
+        let out = self.invoke_with(&mut w, &mut x, u, persist, call);
         self.put_work(w);
-        out
+        let mut out = out?;
+        for (_, s) in &mut out.stop_states {
+            let mut v = u.to_vec();
+            self.scatter(&mut v, s);
+            *s = v;
+        }
+        // The integrand's constant part, constant over [t0, t1].
+        out.integral += self.psi_const(u) * (call.t1 - call.t0);
+        if call.record_stages {
+            out.background = Some(u.to_vec());
+        }
+        self.scatter(u, &x);
+        Ok(out)
     }
 
     /// A workspace for a state of length `n`: a pooled one, or a new one.
@@ -862,14 +856,18 @@ impl<T: Scalar> LeafSpec<T> {
         }
     }
 
+    /// One invocation on the leaf's state vector `u`, with `background` the
+    /// model state at its start (unused when the leaf writes every DOF).
     fn invoke_with(
         &self,
         lw: &mut LeafWork<T>,
         u: &mut [T],
+        background: &[T],
         persist: &mut LeafPersist,
         call: &LeafCall<'_>,
     ) -> Result<LeafOutcome<T>, Error> {
         let LeafWork { m: w, fsal } = lw;
+        let b = self.bound(background);
         let mut out = LeafOutcome {
             steps: Vec::new(),
             accepted: 0,
@@ -880,6 +878,7 @@ impl<T: Scalar> LeafSpec<T> {
             integral: 0.0,
             stage_data: Vec::new(),
             stop_states: Vec::new(),
+            background: None,
         };
         let (t0, t1) = (call.t0, call.t1);
         // The stops of this invocation: interior output times, then the end.
@@ -930,10 +929,9 @@ impl<T: Scalar> LeafSpec<T> {
          -> Attempt {
             let pb = self.params(call.p, pbuf, h, call);
             let reuse = cache.filter(|&(_, hb)| !leaf_bound || hb == h);
-            let mut f = |o: &mut [T], uu: &[T], tt: f64| self.rhs(o, uu, pb, tt);
+            let mut f = |o: &mut [T], uu: &[T], tt: f64| b.rhs(o, uu, pb, tt);
             let tol = &self.tol;
-            let dofs = &self.dofs;
-            let mut norm = |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol, dofs);
+            let mut norm = |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol);
             let norm: Option<&mut NormFn<'_, T>> = if want_err { Some(&mut norm) } else { None };
             match (&self.method, w) {
                 (LeafMethod::Erk(m), MethodWork::Erk(w)) => {
@@ -948,8 +946,8 @@ impl<T: Scalar> LeafSpec<T> {
                 }
                 (LeafMethod::Ros(m, _), MethodWork::Ros(w)) => {
                     let mut jac =
-                        |o: &mut MatrixStorage<T>, uu: &[T], tt: f64| self.jac(o, uu, pb, tt);
-                    let mut ftf = |o: &mut [T], uu: &[T], tt: f64| self.ft(o, uu, pb, tt);
+                        |o: &mut MatrixStorage<T>, uu: &[T], tt: f64| b.jac(o, uu, pb, tt);
+                    let mut ftf = |o: &mut [T], uu: &[T], tt: f64| b.ft(o, uu, pb, tt);
                     let ft: Option<&mut RhsFn<'_, T>> =
                         if forms_ft { Some(&mut ftf) } else { None };
                     let reuse = if m.fsal { reuse } else { None };
@@ -972,13 +970,12 @@ impl<T: Scalar> LeafSpec<T> {
                 }
                 (LeafMethod::Imp(m, _), MethodWork::Imp(w)) => {
                     let mut fp = |part: Part, o: &mut [T], uu: &[T], tt: f64| {
-                        self.rhs_part(part, o, uu, pb, tt)
+                        b.rhs_part(part, o, uu, pb, tt)
                     };
                     let mut jp = |part: Part, o: &mut MatrixStorage<T>, uu: &[T], tt: f64| {
-                        self.jac_part(part, o, uu, pb, tt)
+                        b.jac_part(part, o, uu, pb, tt)
                     };
-                    let mut nrm =
-                        |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol, dofs);
+                    let mut nrm = |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol);
                     let o = m.step(
                         w,
                         &mut fp,
@@ -1097,10 +1094,9 @@ impl<T: Scalar> LeafSpec<T> {
                         // _determine_initdt does (spec/methods.md §9).
                         dtmax: dtmax.min(stops.next_after(t0).0 - t0),
                         tol: &self.tol,
-                        dofs: &self.dofs,
                         order: self.method.order(),
                     };
-                    let (h0, nf) = initial_dt(&inp, &mut |o, uu, tt| self.rhs(o, uu, pb, tt));
+                    let (h0, nf) = initial_dt(&inp, &mut |o, uu, tt| b.rhs(o, uu, pb, tt));
                     out.rhs_calls += nf as u64;
                     h0
                 }
@@ -1263,6 +1259,316 @@ impl<T: Scalar> LeafSpec<T> {
         }
         out.rhs_calls += w.nf() as u64;
         Ok(out)
+    }
+}
+
+/// A leaf's calls over its state vector (operator-interface.md §1, §8.2),
+/// for one invocation: [`LeafSpec::bound`].
+///
+/// Operators act on the whole model state. A leaf that writes every DOF
+/// passes its vectors to them as they are. A leaf that writes part of the
+/// state advances only that part: each call places the leaf's `u` into the
+/// model state at the leaf's DOFs, with the background (the model state at
+/// the start of the invocation) everywhere else, so every other state is a
+/// constant of the leaf; it places `u`-shaped arguments (`v`, `w`, `μ_i`,
+/// `ν`) at the leaf's DOFs with zeros elsewhere, and reads the leaf's DOFs
+/// of the result. The operators' sums are formed in the model state, from
+/// the leaf's values of an accumulated output, so each of the leaf's
+/// entries is the same sum, in the same order, as a call on the whole
+/// state. A Jacobian entry in a row or column outside the leaf is dropped
+/// (§8.3).
+///
+/// The model-state vectors are buffers kept across calls ([`BoundWork`]),
+/// and each call writes only the leaf's DOFs of them, so a call costs the
+/// leaf's length, not the model's: the background does not change within
+/// an invocation, an argument buffer is zero outside the leaf's DOFs, and
+/// an operator only adds into its output, so the output buffer's entries
+/// outside the leaf's DOFs, which are never read, need not be reset.
+pub struct Bound<'a, T: Scalar> {
+    pub leaf: &'a LeafSpec<T>,
+    /// The buffers, returned to the leaf's pool when the invocation ends.
+    w: RefCell<Option<BoundWork<T>>>,
+}
+
+/// The model-state buffers of a [`Bound`], kept by its leaf across
+/// invocations.
+pub struct BoundWork<T> {
+    /// The model state: the background, with the leaf's DOFs set by each call.
+    state: Vec<T>,
+    /// A model-state output; only the leaf's DOFs of it are read.
+    out: Vec<T>,
+    /// Model-state `u`-shaped arguments, zero outside the leaf's DOFs.
+    args: Vec<Vec<T>>,
+    /// Per operator, what its `jac_over` keeps for this leaf.
+    jac: Vec<JacOverScratch<T>>,
+}
+
+impl<T: Scalar> BoundWork<T> {
+    fn new(nops: usize) -> Self {
+        BoundWork {
+            state: Vec::new(),
+            out: Vec::new(),
+            args: Vec::new(),
+            jac: (0..nops).map(|_| JacOverScratch::default()).collect(),
+        }
+    }
+}
+
+impl<T: Scalar> Drop for Bound<'_, T> {
+    fn drop(&mut self) {
+        if let Some(w) = self.w.get_mut().take() {
+            if let Ok(mut v) = self.leaf.bound_work.lock() {
+                v.push(w);
+            }
+        }
+    }
+}
+
+impl<T: Scalar> std::ops::Deref for Bound<'_, T> {
+    type Target = LeafSpec<T>;
+    fn deref(&self) -> &LeafSpec<T> {
+        self.leaf
+    }
+}
+
+/// `v[dofs[i]] ← x[i]`.
+fn put<T: Copy>(v: &mut [T], dofs: &[usize], x: &[T]) {
+    for (&j, &a) in dofs.iter().zip(x) {
+        v[j] = a;
+    }
+}
+
+impl<T: Scalar> Bound<'_, T> {
+    /// Runs `g(u, xs, out)` in the model state: the leaf's state `u` with
+    /// the background, its `u`-shaped arguments `xs` spread, and, when
+    /// there is an output, a model-state output holding the leaf's `out`
+    /// at its DOFs (`out` zeroed first when its flag is set), whose leaf
+    /// DOFs are read back into `out`.
+    fn in_model(
+        &self,
+        u: &[T],
+        xs: &[&[T]],
+        out: Option<(&mut [T], bool)>,
+        g: impl FnOnce(&[T], &[&[T]], Option<&mut [T]>),
+    ) {
+        let out = out.map(|(o, zero)| {
+            if zero {
+                o.iter_mut().for_each(|x| *x = T::zero());
+            }
+            o
+        });
+        if !self.leaf.is_partial() {
+            return g(u, xs, out);
+        }
+        let dofs = &self.leaf.dofs;
+        let n = self.leaf.n_model;
+        let mut guard = self.w.borrow_mut();
+        let w = guard.as_mut().expect("a bound leaf has its buffers");
+        while w.args.len() < xs.len() {
+            w.args.push(vec![T::zero(); n]);
+        }
+        let BoundWork {
+            state,
+            out: of,
+            args,
+            ..
+        } = w;
+        put(state, dofs, u);
+        for (a, x) in args.iter_mut().zip(xs) {
+            put(a, dofs, x);
+        }
+        let xm: Vec<&[T]> = args[..xs.len()].iter().map(|a| &a[..]).collect();
+        match out {
+            None => g(state, &xm, None),
+            Some(o) => {
+                put(of, dofs, o);
+                g(state, &xm, Some(&mut of[..]));
+                for (x, &j) in o.iter_mut().zip(dofs) {
+                    *x = of[j];
+                }
+            }
+        }
+    }
+
+    /// `out ← g` at the leaf's DOFs, for a call `g(out_model, u_model, xs)`
+    /// that accumulates into a model-state output: `out` is zeroed first
+    /// when `zero`, and otherwise accumulated into.
+    fn lift(
+        &self,
+        out: &mut [T],
+        u: &[T],
+        zero: bool,
+        xs: &[&[T]],
+        g: impl FnOnce(&mut [T], &[T], &[&[T]]),
+    ) {
+        self.in_model(u, xs, Some((out, zero)), |uu, xm, o| {
+            g(o.expect("an output"), uu, xm)
+        })
+    }
+
+    /// Runs `g(u_model, xs)` with the state and arguments in the model state.
+    fn model(&self, u: &[T], xs: &[&[T]], g: impl FnOnce(&[T], &[&[T]])) {
+        self.in_model(u, xs, None, |uu, xm, _| g(uu, xm))
+    }
+
+    /// `out = Σ_{k ∈ part} J_k(u)` in the leaf's matrix storage: the
+    /// operators' `jac` itself when the leaf advances the whole state, and
+    /// otherwise their `jac_over` its DOFs, which fills the leaf's storage
+    /// directly.
+    fn lift_jac(&self, part: Part, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
+        out.clear();
+        let leaf = self.leaf;
+        if !leaf.is_partial() {
+            for op in leaf.part_ops(part) {
+                op.jac(out, u, p, t);
+            }
+            return;
+        }
+        let mut guard = self.w.borrow_mut();
+        let w = guard.as_mut().expect("a bound leaf has its buffers");
+        put(&mut w.state, &leaf.dofs, u);
+        for (k, (op, sc)) in leaf.ops.iter().zip(&mut w.jac).enumerate() {
+            if leaf.in_part(k, part) {
+                op.jac_over(out, &leaf.dofs, &w.state, p, t, sc);
+            }
+        }
+    }
+
+    /// `out = Σ_k f_k(u, p, t)`, operators in declared order (operator-interface.md §3).
+    pub fn rhs(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
+        self.rhs_part(Part::All, out, u, p, t)
+    }
+
+    /// `out = Σ_k J_k(u)ᵀ w`.
+    pub fn vjp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, w: &[T]) {
+        self.lift(out, u, true, &[w], |o, uu, x| {
+            for op in &self.leaf.ops {
+                op.vjp_u(o, uu, p, t, x[0]);
+            }
+        })
+    }
+
+    /// `out += Σ_k f_{k,p}(u)ᵀ w`.
+    pub fn vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, w: &[T]) {
+        self.vjp_p_part(Part::All, out, u, p, t, w)
+    }
+
+    /// `out = Σ_k J_k(u)` in the leaf's matrix storage.
+    pub fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
+        self.lift_jac(Part::All, out, u, p, t)
+    }
+
+    /// `out = Σ_{k ∈ part} f_k(u, p, t)`.
+    pub fn rhs_part(&self, part: Part, out: &mut [T], u: &[T], p: &[f64], t: f64) {
+        self.lift(out, u, true, &[], |o, uu, _| {
+            for op in self.leaf.part_ops(part) {
+                op.rhs(o, uu, p, t);
+            }
+        })
+    }
+
+    /// `out = Σ_{k ∈ part} J_k(u)` in the leaf's matrix storage.
+    pub fn jac_part(&self, part: Part, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
+        self.lift_jac(part, out, u, p, t)
+    }
+
+    /// `out += Σ_{k ∈ part} J_k(u)ᵀ w`.
+    pub fn vjp_u_part(&self, part: Part, out: &mut [T], u: &[T], p: &[f64], t: f64, w: &[T]) {
+        self.lift(out, u, false, &[w], |o, uu, x| {
+            for op in self.leaf.part_ops(part) {
+                op.vjp_u(o, uu, p, t, x[0]);
+            }
+        })
+    }
+
+    /// `out += Σ_{k ∈ part} f_{k,p}(u)ᵀ w`.
+    pub fn vjp_p_part(&self, part: Part, out: &mut [f64], u: &[T], p: &[f64], t: f64, w: &[T]) {
+        self.model(u, &[w], |uu, x| {
+            for op in self.leaf.part_ops(part) {
+                op.vjp_p(out, uu, p, t, x[0]);
+            }
+        })
+    }
+
+    /// The pairs `(μ_i, w_i)` as a flat list of arguments, and back.
+    fn flat<'m>(mu: &[MuPair<'m, T>]) -> Vec<&'m [T]> {
+        mu.iter().flat_map(|&(m, w)| [m, w]).collect()
+    }
+    fn pairs<'m>(x: &[&'m [T]]) -> Vec<MuPair<'m, T>> {
+        x.chunks_exact(2).map(|c| (c[0], c[1])).collect()
+    }
+
+    /// `out += Σ_{k ∈ part} ∇_u Σ_i μ_iᵀ J_k(u) w_i` (zero for operators linear in `u`).
+    pub fn hess_u_part(
+        &self,
+        part: Part,
+        out: &mut [T],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        mu: &[MuPair<'_, T>],
+    ) {
+        self.lift(out, u, false, &Self::flat(mu), |o, uu, x| {
+            let mu = Self::pairs(x);
+            for op in self.leaf.part_ops(part).filter(|o| !o.linear_in_u()) {
+                op.hess_u(o, uu, p, t, &mu);
+            }
+        })
+    }
+
+    /// `out += Σ_{k ∈ part} ∇_p Σ_i μ_iᵀ J_k(u) w_i`.
+    pub fn hess_p_part(
+        &self,
+        part: Part,
+        out: &mut [f64],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        mu: &[MuPair<'_, T>],
+    ) {
+        self.model(u, &Self::flat(mu), |uu, x| {
+            let mu = Self::pairs(x);
+            for op in self.leaf.part_ops(part) {
+                op.hess_p(out, uu, p, t, &mu);
+            }
+        })
+    }
+
+    /// `out = Σ_k ∂f_k/∂t` over the operators that depend on `t`.
+    pub fn ft(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
+        self.lift(out, u, true, &[], |o, uu, _| {
+            for op in self.leaf.ops.iter().filter(|o| o.depends_on_t()) {
+                op.ft(o, uu, p, t);
+            }
+        })
+    }
+
+    /// `out += Σ_k ∇_u Σ_i μ_iᵀ J_k(u) w_i` (zero for operators linear in `u`).
+    pub fn hess_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, mu: &[MuPair<'_, T>]) {
+        self.hess_u_part(Part::All, out, u, p, t, mu)
+    }
+
+    /// `out += Σ_k ∇_p Σ_i μ_iᵀ J_k(u) w_i`.
+    pub fn hess_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, mu: &[MuPair<'_, T>]) {
+        self.hess_p_part(Part::All, out, u, p, t, mu)
+    }
+
+    /// `out += Σ_k ∇_u (νᵀ ∂f_k/∂t)` over the operators that depend on `t`.
+    pub fn ft_vjp_u(&self, out: &mut [T], u: &[T], p: &[f64], t: f64, nu: &[T]) {
+        self.lift(out, u, false, &[nu], |o, uu, x| {
+            for op in self.leaf.ops.iter().filter(|o| o.depends_on_t()) {
+                op.ft_vjp_u(o, uu, p, t, x[0]);
+            }
+        })
+    }
+
+    /// `out += Σ_k ∇_p (νᵀ ∂f_k/∂t)` over the operators that depend on `t`.
+    pub fn ft_vjp_p(&self, out: &mut [f64], u: &[T], p: &[f64], t: f64, nu: &[T]) {
+        self.model(u, &[nu], |uu, x| {
+            for op in self.leaf.ops.iter().filter(|o| o.depends_on_t()) {
+                op.ft_vjp_p(out, uu, p, t, x[0]);
+            }
+        })
     }
 }
 

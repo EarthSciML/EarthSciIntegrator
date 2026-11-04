@@ -11,10 +11,11 @@
 //! operator holds no state between calls, so it is `Send + Sync` and one
 //! object may serve several threads at once (U4).
 //!
-//! At M1 every operator is defined over the full model state vector (its
-//! length is the problem's `N`); [`Operator::writes`] says which DOFs it
-//! writes. A leaf's DOFs are the union of its operators' (architecture §3.2
-//! pass 3); its error norm runs over those DOFs only.
+//! Every operator is defined over the full model state vector (its length
+//! is the problem's `N`); [`Operator::writes`] says which DOFs it writes. A
+//! leaf's state vector is the union of its operators' writes (§1, §8.2;
+//! architecture §3.2 pass 3): the leaf advances only those DOFs, and every
+//! other state is a constant of the leaf ([`crate::leaf::Bound`]).
 
 use crate::Scalar;
 
@@ -22,6 +23,59 @@ use crate::Scalar;
 /// accumulates into (§4) live in the solvers crate, beside the linear
 /// solvers that read them.
 pub use earthsci_integrator_solvers::linalg::{MatrixStorage, Structure};
+
+/// What an operator's [`jac_over`](Operator::jac_over) keeps between calls
+/// for one leaf. The leaf owns it, one per operator, and passes the same
+/// one to every call, so an operator, which holds no state of its own,
+/// computes what depends only on the leaf's DOFs once (§4, §8.3). It
+/// starts empty.
+#[derive(Debug, Default)]
+pub struct JacOverScratch<T> {
+    /// The default `jac_over`'s storage of the operator's structure over
+    /// the model state, cleared and refilled at each call.
+    pub model: Option<MatrixStorage<T>>,
+    /// An operator's entries at the leaf's rows and columns, as
+    /// `(entry, leaf row, leaf column)`, for one that knows them (a plan's).
+    pub points: Option<Vec<(usize, usize, usize)>>,
+}
+
+/// Adds the entries of `m`, storage over the model state, at the rows and
+/// columns `dofs` (ascending) into `out`, storage over the state vector the
+/// model state at `dofs` makes: leaf index `i` is model DOF `dofs[i]`. Only
+/// the entries `out` can hold are read, so a `block_diagonal` `out` takes
+/// each of its cells' blocks.
+pub fn add_restricted<T: crate::Scalar>(
+    out: &mut MatrixStorage<T>,
+    m: &MatrixStorage<T>,
+    d: &[usize],
+) {
+    match out {
+        MatrixStorage::Dense { n, .. } => {
+            let n = *n;
+            for b in 0..n {
+                for a in 0..n {
+                    let v = m.get(d[a], d[b]);
+                    if v != T::zero() {
+                        out.add(a, b, v);
+                    }
+                }
+            }
+        }
+        MatrixStorage::BlockDiagonal { ncells, n, .. } => {
+            let (nc, n) = (*ncells, *n);
+            for i in 0..n {
+                for j in 0..n {
+                    for c in 0..nc {
+                        let v = m.get(d[i * nc + c], d[j * nc + c]);
+                        if v != T::zero() {
+                            out.add(i * nc + c, j * nc + c, v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// A call of §3, for refusals that name the missing call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +132,30 @@ pub trait Operator<T: Scalar>: Send + Sync {
     fn linear_in_u(&self) -> bool;
     /// The DOFs (full-state indices, ascending) the operator writes.
     fn writes(&self) -> Vec<usize>;
+    /// The DOFs (full-state indices, ascending) `f_k` may depend on, when the
+    /// operator knows them; `None` when it does not. A leaf that advances
+    /// part of the state needs them for its adjoint: the states it does not
+    /// advance are its constants (§1), and their cotangents pass through it
+    /// unchanged only when no operator reads them.
+    fn reads(&self) -> Option<Vec<usize>> {
+        None
+    }
+    /// The operator's structure over a leaf's state vector, the model state
+    /// at `dofs` (ascending) of the `n_model` DOFs (§2, §8.3); the leaf's
+    /// structure is the coarsest its operators share. The default restricts
+    /// [`structure`](Operator::structure), which is over the model state: a
+    /// leaf that writes every DOF has it, one that writes whole species of a
+    /// `block_diagonal` structure is `block_diagonal` over its own species,
+    /// and any other is `dense`. An operator a plan supplies decides from
+    /// the leaf's own state variables instead (§8.3). An error refuses the
+    /// leaf.
+    fn structure_over(&self, dofs: &[usize], n_model: usize) -> Result<Structure, String> {
+        Ok(crate::schedule::leaf_structure(
+            self.structure(),
+            dofs,
+            n_model,
+        ))
+    }
     /// Whether the operator implements `call`.
     fn provides(&self, call: Call) -> bool {
         matches!(call, Call::Rhs | Call::JvpU | Call::VjpU)
@@ -104,6 +182,37 @@ pub trait Operator<T: Scalar>: Send + Sync {
     /// (an operator that adds through [`MatrixStorage::add`] fills either).
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
         unimplemented!("{}: jac", self.name())
+    }
+    /// `J_k(u)` at a leaf's rows and columns, added into the leaf's storage
+    /// over its state vector (§4, §8.3): leaf index `i` is model DOF
+    /// `dofs[i]` (ascending), and `u` is the model state. Entries in columns
+    /// outside `dofs` (the leaf's constants) are left out. `out` has the
+    /// structure the leaf's operators share over `dofs`
+    /// ([`structure_over`](Operator::structure_over)), or is dense.
+    ///
+    /// `scratch` is the leaf's for this operator, kept across calls
+    /// ([`JacOverScratch`]): `dofs` is the same at every call with it.
+    ///
+    /// The default fills storage of [`structure`](Operator::structure) over
+    /// the whole model state with [`jac`](Operator::jac) and takes the
+    /// leaf's entries from it, so it fills a model-sized matrix, though it
+    /// allocates it only once per leaf (in `scratch.model`); an operator
+    /// that knows its entries (a plan's, §8) adds them directly.
+    fn jac_over(
+        &self,
+        out: &mut MatrixStorage<T>,
+        dofs: &[usize],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        scratch: &mut JacOverScratch<T>,
+    ) {
+        let m = scratch
+            .model
+            .get_or_insert_with(|| MatrixStorage::zeros(self.structure(), u.len()));
+        m.clear();
+        self.jac(m, u, p, t);
+        add_restricted(out, m, dofs);
     }
     /// `out += ∂f_k/∂t`.
     fn ft(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {

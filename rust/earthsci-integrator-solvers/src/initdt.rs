@@ -12,32 +12,30 @@ pub struct InitDtInput<'a, T> {
     pub dtmin: f64,
     pub dtmax: f64,
     pub tol: &'a Tolerances,
-    /// The leaf's DOFs, ascending.
-    pub dofs: &'a [usize],
     /// The method's `order`.
     pub order: u32,
 }
 
-/// Computes the first step. `f(out, u, t)` overwrites `out` with the leaf's
+/// Computes the first step, its norms over every entry of the leaf's state
+/// vector `u0`. `f(out, u, t)` overwrites `out` with the leaf's
 /// right-hand side. Returns the step and the number of `f` evaluations (2,
 /// or 1 when the first evaluation has a NaN).
 pub fn initial_dt<T: Scalar>(inp: &InitDtInput<'_, T>, f: &mut RhsFn<'_, T>) -> (f64, usize) {
     let n = inp.u0.len();
-    let nd = inp.dofs.len();
     let u0 = inp.u0;
     // 1. sk_j = abstol_j + |u0_j| reltol.
     let sk: Vec<f64> = (0..n)
         .map(|j| inp.tol.abstol[j] + u0[j].to_f64().abs() * inp.tol.reltol)
         .collect();
-    let d0 = rms_norm(inp.dofs.iter().map(|&j| u0[j].to_f64() / sk[j]), nd);
+    let d0 = rms_norm((0..n).map(|j| u0[j].to_f64() / sk[j]), n);
     let mut f0 = vec![T::zero(); n];
     f(&mut f0, u0, inp.t0);
-    let d1 = rms_norm(inp.dofs.iter().map(|&j| f0[j].to_f64() / sk[j]), nd);
+    let d1 = rms_norm((0..n).map(|j| f0[j].to_f64() / sk[j]), n);
     // 2.
     let dtmin = next_up(inp.dtmin.max(eps_f64(inp.t0)));
     let smalldt = dtmin.max(1e-6);
     // 3.
-    if inp.dofs.iter().any(|&j| f0[j].to_f64().is_nan()) || d1.is_nan() {
+    if f0.iter().any(|x| x.to_f64().is_nan()) || d1.is_nan() {
         return (dtmin, 1);
     }
     // 4. OrdinaryDiffEq computes (d0/d1)/100; spec/methods.md §9 writes
@@ -57,12 +55,7 @@ pub fn initial_dt<T: Scalar>(inp: &InitDtInput<'_, T>, f: &mut RhsFn<'_, T>) -> 
         return (dtmin.max(100.0 * dt0), 2);
     }
     // 6.
-    let d2 = rms_norm(
-        inp.dofs
-            .iter()
-            .map(|&j| (f1[j].to_f64() - f0[j].to_f64()) / sk[j]),
-        nd,
-    ) / dt0;
+    let d2 = rms_norm((0..n).map(|j| (f1[j].to_f64() - f0[j].to_f64()) / sk[j]), n) / dt0;
     let m = d1.max(d2);
     let dt1 = if m <= 1e-15 {
         1e-6f64.max(dt0 * 1e-3)
@@ -90,7 +83,6 @@ mod tests {
             dtmin: 0.0,
             dtmax: 10.0,
             tol: &tol,
-            dofs: &[0],
             order: 5,
         };
         let (h, nf) = initial_dt(&inp, &mut |out: &mut [f64], u: &[f64], _t| out[0] = -u[0]);

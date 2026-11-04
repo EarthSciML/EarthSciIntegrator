@@ -11,7 +11,7 @@
 //! `strang` and `subcycle` is that reversal (§5.2–§5.4); `bind_dt`
 //! parameters are tape constants and get no cotangent (§5.8).
 
-use crate::leaf::{LeafMethod, LeafSpec, LeafWork, StepData};
+use crate::leaf::{Bound, LeafMethod, LeafSpec, LeafWork, StepData};
 use crate::operator::{Call, MapOperator, MatrixStorage, MuPair};
 use crate::schedule::{AdjRecord, ForwardRun, RunSpec};
 use crate::{Error, Scalar};
@@ -105,9 +105,17 @@ impl<T: Scalar> RunSpec<T> {
             )?;
             for rec in recs.iter().rev() {
                 match rec {
-                    AdjRecord::Leaf { leaf, steps } => {
+                    AdjRecord::Leaf {
+                        leaf,
+                        steps,
+                        background,
+                        span,
+                    } => {
                         let l = &self.schedule.leaves[*leaf];
-                        leaf_adjoint(l, steps, &mut lam, &mut pbar, &bound)?;
+                        leaf_adjoint(l, steps, background.as_deref(), &mut lam, &mut pbar, &bound)?;
+                        // The integrand's part over states the leaf does not
+                        // advance (spec/adjoint.md §2.1).
+                        l.psi_const_adjoint(&mut lam, *span);
                     }
                     AdjRecord::Map {
                         map,
@@ -186,29 +194,58 @@ fn map_adjoint<T: Scalar>(
 /// Reverse of one leaf invocation (§5.1): the family's adjoint step for
 /// `n = N−1, …, 0`. `lam` crosses the leaf boundary in f64; inside, stage
 /// cotangents are in `T` (§6.4).
+///
+/// A leaf that advances part of the model state (operator-interface.md §1)
+/// is reversed over its state vector, with `background` the model state at
+/// the invocation's start; the cotangents of the other states pass through
+/// unchanged, since the leaf leaves those states unchanged and (as its build
+/// checks) none of its operators reads them.
 fn leaf_adjoint<T: Scalar>(
     leaf: &LeafSpec<T>,
     steps: &[StepData<T>],
+    background: Option<&[T]>,
     lam: &mut [f64],
     pbar: &mut [f64],
     bound: &[bool],
 ) -> Result<(), Error> {
-    let mut l: Vec<T> = lam.iter().map(|&x| T::from_f64(x)).collect();
+    let partial = leaf.is_partial();
+    let mut l: Vec<T> = if partial {
+        leaf.dofs.iter().map(|&j| T::from_f64(lam[j])).collect()
+    } else {
+        lam.iter().map(|&x| T::from_f64(x)).collect()
+    };
+    let bg = match (partial, background) {
+        (false, _) => &[][..],
+        (true, Some(b)) => b,
+        (true, None) => {
+            return Err(Error::Run(format!(
+                "adjoint: leaf {} advances part of the state, but its record has no background",
+                leaf.id
+            )))
+        }
+    };
+    let b = leaf.bound(bg);
     // A Rosenbrock leaf refactors W at each step's u_n, which reproduces the
     // forward factorization bit for bit (spec/adjoint.md §3, `solve_Wt`); an
     // implicit leaf refactors W at each converged stage (§4.3, D42).
     let mut lw = leaf.take_work(l.len())?;
-    let out = leaf_adjoint_steps(leaf, steps, &mut l, pbar, bound, &mut lw);
+    let out = leaf_adjoint_steps(&b, steps, &mut l, pbar, bound, &mut lw);
     leaf.put_work(lw);
     out?;
-    for (a, x) in lam.iter_mut().zip(&l) {
-        *a = x.to_f64();
+    if partial {
+        for (&j, x) in leaf.dofs.iter().zip(&l) {
+            lam[j] = x.to_f64();
+        }
+    } else {
+        for (a, x) in lam.iter_mut().zip(&l) {
+            *a = x.to_f64();
+        }
     }
     Ok(())
 }
 
 fn leaf_adjoint_steps<T: Scalar>(
-    leaf: &LeafSpec<T>,
+    leaf: &Bound<'_, T>,
     steps: &[StepData<T>],
     l: &mut [T],
     pbar: &mut [f64],
@@ -268,7 +305,7 @@ fn axpy<T: Scalar>(y: &mut [T], c: f64, x: &[T]) {
 /// `λ_{n+1}` (in `lam`) to `λ_n` and returns the step's `p̄` contribution,
 /// summed over stages in ascending order (§6.4).
 pub fn erk_adjoint_step<T: Scalar>(
-    leaf: &LeafSpec<T>,
+    leaf: &Bound<'_, T>,
     m: &ExplicitRk,
     st: &StepData<T>,
     lam: &mut [T],
@@ -406,7 +443,7 @@ fn scale<T: Scalar>(x: &mut [T], c: f64) {
 ///   `hess_u` takes `(μ_1, γ k_1)` and `(μ_2, γ (k_2 − k_1))`, and
 ///   `ft_vjp_u` takes `ν = γ μ_1`.
 pub fn ros_adjoint_step<T: Scalar>(
-    leaf: &LeafSpec<T>,
+    leaf: &Bound<'_, T>,
     m: &Rosenbrock,
     w: &mut RosWork<T>,
     st: &StepData<T>,
@@ -558,7 +595,7 @@ pub fn ros_adjoint_step<T: Scalar>(
 /// (spec/adjoint.md §4.3, D42), naming the step on failure.
 #[allow(clippy::too_many_arguments)]
 fn refactor<T: Scalar>(
-    leaf: &LeafSpec<T>,
+    leaf: &Bound<'_, T>,
     m: &Implicit,
     w: &mut ImplicitWork<T>,
     part: Part,
@@ -605,7 +642,7 @@ fn solve_wt<T: Scalar>(w: &ImplicitWork<T>, x: &mut [T], sigma: f64) {
 ///   `λ_n = λ_{n+1} + J(u_n)ᵀ μ + ∇_u(μᵀ J_I(u) k)`, `p̄ += f_p(u_n)ᵀ μ + ∇_p(μᵀ J_I k)`
 ///   (§4.2 with one stage, D43).
 pub fn imp_adjoint_step<T: Scalar>(
-    leaf: &LeafSpec<T>,
+    leaf: &Bound<'_, T>,
     m: &Implicit,
     w: &mut ImplicitWork<T>,
     st: &StepData<T>,
