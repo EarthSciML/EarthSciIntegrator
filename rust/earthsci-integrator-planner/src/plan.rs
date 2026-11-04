@@ -291,20 +291,23 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 // The search probes halves of the operator's terms in full
                 // mode rather than differentiating each term's document.
                 let owned: Vec<Term> = ts.iter().map(|t| (*t).clone()).collect();
+                // When no term's own document fails, or the search meets
+                // a failure that is not EarthSciASTDiff's, the operator is
+                // refused with its own message.
                 return Err(match astdiff::first_failing_term(&info, &owned) {
-                    Ok(None) => band_model_failed(astdiff::astdiff_message(e)),
-                    Ok(Some(f)) => {
+                    None => band_model_failed(astdiff::astdiff_message(e)),
+                    Some(f) => {
                         band_source_error(BandSourceError::Failed(f), &ts, band_model_failed)
                     }
-                    Err(f) => band_source_error(f, &ts, band_model_failed),
                 });
             }
         };
         // Pass 2 classified the terms from structure-only entries, whose
         // points include the full mode's (§5.2.2): the full band list must
         // then imply no class or radius wider than the operator's, which
-        // `structure::structure` reads for its block, column and footprint
-        // decisions. A wider one means the two modes disagree.
+        // `structure::structure` reads for its block decision. A wider one
+        // means the two modes disagree. The column bandwidth and the
+        // footprint read the terms' structure-only bands themselves (§5.4).
         let full: Vec<BandEntry> = band_list.iter().map(astdiff::band_entry).collect();
         let full = locality::classify(&full, &info.shapes, &info.index_sets, &axes);
         if locality::operator_locality([&op.locality, &full], &axes) != op.locality {
@@ -313,7 +316,16 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 op.locality
             )));
         }
-        let st = structure::structure(&info, &axes, op, &terms, &sv, band_list, &state_dependent)?;
+        let st = structure::structure(
+            &info,
+            &axes,
+            op,
+            &terms,
+            &bands,
+            &sv,
+            band_list,
+            &state_dependent,
+        )?;
         jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
         structures.insert(name.clone(), st);

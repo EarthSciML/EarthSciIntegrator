@@ -215,6 +215,20 @@ fn every_case() {
                 "{fixture}/{case} {op}"
             );
         }
+        // A stencil operator's footprint reads the pattern its radius reads
+        // (§5.2.2, §5.4): on each horizontal axis its offsets reach exactly
+        // the radius, -lower to upper.
+        for (op, st) in &p.structures {
+            let Some(footprint) = &st.footprint else {
+                continue;
+            };
+            let radius = &p.operators[op].locality.radius;
+            for (i, h) in p.axes.horizontal.iter().enumerate() {
+                let offs = footprint.iter().map(|v| v[i]);
+                let reach = (-offs.clone().min().unwrap(), offs.max().unwrap());
+                assert_eq!(Some(&reach), radius.get(h), "{fixture}/{case} {op} {h}");
+            }
+        }
         check_golden(fixture, case, &p, &bytes);
     }
 }

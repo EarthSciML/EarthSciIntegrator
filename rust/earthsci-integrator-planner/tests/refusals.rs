@@ -77,7 +77,10 @@ fn band_model_failed_names_its_term() {
     }
     // In full mode the same halving search, in every batch size, finds
     // the third term, as each term's own document does.
-    let full = testing::each_term(&info, &ts, Mode::Full).unwrap_err();
+    let full = match testing::each_term(&info, &ts, Mode::Full) {
+        Err(BandSourceError::Failed(f)) => f,
+        other => panic!("want the third term's failure, got {other:?}"),
+    };
     assert_eq!(full.term, 2);
     for large in [0, 1, 3] {
         match testing::in_batches(&info, &ts, large, Mode::Full) {
@@ -85,7 +88,7 @@ fn band_model_failed_names_its_term() {
             other => panic!("large = {large}: want the third term's failure, got {other:?}"),
         }
     }
-    assert_eq!(astdiff::first_failing_term(&info, &ts).unwrap(), Some(full));
+    assert_eq!(astdiff::first_failing_term(&info, &ts), Some(full));
     match plan(&path, &Options::default(), &AstDiffBands) {
         Err(PlanError::Refused(r)) => {
             assert_eq!(

@@ -272,15 +272,27 @@ impl AstDiffBands {
 
     /// Term `t`'s band list in `mode` from its own right-hand-side
     /// document; a failure is `band_model_failed` for the term at position
-    /// `i`.
+    /// `i`. In [`Mode::Full`] only EarthSciASTDiff's failures are: an
+    /// EarthSciAST load or flatten failure is not the term's derivative
+    /// failing, and is [`BandSourceError::Internal`], which ends pass 4's
+    /// search so that the operator is refused instead (§5.2.2).
     fn own(
         info: &ModelInfo,
         t: &Term,
         i: usize,
         mode: Mode,
-    ) -> Result<Vec<BandEntry>, BandFailure> {
+    ) -> Result<Vec<BandEntry>, BandSourceError> {
         let doc = derived::rhs_document(info, "term", &[t]);
-        document_entries(&doc, mode).map_err(|message| BandFailure { term: i, message })
+        let failed = |message| BandSourceError::Failed(BandFailure { term: i, message });
+        match mode {
+            Mode::Structure => document_entries(&doc, mode).map_err(failed),
+            Mode::Full => {
+                let view = FlatView::of_document(&doc).map_err(BandSourceError::Internal)?;
+                let sv = view.sysview().map_err(|e| failed(astdiff_message(e)))?;
+                let list = bands(&sv).map_err(|e| failed(astdiff_message(e)))?;
+                Ok(list.iter().map(band_entry).collect())
+            }
+        }
     }
 
     /// The band lists of `terms` in `mode`, the terms from position
@@ -329,20 +341,19 @@ impl AstDiffBands {
 
 /// The first of `terms`, in their order, whose own right-hand-side
 /// document fails in EarthSciASTDiff's full mode, with that document's
-/// message, or `None` when none does (§5.2.2, §4 "Order of refusals" item
+/// message, or `None` when none does or when the search meets a failure
+/// that is not EarthSciASTDiff's, such as an EarthSciAST load or flatten
+/// failure on a term's own document (§5.2.2, §4 "Order of refusals" item
 /// 4). `plan` calls this on an operator's terms when the operator's own
-/// document fails in pass 4. It is [`AstDiffBands`]' halving search in
+/// document fails in pass 4, and on `None` refuses against the operator
+/// with the operator's own message. It is [`AstDiffBands`]' halving search in
 /// [`Mode::Full`], in the same batches, so it takes about `2 log₂ n` probe
 /// documents rather than one full differentiation per term; each batch's
 /// coefficients are dropped before the next batch is probed.
-pub fn first_failing_term(
-    info: &ModelInfo,
-    terms: &[Term],
-) -> Result<Option<BandFailure>, BandSourceError> {
+pub fn first_failing_term(info: &ModelInfo, terms: &[Term]) -> Option<BandFailure> {
     match AstDiffBands::batched(info, terms, LARGE_TERM_NODES, Mode::Full) {
-        Ok(_) => Ok(None),
-        Err(BandSourceError::Failed(f)) => Ok(Some(f)),
-        Err(e) => Err(e),
+        Err(BandSourceError::Failed(f)) => Some(f),
+        Ok(_) | Err(BandSourceError::Internal(_)) => None,
     }
 }
 
@@ -386,7 +397,7 @@ pub mod testing {
         info: &ModelInfo,
         terms: &[Term],
         mode: Mode,
-    ) -> Result<Vec<Vec<BandEntry>>, BandFailure> {
+    ) -> Result<Vec<Vec<BandEntry>>, BandSourceError> {
         terms
             .iter()
             .enumerate()
