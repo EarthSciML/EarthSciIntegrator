@@ -222,6 +222,23 @@ const PLAN_FILES = String[]
             @test text == jcs(e)
         end
         ops = sort!(collect(keys(p["operators"])))
+        # A stencil operator's footprint reads the pattern its radius reads
+        # (§5.2.2, §5.4): on each horizontal axis its offsets reach exactly
+        # the radius, -l to u.
+        if any(o -> haskey(p["operators"][o]["structure"], "stencil"), ops)
+            horizontal = EarthSciIntegrator.plan_context(
+                EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json")), DiffBackend()
+            ).axes.horizontal
+            for o in ops
+                st = p["operators"][o]["structure"]
+                haskey(st, "stencil") || continue
+                rad = p["operators"][o]["locality"]["radius"]
+                for (i, X) in enumerate(horizontal)
+                    offs = [v[i] for v in st["stencil"]["footprint"]]
+                    @test (-minimum(offs), maximum(offs)) == Tuple(rad[X])
+                end
+            end
+        end
         # Derived documents (§6, §7.7): one rhs and one jacobian per operator, hashed as written.
         @test sort!(collect(keys(p["derived"]))) == sort!(["derived/$o.$k.esm" for o in ops for k in ("rhs", "jacobian")])
         for (path, x) in p["derived"]
@@ -521,11 +538,75 @@ const PLAN_FILES = String[]
         # The operator's document fails in pass 4, and the refusal names its
         # third term, erf(x), with that term's own document's message.
         @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
+        # In the full mode the probe fails, and the halving search finds the
+        # same term with the same message, in batches of any size.
+        @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms; coefficients = true) === nothing
+        for large in (0, 1, 3)
+            e2 = try
+                EarthSciIntegrator.all_term_bands(b, ctx, terms; large, coefficients = true); nothing
+            catch e
+                e
+            end
+            @test e2 isa PlannerRefusal && e2.code == err.code && e2.msg == err.msg
+        end
+        # Pass 4's search, alone, refuses the same way.
+        e3 = try
+            EarthSciIntegrator.refuse_failing_term(b, ctx, terms); nothing
+        catch e
+            e
+        end
+        @test e3 isa PlannerRefusal && e3.msg == err.msg
+        # Without the failing term, the search refuses nothing.
+        @test EarthSciIntegrator.refuse_failing_term(b, ctx, terms[1:2]) === nothing
+    end
+
+    @testset "pass 4 refuses the operator's first term, in term order, whose derivative fails (§5.2.2)" begin
+        # Several underivable terms, among derivable ones, in one operator:
+        # the halving search names the first, (K.y, 0, 3), wherever the
+        # halves fall.
+        src = joinpath(CONF, "plans", "refusals", "band-model-failed")
+        doc = JSON.parsefile(joinpath(src, "model.esm"))
+        x, y = "x", "y"
+        doc["models"]["K"]["equations"][2]["rhs"] = Dict(
+            "op" => "+", "args" => Any[
+                Dict("op" => "*", "args" => Any[-1, "k", y]), Dict("op" => "*", "args" => Any[2, y]),
+                Dict("op" => "*", "args" => Any[3, "k", x]), Dict("op" => "erf", "args" => Any[y]),
+                Dict("op" => "*", "args" => Any[5, x]), Dict("op" => "erf", "args" => Any[x]),
+                Dict("op" => "*", "args" => Any[7, y]),
+            ]
+        )
+        dir = mktempdir()
+        write(joinpath(dir, "model.esm"), JSON.json(doc))
+        cp(joinpath(src, "run.json"), joinpath(dir, "run.json"))
+        err = try
+            EarthSciIntegrator.plan(joinpath(dir, "run.json")); nothing
+        catch e
+            e
+        end
+        @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
+        @test occursin("term (K.y, 0, 3): ", err.msg) && occursin("erf", err.msg)
+        b = DiffBackend()
+        ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(joinpath(dir, "run.json")), b)
+        terms = EarthSciIntegrator.build_terms(ctx.model)
+        for r in (1:length(terms), 2:length(terms), 4:length(terms))
+            e2 = try
+                EarthSciIntegrator.refuse_failing_term(b, ctx, terms[r]); nothing
+            catch e
+                e
+            end
+            @test e2 isa PlannerRefusal && e2.msg == err.msg
+        end
+        e4 = try
+            EarthSciIntegrator.refuse_failing_term(b, ctx, terms[6:end]); nothing
+        catch e
+            e
+        end
+        @test e4 isa PlannerRefusal && occursin("term (K.y, 0, 5): ", e4.msg)
     end
 
     @testset "the probe document fails exactly when a term's own document fails (§5.2.2)" begin
         dir = joinpath(CONF, "plans", "refusals")
-        checked = 0
+        checked = failed = 0
         for name in sort(collect(keys(JSON.parsefile(joinpath(dir, "expected-codes.json")))))
             b = DiffBackend()
             ctx, terms = try
@@ -539,19 +620,24 @@ const PLAN_FILES = String[]
                 continue        # refused before pass 2
             end
             isempty(terms) && continue
-            probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms)
-            each = try
-                [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
-            catch e
-                (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
-                nothing
+            # Both modes: pass 2's structure-only one and the full one, in
+            # which band-model-failed's probe and its third term fail.
+            for coefficients in (false, true)
+                probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms; coefficients)
+                each = try
+                    [EarthSciIntegrator.term_band_dicts(b, ctx, t; coefficients) for t in terms]
+                catch e
+                    (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
+                    nothing
+                end
+                # A probe that succeeds hides no term's failure, and gives its bands.
+                @test (probe === nothing) == (each === nothing)
+                probe === nothing || @test probe == each
+                failed += probe === nothing
+                checked += 1
             end
-            # A probe that succeeds hides no term's failure, and gives its bands.
-            @test (probe === nothing) == (each === nothing)
-            probe === nothing || @test probe == each
-            checked += 1
         end
-        @test checked > 0
+        @test checked > 0 && failed > 0
     end
 
     @testset "write_plan removes an earlier plan's files" begin
