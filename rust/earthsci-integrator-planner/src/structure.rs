@@ -1,10 +1,9 @@
 //! Pass 4, structure (spec/plan.md §5.4): an operator's band list from
 //! EarthSciASTDiff and what the plan records about it.
 
-use crate::astdiff::band_entry;
 use crate::axes::Axes;
 use crate::error::{PlanError, Result};
-use crate::locality::{band_reach, Class};
+use crate::locality::{band_reach, BandEntry, Class};
 use crate::model::ModelInfo;
 use crate::operators::Operator;
 use crate::terms::Term;
@@ -77,13 +76,20 @@ fn reads_t(names: impl IntoIterator<Item = String>) -> bool {
 }
 
 /// Pass 4 for one operator: `sv` is EarthSciASTDiff's view of its
-/// flattened right-hand-side document and `bands` its band list. `state_dependent` is
+/// flattened right-hand-side document and `bands` its band list.
+/// `term_bands` is every term's structure-only band list from pass 2
+/// (§5.2.2), indexed as `terms`: the column bandwidth and the stencil
+/// footprint read the operator's terms' lists, the pattern its locality and
+/// radius read, so they agree with the radius even when a coupling cancels
+/// in the full mode (§5.4). `state_dependent` is
 /// [`ModelInfo::state_dependent`], computed once per model.
+#[allow(clippy::too_many_arguments)]
 pub fn structure(
     info: &ModelInfo,
     axes: &Axes,
     op: &Operator,
     terms: &[Term],
+    term_bands: &[Vec<BandEntry>],
     sv: &SysView,
     bands: Vec<JacEntry>,
     state_dependent: &BTreeSet<String>,
@@ -130,9 +136,12 @@ pub fn structure(
         None
     };
 
-    let reaches: Vec<_> = bands
+    // The operator's terms' structure-only bands, not `bands` (§5.4).
+    let reaches: Vec<_> = op
+        .terms
         .iter()
-        .map(|en| band_reach(&band_entry(en), &info.shapes, &info.index_sets, axes))
+        .flat_map(|&i| &term_bands[i])
+        .map(|b| band_reach(b, &info.shapes, &info.index_sets, axes))
         .collect();
 
     let column = match (&op.locality.class, &axes.vertical) {

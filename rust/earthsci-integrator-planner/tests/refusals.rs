@@ -4,7 +4,7 @@
 mod common;
 
 use common::conformance;
-use earthsci_integrator_planner::astdiff::{self, testing, AstDiffBands};
+use earthsci_integrator_planner::astdiff::{self, testing, AstDiffBands, Mode};
 use earthsci_integrator_planner::error::codes;
 use earthsci_integrator_planner::locality::{BandSourceError, NoBands};
 use earthsci_integrator_planner::{model, plan, runconfig, terms, Options, PlanError};
@@ -53,20 +53,42 @@ fn refusal_fixtures() {
     assert_eq!(passed, expected.as_object().unwrap().len());
 }
 
-/// `band_model_failed` (§5.2.2) is reported against the term it concerns:
-/// the probe document fails, and the term documents find the third term,
-/// whose `erf` has no derivative rule.
+/// `band_model_failed` (§5.2.2) is reported against the term it concerns.
+/// Pass 2 reads the terms' structure only, which takes no derivative, so
+/// the probe and every term's own structure succeed; the operator's
+/// document fails in pass 4, and the full-mode search of its terms finds
+/// the third term, whose `erf` has no derivative rule.
 #[test]
 fn band_model_failed_names_its_term() {
     let path = conformance().join("plans/refusals/band-model-failed/run.json");
     let rc = runconfig::read(&path).unwrap();
     let info = model::read(&rc).unwrap();
     let ts = terms::terms(&info).unwrap();
-    // The refusal comes from the fallback, not from the probe.
     let probe = testing::probe(&info, &ts).unwrap();
-    assert!(probe.is_err(), "the probe document differentiates");
-    let failure = testing::each_term(&info, &ts).unwrap_err();
-    assert_eq!(failure.term, 2);
+    assert!(probe.is_ok(), "the probe document's structure fails");
+    let each = testing::each_term(&info, &ts, Mode::Structure).unwrap();
+    assert_eq!(probe.unwrap(), each);
+    for large in [0, 1, 3] {
+        assert_eq!(
+            testing::in_batches(&info, &ts, large, Mode::Structure).unwrap(),
+            each,
+            "large = {large}"
+        );
+    }
+    // In full mode the same halving search, in every batch size, finds
+    // the third term, as each term's own document does.
+    let full = match testing::each_term(&info, &ts, Mode::Full) {
+        Err(BandSourceError::Failed(f)) => f,
+        other => panic!("want the third term's failure, got {other:?}"),
+    };
+    assert_eq!(full.term, 2);
+    for large in [0, 1, 3] {
+        match testing::in_batches(&info, &ts, large, Mode::Full) {
+            Err(BandSourceError::Failed(f)) => assert_eq!(f, full, "large = {large}"),
+            other => panic!("large = {large}: want the third term's failure, got {other:?}"),
+        }
+    }
+    assert_eq!(astdiff::first_failing_term(&info, &ts), Some(full.clone()));
     // Every term here has one operator node, so the bounds 0 and 1 give
     // single-term batches, 2 gives [t0, t1] [t2], and 3 one batch of all
     // three.
@@ -74,20 +96,14 @@ fn band_model_failed_names_its_term() {
     assert_eq!(astdiff::probe_batches(&ts, 1), [0..1, 1..2, 2..3]);
     assert_eq!(astdiff::probe_batches(&ts, 2), [0..2, 2..3]);
     assert_eq!(astdiff::probe_batches(&ts, 3), vec![0..3]);
-    for large in [0, 2, 3] {
-        match testing::in_batches(&info, &ts, large) {
-            Err(BandSourceError::Failed(f)) => assert_eq!(f, failure, "large = {large}"),
-            other => panic!("large = {large}: want the third term's failure, got {other:?}"),
-        }
-    }
     // Batches given directly, so that a failing probe's halves search also
     // runs in a later batch, from a term other than the first: [t0] [t1, t2]
     // reaches the third term only through the batch's offset.
     let batches: [&[std::ops::Range<usize>]; 3] =
         [&[0..1, 1..3], &[0..2, 2..3], &[0..1, 1..2, 2..3]];
     for b in batches {
-        match testing::in_given_batches(&info, &ts, b.to_vec()) {
-            Err(BandSourceError::Failed(f)) => assert_eq!(f, failure, "batches {b:?}"),
+        match testing::in_given_batches(&info, &ts, b.to_vec(), Mode::Full) {
+            Err(BandSourceError::Failed(f)) => assert_eq!(f, full, "batches {b:?}"),
             other => panic!("batches {b:?}: want the third term's failure, got {other:?}"),
         }
     }
@@ -126,7 +142,7 @@ fn probe_fails_exactly_when_a_term_fails() {
             continue;
         }
         let probe = testing::probe(&info, &ts).unwrap();
-        let each = testing::each_term(&info, &ts);
+        let each = testing::each_term(&info, &ts, Mode::Structure);
         match (probe, each) {
             (Ok(p), Ok(e)) => assert_eq!(p, e, "{name}"),
             (Err(_), Err(_)) => {}

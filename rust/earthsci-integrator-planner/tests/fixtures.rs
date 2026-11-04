@@ -215,6 +215,20 @@ fn every_case() {
                 "{fixture}/{case} {op}"
             );
         }
+        // A stencil operator's footprint reads the pattern its radius reads
+        // (§5.2.2, §5.4): on each horizontal axis its offsets reach exactly
+        // the radius, -lower to upper.
+        for (op, st) in &p.structures {
+            let Some(footprint) = &st.footprint else {
+                continue;
+            };
+            let radius = &p.operators[op].locality.radius;
+            for (i, h) in p.axes.horizontal.iter().enumerate() {
+                let offs = footprint.iter().map(|v| v[i]);
+                let reach = (-offs.clone().min().unwrap(), offs.max().unwrap());
+                assert_eq!(Some(&reach), radius.get(h), "{fixture}/{case} {op} {h}");
+            }
+        }
         check_golden(fixture, case, &p, &bytes);
     }
 }
@@ -446,7 +460,7 @@ fn count_template_refs<'a>(
 /// states carry their equation states' index sets and `ic` equations.
 #[test]
 fn probe_document_gives_each_terms_bands() {
-    use earthsci_integrator_planner::astdiff::{self, testing};
+    use earthsci_integrator_planner::astdiff::{self, testing, Mode};
     use earthsci_integrator_planner::{derived, model, runconfig, terms};
     let mut templated = 0;
     for (fixture, case) in CASES {
@@ -457,7 +471,7 @@ fn probe_document_gives_each_terms_bands() {
         let probe = testing::probe(&info, &ts)
             .unwrap()
             .unwrap_or_else(|m| panic!("{fixture}/{case}: the probe document failed: {m}"));
-        let each = testing::each_term(&info, &ts).unwrap();
+        let each = testing::each_term(&info, &ts, Mode::Structure).unwrap();
         assert_eq!(probe, each, "{fixture}/{case}");
         // So do smaller batches (§5.2.2): with a lower bound, each batch is a
         // consecutive run within the bound in all, or a single term, and it
@@ -497,7 +511,7 @@ fn probe_document_gives_each_terms_bands() {
                 );
             }
             assert_eq!(
-                testing::in_batches(&info, &ts, large).unwrap(),
+                testing::in_batches(&info, &ts, large, Mode::Structure).unwrap(),
                 each,
                 "{fixture}/{case}: batches with large = {large}"
             );
