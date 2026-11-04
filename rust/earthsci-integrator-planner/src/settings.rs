@@ -460,7 +460,12 @@ pub fn checkpoint(rc: &RunConfig, info: &ModelInfo, root: &Node) -> Result<Optio
     for (i, w) in adjoint["wrt"].as_array().into_iter().flatten().enumerate() {
         let w = w.as_str().unwrap_or_default();
         let at = ptr("/adjoint/wrt", i);
-        let params = info.flat.parameters.iter();
+        // Data-fed parameters match only `forcing:` (§7.6).
+        let params = info
+            .flat
+            .parameters
+            .iter()
+            .filter(|(k, _)| !info.data_fed.contains_key(*k));
         let matched: Vec<String> = if w == "u0" {
             info.states.clone()
         } else if w == "params:numeric" {
@@ -478,8 +483,9 @@ pub fn checkpoint(rc: &RunConfig, info: &ModelInfo, root: &Node) -> Result<Optio
                 .filter(|(k, v)| !scalar(v) && glob(p, k))
                 .map(|(k, _)| k.clone())
                 .collect()
+        } else if let Some(p) = w.strip_prefix("forcing:") {
+            info.used.iter().filter(|k| glob(p, k)).cloned().collect()
         } else {
-            // forcing:<pattern>: M2 plans no forcing fields.
             vec![]
         };
         if matched.is_empty() {

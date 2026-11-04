@@ -304,11 +304,8 @@ fn band_value_comparison() {
     ] {
         let p = planned(fixture, case);
         let dofs = Dofs::new(&p.model);
-        let u0 = numeric::initial_state(&p.model, &dofs, p.interval.start).unwrap();
-        let states: Vec<(f64, Vec<f64>)> = numeric::samples(&u0, p.interval.start, p.interval.end)
-            .into_iter()
-            .map(|s| (s.t, s.u))
-            .collect();
+        let (_, states) =
+            numeric::sampled_states(&p.model, &dofs, p.interval.start, p.interval.end).unwrap();
         let op = p.operators.keys().next().unwrap().clone();
         let file = band_values_file(&p, &op, &states);
         compare_band_values(&p, &op, &file).unwrap();
@@ -370,7 +367,7 @@ fn band_model_catches_errors() {
         let base = numeric::sampling_base(&u0);
         let s = &numeric::samples(&u0, tspan.0, tspan.1)[1];
         let bands = &p.structures[op].bands;
-        let jb = numeric::band_jacobian(&jp, &dofs, bands, &s.u, s.t).unwrap();
+        let jb = numeric::band_jacobian(&jp, &dofs, bands, &s.u, s.t, &s.forcing).unwrap();
         let pattern = numeric::pattern(&dofs, bands).unwrap();
         let rows = vec![true; dofs.n];
         let check = |jb: &numeric::Sparse, pattern: &numeric::Sparse| {

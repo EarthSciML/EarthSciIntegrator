@@ -5,13 +5,194 @@
 //! a Jacobian document's fields.
 
 use crate::model::ModelInfo;
+use earthsci_ast::provider::{CadenceProvider, NativeField, ProviderError};
 use earthsci_ast::{
     esm_problem, rhs_program, Compiler, Expr, ForcingSet, ProblemInput, ProblemOptions, RhsProgram,
     RhsWorkspace,
 };
 use earthsci_astdiff::{JacEntry, RIdx};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// A forcing set's buffers by data-fed parameter (spec/plan.md §4.1), each
+/// column-major over the parameter's declared shape (one value for a
+/// scalar), with a process-unique id: the set of buffers a program's
+/// forcing slots are filled from (spec/operator-interface.md §8.4.1). Cheap
+/// to clone; buffers are shared.
+#[derive(Debug, Clone)]
+pub struct Forcing {
+    id: u64,
+    bufs: BTreeMap<String, Arc<[f64]>>,
+}
+
+static NEXT_FORCING: AtomicU64 = AtomicU64::new(1);
+
+impl Forcing {
+    /// Buffers by parameter name.
+    pub fn new(bufs: BTreeMap<String, Arc<[f64]>>) -> Forcing {
+        Forcing {
+            id: NEXT_FORCING.fetch_add(1, Ordering::Relaxed),
+            bufs,
+        }
+    }
+
+    /// No buffers: the forcing of a model without data-fed parameters.
+    pub fn empty() -> Forcing {
+        Forcing {
+            id: 0,
+            bufs: BTreeMap::new(),
+        }
+    }
+
+    /// The process-unique id; equal ids mean equal buffers.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The buffers by parameter name.
+    pub fn bufs(&self) -> &BTreeMap<String, Arc<[f64]>> {
+        &self.bufs
+    }
+
+    /// These buffers with `extra`'s added where these have none.
+    pub fn with_defaults(&self, extra: &BTreeMap<String, Arc<[f64]>>) -> Forcing {
+        let mut bufs = self.bufs.clone();
+        for (k, v) in extra {
+            bufs.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        Forcing::new(bufs)
+    }
+}
+
+/// The canonical forcing order (spec/plan.md §5.5.1): the used data-fed
+/// parameters by code point, each with its extents. Element `m` of the
+/// order is the `m`-th element of their column-major buffers in turn.
+pub fn forcing_order(info: &ModelInfo) -> Vec<(String, Vec<usize>)> {
+    info.used
+        .iter()
+        .map(|n| (n.clone(), info.param_extents(n)))
+        .collect()
+}
+
+/// The element names of the canonical forcing order, as EarthSciAST writes
+/// them (`P` for a scalar, `P[i,j]` for an element of an array, 1-based).
+pub fn forcing_element_names(info: &ModelInfo) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, ext) in forcing_order(info) {
+        if ext.is_empty() {
+            out.push(name);
+            continue;
+        }
+        for cell in cells(&ext.iter().map(|n| (1, *n as i64)).collect::<Vec<_>>()) {
+            let idx: Vec<String> = cell.iter().map(i64::to_string).collect();
+            out.push(format!("{name}[{}]", idx.join(",")));
+        }
+    }
+    out
+}
+
+/// The sampled forcing values `F_s` of §5.5.1 for `s` = 1, 2, 3:
+/// `b^F_m · (0.5 + r_{s+3,m})` over the canonical forcing order, `b^F_m`
+/// the parameter's `default` at the element. Every used data-fed parameter
+/// has a nonzero default by then (§4.1); one without is an error here.
+pub fn sampled_forcing(info: &ModelInfo) -> Result<Vec<Forcing>, String> {
+    let mut bases = Vec::new();
+    for (name, _) in forcing_order(info) {
+        let b = info
+            .default_column_major(&name)
+            .ok_or_else(|| format!("the used data-fed parameter {name} has no default"))?;
+        bases.push((name, b));
+    }
+    Ok((1..=3u64)
+        .map(|s| {
+            let mut m = 0u64;
+            let bufs = bases
+                .iter()
+                .map(|(name, b)| {
+                    let buf: Arc<[f64]> = b
+                        .iter()
+                        .map(|x| {
+                            let v = x * (0.5 + splitmix(((s + 3) << 32) + m));
+                            m += 1;
+                            v
+                        })
+                        .collect();
+                    (name.clone(), buf)
+                })
+                .collect();
+            Forcing::new(bufs)
+        })
+        .collect())
+}
+
+/// The buffers the planner binds data-fed parameters to where nothing else
+/// gives them (§4, §5.5.1): an unused data-fed parameter's, filled with 1.
+pub fn unused_forcing(info: &ModelInfo) -> BTreeMap<String, Arc<[f64]>> {
+    info.data_fed
+        .keys()
+        .filter(|n| !info.used.contains(*n))
+        .map(|n| {
+            let len: usize = info.param_extents(n).iter().product();
+            (n.clone(), vec![1.0; len].into())
+        })
+        .collect()
+}
+
+/// A provider that delivers one fixed array, whatever the time: how the
+/// planner binds a data-fed parameter when it builds the flattened model
+/// (§4: a used one to its `default`, an unused one to 1), since it reads no
+/// data.
+pub struct FixedProvider {
+    array: ndarray::ArrayD<f64>,
+}
+
+impl FixedProvider {
+    /// A provider of the column-major `values` over `extents`.
+    pub fn new(extents: &[usize], values: Vec<f64>) -> Result<FixedProvider, String> {
+        use ndarray::ShapeBuilder;
+        let array = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(extents).f(), values)
+            .map_err(|e| format!("a fixed provider of extents {extents:?}: {e}"))?;
+        Ok(FixedProvider { array })
+    }
+}
+
+impl CadenceProvider for FixedProvider {
+    fn materialize(&mut self) -> Result<HashMap<String, NativeField>, ProviderError> {
+        Ok([("value".to_string(), NativeField::new(self.array.clone()))].into())
+    }
+
+    fn refresh(&mut self, _t: f64) -> Result<Option<HashMap<String, NativeField>>, ProviderError> {
+        self.materialize().map(Some)
+    }
+
+    fn refresh_times(&self) -> Vec<f64> {
+        Vec::new()
+    }
+}
+
+/// The providers that bind the flattened model's data-fed parameters when
+/// the planner builds it (§4): a used one to its `default`, an unused one
+/// to 1, keyed by flattened name.
+pub fn binding_providers(
+    info: &ModelInfo,
+) -> Result<HashMap<String, Box<dyn CadenceProvider>>, String> {
+    let ones = unused_forcing(info);
+    let mut out: HashMap<String, Box<dyn CadenceProvider>> = HashMap::new();
+    for name in info.data_fed.keys() {
+        let values = match ones.get(name) {
+            Some(v) => v.to_vec(),
+            None => info
+                .default_column_major(name)
+                .ok_or_else(|| format!("the used data-fed parameter {name} has no default"))?,
+        };
+        out.insert(
+            name.clone(),
+            Box::new(FixedProvider::new(&info.param_extents(name), values)?),
+        );
+    }
+    Ok(out)
+}
 
 /// The canonical state order (spec/plan.md §4): states sorted by code
 /// point, each array's cells in column-major order. DOF `n` is position `n`.
@@ -145,6 +326,9 @@ pub struct Sample {
     pub t: f64,
     /// The state `u_s`, in canonical order.
     pub u: Vec<f64>,
+    /// The sampled forcing values `F_s` (§5.5.1); empty for a model
+    /// without used data-fed parameters.
+    pub forcing: Forcing,
 }
 
 /// The sampling base `b_n`: `u_0[n]` when nonzero, else 1.
@@ -169,9 +353,53 @@ pub fn samples(u0: &[f64], t0: f64, tf: f64) -> Vec<Sample> {
                     .enumerate()
                     .map(|(n, b)| b * (0.5 + splitmix((s << 32) + n as u64)))
                     .collect(),
+                forcing: Forcing::empty(),
             }
         })
         .collect()
+}
+
+/// The planner's `u_0` and the three sampled states of §5.5.1, each with
+/// its sampled forcing values, over the interval `[t0, tf]`.
+pub fn sampled_states(
+    info: &ModelInfo,
+    dofs: &Dofs,
+    t0: f64,
+    tf: f64,
+) -> Result<(Vec<f64>, Vec<Sample>), String> {
+    let u0 = initial_state(info, dofs, t0)?;
+    let mut out = samples(&u0, t0, tf);
+    for (s, f) in out.iter_mut().zip(sampled_forcing(info)?) {
+        s.forcing = f;
+    }
+    Ok((u0, out))
+}
+
+/// A forcing from values by element name of the canonical forcing order
+/// (§8.2's band-value files): `value(name)` for each element of
+/// [`forcing_element_names`], in turn.
+pub fn forcing_from_elements(
+    info: &ModelInfo,
+    mut value: impl FnMut(&str) -> Option<f64>,
+) -> Result<Forcing, String> {
+    let names = forcing_element_names(info);
+    let mut it = names.iter();
+    let mut bufs = BTreeMap::new();
+    for (name, ext) in forcing_order(info) {
+        let len: usize = ext.iter().product();
+        let buf: Vec<f64> = (0..len)
+            .map(|_| {
+                let el = it.next().expect("one element name per element");
+                value(el).ok_or_else(|| format!("no forcing value for {el}"))
+            })
+            .collect::<Result<_, _>>()?;
+        bufs.insert(name, buf.into());
+    }
+    Ok(if bufs.is_empty() {
+        Forcing::empty()
+    } else {
+        Forcing::new(bufs)
+    })
 }
 
 /// The initial state `u_0` in canonical order: EarthSciAST's
@@ -184,6 +412,7 @@ pub fn initial_state(info: &ModelInfo, dofs: &Dofs, t0: f64) -> Result<Vec<f64>,
         (t0, t0),
         ProblemOptions {
             base_path: info.path.parent().map(|p| p.to_path_buf()),
+            providers: binding_providers(info)?,
             ..Default::default()
         },
     )
@@ -217,6 +446,8 @@ struct Scratch {
     p: Vec<f64>,
     du: Vec<f64>,
     t: f64,
+    /// The epoch of the forcing set `du` was evaluated with.
+    epoch: u64,
     valid: bool,
 }
 
@@ -229,6 +460,8 @@ pub struct Program {
     /// The parameters at their defaults, in the program's order.
     p: Vec<f64>,
     forcing: ForcingSet,
+    /// The forcing sets built for recent [`Forcing`]s, by their id.
+    sets: Mutex<Vec<(u64, ForcingSet)>>,
     /// Each variable's block in the program's `u`: (offset, length).
     blocks: BTreeMap<String, (usize, usize)>,
     /// Each canonical state's block: (canonical start, program offset,
@@ -247,12 +480,26 @@ impl Program {
         tspan: (f64, f64),
         dofs: &Dofs,
     ) -> Result<Program, String> {
+        Program::new_with(input, tspan, dofs, &|| Ok(HashMap::new()))
+    }
+
+    /// [`Program::new`] with the providers `providers` gives bound at
+    /// construction (§4: how the planner builds the flattened model, whose
+    /// data-fed parameters it binds to fixed values).
+    #[allow(clippy::type_complexity)]
+    pub fn new_with<'a>(
+        input: impl Into<ProblemInput<'a>> + Copy,
+        tspan: (f64, f64),
+        dofs: &Dofs,
+        providers: &dyn Fn() -> Result<HashMap<String, Box<dyn CadenceProvider>>, String>,
+    ) -> Result<Program, String> {
         let build = |c: Compiler| -> Result<RhsProgram, String> {
             let prob = esm_problem(
                 input,
                 tspan,
                 ProblemOptions {
                     compiler: Some(c),
+                    providers: providers()?,
                     ..Default::default()
                 },
             )
@@ -299,6 +546,7 @@ impl Program {
             prog,
             p,
             forcing,
+            sets: Mutex::new(Vec::new()),
             blocks,
             map,
             pool: Mutex::new(Vec::new()),
@@ -321,15 +569,73 @@ impl Program {
         self.blocks.get(name).copied()
     }
 
-    /// Evaluates `f(u, p, t)`, where `u(j)` is canonical DOF `j` and `p(i)`
-    /// the program's parameter `i`, and hands the program-layout result to
-    /// `g`. A workspace that last evaluated the same `(u, p, t)`, bit for
-    /// bit, is not evaluated again.
+    /// The names of the program's forcing slots, in slot order.
+    pub fn forcing_slot_names(&self) -> Vec<&str> {
+        self.prog
+            .forcing_slots()
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect()
+    }
+
+    /// The program's forcing set filled from `f`: each slot's buffer is
+    /// `f`'s buffer of the slot's parameter. A slot `f` has no buffer for,
+    /// or one of the wrong length, is an error. Sets are kept for the last
+    /// few `f`s, so asking again is cheap.
+    pub fn forcing_set(&self, f: &Forcing) -> Result<ForcingSet, String> {
+        if self.prog.forcing_slots().is_empty() {
+            return Ok(self.forcing.clone());
+        }
+        let mut sets = self.sets.lock().expect("forcing sets");
+        if let Some((_, fs)) = sets.iter().find(|(id, _)| *id == f.id()) {
+            return Ok(fs.clone());
+        }
+        let bufs = self
+            .prog
+            .forcing_slots()
+            .iter()
+            .map(|slot| {
+                f.bufs().get(&slot.name).cloned().ok_or_else(|| {
+                    format!(
+                        "the program's forcing slot {} has no buffer in the forcing set",
+                        slot.name
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let fs = ForcingSet::new(&self.prog, bufs)
+            .map_err(|e| format!("EarthSciAST forcing set: {e}"))?;
+        if sets.len() >= 8 {
+            sets.remove(0);
+        }
+        sets.push((f.id(), fs.clone()));
+        Ok(fs)
+    }
+
+    /// Evaluates `f(u, p, t)` with the forcing `forcing`, where `u(j)` is
+    /// canonical DOF `j` and `p(i)` the program's parameter `i`, and hands
+    /// the program-layout result to `g`. A workspace that last evaluated
+    /// the same `(u, p, t)`, bit for bit, with the same forcing set, is not
+    /// evaluated again.
     pub fn eval_with<R>(
         &self,
         u: impl Fn(usize) -> f64,
         p: impl Fn(usize) -> f64,
         t: f64,
+        forcing: &Forcing,
+        g: impl FnOnce(&[f64]) -> R,
+    ) -> Result<R, String> {
+        let fs = self.forcing_set(forcing)?;
+        self.eval_with_set(u, p, t, &fs, g)
+    }
+
+    /// [`Program::eval_with`] with the program's own forcing set `fs`.
+    pub fn eval_with_set<R>(
+        &self,
+        u: impl Fn(usize) -> f64,
+        p: impl Fn(usize) -> f64,
+        t: f64,
+        fs: &ForcingSet,
         g: impl FnOnce(&[f64]) -> R,
     ) -> Result<R, String> {
         let popped = self.pool.lock().expect("workspace pool").pop();
@@ -341,10 +647,11 @@ impl Program {
                 p: vec![0.0; self.p.len()],
                 du: vec![0.0; n],
                 t: f64::NAN,
+                epoch: 0,
                 valid: false,
             }
         });
-        let mut same = s.valid && s.t.to_bits() == t.to_bits();
+        let mut same = s.valid && s.t.to_bits() == t.to_bits() && s.epoch == fs.epoch();
         for &(start, off, len) in &self.map {
             for k in 0..len {
                 let x = u(start + k);
@@ -358,11 +665,12 @@ impl Program {
             *slot = x;
         }
         s.t = t;
+        s.epoch = fs.epoch();
         let res = if same {
             Ok(())
         } else {
             self.prog
-                .eval_into(&s.u, &[], &s.p, t, &self.forcing, &mut s.du, &mut s.ws)
+                .eval_into(&s.u, &[], &s.p, t, fs, &mut s.du, &mut s.ws)
                 .map_err(|e| format!("EarthSciAST evaluation: {e}"))
         };
         s.valid = res.is_ok();
@@ -373,13 +681,25 @@ impl Program {
 
     /// Evaluates `f(u, p, t)` with the parameters at their defaults and
     /// hands the program-layout result to `g`.
-    fn with_du<R>(&self, u: &[f64], t: f64, g: impl FnOnce(&[f64]) -> R) -> Result<R, String> {
-        self.eval_with(|j| u[j], |i| self.p[i], t, g)
+    fn with_du<R>(
+        &self,
+        u: &[f64],
+        t: f64,
+        forcing: &Forcing,
+        g: impl FnOnce(&[f64]) -> R,
+    ) -> Result<R, String> {
+        self.eval_with(|j| u[j], |i| self.p[i], t, forcing, g)
     }
 
-    /// `f(u, p, t)` in canonical order.
-    pub fn eval(&self, dofs: &Dofs, u: &[f64], t: f64) -> Result<Vec<f64>, String> {
-        self.with_du(u, t, |du| {
+    /// `f(u, p, t; F)` in canonical order.
+    pub fn eval(
+        &self,
+        dofs: &Dofs,
+        u: &[f64],
+        t: f64,
+        forcing: &Forcing,
+    ) -> Result<Vec<f64>, String> {
+        self.with_du(u, t, forcing, |du| {
             let mut out = vec![0.0; dofs.n];
             for &(start, off, len) in &self.map {
                 out[start..start + len].copy_from_slice(&du[off..off + len]);
@@ -505,14 +825,16 @@ pub fn band_field(k: usize) -> String {
     format!("{}.J_{k}", crate::derived::JACOBIAN_MODEL)
 }
 
-/// The band Jacobian at `(u, t)` from the Jacobian document's program: band
-/// `k`'s field `JacobianEval.J_k` scattered by [`band_scatter`] and summed.
+/// The band Jacobian at `(u, t)` with the forcing `forcing` from the
+/// Jacobian document's program: band `k`'s field `JacobianEval.J_k`
+/// scattered by [`band_scatter`] and summed.
 pub fn band_jacobian(
     jac: &Program,
     dofs: &Dofs,
     entries: &[JacEntry],
     u: &[f64],
     t: f64,
+    forcing: &Forcing,
 ) -> Result<Sparse, String> {
     let mut points = Vec::new();
     for (k, en) in entries.iter().enumerate() {
@@ -526,7 +848,7 @@ pub fn band_jacobian(
                 .map(|(off, r, c)| (base + off, r, c)),
         );
     }
-    jac.with_du(u, t, |du| {
+    jac.with_du(u, t, forcing, |du| {
         let mut out = Sparse::new();
         for (k, r, c) in points {
             *out.entry((r, c)).or_insert(0.0) += du[k];
@@ -539,7 +861,8 @@ pub fn band_jacobian(
 mod tests {
     use super::*;
 
-    /// The check values of spec/plan.md §5.5.1.
+    /// The check values of spec/plan.md §5.5.1, the forcing stream's
+    /// included.
     #[test]
     fn splitmix_check_values() {
         let r = |s: u64, n: u64| splitmix((s << 32) + n);
@@ -547,6 +870,10 @@ mod tests {
         assert_eq!(r(1, 1), 0.12603102042098713);
         assert_eq!(r(2, 0), 0.905065227878185);
         assert_eq!(r(3, 2), 0.03750424614895098);
+        assert_eq!(r(4, 0), 0.5689035232967019);
+        assert_eq!(r(4, 1), 0.4280676132950757);
+        assert_eq!(r(5, 0), 0.7116989708490432);
+        assert_eq!(r(6, 2), 0.7714896152704298);
     }
 
     #[test]

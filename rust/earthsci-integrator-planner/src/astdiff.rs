@@ -20,6 +20,10 @@ use std::ops::Range;
 pub struct FlatView {
     /// The flattened document.
     pub flat: FlattenedSystem,
+    /// The loaded document's `data_sources` (a flattened system carries
+    /// none), which EarthSciASTDiff's evaluation document keeps for the
+    /// data-fed parameters (spec/plan.md §6.2 item 5).
+    pub data_sources: Option<indexmap::IndexMap<String, earthsci_ast::DataSource>>,
 }
 
 impl FlatView {
@@ -29,7 +33,10 @@ impl FlatView {
             earthsci_ast::load_string(text).map_err(|e| format!("EarthSciAST load: {e}"))?;
         let flat =
             earthsci_ast::flatten(&loaded).map_err(|e| format!("EarthSciAST flatten: {e}"))?;
-        Ok(FlatView { flat })
+        Ok(FlatView {
+            flat,
+            data_sources: loaded.data_sources,
+        })
     }
 
     /// The document `doc`, written as its bytes, loaded and flattened.
@@ -42,7 +49,8 @@ impl FlatView {
     /// which checks each lifted state's shape. It is not free: build it
     /// once and pass it to [`bands`] and the passes that read it.
     pub fn sysview(&self) -> Result<SysView<'_>, BandError> {
-        earthsci_astdiff::sysview_flat(&self.flat)
+        Ok(earthsci_astdiff::sysview_flat(&self.flat)?
+            .with_data_sources(self.data_sources.as_ref()))
     }
 }
 

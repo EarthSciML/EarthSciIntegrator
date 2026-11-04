@@ -444,6 +444,7 @@ dependencies = [
  "earthsci-integrator-solvers",
  "indexmap",
  "jsonschema",
+ "ndarray",
  "serde_json",
  "sha2",
 ]
