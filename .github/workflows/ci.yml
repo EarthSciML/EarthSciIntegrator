@@ -29,7 +29,7 @@ jobs:
       # earthsci-ast is EarthSciAST's Python binding, pinned to the release the
       # M2 fixtures are written against (spec/plan.md §0.2): tier 0 loads,
       # validates and flattens every .esm under tests/conformance with it.
-      - run: pip install "jsonschema>=4.18" "earthsci-ast==0.8.0"
+      - run: pip install "jsonschema>=4.18" "earthsci-ast==0.9.0"
       - run: python tests/conformance/validate_schemas.py --require-esm
       - name: M1 and M2 cases are up to date with their generators
         run: |
@@ -66,14 +66,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install "jsonschema>=4.18"
-      # The planner's pass 2 reads EarthSciASTDiff's structure-only mode
-      # (spec/plan.md §5.2.2), which no release has yet:
-      # EarthSciML/EarthSciASTDiff#59. Install the commit rust/Cargo.toml's
-      # [patch] pins; remove this step, and raise the compat entry, once a
-      # release has it.
-      - name: EarthSciASTDiff with structure-only mode (unreleased)
-        run: |
-          julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.add(url = "https://github.com/EarthSciML/EarthSciASTDiff", rev = "4eed1c327c998ebe10329df69b097efb3cab357e", subdir = "pkg/EarthSciASTDiff.jl")'
       - name: Test
         # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote)
         # live in julia/EarthSciIntegrator.jl/test/Project.toml.

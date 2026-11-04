@@ -29,11 +29,8 @@ flattened (`flat`) and viewed with `sysview` (§5.2.2, §5.4). With
 `coefficients = false`, its structure-only entries (esm-jacobian-spec §2.1),
 which carry no coefficient: the pattern pass 2 reads (§5.2.2). An
 EarthSciASTDiff refusal is `band_model_failed` at `/model`, naming `what`.
-An EarthSciASTDiff without the structure-only mode is an error, never a
-refusal ([`require_structure_only`](@ref)).
 """
 function document_bands(flat::EarthSciAST.FlattenedSystem, what::AbstractString; coefficients::Bool = true)
-    coefficients || require_structure_only()
     try
         return EarthSciASTDiff.jacobian_bands(EarthSciASTDiff.sysview(flat); wrt = :states, coefficients)
     catch e
@@ -41,27 +38,6 @@ function document_bands(flat::EarthSciAST.FlattenedSystem, what::AbstractString;
         refuse("band_model_failed", "/model", "EarthSciASTDiff refused to differentiate $what: " * sprint(showerror, e))
     end
 end
-
-"""
-    require_structure_only()
-
-Throw an error unless the loaded EarthSciASTDiff has the structure-only mode
-of `jacobian_bands` (the `coefficients` keyword, EarthSciASTDiff#59), which
-pass 2 needs (§5.2.2). EarthSciASTDiff 0.3.0 lacks it; called there, the
-keyword would be a `MethodError` that the probe search would take for a
-model failure, refusing every model as `band_model_failed`.
-"""
-function require_structure_only()
-    STRUCTURE_ONLY[] === nothing &&
-        (STRUCTURE_ONLY[] = hasmethod(EarthSciASTDiff.jacobian_bands, Tuple{EarthSciASTDiff.SysView}, (:coefficients,)))
-    STRUCTURE_ONLY[] || error(
-        "EarthSciASTDiff $(pkgversion(EarthSciASTDiff)) has no structure-only mode " *
-            "(jacobian_bands(...; coefficients = false), EarthSciASTDiff#59), which the planner's pass 2 needs (spec/plan.md §5.2.2); " *
-            "use an EarthSciASTDiff that includes it"
-    )
-    return nothing
-end
-const STRUCTURE_ONLY = Ref{Union{Bool, Nothing}}(nothing)
 
 """A band as `serialize_band` writes it, without `coef` (§5.4)."""
 function band_json(en)
@@ -218,8 +194,6 @@ default, the full mode's with `coefficients = true`.
 """
 function _probe_entries(b::DiffBackend, ctx, terms::AbstractVector{Term}; coefficients::Bool = false)
     bind!(b, ctx)
-    # Outside the guard below: a missing mode is no failure of the probe.
-    coefficients || require_structure_only()
     doc = probe_document(ctx.model, terms)
     return try
         document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document"; coefficients)
@@ -374,8 +348,8 @@ function artifacts!(b::DiffBackend, ctx, op::PlanOperator)
         document_bands(d.flat, "operator $(op.name)")
     catch e
         (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
-        # Pass 2 read the terms' structure only, which takes no derivative;
-        # a term whose derivative fails is reported here, against the first
+        # Pass 2 read the terms' structure only; a term whose full mode
+        # fails where its structure did not is reported here, against the first
         # such term of the operator, with its own document's message, and
         # against the operator when there is none (§5.2.2).
         refuse_failing_term(b, ctx, op.terms)

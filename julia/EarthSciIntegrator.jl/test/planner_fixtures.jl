@@ -602,7 +602,7 @@ const PLAN_FILES = String[]
         @test err !== nothing && occursin("MAX_TEMPLATE_EXPANSION_DEPTH", sprint(showerror, err))
     end
 
-    @testset "band_model_failed names the term whose derivative fails, in pass 4" begin
+    @testset "band_model_failed names the term whose derivative fails" begin
         cfg = joinpath(CONF, "plans", "refusals", "band-model-failed", "run.json")
         err = try
             EarthSciIntegrator.plan(cfg); nothing
@@ -610,32 +610,32 @@ const PLAN_FILES = String[]
             e
         end
         @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
-        # Pass 2 reads the terms' structure only, which takes no derivative:
-        # the probe succeeds, in batches of any size, with every term's own
-        # structure.
+        # The refusal names the third term, erf(x), with that term's own
+        # document's message.
+        @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
+        # EarthSciASTDiff's structure-only mode refuses what the full mode
+        # refuses (esm-jacobian-spec §2.1, EarthSciASTDiff 0.4.0), so pass 2's
+        # probe fails in either mode, and the halving search finds the same
+        # term with the same message, in batches of any size.
         b = DiffBackend()
         ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(cfg), b)
         terms = EarthSciIntegrator.build_terms(ctx.model)
-        each = [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
-        @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms) == each
-        fields(x) = ntuple(i -> getfield(x, i), fieldcount(typeof(x)))
-        for large in (0, 1, 3)
-            @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms; large)] ==
-                [map(d -> fields(EarthSciIntegrator.BandEntry(d)), x) for x in each]
-        end
-        # The operator's document fails in pass 4, and the refusal names its
-        # third term, erf(x), with that term's own document's message.
-        @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
-        # In the full mode the probe fails, and the halving search finds the
-        # same term with the same message, in batches of any size.
-        @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms; coefficients = true) === nothing
-        for large in (0, 1, 3)
-            e2 = try
-                EarthSciIntegrator.all_term_bands(b, ctx, terms; large, coefficients = true); nothing
+        for coefficients in (false, true)
+            @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms; coefficients) === nothing
+            e1 = try
+                EarthSciIntegrator.term_band_dicts(b, ctx, terms[3]; coefficients); nothing
             catch e
                 e
             end
-            @test e2 isa PlannerRefusal && e2.code == err.code && e2.msg == err.msg
+            @test e1 isa PlannerRefusal && e1.msg == err.msg
+            for large in (0, 1, 3)
+                e2 = try
+                    EarthSciIntegrator.all_term_bands(b, ctx, terms; large, coefficients); nothing
+                catch e
+                    e
+                end
+                @test e2 isa PlannerRefusal && e2.code == err.code && e2.msg == err.msg
+            end
         end
         # Pass 4's search, alone, refuses the same way.
         e3 = try
@@ -709,7 +709,7 @@ const PLAN_FILES = String[]
             end
             isempty(terms) && continue
             # Both modes: pass 2's structure-only one and the full one, in
-            # which band-model-failed's probe and its third term fail.
+            # each of which band-model-failed's probe and its third term fail.
             for coefficients in (false, true)
                 probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms; coefficients)
                 each = try
