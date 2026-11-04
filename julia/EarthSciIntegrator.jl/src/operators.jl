@@ -165,6 +165,27 @@ function provides(op::AbstractOperator, call::Symbol)
     return hasmethod(f, Tuple{typeof(op), ntuple(_ -> Any, nargs)...})
 end
 
+"""
+    rosenbrock_needs_ft(method, op) -> Bool
+
+Whether a leaf advancing `op` with `method` needs `op`'s `ft` (§3): a
+Rosenbrock method that forms f_t (some dᵢ ≠ 0) on an operator that depends on
+t. [`ft_refused_on_rosenbrock`](@ref) operators need it under any Rosenbrock
+method.
+"""
+rosenbrock_needs_ft(method, op) =
+    method isa RosenbrockMethod && depends_on_t(op) && (method.uses_ft || ft_refused_on_rosenbrock(op))
+
+"""
+    ft_refused_on_rosenbrock(op) -> Bool
+
+Whether a Rosenbrock leaf on `op` is refused when `op` depends on t and does
+not provide `ft`, even under a method whose dᵢ are all zero. False for
+operators written by hand; true for the operators a plan supplies
+(operator-interface.md §8.3).
+"""
+ft_refused_on_rosenbrock(op) = false
+
 # ---------------------------------------------------------------------------
 # Matrix storage (operator-interface.md §4)
 
@@ -230,9 +251,25 @@ jacobian_storage(s::BlockDiagonalStructure, ::Type{T}, N) where {T} = BlockJacob
     OperatorSum(ops)
 
 The sum `f = Σ_k f_k` of a leaf's operators, in declared order.
+
+`forms_p` records, once, whether the sum forms each parameter cotangent
+(`vjp_p`, `hess_p`, `ft_vjp_p`): whether every operator that the call reaches
+provides it. A sum that does not form one writes NaN to its output instead
+(see the parameter calls below).
 """
 struct OperatorSum{O <: Tuple}
     ops::O
+    forms_p::NamedTuple{(:vjp_p, :hess_p, :ft_vjp_p), NTuple{3, Bool}}
+    function OperatorSum(ops::Tuple)
+        forms_p = (
+            vjp_p = all(op -> provides(op, :vjp_p), ops),
+            hess_p = all(op -> provides(op, :hess_p), ops),
+            ft_vjp_p = all(op -> !depends_on_t(op) || provides(op, :ft_vjp_p), ops),
+        )
+        return new{typeof(ops)}(ops, forms_p)
+    end
+    # The same operators bound afresh (`with_background`) form the same cotangents.
+    OperatorSum(ops::Tuple, forms_p::NamedTuple) = new{typeof(ops)}(ops, forms_p)
 end
 OperatorSum(ops::AbstractVector) = OperatorSum(Tuple(ops))
 
@@ -241,7 +278,7 @@ writes(s::OperatorSum, N) = sort!(unique!(reduce(vcat, (writes(op, N) for op in 
 depends_on_t(s::OperatorSum) = any(depends_on_t, s.ops)
 linear_in_u(s::OperatorSum) = all(linear_in_u, s.ops)
 
-for call in (:rhs!, :ft!, :jac!)
+for call in (:rhs!, :jac!)
     @eval function $call(s::OperatorSum, out, u, p, t)
         for op in s.ops
             $call(op, out, u, p, t)
@@ -249,13 +286,57 @@ for call in (:rhs!, :ft!, :jac!)
         return out
     end
 end
-for call in (:jvp_u!, :vjp_u!, :vjp_p!, :hess_u!, :hess_p!, :ft_vjp_u!, :ft_vjp_p!)
+for call in (:jvp_u!, :vjp_u!)
     @eval function $call(s::OperatorSum, out, u, p, t, x)
         for op in s.ops
             $call(op, out, u, p, t, x)
         end
         return out
     end
+end
+# f_t and its cotangents are zero for an operator that does not depend on t,
+# which need not provide ft, ft_vjp_u or ft_vjp_p (operator-interface.md §3).
+function ft!(s::OperatorSum, out, u, p, t)
+    for op in s.ops
+        depends_on_t(op) && ft!(op, out, u, p, t)
+    end
+    return out
+end
+function ft_vjp_u!(s::OperatorSum, out, u, p, t, x)
+    for op in s.ops
+        depends_on_t(op) && ft_vjp_u!(op, out, u, p, t, x)
+    end
+    return out
+end
+# hess_u is zero for an operator linear in u, which need not provide it (§3).
+function hess_u!(s::OperatorSum, out, u, p, t, x)
+    for op in s.ops
+        linear_in_u(op) || hess_u!(op, out, u, p, t, x)
+    end
+    return out
+end
+# The parameter cotangents. The method adjoints form them whatever the run's
+# wrt, and an adjoint with respect to p is refused when the run is built
+# unless every operator provides the calls it needs (§3). A sum whose
+# operators do not all provide a call (planned operators at M2, §8.3) is
+# therefore in an adjoint with respect to u0 only. It writes NaN rather than
+# leaving out the operators that do not provide the call, so that a parameter
+# cotangent it cannot form is never mistaken for one it formed.
+for (call, name) in ((:vjp_p!, :vjp_p), (:hess_p!, :hess_p))
+    @eval function $call(s::OperatorSum, out, u, p, t, x)
+        s.forms_p.$name || return fill!(out, NaN)
+        for op in s.ops
+            $call(op, out, u, p, t, x)
+        end
+        return out
+    end
+end
+function ft_vjp_p!(s::OperatorSum, out, u, p, t, x)
+    s.forms_p.ft_vjp_p || return fill!(out, NaN)
+    for op in s.ops
+        depends_on_t(op) && ft_vjp_p!(op, out, u, p, t, x)
+    end
+    return out
 end
 
 """`f!(out, s, u, p, t)`: overwrite `out` with the leaf's right-hand side."""

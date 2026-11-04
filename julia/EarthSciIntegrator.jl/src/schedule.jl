@@ -7,6 +7,51 @@ abstract type Node end
 const Bindings = Vector{Pair{Int, Symbol}}
 
 """
+    LeafState
+
+The state a leaf advances when it is not the whole model state
+(spec/operator-interface.md §1, §8.2): `dofs`, the union of its operators'
+`writes` in ascending (for a plan, canonical) order (the leaf's DOF `i` is
+the model's DOF `dofs[i]`); and `loc`, the inverse map (0 for a DOF outside
+the leaf). Every state the leaf does not advance is a constant of the leaf
+over its interval: the interpreter binds the leaf's operators to the model
+state at the start of each invocation ([`with_background`](@ref)), which they
+hold as their background.
+"""
+struct LeafState
+    dofs::Vector{Int}
+    loc::Vector{Int}
+end
+
+"""
+    leaf_state(ops, N, id) -> LeafState
+
+The state of leaf `id`: the union of its operators' `writes` in ascending
+DOF order, in a model state of `N` DOFs. A leaf whose operators write nothing
+is a [`ConfigError`](@ref).
+"""
+function leaf_state(ops, N, id)
+    dofs = sort!(unique!(reduce(vcat, (writes(o, N) for o in ops); init = Int[])))
+    isempty(dofs) && throw(ConfigError("leaf $id: its operators write nothing"))
+    loc = zeros(Int, N)
+    loc[dofs] = 1:length(dofs)
+    return LeafState(dofs, loc)
+end
+
+"""
+    place!(v, dofs, x) -> v
+
+`v` with the leaf's `x` at the model DOFs `dofs` (`v[dofs[i]] = x[i]`), the
+one way a leaf's vector is placed into a model-state vector.
+"""
+@inline function place!(v, dofs, x)
+    @inbounds for (i, d) in enumerate(dofs)
+        v[d] = x[i]
+    end
+    return v
+end
+
+"""
     LeafNode
 
 A `leaf` (spec/run-config.md §4.2): the sum of its operators advanced by one
@@ -33,7 +78,9 @@ struct LeafNode{O <: OperatorSum, M <: AbstractMethod} <: Node
     check_stages::Bool           # domain.check_stages (Rosenbrock only)
     ψ::Union{Nothing, Integrand} # the integrand of a functional over time, on the leaf that integrates it
     imex::Any                    # IMEX Euler: (explicit part or nothing, implicit part) as OperatorSums; else nothing
+    state::Union{Nothing, LeafState} # the part of the model state the leaf advances, when it is not the whole state; else nothing
 end
+LeafNode(args::Vararg{Any, 19}) = LeafNode(args..., nothing)
 is_adaptive(l::LeafNode) = l.dt === nothing
 
 """The [`RosenbrockContext`](@ref) of a Rosenbrock leaf."""
@@ -195,6 +242,249 @@ function build_node(spec::AbstractDict, prob::ToyProblem, path::String)
     end
 end
 
+"""
+    bind_leaf(ops, prob, id) -> nothing or (ops′, LeafState)
+
+A leaf's operators bound to the leaf's own state, the union of their
+`writes` (spec/operator-interface.md §1, §8.2): planned operators by
+`bind_planned_leaf` (plan_runtime.jl), operators that act on the whole model
+state (the hand-written toy problems) by [`bind_part_leaf`](@ref) when they
+write part of it. `nothing` for a leaf that writes every DOF, which advances
+the whole state as it is.
+"""
+function bind_leaf(ops, prob, id)
+    any(binds_to_leaf, ops) && return bind_planned_leaf(ops, prob, id)
+    N = prob.N
+    length(unique(reduce(vcat, (writes(o, N) for o in ops); init = Int[]))) == N && return nothing
+    return bind_part_leaf(ops, prob, id)
+end
+
+"""`binds_to_leaf(op)`: whether `op` acts on its leaf's own state rather than the whole state ([`bind_leaf`](@ref))."""
+binds_to_leaf(::AbstractOperator) = false
+
+# ---------------------------------------------------------------------------
+# A leaf that advances part of the model state (operator-interface.md §1, §8.2)
+
+"""
+    reads(op, N) -> Vector{Int} or nothing
+
+The 1-based DOFs of the `N`-vector model state that `f_k` may depend on,
+when the operator knows them; `nothing` (the default) when it does not. An
+operator wrapped to act on a leaf's state vector ([`PartOperator`](@ref), a
+planned leaf's `LeafOperator`) forwards to the operator it wraps, so its
+reads are still model-state DOFs. A leaf that
+advances part of the state needs them for its adjoint: the states it does
+not advance are its constants (§1), and their cotangents pass through it
+unchanged only when no operator of the leaf reads them.
+"""
+reads(::AbstractOperator, N) = nothing
+
+"""
+    PartOperator
+
+An operator that acts on the whole model state (a hand-written toy operator)
+bound to a leaf that advances part of it, the union of its operators'
+`writes` (spec/operator-interface.md §1, §8.2). Its calls take and return
+the leaf's vectors: each places the leaf's `u` into the model state at the
+leaf's DOFs `dofs`, with `background` (the model state at the start of the
+invocation, [`with_background`](@ref)) everywhere else, so every other state
+is a constant of the leaf; it places `u`-shaped arguments (`v`, `w`, `μᵢ`,
+`ν`) at the leaf's DOFs with zeros elsewhere, and reads the leaf's DOFs of the
+result. The output is accumulated in the model state from the leaf's values,
+so each of the leaf's entries is the same sum, in the same order, as a call
+on the whole state. `writes` are leaf indices and `structure` the leaf's; a
+Jacobian entry outside the leaf's rows and columns is dropped (§8.3).
+
+The model-sized vectors and Jacobian storage of a Float64 call come from
+`pool` ([`PartBuffers`](@ref), one per concurrent caller), which every
+invocation's binding of the operator shares; a call with dual numbers
+allocates its own.
+"""
+struct PartOperator{O <: AbstractOperator, B <: AbstractVector} <: AbstractOperator
+    op::O
+    dofs::Vector{Int}
+    writes::Vector{Int}
+    structure::Structure
+    background::B
+    pool::Vector{Any}
+    lock::ReentrantLock
+end
+PartOperator(op, dofs, writes, structure, background) =
+    PartOperator(op, dofs, writes, structure, background, Any[], ReentrantLock())
+
+"""
+    with_background(op, u)
+
+`op` bound to a leaf invocation that starts from the model state `u`, which
+it holds (not a copy: [`with_background`](@ref) of a leaf copies `u` once for
+all of its operators). The buffer pool is kept.
+"""
+with_background(o::PartOperator, u) = PartOperator(o.op, o.dofs, o.writes, o.structure, u, o.pool, o.lock)
+
+"""The model-sized buffers of one Float64 call of a [`PartOperator`](@ref); `M`, the wrapped operator's Jacobian storage, is made on the first `jac!`."""
+mutable struct PartBuffers
+    full::Vector{Float64}
+    out::Vector{Float64}
+    v::Vector{Float64}
+    M::Union{Nothing, JacobianStorage}
+end
+
+function with_buffers(f, o::PartOperator)
+    b = lock(() -> isempty(o.pool) ? nothing : pop!(o.pool), o.lock)
+    if b === nothing
+        N = length(o.background)
+        b = PartBuffers(zeros(N), zeros(N), zeros(N), nothing)
+    end
+    try
+        return f(b::PartBuffers)
+    finally
+        lock(() -> push!(o.pool, b), o.lock)
+    end
+end
+
+"""Whether a call on `o` with these leaf vectors is all Float64, so it may use the pooled buffers."""
+_f64(o::PartOperator, xs...) = eltype(o.background) === Float64 && all(x -> x === nothing || eltype(x) === Float64, xs)
+
+opname(o::PartOperator) = opname(o.op)
+structure(o::PartOperator) = o.structure
+depends_on_t(o::PartOperator) = depends_on_t(o.op)
+linear_in_u(o::PartOperator) = linear_in_u(o.op)
+writes(o::PartOperator, N) = o.writes
+provides(o::PartOperator, call::Symbol) = provides(o.op, call)
+# reads, unlike writes, are DOFs of the model state, the wrapped operator's (§1).
+reads(o::PartOperator, N) = reads(o.op, N)
+ft_refused_on_rosenbrock(o::PartOperator) = ft_refused_on_rosenbrock(o.op)
+
+"""
+The model state: the leaf's `x` at its DOFs, the background elsewhere. A
+method that works on primal values (an implicit leaf's Newton iteration and
+`W`, sdirk.jl) passes a primal `x` during a replay with dual numbers; the
+constants are then taken at their primal values too, as they would be in a
+call on the whole state.
+"""
+function _full(o::PartOperator, x)
+    bg = eltype(o.background) <: ForwardDiff.Dual && !(eltype(x) <: ForwardDiff.Dual) ?
+        map(primal, o.background) : o.background
+    v = similar(bg, promote_type(eltype(bg), eltype(x)))
+    return place!(copyto!(v, bg), o.dofs, x)
+end
+_full!(v, o::PartOperator, x) = place!(copyto!(v, o.background), o.dofs, x)
+
+"""A model-state vector: the leaf's `x` at its DOFs, zeros elsewhere."""
+_spread(o::PartOperator, x) = _spread!(zeros(eltype(x), length(o.background)), o, x)
+_spread!(v, o::PartOperator, x) = place!(fill!(v, zero(eltype(v))), o.dofs, x)
+
+"""
+`out ← g(out_model, u_model, v_model)` at the leaf's DOFs, for a call `g`
+that accumulates; `v_model` is the leaf's `v` spread to the model state
+(`nothing` for a call without one). A Float64 call uses pooled buffers.
+"""
+function _lift!(g, o::PartOperator, out, x, v = nothing)
+    function gather!(of)
+        @inbounds for (i, d) in enumerate(o.dofs)
+            out[i] = of[d]
+        end
+        return out
+    end
+    if !_f64(o, out, x, v)
+        of = _spread(o, out)
+        g(of, _full(o, x), v === nothing ? nothing : _spread(o, v))
+        return gather!(of)
+    end
+    return with_buffers(o) do b
+        of = _spread!(b.out, o, out)
+        g(of, _full!(b.full, o, x), v === nothing ? nothing : _spread!(b.v, o, v))
+        gather!(of)
+    end
+end
+
+rhs!(o::PartOperator, out, x, p, t) = _lift!((of, u, _) -> rhs!(o.op, of, u, p, t), o, out, x)
+ft!(o::PartOperator, out, x, p, t) = _lift!((of, u, _) -> ft!(o.op, of, u, p, t), o, out, x)
+for call in (:jvp_u!, :vjp_u!, :ft_vjp_u!)
+    @eval $call(o::PartOperator, out, x, p, t, v) = _lift!((of, u, vm) -> $call(o.op, of, u, p, t, vm), o, out, x, v)
+end
+for call in (:vjp_p!, :ft_vjp_p!)
+    @eval $call(o::PartOperator, out, x, p, t, w) = ($call(o.op, out, _full(o, x), p, t, _spread(o, w)); out)
+end
+_pairs(o::PartOperator, μ) = [(_spread(o, m), _spread(o, w)) for (m, w) in μ]
+hess_u!(o::PartOperator, out, x, p, t, μ) = _lift!((of, u, _) -> hess_u!(o.op, of, u, p, t, _pairs(o, μ)), o, out, x)
+hess_p!(o::PartOperator, out, x, p, t, μ) = (hess_p!(o.op, out, _full(o, x), p, t, _pairs(o, μ)); out)
+
+"""Entry `(i, j)` (1-based) of a Jacobian storage, zero off the blocks."""
+_entry(S::DenseJacobian, i, j) = S.A[i, j]
+function _entry(S::BlockJacobian, i, j)
+    si, ci = divrem(i - 1, S.ncells)
+    sj, cj = divrem(j - 1, S.ncells)
+    return ci == cj ? S.data[(si * S.n + sj) * S.ncells + ci + 1] : zero(eltype(S.data))
+end
+_eltype(S::DenseJacobian{T}) where {T} = T
+_eltype(S::BlockJacobian{T}) where {T} = T
+_zero!(S::DenseJacobian) = (fill!(S.A, zero(eltype(S.A))); S)
+_zero!(S::BlockJacobian) = (fill!(S.data, zero(eltype(S.data))); S)
+
+function jac!(o::PartOperator, out::JacobianStorage, x, p, t)
+    N = length(o.background)
+    if _f64(o, x) && _eltype(out) === Float64
+        # The wrapped operator's model-sized storage is reused from the pool,
+        # zeroed, rather than made on every call.
+        return with_buffers(o) do b
+            b.M === nothing && (b.M = jacobian_storage(structure(o.op), Float64, N))
+            u = _full!(b.full, o, x)
+            jac!(o.op, _zero!(b.M), u, p, t)
+            _jac_block!(out, b.M, o.dofs)
+        end
+    end
+    u = _full(o, x)
+    M = jacobian_storage(structure(o.op), promote_type(_eltype(out), eltype(u)), N)
+    jac!(o.op, M, u, p, t)
+    return _jac_block!(out, M, o.dofs)
+end
+
+"""`out` plus the leaf's rows and columns `d` of the model-sized Jacobian `M`."""
+function _jac_block!(out, M, d)
+    if out isa BlockJacobian
+        nc, n = out.ncells, out.n
+        for i in 0:(n - 1), j in 0:(n - 1), c in 1:nc
+            v = _entry(M, d[i * nc + c], d[j * nc + c])
+            iszero(v) || addentry!(out, i * nc + c, j * nc + c, v)
+        end
+    else
+        n = length(d)
+        for b in 1:n, a in 1:n
+            v = _entry(M, d[a], d[b])
+            iszero(v) || addentry!(out, a, b, v)
+        end
+    end
+    return out
+end
+
+"""
+    bind_part_leaf(ops, prob, id) -> (ops′, LeafState)
+
+The operators `ops` of leaf `id`, which act on the whole model state, bound to
+the leaf's own state, the union of their writes, when that is not the whole
+state (spec/operator-interface.md §1, §8.2). The leaf is `block_diagonal` over
+its own species when its operators share a `block_diagonal` structure and it
+writes whole species of it (every cell of each), with `n` the number of its
+species; otherwise `dense`.
+"""
+function bind_part_leaf(ops, prob, id)
+    N = prob.N
+    S = leaf_state(ops, N, id)
+    dofs, loc = S.dofs, S.loc
+    s = leaf_structure(map(structure, ops))
+    st = DenseStructure()
+    if s isa BlockDiagonalStructure
+        nc = s.ncells
+        whole = length(dofs) % nc == 0 &&
+            all(k -> (d0 = dofs[k * nc + 1]; (d0 - 1) % nc == 0 && dofs[(k * nc + 1):((k + 1) * nc)] == d0:(d0 + nc - 1)), 0:(length(dofs) ÷ nc - 1))
+        whole && (st = BlockDiagonalStructure(nc, length(dofs) ÷ nc))
+    end
+    bg = copy(prob.u0)
+    bound = AbstractOperator[PartOperator(o, dofs, loc[writes(o, N)], st, bg) for o in ops]
+    return bound, S
+end
+
 function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     for k in keys(spec)
         k in _LEAF_KEYS || throw(ConfigError("unknown key '$k' on leaf $id"))
@@ -205,6 +495,22 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     for n in names
         haskey(prob.operators, n) || throw(ConfigError("leaf $id names operator '$n', which $(prob.name) does not define"))
         push!(ops, prob.operators[n])
+    end
+    # A leaf's operators are bound to the leaf's own state, the union of their
+    # writes (spec/operator-interface.md §1, §8.2), unless that is the whole
+    # state (`bind_leaf` returns nothing).
+    bound = bind_leaf(ops, prob, id)
+    leafstate = bound === nothing ? nothing : bound[2]
+    bound === nothing || (ops = bound[1])
+    opof = Dict{String, AbstractOperator}(zip(names, ops))
+    N = leafstate === nothing ? prob.N : length(leafstate.dofs)
+    # Model DOFs (of variables a run config names) as the leaf's own. A DOF
+    # the leaf does not advance is a constant of the leaf (§1): a tolerance
+    # or bound on it means nothing here, and is dropped, as one shared by
+    # every leaf of a schedule names states other leaves advance.
+    function leafdofs(d)
+        leafstate === nothing && return d
+        return Int[leafstate.loc[j] for j in d if leafstate.loc[j] > 0]
     end
     alg = String(get(spec, "alg", "auto"))
     alg == "auto" && throw(UnsupportedError("alg \"auto\" (leaf $id) needs the planner's strategy rules (M2)"))
@@ -261,8 +567,8 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
                 throw(ConfigError("leaf $id: imex puts operator '$n' in $(count(==(n), vcat(impl, expl))) parts; every term must be in exactly one"))
         end
         # Each part sums its operators in the leaf's declared order.
-        opsI = OperatorSum([prob.operators[n] for n in names if n in impl])
-        opsE = isempty(expl) ? nothing : OperatorSum([prob.operators[n] for n in names if n in expl])
+        opsI = OperatorSum([opof[n] for n in names if n in impl])
+        opsE = isempty(expl) ? nothing : OperatorSum([opof[n] for n in names if n in expl])
         imex = (opsE, opsI)
     end
     method = method_for(tab; theta, linearized = isolve == "linearized")
@@ -286,7 +592,7 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         for op in ops
             op in jac_ops && !provides(op, :jac) &&
                 throw(ConfigError("operator '$(opname(op))' of leaf $id does not provide jac, which $alg needs"))
-            method isa RosenbrockMethod && method.uses_ft && depends_on_t(op) && !provides(op, :ft) &&
+            rosenbrock_needs_ft(method, op) && !provides(op, :ft) &&
                 throw(ConfigError("operator '$(opname(op))' of leaf $id depends on t but does not provide ft, which $alg needs"))
         end
     end
@@ -317,13 +623,13 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     if dt === nothing || implicit
         reltol = Float64(get(ctrl, "reltol", 1.0e-3))
         at = get(ctrl, "abstol", 1.0e-6)
-        abstol = fill(at isa Real ? Float64(at) : 1.0e-6, prob.N)
+        abstol = fill(at isa Real ? Float64(at) : 1.0e-6, N)
         if at isa AbstractDict
             for (name, v) in at
-                abstol[variable_dofs(prob, name)] .= Float64(v)
+                abstol[leafdofs(variable_dofs(prob, name))] .= Float64(v)
             end
         end
-        tol = Tolerances(reltol, abstol, writes(opsum, prob.N))
+        tol = Tolerances(reltol, abstol, writes(opsum, N))
     end
     controller = controller_kind(
         let c = get(ctrl, "controller", "auto")
@@ -339,7 +645,10 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         check_stages = Bool(get(dom, "check_stages", false))
         check_stages && !(method isa RosenbrockMethod) &&
             throw(UnsupportedError("domain.check_stages applies to Rosenbrock leaves only (leaf $id)"))
-        haskey(dom, "nonnegative") && (nonneg = _dofs(prob, dom["nonnegative"]))
+        if haskey(dom, "nonnegative")
+            nn = dom["nonnegative"]
+            nonneg = nn == "all" ? collect(1:N) : leafdofs(_dofs(prob, nn))
+        end
         ov = get(dom, "on_violation", "reject")
         ov in ("reject", "clip") ||
             throw(ConfigError("leaf $id: domain.on_violation $(repr(ov)) (reject or clip)"))
@@ -361,7 +670,33 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     end
     return LeafNode(
         id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
-        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex
+        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex, leafstate
+    )
+end
+
+"""
+    with_background(leaf, u) -> leaf′
+
+A leaf that advances part of the model state bound to one invocation that
+starts from the model state `u`: its operators read every state the leaf
+does not advance from `u` (spec/operator-interface.md §1). The leaf itself
+for one that advances the whole state.
+"""
+function with_background(l::LeafNode, u)
+    l.state === nothing && return l
+    # `u` is copied once and shared by every operator; an operator in both
+    # the leaf's sum and an IMEX part is rebound once, so the parts hold the
+    # same objects as the sum, as they do at build time.
+    ub = copy(u)
+    new = IdDict{Any, Any}()
+    re(o) = get!(() -> with_background(o, ub), new, o)
+    rebind(s::OperatorSum) = OperatorSum(map(re, s.ops), s.forms_p)
+    imex = l.imex === nothing ? nothing :
+        (l.imex[1] === nothing ? nothing : rebind(l.imex[1]), rebind(l.imex[2]))
+    return LeafNode(
+        l.id, l.opnames, rebind(l.ops), l.tab, l.method, l.dt, l.tol, l.dt0,
+        l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, l.ψ,
+        imex, l.state
     )
 end
 
@@ -369,7 +704,7 @@ end
 with_integrand(l::LeafNode, ψ::Integrand) = LeafNode(
     l.id, l.opnames, l.ops, l.tab, l.method, l.dt, l.tol, l.dt0,
     l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, ψ,
-    l.imex
+    l.imex, l.state
 )
 
 """

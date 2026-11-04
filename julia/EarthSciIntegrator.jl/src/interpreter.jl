@@ -109,6 +109,18 @@ function build_run(
     for k in keys(step)
         k in ("dt", "hit") || throw(UnsupportedError("step.$k is not implemented in this stage"))
     end
+    # A plan writes `hit` always, `[]` by default (spec/plan.md §7.3). Its
+    # entries name tstop sources (spec/run-config.md §5). The output times
+    # are always tstops here, so `output` asks for nothing more; the other
+    # sources are not implemented.
+    hit = get(step, "hit", Any[])
+    (hit isa AbstractVector && all(h -> h isa AbstractString, hit)) ||
+        throw(ConfigError("step.hit must be a list of tstop sources (forcing_refresh, output, restart, events), not $(repr(hit))"))
+    for h in hit
+        h in ("forcing_refresh", "output", "restart", "events") ||
+            throw(ConfigError("step.hit: unknown tstop source '$h' (forcing_refresh, output, restart or events)"))
+        h == "output" || throw(UnsupportedError("step.hit '$h' is not implemented in this stage"))
+    end
     haskey(step, "dt") || throw(UnsupportedError("a step without dt (macro steps from the root leaf's accepted steps, D49) is not implemented in this stage"))
     dt = parse_duration(step["dt"], prob, "step.dt")
     t0, tf = Float64(tspan[1]), Float64(tspan[2])
@@ -143,6 +155,18 @@ function build_run(
     sort!(unique!(bound))
     if haskey(config, "adjoint")
         adj = config["adjoint"]
+        # The reverse of a leaf that advances part of the model state carries
+        # the other states' cotangents through unchanged, which is exact when
+        # no operator of the leaf reads them (spec/operator-interface.md §1).
+        # A leaf of planned operators that writes every DOF passes trivially.
+        for n in nodes
+            (n isa LeafNode && n.state !== nothing) || continue
+            for op in n.ops.ops
+                r = reads(op, prob.N)
+                (r !== nothing && all(j -> n.state.loc[j] > 0, r)) ||
+                    throw(UnsupportedError("leaf $(n.id): operator $(opname(op)) may read states the leaf does not advance; the adjoint of a leaf through its constants is not implemented (operator-interface.md §1)"))
+            end
+        end
         haskey(adj, "checkpoint") && throw(UnsupportedError("adjoint.checkpoint: M1 checkpoints every macro step in memory"))
         functional = build_functional(adj["functional"], prob)
         if functional.over === :time
@@ -158,7 +182,15 @@ function build_run(
             root.method isa ShuOsherERK &&
                 throw(UnsupportedError("a functional over \"time\" on a Shu–Osher leaf ($(root.tab.name)) is not implemented in this stage"))
             w = functional.reduction === :sum ? 1.0 : 1.0 / length(functional.dofs)
-            root = with_integrand(root, Integrand(functional.dofs, w, prob.N))
+            # ψ over the leaf's state vector (spec/operator-interface.md §1).
+            ψdofs, ψN = functional.dofs, prob.N
+            if root.state !== nothing
+                ψdofs = root.state.loc[functional.dofs]
+                all(>(0), ψdofs) ||
+                    throw(UnsupportedError("a functional over \"time\" of states leaf $(root.id) does not advance is not implemented"))
+                ψN = length(root.state.dofs)
+            end
+            root = with_integrand(root, Integrand(ψdofs, w, ψN))
             leaves = Dict{String, LeafNode}(root.id => root)
         end
         for w in adj["wrt"]
@@ -185,16 +217,21 @@ function build_run(
         # operator-interface.md §3: vjp_p is required when an adjoint is taken
         # with respect to p; a Rosenbrock adjoint needs hess_u, and hess_p with
         # respect to p, and ft_vjp_u, ft_vjp_p for operators that depend on t
-        # when the method forms f_t (spec/adjoint.md §3).
-        for leaf in values(leaves), op in leaf.ops.ops
+        # when the method forms f_t (spec/adjoint.md §3). The leaves are checked
+        # in schedule order, so that the refusal names the first operator
+        # missing a call, whatever the order of the `leaves` Dict.
+        in_order = [leaves[n.id] for n in nodes if haskey(leaves, n.id)]
+        for leaf in in_order, op in leaf.ops.ops
             need = isempty(wrt_p) ? Symbol[] : [:vjp_p]
+            # hess_u is zero for an operator linear in u, and is not called
+            # for it (operator-interface.md §3).
             if leaf.method isa IMEXEulerMethod && leaf.method.linearized && op in leaf.imex[2].ops
                 # The linearized step's adjoint is a one-stage Rosenbrock adjoint (D43).
-                push!(need, :hess_u)
+                linear_in_u(op) || push!(need, :hess_u)
                 isempty(wrt_p) || push!(need, :hess_p)
             end
             if leaf.method isa RosenbrockMethod
-                push!(need, :hess_u)
+                linear_in_u(op) || push!(need, :hess_u)
                 isempty(wrt_p) || push!(need, :hess_p)
                 if leaf.method.uses_ft && depends_on_t(op)
                     push!(need, :ft_vjp_u)
@@ -327,9 +364,9 @@ function tape_record(tape::Tape, key::AbstractString, ::Type{R}, ta::Float64, tb
     return rec
 end
 
-function _stops(run::Run, node::LeafNode, ta, tb)
+function _stops(run::Run, node::LeafNode, ta, tb, isroot::Bool = node === run.root)
     stops = Float64[]
-    if node === run.root
+    if isroot
         for τ in run.output_times
             ta < τ < tb && push!(stops, τ)
         end
@@ -338,11 +375,45 @@ function _stops(run::Run, node::LeafNode, ta, tb)
     return stops
 end
 
+"""The model state `u` with the leaf's state `x` scattered into its DOFs."""
+function _scatter(S::LeafState, u, x)
+    v = similar(u, promote_type(eltype(u), eltype(x)))
+    return place!(copyto!(v, u), S.dofs, x)
+end
+
 function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64)
+    node.state === nothing && return _advance!(run, ctx, node, u, ta, tb)
+    # A leaf advances its own state, the union of its operators' writes; every
+    # other state is a constant of the leaf over its interval, read from the
+    # model state at its start (spec/operator-interface.md §1, §8.2). The
+    # leaf bound to that state is what a trace records, so the reverse pass
+    # and the tangent checks see the same constants.
+    S = node.state
+    bound = with_background(node, u)
+    mode = ctx.mode
+    if mode isa ReplayMode
+        # `outer` is bound once, so the closure calls the caller's visit (not
+        # the one it is itself stored in).
+        outer = mode.visit
+        visit = outer === nothing ? nothing : (t, x) -> outer(t, _scatter(S, u, x))
+        mode = ReplayMode(mode.tape, mode.p, mode.trace, visit, mode.qacc)
+    end
+    sub = ExecCtx(ctx.k, ctx.Δmacro, ctx.occ, mode)
+    n0 = length(run.outputs)
+    # `bound` is a new node; whether the leaf is the root is the original's.
+    x = _advance!(run, sub, bound, u[S.dofs], ta, tb, node === run.root)
+    for i in (n0 + 1):length(run.outputs)
+        t, xi = run.outputs[i]
+        run.outputs[i] = (t, _scatter(S, u, xi))
+    end
+    return _scatter(S, u, x)
+end
+
+function _advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64, isroot::Bool = node === run.root)
     path = next_path!(ctx, node.id)
     nb = filter(b -> b.second !== :leaf, node.bindings)
     pinv = apply_bindings(_params(run, ctx.mode), nb, 0.0, tb - ta, ctx.Δmacro)
-    stops = _stops(run, node, ta, tb)
+    stops = _stops(run, node, ta, tb, isroot)
     mode = ctx.mode
     if mode isa ForwardMode
         cs = get!(() -> ControllerState(node.tab.controller), mode.controllers, node.id)

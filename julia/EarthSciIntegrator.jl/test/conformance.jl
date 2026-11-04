@@ -261,7 +261,9 @@ function check_fd_gradient(case, run, chk)
     δu = run.wrt_u0 ? direction(rng, u0dir) : zeros(length(run.u0))
     δp = zeros(length(run.p))
     δp[run.wrt_p] .= direction(rng, run.p[run.wrt_p])
-    D = dot(ū0, δu) + dot(p̄, δp)
+    # Only the parameters in wrt are differentiated: p̄ need not be formed for
+    # the others (it is NaN through a leaf whose operators provide no vjp_p).
+    D = dot(ū0, δu) + dot(p̄[run.wrt_p], δp[run.wrt_p])
     # Implicit stages are converged to roundoff on these replays (spec/adjoint.md
     # §7.2): the adjoint is the exact implicit-function derivative, while central
     # differences of a loosely converged Newton carry an error of order tol/ε.
@@ -465,8 +467,8 @@ end
     end
 end
 
-@testset "result files validate against result.schema.json" begin
-    files = filter(f -> endswith(f, ".json"), readdir(RESULTS_DIR; join = true))
+"""Validate result files against spec/schemas/result.schema.json with python3's jsonschema, or skip when it is absent."""
+function validate_result_files(files)
     @test !isempty(files)
     validator = """
     import json, sys
@@ -482,10 +484,14 @@ end
     """
     python = Sys.which("python3")
     has_jsonschema = python !== nothing && success(`$python -c "import jsonschema"`)
-    if has_jsonschema
+    return if has_jsonschema
         schema = joinpath(REPO, "spec", "schemas", "result.schema.json")
         @test success(pipeline(`$python -c $validator $schema $files`; stdout, stderr))
     else
         @test_skip "python3 with jsonschema not available" == ""
     end
+end
+
+@testset "result files validate against result.schema.json" begin
+    validate_result_files(filter(f -> endswith(f, ".json"), readdir(RESULTS_DIR; join = true)))
 end
