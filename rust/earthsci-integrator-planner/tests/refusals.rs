@@ -4,9 +4,9 @@
 mod common;
 
 use common::conformance;
-use earthsci_integrator_planner::astdiff::{testing, AstDiffBands};
+use earthsci_integrator_planner::astdiff::{self, testing, AstDiffBands};
 use earthsci_integrator_planner::error::codes;
-use earthsci_integrator_planner::locality::NoBands;
+use earthsci_integrator_planner::locality::{BandSourceError, NoBands};
 use earthsci_integrator_planner::{model, plan, runconfig, terms, Options, PlanError};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -65,7 +65,32 @@ fn band_model_failed_names_its_term() {
     // The refusal comes from the fallback, not from the probe.
     let probe = testing::probe(&info, &ts).unwrap();
     assert!(probe.is_err(), "the probe document differentiates");
-    assert_eq!(testing::each_term(&info, &ts).unwrap_err().term, 2);
+    let failure = testing::each_term(&info, &ts).unwrap_err();
+    assert_eq!(failure.term, 2);
+    // Every term here has one operator node, so the bounds 0 and 1 give
+    // single-term batches, 2 gives [t0, t1] [t2], and 3 one batch of all
+    // three.
+    assert_eq!(astdiff::probe_batches(&ts, 0), [0..1, 1..2, 2..3]);
+    assert_eq!(astdiff::probe_batches(&ts, 1), [0..1, 1..2, 2..3]);
+    assert_eq!(astdiff::probe_batches(&ts, 2), [0..2, 2..3]);
+    assert_eq!(astdiff::probe_batches(&ts, 3), vec![0..3]);
+    for large in [0, 2, 3] {
+        match testing::in_batches(&info, &ts, large) {
+            Err(BandSourceError::Failed(f)) => assert_eq!(f, failure, "large = {large}"),
+            other => panic!("large = {large}: want the third term's failure, got {other:?}"),
+        }
+    }
+    // Batches given directly, so that a failing probe's halves search also
+    // runs in a later batch, from a term other than the first: [t0] [t1, t2]
+    // reaches the third term only through the batch's offset.
+    let batches: [&[std::ops::Range<usize>]; 3] =
+        [&[0..1, 1..3], &[0..2, 2..3], &[0..1, 1..2, 2..3]];
+    for b in batches {
+        match testing::in_given_batches(&info, &ts, b.to_vec()) {
+            Err(BandSourceError::Failed(f)) => assert_eq!(f, failure, "batches {b:?}"),
+            other => panic!("batches {b:?}: want the third term's failure, got {other:?}"),
+        }
+    }
     match plan(&path, &Options::default(), &AstDiffBands) {
         Err(PlanError::Refused(r)) => {
             assert_eq!(

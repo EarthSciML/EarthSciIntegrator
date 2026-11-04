@@ -409,7 +409,7 @@ fn hand_bands_agree() {
 /// states carry their equation states' index sets and `ic` equations.
 #[test]
 fn probe_document_gives_each_terms_bands() {
-    use earthsci_integrator_planner::astdiff::testing;
+    use earthsci_integrator_planner::astdiff::{self, testing};
     use earthsci_integrator_planner::{derived, model, runconfig, terms};
     for (fixture, case) in CASES {
         let rc = runconfig::read(&run_config(fixture, case)).unwrap();
@@ -421,6 +421,49 @@ fn probe_document_gives_each_terms_bands() {
             .unwrap_or_else(|m| panic!("{fixture}/{case}: the probe document failed: {m}"));
         let each = testing::each_term(&info, &ts).unwrap();
         assert_eq!(probe, each, "{fixture}/{case}");
+        // So do smaller batches (§5.2.2): with a lower bound, each batch is a
+        // consecutive run within the bound in all, or a single term, and it
+        // ends only where the next term would take it over the bound.
+        let sizes: Vec<u64> = ts
+            .iter()
+            .map(|t| astdiff::operator_nodes(&t.expr, 1_000_000_000))
+            .collect();
+        let mut sorted = sizes.clone();
+        sorted.sort_unstable();
+        let median = sorted.get(sorted.len().saturating_sub(1) / 2).copied();
+        let all: u64 = sizes.iter().sum();
+        let mut bounds: Vec<u64> = [Some(0), Some(1), median, Some(all)]
+            .into_iter()
+            .flatten()
+            .collect();
+        bounds.dedup();
+        for large in bounds {
+            let batches = astdiff::probe_batches(&ts, large);
+            let covered: Vec<usize> = batches.iter().flat_map(|r| r.clone()).collect();
+            assert_eq!(
+                covered,
+                (0..ts.len()).collect::<Vec<_>>(),
+                "{fixture}/{case}"
+            );
+            let total = |r: &std::ops::Range<usize>| sizes[r.clone()].iter().sum::<u64>();
+            for r in &batches {
+                assert!(
+                    r.len() == 1 || total(r) <= large,
+                    "{fixture}/{case} {large}: {batches:?} goes over the bound"
+                );
+            }
+            for w in batches.windows(2) {
+                assert!(
+                    total(&w[0]) + sizes[w[1].start] > large,
+                    "{fixture}/{case} {large}: {batches:?} ends early"
+                );
+            }
+            assert_eq!(
+                testing::in_batches(&info, &ts, large).unwrap(),
+                each,
+                "{fixture}/{case}: batches with large = {large}"
+            );
+        }
         let doc = derived::probe_document(&info, &ts);
         let probe_model = &doc["models"][derived::PROBE_COMPONENT];
         let vars = probe_model["variables"].as_object();
