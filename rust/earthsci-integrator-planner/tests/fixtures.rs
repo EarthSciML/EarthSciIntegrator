@@ -404,6 +404,43 @@ fn hand_bands_agree() {
     }
 }
 
+/// `e` with every `apply_expression_template` reference to one of
+/// `bodies` replaced, recursively, by its body.
+fn expand_templates(
+    e: &earthsci_ast::Expr,
+    bodies: &std::collections::HashMap<&str, &earthsci_ast::Expr>,
+) -> earthsci_ast::Expr {
+    use earthsci_ast::Expr;
+    let Expr::Operator(node) = e else {
+        return e.clone();
+    };
+    if node.op == "apply_expression_template" {
+        if let Some(b) = node.name.as_deref().and_then(|n| bodies.get(n)) {
+            return expand_templates(b, bodies);
+        }
+    }
+    Expr::Operator(std::sync::Arc::new(
+        node.map_children(&mut |c| expand_templates(c, bodies)),
+    ))
+}
+
+/// Adds to `refs` the `apply_expression_template` references in `e`, by
+/// template name.
+fn count_template_refs<'a>(
+    e: &'a earthsci_ast::Expr,
+    refs: &mut std::collections::HashMap<&'a str, usize>,
+) {
+    let earthsci_ast::Expr::Operator(node) = e else {
+        return;
+    };
+    if node.op == "apply_expression_template" {
+        if let Some(n) = node.name.as_deref() {
+            *refs.entry(n).or_default() += 1;
+        }
+    }
+    node.for_each_child(&mut |c| count_template_refs(c, refs));
+}
+
 /// The probe document (§5.2.2) gives every term, band for band and in
 /// order, the bands of its own right-hand-side document, and its probe
 /// states carry their equation states' index sets and `ic` equations.
@@ -460,12 +497,33 @@ fn probe_document_gives_each_terms_bands() {
                 .unwrap_or_else(|m| panic!("{fixture}/{case} {min_nodes}: {m}"));
             assert_eq!(p, each, "{fixture}/{case}: templates of {min_nodes} nodes");
         }
-        let doc = derived::probe_document_with(&info, &ts, 1);
-        if doc["models"][derived::PROBE_COMPONENT]
-            .get("expression_templates")
-            .is_some()
-        {
-            templated += 1;
+        // The templates expand to exactly the terms, and each is referenced
+        // at least twice.
+        let exprs: Vec<&earthsci_ast::Expr> = ts.iter().map(|t| &t.expr).collect();
+        for min_nodes in [1, 2, derived::PROBE_TEMPLATE_MIN_NODES] {
+            let (tpl, out) = derived::shared_templates(&exprs, min_nodes);
+            if min_nodes == 1 && !tpl.is_empty() {
+                templated += 1;
+            }
+            let bodies: std::collections::HashMap<&str, &earthsci_ast::Expr> =
+                tpl.iter().map(|(n, b)| (n.as_str(), b)).collect();
+            let mut refs = std::collections::HashMap::new();
+            for e in out.iter().chain(tpl.iter().map(|(_, b)| b)) {
+                count_template_refs(e, &mut refs);
+            }
+            for (nm, _) in &tpl {
+                assert!(
+                    refs.get(nm.as_str()).copied().unwrap_or(0) >= 2,
+                    "{fixture}/{case} {min_nodes}: {nm} is referenced fewer than twice"
+                );
+            }
+            for (k, e) in out.iter().enumerate() {
+                assert_eq!(
+                    &expand_templates(e, &bodies),
+                    exprs[k],
+                    "{fixture}/{case} {min_nodes}: term {k}"
+                );
+            }
         }
         let doc = derived::probe_document(&info, &ts);
         let probe_model = &doc["models"][derived::PROBE_COMPONENT];
