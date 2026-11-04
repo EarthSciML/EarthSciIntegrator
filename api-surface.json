@@ -424,6 +424,30 @@
       }
     },
     {
+      "name": "load_plan_with",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "planned::load_plan_with"
+      }
+    },
+    {
+      "name": "data_options",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "forcing::DataOptions"
+      }
+    },
+    {
+      "name": "forcing_timeline",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "forcing::ForcingTimeline"
+      }
+    },
+    {
       "name": "loaded_plan",
       "kind": "type",
       "tier": "stable",

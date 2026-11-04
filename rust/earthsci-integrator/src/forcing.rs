@@ -285,3 +285,28 @@ impl ModelData {
         Ok(names.keys().any(|n| reads.contains(n)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// §8.4.1: a call takes the epoch its `t` falls in; a stage at exactly
+    /// a boundary takes the new epoch, and `t_f`'s epoch is the last.
+    #[test]
+    fn epoch_selection() {
+        let f = |x: f64| Forcing::new(BTreeMap::from([("P".to_string(), Arc::from(vec![x]))]));
+        let tl = ForcingTimeline {
+            boundaries: vec![0.0, 10.0, 20.0],
+            epochs: vec![f(0.0), f(1.0), f(2.0)],
+        };
+        let at = |t: f64| tl.at(t).bufs()["P"][0];
+        assert_eq!(at(-1.0), 0.0);
+        assert_eq!(at(0.0), 0.0);
+        assert_eq!(at(9.999), 0.0);
+        assert_eq!(at(10.0), 1.0);
+        assert_eq!(at(19.0), 1.0);
+        assert_eq!(at(20.0), 2.0);
+        assert_eq!(tl.refresh_times(), [10.0, 20.0]);
+        assert_eq!(ForcingTimeline::empty(3.0).refresh_times(), [] as [f64; 0]);
+    }
+}
