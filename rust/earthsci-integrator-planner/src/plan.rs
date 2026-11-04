@@ -8,7 +8,7 @@ use crate::astdiff;
 use crate::axes::{self, Axes};
 use crate::derived;
 use crate::error::{codes, refuse, PlanError, Result};
-use crate::locality::{self, BandSource, BandSourceError, Class, Locality};
+use crate::locality::{self, BandEntry, BandSource, BandSourceError, Class, Locality};
 use crate::model::{self, ModelInfo};
 use crate::numeric::{self, Dofs, Program, Sample, Sparse};
 use crate::operators::{self, Operator};
@@ -118,6 +118,35 @@ fn internal(m: impl std::fmt::Display) -> PlanError {
     PlanError::Internal(m.to_string())
 }
 
+/// `band_model_failed` against the term `t`, with its own document's
+/// message `m` (§5.2.2): pass 2's refusal and pass 4's both.
+fn term_failed(t: &Term, m: &str) -> PlanError {
+    refuse(
+        codes::BAND_MODEL_FAILED,
+        "/model",
+        format!(
+            "term ({}, {}, {}): {m}",
+            t.variable, t.contribution, t.summand
+        ),
+    )
+}
+
+/// Turns a band source's failure into the plan's error: a term's failure
+/// is `band_model_failed` against it, `other` when it names no term.
+fn band_source_error(
+    e: BandSourceError,
+    terms: &[&Term],
+    other: impl FnOnce(String) -> PlanError,
+) -> PlanError {
+    match e {
+        BandSourceError::Internal(m) => PlanError::Internal(m),
+        BandSourceError::Failed(f) => match terms.get(f.term) {
+            Some(t) => term_failed(t, &f.message),
+            None => other(f.message),
+        },
+    }
+}
+
 impl<'a> Numbers<'a> {
     fn new(info: &'a ModelInfo, interval: Interval) -> Self {
         let dofs = Dofs::new(info);
@@ -209,20 +238,11 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 "this band source gives no term bands (spec/plan.md §5.2.2)".into(),
             ))
         }
-        Err(BandSourceError::Internal(m)) => return Err(PlanError::Internal(m)),
-        Err(BandSourceError::Failed(f)) => {
-            let t = terms.get(f.term);
-            return Err(refuse(
-                codes::BAND_MODEL_FAILED,
-                "/model",
-                match t {
-                    Some(t) => format!(
-                        "term ({}, {}, {}): {}",
-                        t.variable, t.contribution, t.summand, f.message
-                    ),
-                    None => f.message,
-                },
-            ));
+        Err(e) => {
+            let all: Vec<&Term> = terms.iter().collect();
+            return Err(band_source_error(e, &all, |m| {
+                refuse(codes::BAND_MODEL_FAILED, "/model", m)
+            }));
         }
     };
     let term_localities: Vec<Locality> = bands
@@ -261,9 +281,51 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         let sv = view
             .sysview()
             .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
-        let band_list =
-            astdiff::bands(&sv).map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
-        let st = structure::structure(&info, &axes, op, &terms, &sv, band_list, &state_dependent)?;
+        let band_list = match astdiff::bands(&sv) {
+            Ok(b) => b,
+            Err(e) => {
+                // Pass 2 read the terms' structure only, which takes no
+                // derivative; a term whose derivative fails is reported
+                // here, against the first such term of the operator, in
+                // term order, with its own document's message (§5.2.2).
+                // The search probes halves of the operator's terms in full
+                // mode rather than differentiating each term's document.
+                let owned: Vec<Term> = ts.iter().map(|t| (*t).clone()).collect();
+                // When no term's own document fails, or the search meets
+                // a failure that is not EarthSciASTDiff's, the operator is
+                // refused with its own message.
+                return Err(match astdiff::first_failing_term(&info, &owned) {
+                    None => band_model_failed(astdiff::astdiff_message(e)),
+                    Some(f) => {
+                        band_source_error(BandSourceError::Failed(f), &ts, band_model_failed)
+                    }
+                });
+            }
+        };
+        // Pass 2 classified the terms from structure-only entries, whose
+        // points include the full mode's (§5.2.2): the full band list must
+        // then imply no class or radius wider than the operator's, which
+        // `structure::structure` reads for its block decision. A wider one
+        // means the two modes disagree. The column bandwidth and the
+        // footprint read the terms' structure-only bands themselves (§5.4).
+        let full: Vec<BandEntry> = band_list.iter().map(astdiff::band_entry).collect();
+        let full = locality::classify(&full, &info.shapes, &info.index_sets, &axes);
+        if locality::operator_locality([&op.locality, &full], &axes) != op.locality {
+            return Err(internal(format!(
+                "operator {name}: its full band list implies locality {full:?}, wider than {:?} from its terms' structure-only entries (spec/plan.md §5.2.2: the full mode's points are a subset of the structure-only mode's)",
+                op.locality
+            )));
+        }
+        let st = structure::structure(
+            &info,
+            &axes,
+            op,
+            &terms,
+            &bands,
+            &sv,
+            band_list,
+            &state_dependent,
+        )?;
         jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
         structures.insert(name.clone(), st);

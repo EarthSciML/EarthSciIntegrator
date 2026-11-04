@@ -20,3 +20,9 @@ debug = false
 [[example]]
 name = "forward_and_gradient"
 path = "forward_and_gradient.rs"
+
+# The same EarthSciASTDiff as the workspace's `[patch]` (rust/Cargo.toml):
+# this package is a workspace of its own, so that patch does not reach it.
+# Remove both once an EarthSciASTDiff release has #59.
+[patch.crates-io]
+earthsci-astdiff = { git = "https://github.com/EarthSciML/EarthSciASTDiff", rev = "4eed1c327c998ebe10329df69b097efb3cab357e" }

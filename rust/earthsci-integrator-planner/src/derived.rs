@@ -150,8 +150,18 @@ fn d_of(x: &str) -> Value {
 
 /// The right-hand side of state `x`'s equation `i` holding `terms` (§6.1.2).
 fn state_rhs(info: &ModelInfo, i: usize, x: &str, terms: &[&Term]) -> Value {
+    state_rhs_of(info, i, x, terms.iter().map(|t| &t.expr))
+}
+
+/// [`state_rhs`] of the terms' expressions `exprs`.
+fn state_rhs_of<'a>(
+    info: &ModelInfo,
+    i: usize,
+    x: &str,
+    exprs: impl IntoIterator<Item = &'a Expr>,
+) -> Value {
     let lifted = info.flat.equation_lifted.get(i).copied().unwrap_or(false);
-    let Some(f) = fold(terms.iter().map(|t| &t.expr)) else {
+    let Some(f) = fold(exprs) else {
         return zero(info, x);
     };
     if !lifted {
@@ -269,7 +279,7 @@ pub fn domain_json(domain: &Domain) -> Result<Option<Value>> {
 /// The right-hand-side document of an operator named `name` whose terms are
 /// `terms` (§6.1). Also the document of a single term (§5.2.2).
 pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
-    term_document(info, name, terms, false)
+    term_document(info, name, terms, None)
 }
 
 /// The component of the probe document's new states (§5.2.2): the name
@@ -291,14 +301,206 @@ pub fn probe_state(k: usize) -> String {
 /// state would have holding the term alone (a lifted term inside the same
 /// `faq`), and it has that state's `ic` equations, if any. Its
 /// bands with row `probe_state(k)` are the `k`-th term's bands, row renamed.
+/// Subexpressions the terms share are written once each, as templates
+/// ([`shared_templates`]).
 pub fn probe_document(info: &ModelInfo, terms: &[Term]) -> Value {
-    let terms: Vec<&Term> = terms.iter().collect();
-    term_document(info, "probe", &terms, true)
+    probe_document_with(info, terms, PROBE_TEMPLATE_MIN_NODES)
 }
 
-/// [`rhs_document`] (`probe` false) or [`probe_document`] (`probe` true)
-/// of `terms`, so the two documents are built by the same code.
-fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: bool) -> Value {
+/// [`probe_document`], naming as templates the shared subexpressions of at
+/// least `min_nodes` operator nodes.
+pub fn probe_document_with(info: &ModelInfo, terms: &[Term], min_nodes: u64) -> Value {
+    let terms: Vec<&Term> = terms.iter().collect();
+    term_document(info, "probe", &terms, Some(min_nodes))
+}
+
+/// The fewest operator nodes in one occurrence of a subexpression the probe
+/// document names as a template (§5.2.2).
+pub const PROBE_TEMPLATE_MIN_NODES: u64 = 8;
+
+/// EarthSciAST's `MAX_TEMPLATE_EXPANSION_DEPTH` (esm-spec §9.7.3): the most
+/// templates on a chain of template bodies referencing templates.
+pub const MAX_TEMPLATE_CHAIN: u32 = 32;
+
+/// §5.2.2's shared subexpressions of `exprs`: a subexpression of at least
+/// `min_nodes` operator nodes that would still be written at least twice in
+/// the result, with a template's body written once however often the
+/// template is referenced, is named as a zero-parameter template, `shared_k`
+/// (`k` from 1, children before parents), and each of its occurrences, in
+/// `exprs` and in other templates' bodies, is replaced by an
+/// `apply_expression_template` reference to it. So every template is
+/// referenced at least twice. A subexpression whose template would end a
+/// chain of more than [`MAX_TEMPLATE_CHAIN`] templates is left in place.
+/// Expanding every reference gives `exprs` back, structurally.
+/// Subexpressions are compared structurally and exactly; the walk is
+/// memoized on node identity, so it costs time in proportion to the
+/// distinct nodes of `exprs` rather than to their size as trees. Returns
+/// the templates as `(name, body)` pairs and `exprs` with the references.
+pub fn shared_templates(exprs: &[&Expr], min_nodes: u64) -> (Vec<(String, Expr)>, Vec<Expr>) {
+    use earthsci_ast::ExpressionNode;
+    use std::collections::HashMap;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::sync::Arc;
+    type Ptr = *const ExpressionNode;
+    #[derive(Default)]
+    struct Interner {
+        /// The structural id of each node seen, by identity.
+        id_of: HashMap<Ptr, usize>,
+        /// The ids whose shells have each hash.
+        by_hash: HashMap<u64, Vec<usize>>,
+        /// One node of each id, its operator nodes, its operator children.
+        rep: Vec<Arc<ExpressionNode>>,
+        nodes: Vec<u64>,
+        kids: Vec<Vec<usize>>,
+    }
+    // A node's shell: the node with each operator child replaced by an
+    // operator node holding the child's id. Leaf children are kept, and a
+    // leaf never equals an operator node, so two nodes have equal shells
+    // exactly when they are structurally equal. The children must be
+    // interned.
+    fn shell(it: &Interner, node: &ExpressionNode) -> ExpressionNode {
+        node.map_children(&mut |c| match c {
+            Expr::Operator(n) => Expr::Operator(Arc::new(ExpressionNode {
+                value: Some(json!(it.id_of[&Arc::as_ptr(n)])),
+                ..Default::default()
+            })),
+            leaf => leaf.clone(),
+        })
+    }
+    // Structural ids, children before parents. Ids are 1-based; 0 is a
+    // leaf. Shells are looked up by a hash of their `stable_json` and then
+    // compared exactly, so a hash collision, or a shell that does not
+    // serialize, costs only a comparison.
+    fn intern(it: &mut Interner, e: &Expr) -> usize {
+        let Expr::Operator(node) = e else {
+            return 0;
+        };
+        let ptr = Arc::as_ptr(node);
+        if let Some(&id) = it.id_of.get(&ptr) {
+            return id;
+        }
+        let mut cs = Vec::new();
+        node.for_each_child(&mut |c| {
+            let cid = intern(it, c);
+            if cid != 0 {
+                cs.push(cid);
+            }
+        });
+        let sh = shell(it, node);
+        let mut h = DefaultHasher::new();
+        match serde_json::to_value(&sh) {
+            Ok(v) => earthsci_astdiff::stable_json(&v).hash(&mut h),
+            Err(_) => sh.op.hash(&mut h),
+        }
+        let h = h.finish();
+        let found = it.by_hash.get(&h).and_then(|ids| {
+            ids.iter()
+                .copied()
+                .find(|&id| shell(it, &it.rep[id - 1]) == sh)
+        });
+        let id = match found {
+            Some(id) => id,
+            None => {
+                let n = cs
+                    .iter()
+                    .fold(1u64, |a, &c| a.saturating_add(it.nodes[c - 1]));
+                it.rep.push(node.clone());
+                it.nodes.push(n);
+                it.kids.push(cs);
+                let id = it.rep.len();
+                it.by_hash.entry(h).or_default().push(id);
+                id
+            }
+        };
+        it.id_of.insert(ptr, id);
+        id
+    }
+    let mut it = Interner::default();
+    let roots: Vec<usize> = exprs.iter().map(|e| intern(&mut it, e)).collect();
+    let n = it.rep.len();
+    // Shared subexpressions, parents first (parents have larger ids than
+    // children): `written[id]` is how often the subexpression is written in
+    // the result, a shared parent's body counting once.
+    let mut written = vec![0u64; n + 1];
+    for &r in &roots {
+        if r != 0 {
+            written[r] = written[r].saturating_add(1);
+        }
+    }
+    let mut shared = vec![false; n + 1];
+    for id in (1..=n).rev() {
+        shared[id] = written[id] >= 2 && it.nodes[id - 1] >= min_nodes;
+        let each = if shared[id] { 1 } else { written[id] };
+        for &c in &it.kids[id - 1] {
+            written[c] = written[c].saturating_add(each);
+        }
+    }
+    // Templates, children first, within the chain bound. Leaving a shared
+    // parent in place only writes its children more often, so every
+    // template is still referenced at least twice.
+    let mut name: Vec<Option<String>> = vec![None; n + 1];
+    let mut chain = vec![0u32; n + 1];
+    let mut k = 0;
+    for id in 1..=n {
+        let mut d = it.kids[id - 1].iter().map(|&c| chain[c]).max().unwrap_or(0);
+        if shared[id] && d < MAX_TEMPLATE_CHAIN {
+            k += 1;
+            name[id] = Some(format!("shared_{k}"));
+            d += 1;
+        }
+        chain[id] = d;
+    }
+    // Rewrite, memoized on structural id: one rewritten node per distinct
+    // subexpression.
+    struct Rewriter<'a> {
+        it: &'a Interner,
+        name: &'a [Option<String>],
+        memo: Vec<Option<Expr>>,
+    }
+    impl Rewriter<'_> {
+        fn body(&mut self, node: &ExpressionNode) -> Expr {
+            Expr::Operator(Arc::new(node.map_children(&mut |c| self.rw(c))))
+        }
+        fn rw(&mut self, e: &Expr) -> Expr {
+            let Expr::Operator(node) = e else {
+                return e.clone();
+            };
+            let id = self.it.id_of[&Arc::as_ptr(node)];
+            if let Some(x) = &self.memo[id] {
+                return x.clone();
+            }
+            let x = match &self.name[id] {
+                Some(nm) => Expr::Operator(Arc::new(ExpressionNode {
+                    op: "apply_expression_template".into(),
+                    name: Some(nm.clone()),
+                    bindings: Some(HashMap::new()),
+                    ..Default::default()
+                })),
+                None => self.body(node),
+            };
+            self.memo[id] = Some(x.clone());
+            x
+        }
+    }
+    let mut rw = Rewriter {
+        it: &it,
+        name: &name,
+        memo: vec![None; n + 1],
+    };
+    let rewritten: Vec<Expr> = exprs.iter().map(|e| rw.rw(e)).collect();
+    let mut templates = Vec::new();
+    for (id, nm) in name.iter().enumerate() {
+        if let Some(nm) = nm {
+            templates.push((nm.clone(), rw.body(&it.rep[id - 1])));
+        }
+    }
+    (templates, rewritten)
+}
+
+/// [`rhs_document`] (`probe` `None`) or [`probe_document`] (`probe` the
+/// least size of a template) of `terms`, so the two documents are built by
+/// the same code.
+fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u64>) -> Value {
     let mut by_eq: BTreeMap<usize, Vec<&Term>> = BTreeMap::new();
     let mut names = BTreeSet::new();
     for t in terms {
@@ -308,25 +510,38 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: bool) -> 
     let live = live_observeds(info, &names);
     let rhs = |i: usize, x: &str| {
         let ts = match by_eq.get(&i) {
-            Some(ts) if !probe => ts.as_slice(),
+            Some(ts) if probe.is_none() => ts.as_slice(),
             _ => &[],
         };
         state_rhs(info, i, x, ts)
     };
     let mut tree = tree(info, &live, &rhs);
-    if probe {
+    let mut templates = Vec::new();
+    if let Some(min_nodes) = probe {
+        // Subexpressions the terms share, written once each (§5.2.2).
+        let exprs: Vec<&Expr> = terms.iter().map(|t| &t.expr).collect();
+        let (tpl, exprs) = shared_templates(&exprs, min_nodes);
+        templates = tpl;
         for (k, t) in terms.iter().enumerate() {
             let x = probe_state(k);
             let v = &info.flat.state_variables[&t.variable];
             tree.declare(&x, variable_json(v, &info.shapes[&t.variable]));
-            let rhs = state_rhs(info, t.equation, &t.variable, &[t]);
+            let rhs = state_rhs_of(info, t.equation, &t.variable, [&exprs[k]]);
             tree.push(&x, json!({"lhs": d_of(&x), "rhs": rhs}));
             for (_, e) in info.flat.field_ics.iter().filter(|(s, _)| *s == t.variable) {
                 tree.push(&x, ic_equation(&x, e));
             }
         }
     }
-    document(info, name, tree.to_json())
+    let mut models = tree.to_json();
+    if !templates.is_empty() {
+        let tpl: Map<String, Value> = templates
+            .iter()
+            .map(|(nm, body)| (nm.clone(), json!({"params": [], "body": expr_json(body)})))
+            .collect();
+        models[PROBE_COMPONENT]["expression_templates"] = Value::Object(tpl);
+    }
+    document(info, name, models)
 }
 
 /// The Jacobian document of an operator (§6.2): EarthSciASTDiff's

@@ -40,12 +40,14 @@ end
 """
     term_localities!(ctx, terms)
 
-§5.2.2–§5.2.4 for every term: its bands from the backend, then class and
-radius. Left `nothing` when the backend has no bands for it yet.
+§5.2.2–§5.2.4 for every term: its bands from the backend, kept on the term
+(pass 4 reads them, §5.4), then class and radius. Left `nothing` when the
+backend has no bands for it yet.
 """
 function term_localities!(ctx, terms::Vector{Term})
     for (t, bands) in zip(terms, all_term_bands(ctx.backend, ctx, terms))
         bands === nothing && continue
+        t.bands = bands
         t.locality, t.radius = classify_bands(bands, ctx.model.shapes, ctx.axes, ctx.model.sizes)
     end
     return

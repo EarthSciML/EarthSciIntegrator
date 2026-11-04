@@ -110,7 +110,7 @@ const PROBE_COMPONENT = "JacobianEval"
 probe_state(k::Integer) = "$PROBE_COMPONENT.term_$k"
 
 """
-    probe_document(m, terms) -> Dict
+    probe_document(m, terms; min_nodes = PROBE_TEMPLATE_MIN_NODES) -> Dict
 
 §5.2.2's probe document: §6.1's document of the terms `terms` in which every
 state of the model has the zero right-hand side (§6.1.2), and the `k`-th term
@@ -119,10 +119,132 @@ of the shape of its equation's state (the same index-set names), written as
 that state's equation would hold it alone (a lifted term inside the same
 `faq`). Its bands with row `probe_state(k)` are the `k`-th term's bands,
 row renamed.
-"""
-probe_document(m::PlanModel, terms::AbstractVector) = _rhs_document(m, "probe", terms, true)
 
-function _rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector, probe::Bool)
+The subexpressions the terms share are written once each, as the
+zero-parameter templates `shared_k` in `expression_templates` of the
+component `JacobianEval`, and every place they occur, in the terms and in
+other templates' bodies, as an `apply_expression_template` reference to one
+([`shared_templates`](@ref), whose `min_nodes` this passes on; the planner
+always uses the default). The references expand to exactly the terms, so
+the templates change no band.
+"""
+probe_document(m::PlanModel, terms::AbstractVector; min_nodes::Int = PROBE_TEMPLATE_MIN_NODES) =
+    _rhs_document(m, "probe", terms, true; min_nodes)
+
+"""
+The fewest operator nodes, every occurrence counted, of a subexpression the
+probe document names as a template (§5.2.2).
+"""
+const PROBE_TEMPLATE_MIN_NODES = 8
+
+"""
+EarthSciAST's `MAX_TEMPLATE_EXPANSION_DEPTH` (esm-spec §9.7.3): the most
+templates on a chain of template bodies referencing templates.
+"""
+const MAX_TEMPLATE_CHAIN = 32
+
+"""
+    shared_templates(exprs; min_nodes = PROBE_TEMPLATE_MIN_NODES) -> (templates, rewritten)
+
+§5.2.2's shared subexpressions of `exprs`, named as zero-parameter templates
+`shared_k` and replaced, where they occur, by `apply_expression_template`
+references to them. Expanding every reference gives `exprs` back,
+structurally.
+
+Subexpressions are compared structurally and chosen outermost first, so a
+subexpression inside a template counts once however often the template is
+referenced. A subexpression becomes a template when it has at least
+`min_nodes` operator nodes, every occurrence counted, and occurs at least
+twice in what is written: in `exprs` (written in place, as they are) and in
+the templates' bodies, each body written once. A subexpression of a
+template's body that occurs nowhere else therefore stays in that body. A
+subexpression below [`MAX_TEMPLATE_CHAIN`](@ref) templates, on some path
+from an expression of `exprs` down to it, is written in place: the chain of
+templates each referencing the next is then never longer than EarthSciAST
+loads.
+
+The walk is memoized on node identity, so it costs time in proportion to
+the distinct nodes of `exprs` rather than to their size as trees.
+`templates` is a vector of `name => body` pairs (`k` from 1, outermost
+first); `rewritten` is `exprs` with the references.
+"""
+function shared_templates(exprs::AbstractVector; min_nodes::Int = PROBE_TEMPLATE_MIN_NODES)
+    sat(a, b) = a > typemax(Int) - b ? typemax(Int) : a + b
+    idof = IdDict{EarthSciAST.OpExpr, Int}()
+    ids = Dict{String, Int}()
+    rep = EarthSciAST.OpExpr[]
+    kids = Vector{Int}[]
+    # Structural ids, children before parents: a node's key is its JCS form
+    # with each operator child replaced by a name holding the child's id.
+    function intern(e)
+        e isa EarthSciAST.OpExpr || return 0
+        id = get(idof, e, 0)
+        id == 0 || return id
+        cs = Int[]
+        shell = EarthSciAST.map_children(e) do c
+            cid = intern(c)
+            cid == 0 && return c
+            push!(cs, cid)
+            return EarthSciAST.VarExpr("⟦$(cid)⟧")
+        end
+        key = jcs(_ser(shell))
+        id = get!(ids, key) do
+            push!(rep, e)
+            push!(kids, cs)
+            length(rep)
+        end
+        return idof[e] = id
+    end
+    roots = [intern(e) for e in exprs]
+    n = length(rep)
+    # Whether a subexpression has at least `min_nodes` operator nodes, by the
+    # walk `operator_nodes` makes, its count capped at `cap` (low enough that
+    # the walk's sums cannot overflow).
+    sizes = IdDict{EarthSciAST.OpExpr, Int}()
+    cap = min(min_nodes, typemax(Int) >> 2)
+    large(id) = _operator_nodes(rep[id], sizes, cap - 1) >= min_nodes
+    # Templates, outermost first: parents have larger ids than their
+    # children, so a node's references and the templates above it are all
+    # known when it is reached. `refs` counts the node's references in what
+    # is written: a template's body is written once, any other node's once
+    # for each of its own references. `above` is the most templates on a
+    # path from a root down to the node.
+    refs = zeros(Int, n)
+    above = zeros(Int, n)
+    for r in roots
+        r == 0 || (refs[r] = sat(refs[r], 1))
+    end
+    name = Vector{Union{Nothing, String}}(nothing, n)
+    k = 0
+    for id in n:-1:1
+        t = refs[id] >= 2 && above[id] < MAX_TEMPLATE_CHAIN && large(id)
+        t && (name[id] = "shared_$(k += 1)")
+        each = t ? 1 : refs[id]
+        for c in kids[id]
+            refs[c] = sat(refs[c], each)
+            above[c] = max(above[c], above[id] + t)
+        end
+    end
+    # Rewrite, memoized on node identity.
+    memo = IdDict{EarthSciAST.OpExpr, EarthSciAST.ASTExpr}()
+    ref(nm) = EarthSciAST.OpExpr("apply_expression_template", EarthSciAST.ASTExpr[]; name = nm, bindings = Dict{String, EarthSciAST.ASTExpr}())
+    body(e) = EarthSciAST.map_children(rw, e)
+    function rw(e)
+        e isa EarthSciAST.OpExpr || return e
+        return get!(memo, e) do
+            nm = name[idof[e]]
+            nm === nothing ? body(e) : ref(nm)
+        end
+    end
+    rewritten = EarthSciAST.ASTExpr[rw(e) for e in exprs]
+    templates = Pair{String, EarthSciAST.ASTExpr}[name[id] => body(rep[id]) for id in n:-1:1 if name[id] !== nothing]
+    return templates, rewritten
+end
+
+function _rhs_document(
+        m::PlanModel, name::AbstractString, terms::AbstractVector, probe::Bool;
+        min_nodes::Int = PROBE_TEMPLATE_MIN_NODES
+    )
     flat = m.flat
     live = live_observeds(m, reduce(vcat, (t.refs for t in terms); init = String[]))
     models = Dict{String, Any}()
@@ -151,12 +273,19 @@ function _rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector
     end
     if probe
         v = component_model!(models, PROBE_COMPONENT)
+        # Subexpressions the terms share, written once each (§5.2.2).
+        templates, exprs = shared_templates(ASTExpr[t.expr for t in terms]; min_nodes)
+        isempty(templates) || (
+            v["expression_templates"] = Dict{String, Any}(
+                nm => Dict{String, Any}("params" => Any[], "body" => _ser(b)) for (nm, b) in templates
+            )
+        )
         for (k, t) in enumerate(terms)
             x = probe_state(k)
             # The term's state's declaration (its shape and `default`) and its
             # `ic` equation, if any, so the new state is initialized as it is.
             v["variables"][last_segment(x)] = variable_object(m, t.variable, flat.state_variables[t.variable])
-            eq = state_equation(m, t.equation, t.variable, t.lifted, [t])
+            eq = state_equation(m, t.equation, t.variable, t.lifted, [t]; exprs = exprs[k:k])
             eq["lhs"]["args"] = Any[x]
             push!(v["equations"], eq)
             for (y, e) in flat.field_ics
@@ -182,17 +311,20 @@ function _rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector
 end
 
 """The equation `D(var) = …` of state `var`, flattened equation `ei`, holding the terms `ts` (§6.1.2): their left fold, inside the lift's `faq` when `lifted`, or the zero right-hand side when there are none."""
-function state_equation(m::PlanModel, ei::Int, var::AbstractString, lifted::Bool, ts::AbstractVector)
+function state_equation(
+        m::PlanModel, ei::Int, var::AbstractString, lifted::Bool, ts::AbstractVector;
+        exprs::AbstractVector = ASTExpr[t.expr for t in ts]
+    )
     rhs = if isempty(ts)
         zero_rhs(m, var)
     elseif lifted
         O, G = lifted_ranges(m, ei, var)
         Dict{String, Any}(
             "op" => "faq", "args" => Any[], "output_idx" => Any[O...], "ranges" => G,
-            "expr" => fold_sum(Any[_ser(t.expr) for t in ts])
+            "expr" => fold_sum(Any[_ser(e) for e in exprs])
         )
     else
-        fold_sum(Any[_ser(t.expr) for t in ts])
+        fold_sum(Any[_ser(e) for e in exprs])
     end
     lhs = Dict{String, Any}("op" => "D", "args" => Any[var], "wrt" => "t")
     return Dict{String, Any}("lhs" => lhs, "rhs" => rhs)

@@ -222,6 +222,23 @@ const PLAN_FILES = String[]
             @test text == jcs(e)
         end
         ops = sort!(collect(keys(p["operators"])))
+        # A stencil operator's footprint reads the pattern its radius reads
+        # (§5.2.2, §5.4): on each horizontal axis its offsets reach exactly
+        # the radius, -l to u.
+        if any(o -> haskey(p["operators"][o]["structure"], "stencil"), ops)
+            horizontal = EarthSciIntegrator.plan_context(
+                EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json")), DiffBackend()
+            ).axes.horizontal
+            for o in ops
+                st = p["operators"][o]["structure"]
+                haskey(st, "stencil") || continue
+                rad = p["operators"][o]["locality"]["radius"]
+                for (i, X) in enumerate(horizontal)
+                    offs = [v[i] for v in st["stencil"]["footprint"]]
+                    @test (-minimum(offs), maximum(offs)) == Tuple(rad[X])
+                end
+            end
+        end
         # Derived documents (§6, §7.7): one rhs and one jacobian per operator, hashed as written.
         @test sort!(collect(keys(p["derived"]))) == sort!(["derived/$o.$k.esm" for o in ops for k in ("rhs", "jacobian")])
         for (path, x) in p["derived"]
@@ -450,6 +467,36 @@ const PLAN_FILES = String[]
         fields(x) = ntuple(i -> getfield(x, i), fieldcount(typeof(x)))
         @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms)] ==
             [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
+        # A BandEntry read from EarthSciASTDiff's entry equals one read from
+        # `serialize_band`'s dictionary.
+        @test [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms] ==
+            [map(d -> fields(EarthSciIntegrator.BandEntry(d)), EarthSciIntegrator.term_band_dicts(b, ctx, t)) for t in terms]
+        # The probe document's bands are the same, in order, with none of its
+        # shared subexpressions written as templates and with more of them,
+        # down to every repeated one (§5.2.2).
+        doc_bands(min_nodes) = map(
+            EarthSciIntegrator.band_json,
+            EarthSciIntegrator.document_bands(
+                EarthSciAST.flatten(EarthSciAST.load_document(EarthSciIntegrator.probe_document(m, terms; min_nodes))), "the probe document"
+            )
+        )
+        plain = doc_bands(typemax(Int))
+        for min_nodes in (1, 2, EarthSciIntegrator.PROBE_TEMPLATE_MIN_NODES)
+            @test doc_bands(min_nodes) == plain
+        end
+        # So do smaller batches (§5.2.2): with a lower bound, each batch is a
+        # consecutive run within the bound in all, or a single term, and it
+        # ends only where the next term would take it over the bound.
+        sizes = [EarthSciIntegrator.operator_nodes(t.expr, 10^9) for t in terms]
+        median = isempty(sizes) ? 0 : sort(sizes)[cld(length(sizes), 2)]
+        for large in unique!([0, 1, median, sum(sizes; init = 0)])
+            batches = EarthSciIntegrator.probe_batches(terms; large)
+            @test reduce(vcat, collect.(batches); init = Int[]) == collect(eachindex(terms))
+            @test all(r -> length(r) == 1 || sum(sizes[r]) <= large, batches)
+            @test all(i -> sum(sizes[batches[i]]) + sizes[first(batches[i + 1])] > large, 1:(length(batches) - 1))
+            @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms; large)] ==
+                [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms]
+        end
         # The probe states are declared with their equation state's index sets.
         doc = EarthSciIntegrator.probe_document(m, terms)
         vars = doc["models"]["JacobianEval"]["variables"]
@@ -462,7 +509,100 @@ const PLAN_FILES = String[]
         @test ics == Set(EarthSciIntegrator.probe_state(k) for (k, t) in enumerate(terms) if any(p -> first(p) == t.variable, m.flat.field_ics))
     end
 
-    @testset "band_model_failed names the term that fails, after the probe document fails" begin
+    @testset "shared subexpressions are templates that expand to the terms (§5.2.2)" begin
+        templated = 0
+        for (fixture, case) in fixture_cases()
+            ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json")), DiffBackend())
+            exprs = EarthSciAST.ASTExpr[t.expr for t in EarthSciIntegrator.build_terms(ctx.model)]
+            templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
+            templated += !isempty(templates)
+            reg = Dict{String, EarthSciAST.ASTExpr}(templates)
+            @test length(reg) == length(templates)
+            key(e) = jcs(EarthSciAST.serialize_expression(e))
+            @test key.(EarthSciAST.ASTExpr[EarthSciASTDiff.expand_templates(e, reg) for e in rewritten]) == key.(exprs)
+        end
+        @test templated > 0
+    end
+
+    @testset "a subexpression inside a template is a template only when it is shared outside it (§5.2.2)" begin
+        E(x) = EarthSciAST.expression_from_json(x)
+        key(e) = jcs(EarthSciAST.serialize_expression(e))
+        isref(e) = e isa EarthSciAST.OpExpr && e.op == "apply_expression_template"
+        inner = Dict("op" => "*", "args" => ["a", Dict("op" => "+", "args" => ["b", "c"])])
+        outer = Dict("op" => "-", "args" => [inner, "d"])
+        # `outer` occurs twice (two distinct but equal nodes); `inner` and its
+        # parts only inside it, so only `outer` is a template.
+        exprs = EarthSciAST.ASTExpr[E(outer), E(Dict("op" => "exp", "args" => [outer]))]
+        templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
+        @test first.(templates) == ["shared_1"]
+        @test key(last(only(templates))) == key(E(outer))
+        @test isref(rewritten[1]) && isref(only(rewritten[2].args))
+        # When `inner` also occurs on its own, it is a template too, and
+        # `outer`'s body references it.
+        exprs = vcat(exprs, E(Dict("op" => "sin", "args" => [inner])))
+        templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
+        reg = Dict{String, EarthSciAST.ASTExpr}(templates)
+        @test length(templates) == 2
+        @test isref(reg["shared_1"].args[1])
+        @test key.(EarthSciAST.ASTExpr[EarthSciASTDiff.expand_templates(e, reg) for e in rewritten]) == key.(exprs)
+        # Below `min_nodes` operator nodes, nothing is a template.
+        @test isempty(first(EarthSciIntegrator.shared_templates(exprs; min_nodes = 4)))
+    end
+
+    @testset "the chain of templates stops at EarthSciAST's limit, outermost first (§5.2.2)" begin
+        # 40 nested levels, each the sum of two copies of the one below: every
+        # level below the top occurs twice in what is written.
+        x = EarthSciAST.VarExpr("JacobianEval.chain")
+        e = x
+        for _ in 1:40
+            e = EarthSciAST.OpExpr("+", EarthSciAST.ASTExpr[e, e])
+        end
+        templates, rewritten = EarthSciIntegrator.shared_templates(EarthSciAST.ASTExpr[e]; min_nodes = 1)
+        reg = Dict{String, EarthSciAST.ASTExpr}(templates)
+        isref(y) = y isa EarthSciAST.OpExpr && y.op == "apply_expression_template"
+        function refs(y, out = String[])
+            y isa EarthSciAST.OpExpr || return out
+            isref(y) ? push!(out, y.name) : EarthSciAST.map_children(c -> (refs(c, out); c), y)
+            return out
+        end
+        depth = Dict{String, Int}()
+        chain(nm) = get!(() -> 1 + maximum(chain.(refs(reg[nm])); init = 0), depth, nm)
+        @test length(templates) == EarthSciIntegrator.MAX_TEMPLATE_CHAIN == 32
+        @test maximum(chain(nm) for (nm, _) in templates) == 32
+        # The outermost levels are the templates: the top's two arguments are
+        # references, and the innermost levels are written in place.
+        @test all(isref, only(rewritten).args)
+        @test isempty(refs(reg["shared_32"]))
+        # (Not compared with `e` by serializing: as a tree it has 2^41 nodes.)
+        # EarthSciAST loads a probe document holding them, and refuses one
+        # more template on the chain.
+        ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(joinpath(PFIX, first(fixture_cases())[1], "$(first(fixture_cases())[2]).run.json")), DiffBackend())
+        terms = EarthSciIntegrator.build_terms(ctx.model)
+        function with_chain(templates, rhs)
+            doc = EarthSciIntegrator.probe_document(ctx.model, terms)
+            v = doc["models"]["JacobianEval"]
+            v["variables"]["chain"] = Dict{String, Any}("type" => v["variables"]["term_1"]["type"], "default" => 0.0)
+            ts = get!(v, "expression_templates", Dict{String, Any}())
+            for (nm, body) in templates
+                ts[nm] = Dict{String, Any}("params" => Any[], "body" => EarthSciAST.serialize_expression(body))
+            end
+            lhs = Dict{String, Any}("op" => "D", "args" => Any["JacobianEval.chain"], "wrt" => "t")
+            push!(v["equations"], Dict{String, Any}("lhs" => lhs, "rhs" => EarthSciAST.serialize_expression(rhs)))
+            return doc
+        end
+        @test EarthSciAST.flatten(EarthSciAST.load_document(with_chain(templates, only(rewritten)))) !== nothing
+        ref(nm) = EarthSciAST.OpExpr("apply_expression_template", EarthSciAST.ASTExpr[]; name = nm, bindings = Dict{String, EarthSciAST.ASTExpr}())
+        longer = vcat(templates, ["one_more" => EarthSciAST.OpExpr("+", EarthSciAST.ASTExpr[ref("shared_1"), x])])
+        err = try
+            EarthSciAST.load_document(with_chain(longer, ref("one_more")))
+            nothing
+        catch ex
+            ex
+        end
+        @test err !== nothing && occursin("MAX_TEMPLATE_EXPANSION_DEPTH", sprint(showerror, err))
+    end
+
+    @testset "band_model_failed names the term whose derivative fails, in pass 4" begin
         cfg = joinpath(CONF, "plans", "refusals", "band-model-failed", "run.json")
         err = try
             EarthSciIntegrator.plan(cfg); nothing
@@ -470,17 +610,91 @@ const PLAN_FILES = String[]
             e
         end
         @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
-        # The refusal comes from the search: the probe document itself fails.
+        # Pass 2 reads the terms' structure only, which takes no derivative:
+        # the probe succeeds, in batches of any size, with every term's own
+        # structure.
         b = DiffBackend()
         ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(cfg), b)
-        @test EarthSciIntegrator.probe_band_dicts(b, ctx, EarthSciIntegrator.build_terms(ctx.model)) === nothing
-        # The third term, erf(x); the two before it differentiate.
+        terms = EarthSciIntegrator.build_terms(ctx.model)
+        each = [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
+        @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms) == each
+        fields(x) = ntuple(i -> getfield(x, i), fieldcount(typeof(x)))
+        for large in (0, 1, 3)
+            @test [map(fields, x) for x in EarthSciIntegrator.all_term_bands(b, ctx, terms; large)] ==
+                [map(d -> fields(EarthSciIntegrator.BandEntry(d)), x) for x in each]
+        end
+        # The operator's document fails in pass 4, and the refusal names its
+        # third term, erf(x), with that term's own document's message.
         @test occursin("term (K.y, 0, 1): ", err.msg) && occursin("erf", err.msg)
+        # In the full mode the probe fails, and the halving search finds the
+        # same term with the same message, in batches of any size.
+        @test EarthSciIntegrator.probe_band_dicts(b, ctx, terms; coefficients = true) === nothing
+        for large in (0, 1, 3)
+            e2 = try
+                EarthSciIntegrator.all_term_bands(b, ctx, terms; large, coefficients = true); nothing
+            catch e
+                e
+            end
+            @test e2 isa PlannerRefusal && e2.code == err.code && e2.msg == err.msg
+        end
+        # Pass 4's search, alone, refuses the same way.
+        e3 = try
+            EarthSciIntegrator.refuse_failing_term(b, ctx, terms); nothing
+        catch e
+            e
+        end
+        @test e3 isa PlannerRefusal && e3.msg == err.msg
+        # Without the failing term, the search refuses nothing.
+        @test EarthSciIntegrator.refuse_failing_term(b, ctx, terms[1:2]) === nothing
+    end
+
+    @testset "pass 4 refuses the operator's first term, in term order, whose derivative fails (§5.2.2)" begin
+        # Several underivable terms, among derivable ones, in one operator:
+        # the halving search names the first, (K.y, 0, 3), wherever the
+        # halves fall.
+        src = joinpath(CONF, "plans", "refusals", "band-model-failed")
+        doc = JSON.parsefile(joinpath(src, "model.esm"))
+        x, y = "x", "y"
+        doc["models"]["K"]["equations"][2]["rhs"] = Dict(
+            "op" => "+", "args" => Any[
+                Dict("op" => "*", "args" => Any[-1, "k", y]), Dict("op" => "*", "args" => Any[2, y]),
+                Dict("op" => "*", "args" => Any[3, "k", x]), Dict("op" => "erf", "args" => Any[y]),
+                Dict("op" => "*", "args" => Any[5, x]), Dict("op" => "erf", "args" => Any[x]),
+                Dict("op" => "*", "args" => Any[7, y]),
+            ]
+        )
+        dir = mktempdir()
+        write(joinpath(dir, "model.esm"), JSON.json(doc))
+        cp(joinpath(src, "run.json"), joinpath(dir, "run.json"))
+        err = try
+            EarthSciIntegrator.plan(joinpath(dir, "run.json")); nothing
+        catch e
+            e
+        end
+        @test err isa PlannerRefusal && err.code == "band_model_failed" && err.at == "/model"
+        @test occursin("term (K.y, 0, 3): ", err.msg) && occursin("erf", err.msg)
+        b = DiffBackend()
+        ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(joinpath(dir, "run.json")), b)
+        terms = EarthSciIntegrator.build_terms(ctx.model)
+        for r in (1:length(terms), 2:length(terms), 4:length(terms))
+            e2 = try
+                EarthSciIntegrator.refuse_failing_term(b, ctx, terms[r]); nothing
+            catch e
+                e
+            end
+            @test e2 isa PlannerRefusal && e2.msg == err.msg
+        end
+        e4 = try
+            EarthSciIntegrator.refuse_failing_term(b, ctx, terms[6:end]); nothing
+        catch e
+            e
+        end
+        @test e4 isa PlannerRefusal && occursin("term (K.y, 0, 5): ", e4.msg)
     end
 
     @testset "the probe document fails exactly when a term's own document fails (§5.2.2)" begin
         dir = joinpath(CONF, "plans", "refusals")
-        checked = 0
+        checked = failed = 0
         for name in sort(collect(keys(JSON.parsefile(joinpath(dir, "expected-codes.json")))))
             b = DiffBackend()
             ctx, terms = try
@@ -494,19 +708,24 @@ const PLAN_FILES = String[]
                 continue        # refused before pass 2
             end
             isempty(terms) && continue
-            probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms)
-            each = try
-                [EarthSciIntegrator.term_band_dicts(b, ctx, t) for t in terms]
-            catch e
-                (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
-                nothing
+            # Both modes: pass 2's structure-only one and the full one, in
+            # which band-model-failed's probe and its third term fail.
+            for coefficients in (false, true)
+                probe = EarthSciIntegrator.probe_band_dicts(b, ctx, terms; coefficients)
+                each = try
+                    [EarthSciIntegrator.term_band_dicts(b, ctx, t; coefficients) for t in terms]
+                catch e
+                    (e isa PlannerRefusal && e.code == "band_model_failed") || rethrow()
+                    nothing
+                end
+                # A probe that succeeds hides no term's failure, and gives its bands.
+                @test (probe === nothing) == (each === nothing)
+                probe === nothing || @test probe == each
+                failed += probe === nothing
+                checked += 1
             end
-            # A probe that succeeds hides no term's failure, and gives its bands.
-            @test (probe === nothing) == (each === nothing)
-            probe === nothing || @test probe == each
-            checked += 1
         end
-        @test checked > 0
+        @test checked > 0 && failed > 0
     end
 
     @testset "write_plan removes an earlier plan's files" begin

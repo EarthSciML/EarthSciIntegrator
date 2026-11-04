@@ -53,7 +53,13 @@ mutable struct Term
     refs::Vector{String}
     locality::Union{Symbol, Nothing}
     radius::Union{Dict{String, Tuple{Int, Int}}, Nothing}
+    # The term's band list (§5.2.2), the pattern its locality and radius were
+    # read from; pass 4 reads the operator's footprint and bandwidth from it.
+    bands::Union{Vector{BandEntry}, Nothing}
 end
+
+Term(variable, contribution, summand, expr, origins, provenance, owner, lifted, equation, refs, locality, radius) =
+    Term(variable, contribution, summand, expr, origins, provenance, owner, lifted, equation, refs, locality, radius, nothing)
 
 """The provenance label of a contribution's origins (§5.1.1): `P`, `coupling:k`, joined by `+`."""
 provenance_label(origins) = join((o.component !== nothing ? o.component : "coupling:$(o.coupling)" for o in origins), "+")

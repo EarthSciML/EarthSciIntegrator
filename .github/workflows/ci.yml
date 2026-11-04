@@ -66,6 +66,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install "jsonschema>=4.18"
+      # The planner's pass 2 reads EarthSciASTDiff's structure-only mode
+      # (spec/plan.md §5.2.2), which no release has yet:
+      # EarthSciML/EarthSciASTDiff#59. Install the commit rust/Cargo.toml's
+      # [patch] pins; remove this step, and raise the compat entry, once a
+      # release has it.
+      - name: EarthSciASTDiff with structure-only mode (unreleased)
+        run: |
+          julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.add(url = "https://github.com/EarthSciML/EarthSciASTDiff", rev = "4eed1c327c998ebe10329df69b097efb3cab357e", subdir = "pkg/EarthSciASTDiff.jl")'
       - name: Test
         # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote)
         # live in julia/EarthSciIntegrator.jl/test/Project.toml.
