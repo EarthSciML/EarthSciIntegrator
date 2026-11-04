@@ -137,6 +137,46 @@ end
     end
 end
 
+# A functional over time of a state the root leaf does not advance: B is a
+# constant of the transport leaf, so its part of the integral is
+# w·Σ B·(t₁ − t₀) per invocation and its cotangent gains w·(t₁ − t₀)
+# (spec/adjoint.md §2.1; operator-interface.md §1).
+@testset "a functional over time of states the leaf does not advance" begin
+    ctl = Dict("reltol" => 1.0e-8, "abstol" => 1.0e-10)
+    prob = toy_problem("toy:advection_reaction")
+    u0 = ls_u0(prob)
+    A, B = 1:LS_NC, (LS_NC + 1):(2 * LS_NC)
+    for (what, sch) in (
+            "Tsit5" => Dict("leaf" => "transport", "alg" => "Tsit5", "control" => ctl),
+            "Rodas4" => Dict("leaf" => "transport", "alg" => "Rodas4", "dt" => 0.005),
+            "Kvaerno4" => Dict("leaf" => "transport", "alg" => "Kvaerno4", "dt" => 0.005),
+        )
+        run_xcase(
+            xcase(
+                "leaf_state.time.$what", "toy:advection_reaction", sch, Dict("dt" => 0.01), [0.0, 0.02];
+                adjoint = xgrad("B", "time"), checks = XGRAD
+            )
+        )
+        @testset "$what $how" for (how, w) in (("sum", 1.0), ("mean", 1.0 / LS_NC))
+            cfg = ls_cfg(sch)
+            cfg["adjoint"] = xgrad("B", "time", how)
+            run = forward!(build_run(cfg; tspan = (0.0, 0.02), u0))
+            @test run.retcode == "Success"
+            # Two macro steps of 0.01, each adding w·Σ B·0.01.
+            exact = 0.02 * w * sum(u0[B])
+            @test isapprox(run.q, exact; rtol = 1.0e-14)
+            J, ū0, _ = gradient(run)
+            @test J == run.q
+            @test all(==(0.0), ū0[A])
+            @test all(x -> isapprox(x, 0.02 * w; rtol = 1.0e-14), ū0[B])
+            # Replay reproduces q bitwise, and its tangents give the same gradient.
+            @test replay(run)[3] == run.q
+            g = ForwardDiff.gradient(x -> replay(run, x, run.p)[3], run.u0)
+            @test isapprox(ū0, g; rtol = 1.0e-12, atol = 1.0e-16)
+        end
+    end
+end
+
 # A two-state problem: `push` writes x and reads y (x' = -y), `relax` writes y
 # (y' = -y). A leaf of push alone reads y as a constant of the leaf.
 struct LSPush <: AbstractOperator end
