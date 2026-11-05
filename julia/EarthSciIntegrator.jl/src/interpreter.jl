@@ -52,6 +52,7 @@ mutable struct Run
     bounds::Vector{Float64}           # macro-step boundaries t₀ … t_f
     reasons::Vector{String}
     output_times::Vector{Float64}     # sorted, each in (t₀, t_f]: exactly those listed (a listed t₀ dropped), t_f by default
+    tstops::Vector{Float64}           # every tstop in (t₀, t_f]: the output times and the caller's (forcing epochs, spec/operator-interface.md §8.4.3)
     functional::Union{Nothing, Functional}
     wrt_u0::Bool
     wrt_p::Vector{Int}                # parameter indices differentiated
@@ -87,7 +88,7 @@ come from the conformance case (spec/toy-problems.md §2). Raises
 """
 function build_run(
         config::AbstractDict; tspan, saveat = nothing, prob::ToyProblem = toy_problem(config["model"]),
-        p::AbstractVector = prob.p, u0::AbstractVector = prob.u0
+        p::AbstractVector = prob.p, u0::AbstractVector = prob.u0, tstops::AbstractVector = Float64[]
     )
     for k in keys(config)
         k in _TOP_KEYS || throw(ConfigError("unknown top-level key '$k'"))
@@ -119,7 +120,7 @@ function build_run(
     for h in hit
         h in ("forcing_refresh", "output", "restart", "events") ||
             throw(ConfigError("step.hit: unknown tstop source '$h' (forcing_refresh, output, restart or events)"))
-        h == "output" || throw(UnsupportedError("step.hit '$h' is not implemented in this stage"))
+        h == "output" || h == "forcing_refresh" || throw(UnsupportedError("step.hit '$h' is not implemented in this stage"))
     end
     haskey(step, "dt") || throw(UnsupportedError("a step without dt (macro steps from the root leaf's accepted steps, D49) is not implemented in this stage"))
     dt = parse_duration(step["dt"], prob, "step.dt")
@@ -133,15 +134,18 @@ function build_run(
         (t0 <= τ <= tf) || throw(ConfigError("output time $τ outside [$t0, $tf]"))
     end
     filter!(!=(t0), outs)
-    bounds, reasons = macro_bounds(t0, tf, dt, outs)
-    for τ in outs
+    # The caller's tstops (a plan's forcing epochs, spec/operator-interface.md
+    # §8.4.3) are tstops like the output times, and are not reported.
+    stops = sort!(unique!(vcat(outs, Float64[Float64(x) for x in tstops if t0 < x <= tf])))
+    bounds, reasons = macro_bounds(t0, tf, dt, stops)
+    for τ in stops
         # Output times are tstops. Under a fixed step.dt they must be macro-step
         # boundaries (spec/run-config.md §8 rule 9), except that when the root is a
         # single leaf they are stops inside its interval (spec/methods.md §10).
         # A leaf with dt "step" or "accumulated" takes exactly one step of its
         # interval (spec/run-config.md §4.2), so it cannot land on one.
         τ in bounds || (root isa LeafNode && (root.dt === nothing || root.dt isa Float64)) ||
-            throw(ConfigError("output time $τ is not a multiple of step.dt = $dt, and the schedule root is not a leaf that substeps to land on it (run-config §4.2, §8 rule 9)"))
+            throw(ConfigError("tstop $τ is not a multiple of step.dt = $dt, and the schedule root is not a leaf that substeps to land on it (run-config §4.2, §8 rule 9)"))
     end
 
     functional = nothing
@@ -247,7 +251,7 @@ function build_run(
         end
     end
     return Run(
-        prob, collect(Float64, p), collect(Float64, u0), root, leaves, (t0, tf), dt, bounds, reasons, outs,
+        prob, collect(Float64, p), collect(Float64, u0), root, leaves, (t0, tf), dt, bounds, reasons, outs, stops,
         functional, wrt_u0, wrt_p, bound, Dict{String, ControllerState}(), Tape(), Checkpoint[],
         Tuple{Float64, Vector{Float64}}[], Float64[], 0, 0, 0, "Default", "", 0.0
     )
@@ -369,7 +373,7 @@ end
 function _stops(run::Run, node::LeafNode, ta, tb, isroot::Bool = node === run.root)
     stops = Float64[]
     if isroot
-        for τ in run.output_times
+        for τ in run.tstops
             ta < τ < tb && push!(stops, τ)
         end
     end

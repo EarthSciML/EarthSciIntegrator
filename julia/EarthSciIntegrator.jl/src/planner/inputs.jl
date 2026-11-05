@@ -115,6 +115,14 @@ function read_inputs(config_path::AbstractString)
         r === nothing || throw(r)
         refuse("model_load_failed", "/model", "EarthSciAST refused to load $model: " * _load_error_message(e))
     end
+    # A validation failure is a load failure too (§4 step 3): EarthSciAST's
+    # `validate` reports what `load_path` does not refuse, such as a data
+    # source's temporal block without a start, as the Rust planner does.
+    v = EarthSciAST.validate(file)
+    v.is_valid || refuse(
+        "model_load_failed", "/model",
+        "the model does not validate: " * join(vcat([sprint(show, x) for x in v.schema_errors], [sprint(show, x) for x in v.structural_errors]), "; ")
+    )
     # Step 4: solver.external.
     ext = try
         EarthSciAST.solver_external_location(file; base_path = dirname(model_path))

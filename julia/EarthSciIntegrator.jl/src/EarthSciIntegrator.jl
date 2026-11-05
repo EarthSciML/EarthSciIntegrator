@@ -36,6 +36,10 @@ using SHA: sha256
 import EarthSciAST
 import EarthSciASTDiff
 import ForwardDiff
+# EarthSciAST's providers from an esm document (`providers_from_document`, its
+# EarthSciIO extension) are what a plan that reads data runs on
+# (spec/operator-interface.md §8.4.2).
+import EarthSciIO
 using EarthSciAST: ASTExpr, NumExpr, IntExpr, VarExpr, OpExpr, Equation, TermOrigin, Contribution
 
 """Version of the integrator spec (the run config's `esm_integrator` key) this package implements."""
@@ -114,6 +118,7 @@ include("planner/planner.jl")
 
 # Executing a plan (spec/operator-interface.md §8): operators built from the
 # plan's derived documents, run by the schedule interpreter above.
+include("forcing_runtime.jl")
 include("plan_runtime.jl")
 
 """

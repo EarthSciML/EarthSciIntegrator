@@ -182,7 +182,12 @@ function leaf_forward(
         end
         pp = pstep(h)
         k1 = (fsal !== nothing && (!leaf_bound || fsal_h == h)) ? fsal : nothing
-        res = method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive, hist)
+        prev_start = set_step_start!(t)
+        res = try
+            method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive, hist)
+        finally
+            set_step_start!(prev_start)
+        end
         nf += res.nf
         unew = res.u
         # A negative stage state under domain.check_stages is a violation whatever
@@ -249,6 +254,8 @@ function leaf_forward(
         # (spec/methods.md §3.3). It is reused even when tₙ₊₁ was snapped to a
         # stop, as OrdinaryDiffEq does; replay reproduces this (leaf_replay).
         fsal = (res.fsal !== nothing && !clipped) ? res.fsal : nothing
+        # Never reused across a forcing epoch boundary (spec/operator-interface.md §8.4.1, D88).
+        forcing_boundary(leaf.ops, tnew) && (fsal = nothing)
         fsal_h = h
         hist = (u, t)
         res.dq === nothing || (qint = qint + res.dq)
@@ -302,13 +309,18 @@ function leaf_replay(
         if isstop && h < eps(abs(t))
             tk1_next = nothing
         else
-            if qacc !== nothing && leaf.ψ !== nothing
-                u, dq = leaf_step(leaf, u, pp, t, h, mask, tk1; withq = true)
-                qinv = qinv + dq
-            else
-                u = leaf_step(leaf, u, pp, t, h, mask, tk1)
+            prev_start = set_step_start!(t)
+            try
+                if qacc !== nothing && leaf.ψ !== nothing
+                    u, dq = leaf_step(leaf, u, pp, t, h, mask, tk1; withq = true)
+                    qinv = qinv + dq
+                else
+                    u = leaf_step(leaf, u, pp, t, h, mask, tk1)
+                end
+            finally
+                set_step_start!(prev_start)
             end
-            tk1_next = fsal_method && mask === nothing ? t + h : nothing
+            tk1_next = fsal_method && mask === nothing && !forcing_boundary(leaf.ops, tnew) ? t + h : nothing
             hprev = h
         end
         visit === nothing || visit(tnew, u)

@@ -186,6 +186,34 @@ operators written by hand; true for the operators a plan supplies
 """
 ft_refused_on_rosenbrock(op) = false
 
+"""
+    forcing_boundary(op, t) -> Bool
+
+Whether `t` is the start of one of `op`'s forcing epochs other than the first
+(spec/operator-interface.md §8.4.1, D88): a step that starts there does not
+reuse the first-same-as-last stage of the step that ended there. `false` for
+an operator that reads no data.
+"""
+forcing_boundary(op, t) = false
+
+"""
+    set_step_start!(t) -> previous
+
+Make `t` the start of the step whose stages are evaluated next, until
+`set_step_start!(previous)`: the time that picks the epoch of the one-record
+data-fed parameters at a stage on the step's right end
+(spec/operator-interface.md §8.4.1, D88). `nothing` clears it.
+"""
+function set_step_start!(t)
+    tls = task_local_storage()
+    prev = get(tls, :esi_step_start, nothing)
+    t === nothing ? delete!(tls, :esi_step_start) : (tls[:esi_step_start] = Float64(t))
+    return prev
+end
+
+"""The start of the step being evaluated, or `t` itself outside one."""
+step_start(t) = something(get(task_local_storage(), :esi_step_start, nothing), Float64(t))::Float64
+
 # ---------------------------------------------------------------------------
 # Matrix storage (operator-interface.md §4)
 
@@ -271,6 +299,8 @@ struct OperatorSum{O <: Tuple}
     # The same operators bound afresh (`with_background`) form the same cotangents.
     OperatorSum(ops::Tuple, forms_p::NamedTuple) = new{typeof(ops)}(ops, forms_p)
 end
+
+forcing_boundary(s::OperatorSum, t) = any(op -> forcing_boundary(op, t), s.ops)
 OperatorSum(ops::AbstractVector) = OperatorSum(Tuple(ops))
 
 structure(s::OperatorSum) = leaf_structure(map(structure, s.ops))
