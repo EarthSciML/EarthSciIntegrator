@@ -654,9 +654,11 @@ function data_initial_state(file, F, tspan, L::DofLayout)
     end
     vm = Dict{String, Int}(String(k) => Int(v) for (k, v) in prob.var_map)
     return Float64[
-        prob.u0[get(vm, n) do
-            throw(ConfigError("the plan's model built with its data has no state element $n"))
-        end] for n in L.names
+        prob.u0[
+            get(vm, n) do
+                throw(ConfigError("the plan's model built with its data has no state element $n"))
+            end,
+        ] for n in L.names
     ]
 end
 
