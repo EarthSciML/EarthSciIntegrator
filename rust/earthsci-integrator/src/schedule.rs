@@ -808,6 +808,10 @@ struct Exec<'a, T: Scalar> {
     adj: Option<Vec<AdjRecord<T>>>,
     /// Output times strictly inside this macro step, for a root leaf.
     stops: Vec<f64>,
+    /// The forcing refresh times among `stops`: a root leaf's step that
+    /// ends at one does not reuse its last stage (operator-interface.md
+    /// §8.4.1).
+    no_reuse: Vec<f64>,
     stop_states: Vec<(f64, Vec<T>)>,
     rhs_calls: u64,
     /// The integral term's increment over this macro step (D26).
@@ -909,6 +913,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     delta,
                     macro_dt: self.macro_dt,
                     stops: &stops,
+                    no_reuse: if is_root { &self.no_reuse } else { &[] },
                     replay,
                     record_stages: self.adj.is_some(),
                     tight_newton: self.tight_newton,
@@ -1067,6 +1072,10 @@ pub struct RunSpec<T: Scalar> {
     /// times and the other tstops (the plan's forcing epochs,
     /// spec/operator-interface.md §8.4.3).
     pub stop_times: Vec<f64>,
+    /// The tstops given besides the output times (a plan's forcing refresh
+    /// times), ascending: a step ending at one does not reuse its last
+    /// stage.
+    pub refresh_times: Vec<f64>,
     /// Macro-step boundaries `t0 … t_f`.
     pub bounds: Vec<f64>,
     /// The reason for each macro step's size.
@@ -1351,11 +1360,13 @@ impl<T: Scalar> RunSpec<T> {
         // Macro-step boundaries t0 + k·dt, the last one t_f exactly by the stop
         // rule of spec/methods.md §10 (multiplied, not accumulated); a boundary
         // within the landing tolerance of a tstop is that tstop (run-config §5).
-        let extra: Vec<f64> = tstops
+        let mut extra: Vec<f64> = tstops
             .iter()
             .copied()
             .filter(|&x| x > tspan.0 && x <= tspan.1)
             .collect();
+        extra.sort_by(f64::total_cmp);
+        extra.dedup();
         let mut stop_times = out_times.clone();
         stop_times.extend(&extra);
         stop_times.sort_by(f64::total_cmp);
@@ -1405,6 +1416,7 @@ impl<T: Scalar> RunSpec<T> {
             macro_dt,
             output_times: out_times,
             stop_times,
+            refresh_times: extra,
             bounds,
             reasons,
             functional,
@@ -1575,6 +1587,7 @@ impl<T: Scalar> RunSpec<T> {
             tape_out: Vec::new(),
             adj: adj.as_ref().map(|_| Vec::new()),
             stops,
+            no_reuse: self.refresh_times.clone(),
             stop_states: Vec::new(),
             rhs_calls: 0,
             integral: 0.0,

@@ -12,17 +12,47 @@
 //! plan is loaded, in order on the calling thread, which is before the first
 //! call whose `t` reaches it; EarthSciIO's prefetch may replace this without
 //! changing a result. A call takes the set of the epoch its `t` falls in
-//! (§8.4.1), so a stage at exactly a boundary reads the new epoch.
+//! (§8.4.1); a stage at exactly a boundary reads the new epoch for a
+//! two-record parameter and the old one for a one-record parameter, and a
+//! step that ends on a boundary does not lend its last stage to the next
+//! (the leaf's `no_reuse`).
 
 use earthsci_ast::esio_provider::{providers_from_document_with, DocumentProviderOptions};
 use earthsci_ast::provider::{CadenceProvider, ForcingBuffer, NativeField, RefreshExecutor};
 use earthsci_ast::{forcing_from_sample, ForcingSlot};
 use earthsci_integrator_planner::numeric::Forcing;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+
+thread_local! {
+    /// The start time of the step the calling thread is taking, NaN outside
+    /// a step: a stage at exactly a refresh time that starts the step takes
+    /// the new epoch, one that ends it the boundary set (§8.4.1).
+    static STEP_START: Cell<f64> = const { Cell::new(f64::NAN) };
+}
+
+/// Marks the calling thread as taking a step from `t` until the guard is
+/// dropped; the leaf holds one around each step it takes.
+pub struct StepGuard {
+    prev: f64,
+}
+
+impl StepGuard {
+    pub fn new(t: f64) -> StepGuard {
+        StepGuard {
+            prev: STEP_START.with(|c| c.replace(t)),
+        }
+    }
+}
+
+impl Drop for StepGuard {
+    fn drop(&mut self) {
+        STEP_START.with(|c| c.set(self.prev));
+    }
+}
 
 /// The run-time options of the data layer (spec/operator-interface.md
 /// §8.4.2 item 1): in neither the run config nor the plan, since none
@@ -87,6 +117,12 @@ pub struct ForcingTimeline {
     /// Epoch `k`'s buffers, for every data-fed parameter some operator
     /// reads.
     epochs: Vec<Forcing>,
+    /// For `k >= 1`, the buffers a stage at exactly `B_k` takes (§8.4.1):
+    /// epoch `k`'s for a parameter with two records per sample, whose
+    /// time blend is continuous there only with the new bracket, and epoch
+    /// `k - 1`'s for one with one record, the limit from the left of its
+    /// piecewise-constant values. Entry 0 is epoch 0's.
+    at_boundary: Vec<Forcing>,
 }
 
 impl ForcingTimeline {
@@ -95,15 +131,58 @@ impl ForcingTimeline {
         ForcingTimeline {
             boundaries: vec![t0],
             epochs: vec![Forcing::empty()],
+            at_boundary: vec![Forcing::empty()],
         }
     }
 
     /// The forcing a call at `t` takes (§8.4.1): epoch `k` with
     /// `B_k <= t < B_{k+1}`, the last epoch for `t` at or after its start
-    /// and the first for `t` before `t0`.
+    /// and the first for `t` before `t0`; except that a stage at exactly a
+    /// later boundary `B_k` of a step that does not start there (a stage
+    /// at the right end of the step that ends on it) takes each parameter's
+    /// buffer by its records per sample (`at_boundary`).
     pub fn at(&self, t: f64) -> &Forcing {
-        let k = self.boundaries.partition_point(|&b| b <= t);
-        &self.epochs[k.saturating_sub(1)]
+        let k = self
+            .boundaries
+            .partition_point(|&b| b <= t)
+            .saturating_sub(1);
+        let starts_here = STEP_START.with(|c| c.get()) == t;
+        if k >= 1 && self.boundaries[k] == t && !starts_here {
+            &self.at_boundary[k]
+        } else {
+            &self.epochs[k]
+        }
+    }
+
+    /// Builds the boundary sets from the epochs: a parameter in `two` (two
+    /// records per sample) takes the new epoch's buffer, any other the old
+    /// one's.
+    fn with_boundaries(
+        boundaries: Vec<f64>,
+        epochs: Vec<Forcing>,
+        two: &BTreeSet<String>,
+    ) -> ForcingTimeline {
+        let mut at_boundary = vec![epochs[0].clone()];
+        for k in 1..epochs.len() {
+            let bufs = epochs[k]
+                .bufs()
+                .iter()
+                .map(|(name, new)| {
+                    let b = if two.contains(name) {
+                        new.clone()
+                    } else {
+                        epochs[k - 1].bufs()[name].clone()
+                    };
+                    (name.clone(), b)
+                })
+                .collect();
+            at_boundary.push(Forcing::new(bufs));
+        }
+        ForcingTimeline {
+            boundaries,
+            epochs,
+            at_boundary,
+        }
     }
 
     /// The epoch starts after `t0`: the `forcing_refresh` tstops
@@ -252,7 +331,12 @@ impl ModelData {
             boundaries.push(t);
             epochs.push(bufs(&buf, t)?);
         }
-        Ok(ForcingTimeline { boundaries, epochs })
+        let two: BTreeSet<String> = read
+            .iter()
+            .filter(|(_, f)| f.records_per_sample == 2)
+            .map(|(n, _)| n.clone())
+            .collect();
+        Ok(ForcingTimeline::with_boundaries(boundaries, epochs, &two))
     }
 
     /// EarthSciAST's Problem of the model over `tspan` with the providers of
@@ -291,21 +375,35 @@ mod tests {
     use super::*;
 
     /// §8.4.1: a call takes the epoch its `t` falls in; a stage at exactly
-    /// a boundary takes the new epoch, and `t_f`'s epoch is the last.
+    /// a later boundary takes the new epoch for a two-record parameter and
+    /// the old one for a one-record parameter; `t_f`'s epoch is the last.
     #[test]
     fn epoch_selection() {
-        let f = |x: f64| Forcing::new(BTreeMap::from([("P".to_string(), Arc::from(vec![x]))]));
-        let tl = ForcingTimeline {
-            boundaries: vec![0.0, 10.0, 20.0],
-            epochs: vec![f(0.0), f(1.0), f(2.0)],
+        let f = |x: f64| {
+            Forcing::new(BTreeMap::from([
+                ("P".to_string(), Arc::from(vec![x])),
+                ("Q".to_string(), Arc::from(vec![-x])),
+            ]))
         };
-        let at = |t: f64| tl.at(t).bufs()["P"][0];
-        assert_eq!(at(-1.0), 0.0);
-        assert_eq!(at(0.0), 0.0);
-        assert_eq!(at(9.999), 0.0);
-        assert_eq!(at(10.0), 1.0);
-        assert_eq!(at(19.0), 1.0);
-        assert_eq!(at(20.0), 2.0);
+        let tl = ForcingTimeline::with_boundaries(
+            vec![0.0, 10.0, 20.0],
+            vec![f(0.0), f(1.0), f(2.0)],
+            &BTreeSet::from(["P".to_string()]),
+        );
+        let at = |t: f64| (tl.at(t).bufs()["P"][0], tl.at(t).bufs()["Q"][0]);
+        assert_eq!(at(-1.0), (0.0, 0.0));
+        assert_eq!(at(0.0), (0.0, 0.0));
+        assert_eq!(at(9.999), (0.0, 0.0));
+        assert_eq!(at(10.0), (1.0, 0.0));
+        assert_eq!(at(10.001), (1.0, -1.0));
+        assert_eq!(at(19.0), (1.0, -1.0));
+        assert_eq!(at(20.0), (2.0, -1.0));
+        // The first stage of a step that starts on a boundary.
+        {
+            let _g = StepGuard::new(10.0);
+            assert_eq!(at(10.0), (1.0, -1.0));
+        }
+        assert_eq!(at(10.0), (1.0, 0.0));
         assert_eq!(tl.refresh_times(), [10.0, 20.0]);
         assert_eq!(ForcingTimeline::empty(3.0).refresh_times(), [] as [f64; 0]);
     }

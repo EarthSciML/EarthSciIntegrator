@@ -360,6 +360,11 @@ pub struct LeafCall<'a> {
     pub macro_dt: f64,
     /// Interior stops in `(t0, t1)`, ascending (output times).
     pub stops: &'a [f64],
+    /// Stops at which the forcing changes (refresh times), ascending: a
+    /// step ending at one does not reuse its last stage as the next step's
+    /// first, which is evaluated with the new epoch's forcing
+    /// (operator-interface.md §8.4.1).
+    pub no_reuse: &'a [f64],
     /// Replay: the recorded steps and clip masks; the controller is off.
     pub replay: Option<Replay<'a>>,
     /// Keep the stage values of every accepted step for the adjoint.
@@ -774,6 +779,9 @@ impl<T: Scalar> LeafSpec<T> {
             }
             u.copy_from_slice(w.unew());
         }
+        if stop.is_some_and(|ts| call.no_reuse.binary_search_by(|x| x.total_cmp(&ts)).is_ok()) {
+            *cache = None;
+        }
         if let Some(mk) = clip {
             out.clips.push((out.steps.len(), mk));
         }
@@ -928,6 +936,10 @@ impl<T: Scalar> LeafSpec<T> {
                     want_err: bool|
          -> Attempt {
             let pb = self.params(call.p, pbuf, h, call);
+            // The forcing of a stage at exactly a refresh time depends on
+            // whether the step starts or ends there (operator-interface.md
+            // §8.4.1).
+            let _step = crate::forcing::StepGuard::new(t);
             let reuse = cache.filter(|&(_, hb)| !leaf_bound || hb == h);
             let mut f = |o: &mut [T], uu: &[T], tt: f64| b.rhs(o, uu, pb, tt);
             let tol = &self.tol;

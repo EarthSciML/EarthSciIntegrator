@@ -43,21 +43,12 @@ fn copy_dir(from: &Path, to: &Path) {
 
 /// M2 cases that fail for a cause outside the Rust implementation, with
 /// the cause.
-const KNOWN_FAILURES: &[(&str, &str)] = &[
-    (
-        "m2.data_points.tsit5",
-        "stations.csv leaves the filtered rates blank; EarthSciIO's csv reader reads a column \
+const KNOWN_FAILURES: &[(&str, &str)] = &[(
+    "m2.data_points.tsit5",
+    "stations.csv leaves the filtered rates blank; EarthSciIO's csv reader reads a column \
          with a blank cell as text (a blank numeric cell is an error, never NaN, in every \
          language), and EarthSciAST refuses a text forcing",
-    ),
-    (
-        "m2.data_monthly.tsit5",
-        "operator-interface.md §8.4.1 gives a stage at exactly an epoch boundary the new \
-         epoch, which keeps a two-record time blend continuous but puts the next month's \
-         rate into the c = 1 stages of the step that ends on a month boundary of this \
-         piecewise-constant forcing (2.3e-8 against rtol 1e-10)",
-    ),
-];
+)];
 
 #[test]
 fn m2_conformance_cases() {
