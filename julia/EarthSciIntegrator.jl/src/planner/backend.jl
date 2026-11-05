@@ -600,8 +600,11 @@ function derived_and_validation(b::DiffBackend, ctx)
     for o in names
         op = ctx.ops[o]
         for (kind, d) in (("rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op)))
+            # SHA's `sha256(::String)` re-hashes the whole string for every
+            # block (its copy's alias check takes the string's `objectid`), so a
+            # document of megabytes takes minutes; a byte vector does not.
             derived["derived/$o.$kind.esm"] = Dict{String, Any}(
-                "kind" => kind, "operator" => o, "sha256" => bytes2hex(sha256(d.bytes))
+                "kind" => kind, "operator" => o, "sha256" => bytes2hex(sha256(Vector{UInt8}(d.bytes)))
             )
         end
     end
