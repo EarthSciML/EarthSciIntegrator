@@ -43,12 +43,7 @@ fn copy_dir(from: &Path, to: &Path) {
 
 /// M2 cases that fail for a cause outside the Rust implementation, with
 /// the cause.
-const KNOWN_FAILURES: &[(&str, &str)] = &[(
-    "m2.data_points.tsit5",
-    "stations.csv leaves the filtered rates blank; EarthSciIO's csv reader reads a column \
-         with a blank cell as text (a blank numeric cell is an error, never NaN, in every \
-         language), and EarthSciAST refuses a text forcing",
-)];
+const KNOWN_FAILURES: &[(&str, &str)] = &[];
 
 #[test]
 fn m2_conformance_cases() {

@@ -142,12 +142,13 @@ def write_monthly(root):
 # --------------------------------------------------------------------------
 # data_points (§4.6)
 
+# The two records the filter drops carry NaN: EarthSciIO's CSV readers never read a blank cell as NaN.
 STATIONS = [
     ("1.0e-3", "a"),
-    ("", "b"),
+    ("NaN", "b"),
     ("2.0e-3", "b"),
     ("5.0e-4", "c"),
-    ("", "a"),
+    ("NaN", "a"),
     ("3.0e-3", "a"),
 ]
 POINTS_T0, POINTS_TF = 0.0, 3600.0
@@ -157,7 +158,7 @@ POINTS_SAVEAT = [600.0 * k for k in range(1, 7)]
 def points_exact(t):
     sums = {"a": 0.0, "b": 0.0, "c": 0.0}
     for r, c in STATIONS:
-        if r:
+        if r != "NaN":
             sums[c] += float(r)
     return [t * sums[c] for c in ("a", "b", "c")]
 
