@@ -1,6 +1,7 @@
 //! The forcing epochs of a planned run (spec/operator-interface.md §8.4):
 //! the adjoint takes, at every evaluation, the buffers its forward step took
-//! (§8.4.1, D88; spec/adjoint.md §2.4, §3).
+//! (§8.4.1, D88; spec/adjoint.md §2.4, §3), and the providers' clock is
+//! converted to model time whatever origin they chose (§8.4.2 item 2).
 //!
 //! The models are written here, into the target's directory; the data are
 //! the monthly inventory files of the `data_monthly` toy
@@ -209,5 +210,73 @@ fn adjoint_takes_the_forward_steps_forcing() {
                 other => panic!("{alg} {k}: {other:?}"),
             }
         }
+    }
+}
+
+/// §8.4.2 item 2: a model with no `domain.temporal` counts time from the
+/// Unix epoch, while EarthSciAST's providers then count from the run
+/// window's start. Run from day 19 to day 69 of 1970, the epochs start at
+/// day 19 and at the month starts, 1970-02-01 (day 31) and 1970-03-01 (day
+/// 59), and each holds that month's record (`E_{m,i}`, file cells 2–4).
+#[test]
+fn provider_clock_without_a_time_origin() {
+    let doc = json!({
+        "esm": "1.3.0", "metadata": {"name": "no_origin"},
+        "index_sets": {"x": {"kind": "interval", "size": 3}},
+        "data_sources": {"Inventory": inventory_source("1970-01-01T00:00:00Z")},
+        "models": {"Emis": {
+            "variables": {
+                "c": {"type": "unknown", "units": "1", "shape": ["x"], "default": 0.0},
+                "E": e_param(),
+            },
+            "equations": [{
+                "lhs": {"op": "D", "args": ["c"], "wrt": "t"},
+                "rhs": over_cells(ix("Emis.E")),
+            }],
+        }},
+    });
+    let tspan = (19.0 * DAY, 69.0 * DAY);
+    let ctl = json!({"dt_scope": "global", "reltol": 1e-8, "abstol": 1e-12});
+    let (lp, _, pj) = planned(
+        "no_origin",
+        &doc,
+        json!({"leaf": "emis", "alg": "Tsit5", "control": ctl}),
+        50.0 * DAY,
+        tspan,
+    );
+    assert_eq!(
+        lp.timeline.boundaries(),
+        [19.0 * DAY, 31.0 * DAY, 59.0 * DAY]
+    );
+    let e = |m: f64, i: f64| 1e-6 * (m + i) / 86400.0;
+    for (k, m) in [1.0, 2.0, 3.0].into_iter().enumerate() {
+        let got = &lp.timeline.epoch(k).bufs()["Emis.E"];
+        let want = [e(m, 2.0), e(m, 3.0), e(m, 4.0)];
+        for (g, w) in got.iter().zip(want) {
+            assert!(
+                (g - w).abs() <= 1e-15 * w,
+                "epoch {k}: {got:?}, want {want:?}"
+            );
+        }
+    }
+    // The run integrates the right months: c_i(t_f) = Σ_m E_{m,i+1} × the
+    // time spent in month m.
+    let rc = RunConfig::from_value(&json!({
+        "esm_integrator": "0.1.0", "model": "no_origin.esm",
+        "schedule": pj["schedule"], "step": pj["step"],
+    }))
+    .unwrap();
+    let tstops = lp.timeline.refresh_times().to_vec();
+    let s = RunSpec::with_problem_and_tstops(lp.problem, &rc, tspan, None, &tstops).unwrap();
+    let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    let u1 = fwd.final_state();
+    for (i, &ci) in u1.iter().enumerate() {
+        let ii = i as f64 + 2.0;
+        let want =
+            e(1.0, ii) * (12.0 * DAY) + e(2.0, ii) * (28.0 * DAY) + e(3.0, ii) * (10.0 * DAY);
+        assert!(
+            (ci - want).abs() < 1e-9 * want,
+            "c[{i}] = {ci}, want {want}"
+        );
     }
 }

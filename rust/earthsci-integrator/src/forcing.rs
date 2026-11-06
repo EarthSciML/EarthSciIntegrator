@@ -270,11 +270,63 @@ impl ModelData {
         })
     }
 
+    /// The run window `tspan` (model seconds) as the instants EarthSciIO
+    /// bounds a provider's anchors by (§8.4.2 item 2): `[origin + t0,
+    /// origin + t_f + 1 s)`. EarthSciIO's window is half-open and read to
+    /// the millisecond, so a refresh time at exactly `t_f`, which §8.4.3
+    /// counts (the last epoch is `[t_f, t_f]`), is kept by moving the stop
+    /// one second past `t_f`; refresh times after `t_f` are dropped by
+    /// [`timeline`](Self::timeline).
+    fn window(
+        &self,
+        tspan: (f64, f64),
+    ) -> Result<(time::OffsetDateTime, time::OffsetDateTime), String> {
+        let at = |s: f64| {
+            let ns = ((self.origin + s) * 1e9).round() as i128;
+            time::OffsetDateTime::from_unix_timestamp_nanos(ns)
+                .map_err(|e| format!("run window bound {s} s: {e}"))
+        };
+        Ok((at(tspan.0)?, at(tspan.1 + 1.0)?))
+    }
+
+    /// The origin of the providers' clock, in Unix seconds, for the run
+    /// window `tspan` (§8.4.2 item 2). `providers_from_document` counts
+    /// time from the model's `domain.temporal.reference_time`, else its
+    /// `start`, else the start of the window it is given, so it agrees with
+    /// the model's time origin (D74) only when the model declares one: a
+    /// model without `domain.temporal` counts from the Unix epoch, its
+    /// providers from `origin + t0`. This is EarthSciAST's rule, followed
+    /// here so that every time passed to or read from a provider can be
+    /// converted.
+    pub fn provider_origin(&self, tspan: (f64, f64)) -> Result<f64, String> {
+        if let Some(temporal) = self
+            .doc
+            .pointer("/domain/temporal")
+            .and_then(serde_json::Value::as_object)
+        {
+            for key in ["reference_time", "start"] {
+                match temporal.get(key) {
+                    None => {}
+                    Some(serde_json::Value::String(s)) if s.is_empty() => {}
+                    Some(v) => {
+                        let domain = serde_json::json!({ "temporal": { key: v } });
+                        return earthsci_ast::time_origin(&domain)
+                            .map_err(|e| format!("the providers' time origin: {e}"));
+                    }
+                }
+            }
+        }
+        let (start, _) = self.window(tspan)?;
+        Ok(start.unix_timestamp() as f64 + f64::from(start.nanosecond()) * 1e-9)
+    }
+
     /// One provider per parameter of `names`, keyed by its flattened name,
     /// built by EarthSciAST's `providers_from_document` from the model's own
     /// declarations, restricted to the sources `names` read, over the run
     /// window `tspan` (model seconds). A parameter it gives no provider for
-    /// is an error.
+    /// is an error. The providers count time from
+    /// [`provider_origin`](Self::provider_origin), not from the model's
+    /// origin.
     pub fn providers(
         &self,
         names: &BTreeMap<String, PlanForcing>,
@@ -285,11 +337,6 @@ impl ModelData {
             return Ok(HashMap::new());
         }
         let sources: BTreeSet<String> = names.values().map(|f| f.source.clone()).collect();
-        let at = |s: f64| {
-            let ns = ((self.origin + s) * 1e9).round() as i128;
-            time::OffsetDateTime::from_unix_timestamp_nanos(ns)
-                .map_err(|e| format!("run window bound {s} s: {e}"))
-        };
         let cache = opts.cache_dir.clone().unwrap_or_else(earthsciio::data_dir);
         let built = providers_from_document_with(
             &self.doc,
@@ -297,12 +344,7 @@ impl ModelData {
             &DocumentProviderOptions {
                 loaders: Some(sources.into_iter().collect()),
                 url_overrides: opts.url_overrides.clone(),
-                // EarthSciIO's window is half-open, so a refresh time at
-                // exactly t_f would be left out; §8.4.3 counts it (the last
-                // epoch is [t_f, t_f]). The end is moved past t_f by a
-                // millisecond, less than any cadence, and refresh times
-                // after t_f are dropped by the caller.
-                window: Some((at(tspan.0)?, at(tspan.1 + 1e-3)?)),
+                window: Some(self.window(tspan)?),
                 ..Default::default()
             },
         )
@@ -359,15 +401,19 @@ impl ModelData {
         };
         exec.materialize_const(&buf)
             .map_err(|e| format!("reading const data: {e}"))?;
-        exec.sample_at(tspan.0, &buf)
+        // A model time t is the providers' t + shift (§8.4.2 item 2).
+        let shift = self.provider_origin(tspan)? - self.origin;
+        exec.sample_at(tspan.0 - shift, &buf)
             .map_err(|e| format!("sampling the data at t0 = {}: {e}", tspan.0))?;
         let mut boundaries = vec![tspan.0];
         let mut epochs = vec![bufs(&buf, tspan.0)?];
-        for t in exec.refresh_times() {
+        for tp in exec.refresh_times() {
+            let t = tp + shift;
             if t <= tspan.0 || t > tspan.1 {
                 continue;
             }
-            exec.refresh_at(t, &buf)
+            // The provider's own refresh time, so it is recognized as one.
+            exec.refresh_at(tp, &buf)
                 .map_err(|e| format!("refreshing the data at t = {t}: {e}"))?;
             boundaries.push(t);
             epochs.push(bufs(&buf, t)?);
