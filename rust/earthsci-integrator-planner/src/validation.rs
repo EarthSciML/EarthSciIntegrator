@@ -154,8 +154,8 @@ pub fn band_model(
             up[c] = u[c] + step[c];
             um[c] = u[c] - step[c];
         }
-        let fp = f.eval(dofs, &up, s.t)?;
-        let fm = f.eval(dofs, &um, s.t)?;
+        let fp = f.eval(dofs, &up, s.t, &s.forcing)?;
+        let fm = f.eval(dofs, &um, s.t, &s.forcing)?;
         for r in (0..n).filter(|r| rows[*r]) {
             let big_f = fp[r].abs().max(fm[r].abs());
             let col = cols_of

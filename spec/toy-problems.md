@@ -188,7 +188,7 @@ The runtimes' own tests add the check of spec/operator-interface.md §8.4.2 item
 
 - state `c[x]`, $c(0) = 0$; one operator `sources`, pointwise; $c_i' = \sum_j \text{rate}_j\,[\text{cell}_j = i]$, a `faq` sum over `stn` of `ifelse` on the code (it reads no state across cells, so the operator is pointwise);
 - source `Stations`: `kind` `points`, no `temporal` (`const`), `url_template` `data_points/stations.csv`, `metadata.esio_format` `"csv"`, `record_filter` `{"require_finite": ["rate"]}`, `extent` `{"metaparameter": "N_STN"}`; data-fed `Src.rate[stn]` (`file_variable` `rate`, `default` 1.0e-3) and `Src.cell[stn]` (`file_variable` `cell`, `codes` mapping the text codes `"a"`, `"b"`, `"c"` to 1, 2, 3, `default` 1.0).
-- **Data.** `stations.csv`, six rows, two with a blank `rate`, so four survive the filter and the discovered extent equals the planned `N_STN`.
+- **Data.** `stations.csv`, six rows, two with a `rate` of `NaN` (not blank: EarthSciIO's CSV readers never read a blank cell as `NaN`, so a blank would make the column text), so four survive the filter and the discovered extent equals the planned `N_STN`.
 - **Exact solution.** $c_i(t) = t \sum_{j:\,\text{cell}_j = i} \text{rate}_j$.
 - **Cases.** Interval $[0, 3600]$, `output.saveat` 600. `m2.data_points.tsit5`: one adaptive `Tsit5` leaf; `reference` at `rtol` 1e-12, `cross_language`. The runtimes' tests add a variant run with `N_STN` bound to 5 at load, which must be refused before the first step for the extent mismatch (spec/operator-interface.md §8.4.2 item 4).
 

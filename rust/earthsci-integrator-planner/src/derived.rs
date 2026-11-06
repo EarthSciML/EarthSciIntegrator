@@ -191,7 +191,12 @@ pub fn live_observeds(info: &ModelInfo, names: &BTreeSet<String>) -> BTreeSet<St
 /// The right-hand-side document's component tree: every state and parameter, the live
 /// observeds, the state equations (right-hand sides from `rhs`), the live
 /// observeds' definitions and every `ic` equation (§6.1.1–§6.1.2).
-fn tree(info: &ModelInfo, live: &BTreeSet<String>, rhs: &dyn Fn(usize, &str) -> Value) -> Tree {
+fn tree(
+    info: &ModelInfo,
+    live: &BTreeSet<String>,
+    forcing: &BTreeSet<String>,
+    rhs: &dyn Fn(usize, &str) -> Value,
+) -> Tree {
     let flat = &info.flat;
     let mut tree = Tree::default();
     for s in &info.states {
@@ -199,6 +204,24 @@ fn tree(info: &ModelInfo, live: &BTreeSet<String>, rhs: &dyn Fn(usize, &str) -> 
     }
     for (p, v) in &flat.parameters {
         let shape = v.shape.clone().unwrap_or_default();
+        // §6.3: an unused data-fed parameter is not declared; one this
+        // document reads is declared with its `data` rule; any other is an
+        // ordinary parameter.
+        if let Some(d) = info.data_fed.get(p) {
+            if !info.used.contains(p) && !forcing.contains(p) {
+                continue;
+            }
+            if forcing.contains(p) {
+                let mut var = variable_json(v, &shape);
+                var["update"] = json!({
+                    "kind": "data",
+                    "source": d.source,
+                    "from": {"file_variable": d.file_variable},
+                });
+                tree.declare(p, var);
+                continue;
+            }
+        }
         tree.declare(p, variable_json(v, &shape));
     }
     for o in live {
@@ -227,8 +250,37 @@ fn ic_equation(x: &str, e: &Expr) -> Value {
     json!({"lhs": {"op": "ic", "args": [x]}, "rhs": expr_json(e)})
 }
 
+/// The URL template of a derived document's data source stub (§6.3).
+pub const FORCING_STUB_URL: &str = "{esm_integrator_forcing}";
+
+/// A derived document's `data_sources` (§6.3): one stub per source named by
+/// a data-fed parameter of `forcing`; `None` when `forcing` is empty.
+pub fn data_sources_stub(info: &ModelInfo, forcing: &BTreeSet<String>) -> Option<Value> {
+    let stubs: BTreeMap<&str, Value> = forcing
+        .iter()
+        .filter_map(|p| info.data_fed.get(p))
+        .map(|d| {
+            (
+                d.source.as_str(),
+                json!({"kind": d.source_kind, "source": {"url_template": FORCING_STUB_URL}}),
+            )
+        })
+        .collect();
+    (!stubs.is_empty()).then(|| json!(stubs))
+}
+
+/// The data-fed parameters a document of terms with these `names` reads:
+/// those among the names and, transitively, the names of the observeds'
+/// definitions (§5.3).
+pub fn forcing_of(info: &ModelInfo, names: &BTreeSet<String>) -> BTreeSet<String> {
+    info.close_over_observeds(names)
+        .into_iter()
+        .filter(|n| info.data_fed.contains_key(n))
+        .collect()
+}
+
 /// The top-level keys of a derived document (§6.1).
-fn document(info: &ModelInfo, name: &str, models: Value) -> Value {
+fn document(info: &ModelInfo, name: &str, models: Value, data_sources: Option<Value>) -> Value {
     let sets: Map<String, Value> = info
         .index_sets
         .iter()
@@ -242,6 +294,9 @@ fn document(info: &ModelInfo, name: &str, models: Value) -> Value {
         out.insert("domain".into(), d.clone());
     }
     out.insert("models".into(), models);
+    if let Some(d) = data_sources {
+        out.insert("data_sources".into(), d);
+    }
     Value::Object(out)
 }
 
@@ -508,6 +563,7 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u6
         names.extend(t.names.iter().cloned());
     }
     let live = live_observeds(info, &names);
+    let forcing = forcing_of(info, &names);
     let rhs = |i: usize, x: &str| {
         let ts = match by_eq.get(&i) {
             Some(ts) if probe.is_none() => ts.as_slice(),
@@ -515,7 +571,7 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u6
         };
         state_rhs(info, i, x, ts)
     };
-    let mut tree = tree(info, &live, &rhs);
+    let mut tree = tree(info, &live, &forcing, &rhs);
     let mut templates = Vec::new();
     if let Some(min_nodes) = probe {
         // Subexpressions the terms share, written once each (§5.2.2).
@@ -541,7 +597,7 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u6
             .collect();
         models[PROBE_COMPONENT]["expression_templates"] = Value::Object(tpl);
     }
-    document(info, name, models)
+    document(info, name, models, data_sources_stub(info, &forcing))
 }
 
 /// The Jacobian document of an operator (§6.2): EarthSciASTDiff's

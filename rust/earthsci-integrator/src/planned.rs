@@ -16,11 +16,12 @@
 //! parameters in code-point order of their names, at their defaults.
 
 use crate::config::RunConfig;
+use crate::forcing::{plan_forcing, DataOptions, ForcingTimeline, ModelData, PlanForcing};
 use crate::operator::{Call, JacOverScratch, MatrixStorage, Operator, Structure};
 use crate::toy::ToyProblem;
 use crate::{Error, Scalar};
 use earthsci_ast::{esm_problem, rhs_program, Compiler, ProblemInput, ProblemOptions, RhsProgram};
-use earthsci_integrator_planner::numeric::{band_field, band_scatter, Dofs, Program};
+use earthsci_integrator_planner::numeric::{band_field, band_scatter, Dofs, Forcing, Program};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -59,32 +60,70 @@ fn program_dofs(prog: &RhsProgram, skip: impl Fn(&str) -> bool) -> Dofs {
     )
 }
 
+/// Where a document's parameter takes its value from.
+#[derive(Debug, Clone, Copy)]
+enum ParamSource {
+    /// The problem's `p`, at this index.
+    P(usize),
+    /// A fixed value: a used data-fed parameter the document declares as an
+    /// ordinary parameter, which only `ic` equations read, at its `default`
+    /// (spec/plan.md §6.3). It is not in `p` (§8.2).
+    Fixed(f64),
+}
+
 /// A derived document's right-hand side (§8.1) and, for each of its
-/// parameters, the parameter's index in the problem's `p`.
+/// parameters, where its value comes from.
 struct Document {
     prog: Program,
-    p_index: Vec<usize>,
+    p_index: Vec<ParamSource>,
+    /// The forcing epochs of the run (§8.4).
+    timeline: Arc<ForcingTimeline>,
 }
 
 impl Document {
-    fn new(prog: RhsProgram, dofs: &Dofs, params: &[String]) -> Result<Document, String> {
-        let p_index =
-            prog.parameters()
-                .iter()
-                .map(|ps| {
-                    params.iter().position(|q| *q == ps.name).ok_or_else(|| {
-                        format!("its parameter {} is not one of the plan's", ps.name)
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+    fn new(
+        prog: RhsProgram,
+        dofs: &Dofs,
+        params: &[String],
+        forcing: &BTreeMap<String, PlanForcing>,
+        timeline: Arc<ForcingTimeline>,
+    ) -> Result<Document, String> {
+        let p_index = prog
+            .parameters()
+            .iter()
+            .map(|ps| match params.iter().position(|q| *q == ps.name) {
+                Some(i) => Ok(ParamSource::P(i)),
+                None if forcing.contains_key(&ps.name) => ps
+                    .default
+                    .map(ParamSource::Fixed)
+                    .ok_or_else(|| format!("its data-fed parameter {} has no default", ps.name)),
+                None => Err(format!(
+                    "its parameter {} is not one of the plan's",
+                    ps.name
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // §8.4.1: every forcing slot is a data-fed parameter of the plan.
+        let prog = Program::from_program(prog, dofs)?;
+        if let Some(n) = prog
+            .forcing_slot_names()
+            .into_iter()
+            .find(|n| !forcing.contains_key(*n))
+        {
+            return Err(format!(
+                "its forcing slot {n} is not a data-fed parameter of the plan's forcing"
+            ));
+        }
         Ok(Document {
-            prog: Program::from_program(prog, dofs)?,
+            prog,
             p_index,
+            timeline,
         })
     }
 
     /// Evaluates the document's right-hand side at the canonical state `u`
-    /// and hands its program-layout result to `g`.
+    /// with the forcing of the epoch `t` falls in (§8.4.1) and hands its
+    /// program-layout result to `g`.
     fn eval<T: Scalar, R>(
         &self,
         u: &[T],
@@ -92,8 +131,28 @@ impl Document {
         t: f64,
         g: impl FnOnce(&[f64]) -> R,
     ) -> Result<R, String> {
-        self.prog
-            .eval_with(|j| u[j].to_f64(), |i| p[self.p_index[i]], t, g)
+        self.eval_with(u, p, t, self.timeline.at(t), g)
+    }
+
+    /// [`Document::eval`] with the forcing `forcing`.
+    fn eval_with<T: Scalar, R>(
+        &self,
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        forcing: &Forcing,
+        g: impl FnOnce(&[f64]) -> R,
+    ) -> Result<R, String> {
+        self.prog.eval_with(
+            |j| u[j].to_f64(),
+            |i| match self.p_index[i] {
+                ParamSource::P(k) => p[k],
+                ParamSource::Fixed(x) => x,
+            },
+            t,
+            forcing,
+            g,
+        )
     }
 }
 
@@ -258,6 +317,16 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
         r.dedup();
         Some(r)
     }
+    fn forcing_refresh_times(&self) -> Vec<f64> {
+        // The run's epochs are shared by every operator that reads data
+        // (§8.4.3); one that reads none adds no stops.
+        if self.rhs.prog.forcing_slot_names().is_empty()
+            && self.jacobian.prog.forcing_slot_names().is_empty()
+        {
+            return Vec::new();
+        }
+        self.rhs.timeline.refresh_times().to_vec()
+    }
     fn provides(&self, call: Call) -> bool {
         // ft, vjp_p and the second-order calls wait for U17, U7 and U8
         // (operator-interface.md §8.3).
@@ -352,6 +421,10 @@ pub struct LoadedPlan<T: Scalar> {
     /// The canonical DOFs of each state, by its flattened name, for writing
     /// results in another layout.
     pub state_dofs: BTreeMap<String, Vec<usize>>,
+    /// The forcing epochs (spec/operator-interface.md §8.4.3); one empty
+    /// epoch for a plan without `forcing`. Its refresh times are the
+    /// `forcing_refresh` tstops.
+    pub timeline: Arc<ForcingTimeline>,
 }
 
 fn refuse(op: &str, doc: &str, m: impl std::fmt::Display) -> Error {
@@ -408,8 +481,15 @@ fn schedule_operators(node: &Value, out: &mut Vec<(String, Role)>) {
 }
 
 /// Reads the plan directory `dir` and builds every operator its schedule
-/// names (operator-interface.md §8).
+/// names (operator-interface.md §8). A plan with `forcing` needs the data
+/// options' model: see [`load_plan_with`].
 pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
+    load_plan_with(dir, &DataOptions::default())
+}
+
+/// [`load_plan`], fetching the data of a plan with `forcing` as `data`
+/// says (operator-interface.md §8.4).
+pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<LoadedPlan<T>, Error> {
     let cfg = |m: String| Error::Config(m);
     let text = std::fs::read_to_string(dir.join("plan.json"))
         .map_err(|e| cfg(format!("{}: {e}", dir.join("plan.json").display())))?;
@@ -464,8 +544,19 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
         /// one (§8.3).
         ncells: Option<usize>,
     }
+    let forcing = plan_forcing(&plan).map_err(cfg)?;
     let mut model: Option<Model> = None;
-    let mut operators: Vec<Arc<dyn Operator<T>>> = Vec::new();
+    // Every operator's programs first: their forcing slots are what the
+    // data layer fills (§8.4.2 item 3).
+    struct Built {
+        name: String,
+        rhs_path: String,
+        jac_path: String,
+        rhs_prog: RhsProgram,
+        jac_prog: RhsProgram,
+    }
+    let mut built = Vec::new();
+    let mut slots: BTreeMap<String, earthsci_ast::ForcingSlot> = BTreeMap::new();
     for (name, _) in &names {
         let entry = &plan["operators"][name];
         if !entry.is_object() {
@@ -499,16 +590,50 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
                 "its states are not those of the right-hand-side document",
             ));
         }
+        // §8.4.1: a slot names a data-fed parameter of the plan, with its
+        // shape.
+        let sizes =
+            index_set_sizes(&dir.join(&rhs_path)).map_err(|e| refuse(name, &rhs_path, e))?;
+        for (prog, path) in [(&rhs_prog, &rhs_path), (&jac_prog, &jac_path)] {
+            for slot in prog.forcing_slots() {
+                let Some(f) = forcing.get(&slot.name) else {
+                    return Err(refuse(
+                        name,
+                        path,
+                        format!(
+                            "its forcing slot {} is not in the plan's forcing",
+                            slot.name
+                        ),
+                    ));
+                };
+                let want: Option<Vec<usize>> =
+                    f.shape.iter().map(|x| sizes.get(x).copied()).collect();
+                if want.as_ref() != Some(&slot.shape) {
+                    return Err(refuse(
+                        name,
+                        path,
+                        format!(
+                            "its forcing slot {} has the shape {:?}, the plan's forcing {:?}",
+                            slot.name, slot.shape, f.shape
+                        ),
+                    ));
+                }
+                slots.insert(slot.name.clone(), slot.clone());
+            }
+        }
         match &model {
             None => {
                 let p = rhs_prog
                     .parameter_vector(&HashMap::new())
                     .map_err(|e| refuse(name, &rhs_path, format!("parameters: {e}")))?;
-                let params = rhs_prog
+                // p is the scalar parameters other than data-fed ones (§8.2).
+                let (params, p): (Vec<String>, Vec<f64>) = rhs_prog
                     .parameters()
                     .iter()
                     .map(|ps| ps.name.clone())
-                    .collect();
+                    .zip(p)
+                    .filter(|(n, _)| !forcing.contains_key(n))
+                    .unzip();
                 let u0 = initial_state(&rhs_prob, &this).map_err(|e| refuse(name, &rhs_path, e))?;
                 let shapes = state_shapes(&dir.join(&rhs_path), &this)
                     .map_err(|e| refuse(name, &rhs_path, e))?;
@@ -535,15 +660,69 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
             }
             Some(_) => {}
         }
-        let m = model.as_ref().expect("set above");
-        let rhs =
-            Document::new(rhs_prog, &m.dofs, &m.params).map_err(|e| refuse(name, &rhs_path, e))?;
-        let jacobian =
-            Document::new(jac_prog, &m.dofs, &m.params).map_err(|e| refuse(name, &jac_path, e))?;
+        built.push(Built {
+            name: name.clone(),
+            rhs_path,
+            jac_path,
+            rhs_prog,
+            jac_prog,
+        });
+    }
+    let mut m = model.expect("at least one operator");
+
+    // The data (§8.4): the plan's model, its providers, the forcing epochs
+    // and, when an `ic` equation reads data, the initial state at t0.
+    let timeline = if forcing.is_empty() {
+        Arc::new(ForcingTimeline::empty(tspan.0))
+    } else {
+        let model_path = data.model.as_ref().ok_or_else(|| {
+            cfg("the plan has forcing, so building it needs its model (DataOptions::model, the plan's inputs.model)".into())
+        })?;
+        let bytes =
+            std::fs::read(model_path).map_err(|e| cfg(format!("{}: {e}", model_path.display())))?;
+        let want = plan["inputs"]["model"]["sha256"]
+            .as_str()
+            .unwrap_or_default();
+        let got = earthsci_integrator_planner::settings::sha256_hex(&bytes);
+        if got != want {
+            return Err(cfg(format!(
+                "the model {} has the hash {got}, the plan's inputs.model {want}: the plan is stale",
+                model_path.display()
+            )));
+        }
+        let md = ModelData::load(model_path).map_err(cfg)?;
+        let read: BTreeMap<String, PlanForcing> = forcing
+            .iter()
+            .filter(|(n, _)| slots.contains_key(*n))
+            .map(|(n, f)| (n.clone(), f.clone()))
+            .collect();
+        let timeline = md
+            .timeline(&read, &slots, tspan, data)
+            .map_err(|e| cfg(format!("the data: {e}")))?;
+        if md.ic_reads(&forcing).map_err(cfg)? {
+            // §8.4.5: the initial state of EarthSciAST's Problem of the model
+            // with the providers, permuted into canonical order.
+            let prob = md
+                .problem(&forcing, tspan, data)
+                .map_err(|e| cfg(format!("the data: {e}")))?;
+            m.u0 = initial_state(&prob, &m.dofs)
+                .map_err(|e| cfg(format!("the initial state with data: {e}")))?;
+        }
+        Arc::new(timeline)
+    };
+
+    let mut operators: Vec<Arc<dyn Operator<T>>> = Vec::new();
+    for b in built {
+        let (name, rhs_path, jac_path) = (&b.name, &b.rhs_path, &b.jac_path);
+        let entry = &plan["operators"][name];
+        let rhs = Document::new(b.rhs_prog, &m.dofs, &m.params, &forcing, timeline.clone())
+            .map_err(|e| refuse(name, rhs_path, e))?;
+        let jacobian = Document::new(b.jac_prog, &m.dofs, &m.params, &forcing, timeline.clone())
+            .map_err(|e| refuse(name, jac_path, e))?;
         // A document that cannot be evaluated at the initial state is
         // refused here, with EarthSciAST's message, rather than failing
         // every step of the run.
-        for (doc, path) in [(&rhs, &rhs_path), (&jacobian, &jac_path)] {
+        for (doc, path) in [(&rhs, rhs_path), (&jacobian, jac_path)] {
             doc.eval(&m.u0, &m.p, tspan.0, |_| ())
                 .map_err(|e| refuse(name, path, format!("at the initial state: {e}")))?;
         }
@@ -551,7 +730,6 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
             name, entry, &m.dofs, m.ncells, rhs, jacobian,
         )?));
     }
-    let m = model.expect("at least one operator");
 
     // The problem: names and layout for run configs' variable references.
     // The toy problems' one index set is `cell` (spec/toy-problems.md), so
@@ -602,6 +780,7 @@ pub fn load_plan<T: Scalar>(dir: &Path) -> Result<LoadedPlan<T>, Error> {
         run_config,
         tspan,
         state_dofs,
+        timeline,
     })
 }
 
@@ -627,6 +806,19 @@ fn initial_state(prob: &earthsci_ast::EsmProblem, dofs: &Dofs) -> Result<Vec<f64
                 .ok_or_else(|| format!("EarthSciAST's initial state has no {n}"))
         })
         .collect()
+}
+
+/// The sizes of a derived document's index sets (spec/plan.md §6.1: every
+/// one an interval).
+fn index_set_sizes(path: &Path) -> Result<BTreeMap<String, usize>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let doc: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(doc["index_sets"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, v)| Some((k.clone(), v["size"].as_u64()? as usize)))
+        .collect())
 }
 
 /// Each state's index sets, as the flattened document declares them

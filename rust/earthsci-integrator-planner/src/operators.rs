@@ -23,6 +23,8 @@ pub struct Operator {
     pub writes: Vec<String>,
     /// Pass 3: the names its terms read, sorted.
     pub reads: Vec<String>,
+    /// Pass 3: the data-fed parameters among `reads` (§5.3, D87), sorted.
+    pub forcing: Vec<String>,
     /// Pass 2: its class and radius.
     pub locality: Locality,
 }
@@ -204,6 +206,7 @@ pub fn select(
             .and_then(|op| op.get("bind_dt"))
             .cloned();
         let (writes, reads) = dof_sets(info, idx.iter().map(|&i| &terms[i]));
+        let forcing = info.forcing_among(&reads);
         out.insert(
             name.clone(),
             Operator {
@@ -213,6 +216,7 @@ pub fn select(
                 bind_dt,
                 writes,
                 reads,
+                forcing,
                 locality: Locality {
                     class: Class::Pointwise,
                     radius: BTreeMap::new(),

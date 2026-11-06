@@ -7,7 +7,8 @@
 //! with `u` in the case's `layout`.
 
 use crate::conformance::{self, Outcome, Paths};
-use crate::planned::load_plan;
+use crate::forcing::DataOptions;
+use crate::planned::load_plan_with;
 use crate::schedule::RunSpec;
 use crate::tape::{Tape, TapeRecord};
 use serde::Deserialize;
@@ -48,6 +49,14 @@ pub enum Check {
         #[serde(default)]
         rtol_steps_differ: Option<f64>,
     },
+    /// Against `m2/reference/<case>.json` (spec/toy-problems.md §2.1, §4.4).
+    Reference { rtol: f64 },
+    /// Julia against Rust, run in CI on both result files (§2.1).
+    CrossLanguage {
+        rtol: f64,
+        #[serde(default)]
+        rtol_steps_differ: Option<f64>,
+    },
 }
 
 /// A run's result file (spec/toy-problems.md §3) and its tape.
@@ -61,7 +70,17 @@ pub struct RunResult {
 /// the case's interval and output times, and returns the result with `u` in
 /// the case's `layout`.
 pub fn run_plan(case: &Case, plan_dir: &Path) -> Result<RunResult, String> {
-    let lp = load_plan::<f64>(plan_dir).map_err(|e| e.to_string())?;
+    run_plan_with(case, plan_dir, &DataOptions::default())
+}
+
+/// [`run_plan`] with the data options `data` (the plan's model, for a plan
+/// with `forcing`; spec/operator-interface.md §8.4).
+pub fn run_plan_with(
+    case: &Case,
+    plan_dir: &Path,
+    data: &DataOptions,
+) -> Result<RunResult, String> {
+    let lp = load_plan_with::<f64>(plan_dir, data).map_err(|e| e.to_string())?;
     let tspan = (case.tspan[0], case.tspan[1]);
     if lp.tspan != tspan {
         return Err(format!(
@@ -77,9 +96,14 @@ pub fn run_plan(case: &Case, plan_dir: &Path) -> Result<RunResult, String> {
                 .ok_or_else(|| format!("layout variable {v} is not a state of the plan"))?,
         );
     }
-    let spec =
-        RunSpec::<f64>::with_problem(lp.problem, &lp.run_config, tspan, case.saveat.as_deref())
-            .map_err(|e| e.to_string())?;
+    let spec = RunSpec::<f64>::with_problem_and_tstops(
+        lp.problem,
+        &lp.run_config,
+        tspan,
+        case.saveat.as_deref(),
+        lp.timeline.refresh_times(),
+    )
+    .map_err(|e| e.to_string())?;
     let u0 = spec.u0();
     let p = spec.problem.p.clone();
     let fwd = spec.forward(&u0, &p).map_err(|e| e.to_string())?;
@@ -227,6 +251,58 @@ pub fn toy_equivalence(
     } else {
         Outcome::Fail(format!(
             "state component {} at t = {}: relative difference {:.3e} > rtol {tol:e} [{msg}]",
+            worst.2, ta[worst.1], worst.0
+        ))
+    }
+}
+
+/// spec/toy-problems.md §2.1 `reference`: the result's output times are the
+/// reference file's at `path`, and its states agree to `rtol`, each
+/// component relative to its largest magnitude over the run in either.
+pub fn check_reference(r: &RunResult, path: &Path, rtol: f64) -> Outcome {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => return Outcome::Fail(format!("reference file {}: {e}", path.display())),
+    };
+    let reference: Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => return Outcome::Fail(format!("reference file {}: {e}", path.display())),
+    };
+    let parse = |v: &Value| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
+        Some((
+            serde_json::from_value(v["t"].clone()).ok()?,
+            serde_json::from_value(v["u"].clone()).ok()?,
+        ))
+    };
+    let Some((ta, ua)) = parse(&r.result) else {
+        return Outcome::Fail(no_states("run's"));
+    };
+    let Some((tb, ub)) = parse(&reference) else {
+        return Outcome::Fail(no_states("reference"));
+    };
+    if ta != tb {
+        return Outcome::Fail(format!("output times differ: run {ta:?}, reference {tb:?}"));
+    }
+    let ncomp = ub.first().map_or(0, Vec::len);
+    if ua.iter().chain(&ub).any(|x| x.len() != ncomp) {
+        return Outcome::Fail("state lengths differ".into());
+    }
+    let mut worst = (0.0f64, 0usize, 0usize);
+    for j in 0..ncomp {
+        let scale = ua.iter().chain(&ub).map(|x| x[j].abs()).fold(0.0, f64::max);
+        for (k, (x, y)) in ua.iter().zip(&ub).enumerate() {
+            let d = (x[j] - y[j]).abs() / if scale > 0.0 { scale } else { 1.0 };
+            if d > worst.0 {
+                worst = (d, k, j);
+            }
+        }
+    }
+    let msg = format!("states {:.2e} (rtol {rtol:e})", worst.0);
+    if worst.0 <= rtol {
+        Outcome::Pass(msg)
+    } else {
+        Outcome::Fail(format!(
+            "state component {} at t = {}: relative difference {:.3e} > rtol {rtol:e}",
             worst.2, ta[worst.1], worst.0
         ))
     }

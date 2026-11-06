@@ -12,7 +12,7 @@ repository.workspace = true
 # Operators supplied by a plan (spec/operator-interface.md §8): their
 # right-hand sides are EarthSciAST's reentrant `rhs_program`, and the initial
 # state is EarthSciAST's `initial_state`, which needs its `solve` feature.
-earthsci-ast = { version = "0.9", default-features = false, features = ["solve"] }
+earthsci-ast = { version = "0.9", default-features = false, features = ["solve", "esio"] }
 # Reading the plan's band positions (esm-jacobian-spec §4).
 earthsci-astdiff = "0.4"
 # The planner's canonical order, derived-document evaluation and band
@@ -20,5 +20,10 @@ earthsci-astdiff = "0.4"
 # was checked.
 earthsci-integrator-planner.workspace = true
 earthsci-integrator-solvers.workspace = true
+# The data layer (spec/operator-interface.md §8.4.2): EarthSciIO's data
+# directory, and the run window's instants.
+earthsciio = "0.3"
+ndarray = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+time = "0.3"

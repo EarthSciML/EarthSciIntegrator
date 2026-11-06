@@ -1,0 +1,18 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "forced_column under the auto schedule: the column operator's stiffness would need its Gershgorin bound, but its Jacobian reads the data-fed Met.T (spec/plan.md §5.5.2): auto_stiffness_reads_forcing at /schedule.",
+  "model": "../../fixtures/forced_column/model.esm",
+  "axes": {
+    "horizontal": [
+      "x"
+    ],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 3600,
+    "hit": [
+      "forcing_refresh"
+    ]
+  },
+  "schedule": "auto"
+}

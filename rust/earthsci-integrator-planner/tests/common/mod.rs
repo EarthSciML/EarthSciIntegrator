@@ -170,7 +170,33 @@ pub fn compare_band_values(p: &Planned, op: &str, file: &Value) -> Result<(), St
                     .ok_or_else(|| format!("sample {k} has no u[{n}]"))
             })
             .collect::<Result<_, _>>()?;
-        let got = p.band_jacobian_at(op, &u, t).map_err(|e| e.to_string())?;
+        // The sampled forcing values, by element of the canonical forcing
+        // order, when the model has used data-fed parameters (§8.2).
+        let elements = numeric::forcing_element_names(&p.model);
+        let forcing = match s.get("forcing") {
+            None if elements.is_empty() => numeric::Forcing::empty(),
+            None => return Err(format!("sample {k} has no forcing")),
+            Some(_) if elements.is_empty() => {
+                return Err(format!("sample {k} has forcing, the model has none"))
+            }
+            Some(f) => {
+                let f = f
+                    .as_object()
+                    .ok_or_else(|| format!("sample {k}'s forcing is not an object"))?;
+                if f.len() != elements.len() {
+                    return Err(format!(
+                        "sample {k}: forcing lists {} elements, the model has {}",
+                        f.len(),
+                        elements.len()
+                    ));
+                }
+                numeric::forcing_from_elements(&p.model, |n| f.get(n).and_then(Value::as_f64))
+                    .map_err(|e| format!("sample {k}: {e}"))?
+            }
+        };
+        let got = p
+            .band_jacobian_at(op, &u, t, &forcing)
+            .map_err(|e| e.to_string())?;
         let mut want: BTreeMap<(String, String), f64> = BTreeMap::new();
         for e in s["entries"].as_array().ok_or("a sample has no entries")? {
             let r = e[0].as_str().ok_or("an entry has no row")?;
@@ -210,19 +236,31 @@ pub fn compare_band_values(p: &Planned, op: &str, file: &Value) -> Result<(), St
 /// A band-value file in the golden's form, written from the Rust planner's
 /// own band Jacobian at `states` (`(t, u)` pairs): for testing the
 /// comparison itself.
-pub fn band_values_file(p: &Planned, op: &str, states: &[(f64, Vec<f64>)]) -> Value {
+pub fn band_values_file(p: &Planned, op: &str, states: &[numeric::Sample]) -> Value {
     let names = p.dofs().element_names();
+    let elements = numeric::forcing_element_names(&p.model);
     let samples: Vec<Value> = states
         .iter()
-        .map(|(t, u)| {
-            let jb = p.band_jacobian_at(op, u, *t).unwrap();
+        .map(|s| {
+            let (t, u) = (&s.t, &s.u);
+            let jb = p.band_jacobian_at(op, u, *t, &s.forcing).unwrap();
             let um: Map<String, Value> = names
                 .iter()
                 .zip(u)
                 .map(|(n, x)| (n.clone(), json!(x)))
                 .collect();
             let entries: Vec<Value> = jb.iter().map(|((r, c), v)| json!([r, c, v])).collect();
-            json!({"t": t, "u": um, "entries": entries})
+            let mut out = json!({"t": t, "u": um, "entries": entries});
+            if !elements.is_empty() {
+                let values: Vec<f64> = s.forcing.bufs().values().flat_map(|b| b.to_vec()).collect();
+                let fm: Map<String, Value> = elements
+                    .iter()
+                    .zip(values)
+                    .map(|(n, x)| (n.clone(), json!(x)))
+                    .collect();
+                out["forcing"] = Value::Object(fm);
+            }
+            out
         })
         .collect();
     json!({ "samples": samples })

@@ -167,10 +167,14 @@ impl<'a> Numbers<'a> {
 
     fn states(&mut self) -> Result<&(Vec<f64>, Vec<f64>, Vec<Sample>)> {
         if self.states.is_none() {
-            let u0 = numeric::initial_state(self.info, &self.dofs, self.interval.start)
-                .map_err(internal)?;
+            let (u0, samples) = numeric::sampled_states(
+                self.info,
+                &self.dofs,
+                self.interval.start,
+                self.interval.end,
+            )
+            .map_err(internal)?;
             let base = numeric::sampling_base(&u0);
-            let samples = numeric::samples(&u0, self.interval.start, self.interval.end);
             self.states = Some((u0, base, samples));
         }
         Ok(self.states.as_ref().expect("set above"))
@@ -199,7 +203,9 @@ impl<'a> Numbers<'a> {
                 .collect();
             let jb = samples
                 .iter()
-                .map(|s| numeric::band_jacobian(&jac_prog, &self.dofs, &st.bands, &s.u, s.t))
+                .map(|s| {
+                    numeric::band_jacobian(&jac_prog, &self.dofs, &st.bands, &s.u, s.t, &s.forcing)
+                })
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(internal)?;
             self.ops.insert(
@@ -221,13 +227,18 @@ impl<'a> Numbers<'a> {
 pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Planned> {
     // §4 steps 1–7.
     let rc = runconfig::read(path)?;
-    let info = model::read(&rc)?;
+    let mut info = model::read(&rc)?;
     // §4 step 8: the axes, then the time.
     let axes = axes::resolve(&rc, &info)?;
     let interval = time::resolve(&rc, &info, options.time.as_ref())?;
 
     // Pass 1: terms.
     let terms = terms::terms(&info)?;
+    // The used data-fed parameters (§4.1): every term belongs to some
+    // operator, so those the terms read and those the `ic` equations read
+    // are the ones pass 3 finds. The derived documents, probes included,
+    // declare data-fed parameters by it (§6.3).
+    info.set_used(terms.iter().map(|t| &t.names));
 
     // Each term's locality, before selection, which reads it (§4 "Order of
     // refusals" item 2, D81).
@@ -256,6 +267,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         op.locality =
             locality::operator_locality(op.terms.iter().map(|&i| &term_localities[i]), &axes);
     }
+    // The scale of the used data-fed parameters, after pass 3 (§4.1).
+    check_forcing_scale(&info)?;
 
     // Pass 4: each operator's band list, from its right-hand-side document,
     // and its structure.
@@ -387,7 +400,18 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         ) {
             Some(s) => s,
             None => {
-                // Rule 4: max_s ρ(u_s, p, t_s) · Δ ≥ 10.
+                // Rule 4: max_s ρ(u_s, p, t_s) · Δ ≥ 10, except for an
+                // operator whose Jacobian document reads a data-fed
+                // parameter (§5.5.2, D87).
+                if let Some(f) = jacobian_forcing(&info, &structures[name]).first() {
+                    return Err(refuse(
+                        codes::AUTO_STIFFNESS_READS_FORCING,
+                        leaf.map_or("/schedule", |n| n.pointer.as_str()),
+                        format!(
+                            "operator {name}'s stiffness would be classified by its Gershgorin bound, but its Jacobian reads the data-fed parameter {f}, whose sampled values are synthetic; name the leaf's alg"
+                        ),
+                    ));
+                }
                 let delta = leaf
                     .and_then(|n| reference_steps.get(n.id()).copied())
                     .ok_or_else(|| internal(format!("no leaf advances {name}")))?;
@@ -464,7 +488,13 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     // Pass 8: validation.
     let mut report = Map::new();
     let model_prog =
-        Program::new(info.path.as_path(), numbers.tspan(), &numbers.dofs).map_err(internal)?;
+        Program::new_with(info.path.as_path(), numbers.tspan(), &numbers.dofs, &|| {
+            numeric::binding_providers(&info)
+        })
+        .map_err(internal)?;
+    // The flattened model has a slot for every data-fed parameter; an
+    // unused one's buffer holds 1, which nothing reads (§8).
+    let unused = numeric::unused_forcing(&info);
     for (name, op) in &planned.operators {
         numbers.op(
             name,
@@ -479,12 +509,12 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let mut rhs_sum = Vec::new();
     for s in samples {
         let f = model_prog
-            .eval(&numbers.dofs, &s.u, s.t)
+            .eval(&numbers.dofs, &s.u, s.t, &s.forcing.with_defaults(&unused))
             .map_err(internal)?;
         let parts = numbers
             .ops
             .values()
-            .map(|o| o.rhs.eval(&numbers.dofs, &s.u, s.t))
+            .map(|o| o.rhs.eval(&numbers.dofs, &s.u, s.t, &s.forcing))
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(internal)?;
         let worst = validation::rhs_sum(&f, &parts, &numbers.names).map_err(|m| {
@@ -561,6 +591,42 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     Ok(planned)
 }
 
+/// `forcing_without_scale` (§4.1): every used data-fed parameter needs a
+/// `default` that is nonzero at every element; the first that has none, in
+/// code-point order, is refused.
+fn check_forcing_scale(info: &ModelInfo) -> Result<()> {
+    for name in &info.used {
+        let why = match info.default_column_major(name) {
+            None if info.flat.parameters[name].default.is_none() => "has no default",
+            None => "has a default that does not fit its shape",
+            Some(d) if d.contains(&0.0) => "has a default with a zero element",
+            Some(_) => continue,
+        };
+        return Err(refuse(
+            codes::FORCING_WITHOUT_SCALE,
+            "/model",
+            format!(
+                "the used data-fed parameter {name} {why}, so the planner's checks have no scale to sample it around"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The data-fed parameters an operator's Jacobian document reads: those a
+/// band coefficient references, directly or through observed definitions
+/// (§5.5.2), sorted.
+pub fn jacobian_forcing(info: &ModelInfo, st: &Structure) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    for en in &st.bands {
+        names.extend(info.names_in(&en.band.coef));
+    }
+    info.close_over_observeds(&names)
+        .into_iter()
+        .filter(|n| info.data_fed.contains_key(n))
+        .collect()
+}
+
 /// The `alg` each leaf gives, when it is not `"auto"`, by node id.
 fn given_algs(root: &Node) -> BTreeMap<String, String> {
     root.leaves()
@@ -623,6 +689,9 @@ impl Planned {
         out.insert("locality".into(), self.locality_json(op));
         out.insert("writes".into(), json!(op.writes));
         out.insert("reads".into(), json!(op.reads));
+        if !op.forcing.is_empty() {
+            out.insert("forcing".into(), json!(op.forcing));
+        }
         out.insert("terms".into(), self.terms_json(op));
         out.insert("structure".into(), self.structures[name].to_json());
         out.insert("stiffness".into(), self.stiffness[name].to_json());
@@ -714,7 +783,8 @@ impl Planned {
         Dofs::new(&self.model)
     }
 
-    /// Operator `op`'s band Jacobian at `(u, t)`, `u` in canonical order:
+    /// Operator `op`'s band Jacobian at `(u, t)` with the forcing `forcing`,
+    /// `u` in canonical order:
     /// its Jacobian document evaluated and scattered with
     /// `structure.bands`, keyed by EarthSciAST's element names (`X[i,j]`).
     /// Every band point is a key, whatever its value: the keys are the band
@@ -725,6 +795,7 @@ impl Planned {
         op: &str,
         u: &[f64],
         t: f64,
+        forcing: &numeric::Forcing,
     ) -> Result<BTreeMap<(String, String), f64>> {
         let docs = self
             .documents
@@ -741,7 +812,7 @@ impl Planned {
             .keys()
             .map(|(r, c)| ((names[*r].clone(), names[*c].clone()), 0.0))
             .collect();
-        let jb = numeric::band_jacobian(&prog, &dofs, bands, u, t).map_err(internal)?;
+        let jb = numeric::band_jacobian(&prog, &dofs, bands, u, t, forcing).map_err(internal)?;
         for ((r, c), v) in jb {
             out.insert((names[r].clone(), names[c].clone()), v);
         }
@@ -786,6 +857,15 @@ impl Planned {
             .map(|n| (n.clone(), self.operator_json(n)))
             .collect();
         out.insert("operators".into(), Value::Object(ops));
+        if !self.model.used.is_empty() {
+            let forcing: Map<String, Value> = self
+                .model
+                .used
+                .iter()
+                .map(|n| (n.clone(), self.model.data_fed[n].to_json()))
+                .collect();
+            out.insert("forcing".into(), Value::Object(forcing));
+        }
         out.insert("schedule".into(), self.resolved_schedule.clone());
         out.insert("step".into(), self.step.clone());
         out.insert("partition".into(), self.partition.clone());

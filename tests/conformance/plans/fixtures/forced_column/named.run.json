@@ -1,0 +1,19 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Data-fed parameters (D87): the column operator reads the blended two-record temperature in its Jacobian, so its alg is named; the pointwise operator reads a constant data-fed scalar only in its source term, so its auto stiffness comes from its Gershgorin bound. forcing_refresh is a tstop source.",
+  "model": "model.esm",
+  "axes": {
+    "horizontal": ["x"],
+    "vertical": "lev"
+  },
+  "step": {
+    "dt": 3600,
+    "hit": ["forcing_refresh"]
+  },
+  "schedule": {
+    "sequence": [
+      {"leaf": "default_column", "alg": "TRBDF2", "dt": 600},
+      {"leaf": "default_pointwise"}
+    ]
+  }
+}

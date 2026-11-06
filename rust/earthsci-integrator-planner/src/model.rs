@@ -36,9 +36,123 @@ pub struct ModelInfo {
     /// The derived documents' `domain` ([`crate::derived::domain_json`] of
     /// the flattened model's), built once; `None` when they have none.
     pub domain: Option<Value>,
+    /// The data-fed parameters (spec/plan.md §4.1), by flattened name.
+    pub data_fed: BTreeMap<String, DataFed>,
+    /// The used data-fed parameters (§4.1): those a term reads, directly or
+    /// through observed definitions, or an `ic` equation reads. Set by
+    /// [`ModelInfo::set_used`] once the terms are known (pass 1); every
+    /// term belongs to some operator, so this is the union of the
+    /// operators' `forcing` (§5.3) and the `ic` equations' data-fed reads.
+    pub used: BTreeSet<String>,
+}
+
+/// A data-fed parameter (spec/plan.md §4.1): what the plan's `forcing`
+/// records about it, and its declared `default`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataFed {
+    /// Its declared shape (index-set names; empty for a scalar).
+    pub shape: Vec<String>,
+    /// The `data_sources` key its `loader_fields` entry names.
+    pub source: String,
+    /// The source's `kind` as the esm format writes it (`grid`, `points`,
+    /// `static`), for the derived documents' stub (§6.3).
+    pub source_kind: String,
+    /// The `file_variable` its `loader_fields` entry names.
+    pub file_variable: String,
+    /// `discrete` when its source's `temporal` has a `start` and a
+    /// `frequency` or `file_period`, else `const`.
+    pub cadence: &'static str,
+    /// The effective records per sample EarthSciAST reports (1 or 2).
+    pub records_per_sample: u8,
+}
+
+impl DataFed {
+    /// Its entry in the plan's `forcing` (§3).
+    pub fn to_json(&self) -> Value {
+        serde_json::json!({
+            "shape": self.shape,
+            "source": self.source,
+            "file_variable": self.file_variable,
+            "cadence": self.cadence,
+            "records_per_sample": self.records_per_sample,
+        })
+    }
 }
 
 impl ModelInfo {
+    /// Sets [`ModelInfo::used`] from the terms' names (pass 1) and the `ic`
+    /// equations (§4.1).
+    pub fn set_used<'a>(&mut self, term_names: impl IntoIterator<Item = &'a BTreeSet<String>>) {
+        let mut names = BTreeSet::new();
+        for n in term_names {
+            names.extend(n.iter().cloned());
+        }
+        for (_, e) in &self.flat.field_ics {
+            names.extend(self.names_in(e));
+        }
+        self.used = self
+            .close_over_observeds(&names)
+            .into_iter()
+            .filter(|n| self.data_fed.contains_key(n))
+            .collect();
+    }
+
+    /// The data-fed parameters among `names`.
+    pub fn forcing_among<'a>(&self, names: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+        names
+            .into_iter()
+            .filter(|n| self.data_fed.contains_key(*n))
+            .cloned()
+            .collect()
+    }
+
+    /// The extents of parameter `name`'s declared shape (empty for a
+    /// scalar).
+    pub fn param_extents(&self, name: &str) -> Vec<usize> {
+        self.flat.parameters[name]
+            .shape
+            .iter()
+            .flatten()
+            .map(|x| self.index_sets.get(x).copied().unwrap_or(0) as usize)
+            .collect()
+    }
+
+    /// Parameter `name`'s `default` at every element, column-major over its
+    /// declared shape (a scalar default broadcast); `None` without a
+    /// `default`, or with array data that does not have the shape.
+    pub fn default_column_major(&self, name: &str) -> Option<Vec<f64>> {
+        let ext = self.param_extents(name);
+        let len: usize = ext.iter().product();
+        match self.flat.parameters[name].default.as_ref()? {
+            earthsci_ast::InlineValue::Scalar(x) => Some(vec![*x; len]),
+            d => {
+                let (dims, row_major) = d.to_dense().ok()?;
+                if dims != ext {
+                    return None;
+                }
+                // Row-major (last index fastest) to column-major (first
+                // index fastest).
+                let mut out = vec![0.0; len];
+                for (k, x) in row_major.into_iter().enumerate() {
+                    let mut rem = k;
+                    let mut off = 0;
+                    let mut stride = 1;
+                    let mut idx = vec![0; ext.len()];
+                    for d in (0..ext.len()).rev() {
+                        idx[d] = rem % ext[d];
+                        rem /= ext[d];
+                    }
+                    for d in 0..ext.len() {
+                        off += idx[d] * stride;
+                        stride *= ext[d];
+                    }
+                    out[off] = x;
+                }
+                Some(out)
+            }
+        }
+    }
+
     /// Whether `name` is a state of the flattened model.
     pub fn is_state(&self, name: &str) -> bool {
         self.shapes.contains_key(name)
@@ -122,6 +236,34 @@ impl ModelInfo {
         }
         out
     }
+}
+
+/// The names the `ic` equations of the flattened model `flat` read,
+/// directly or through observed definitions, transitively (spec/plan.md
+/// §4.1; spec/operator-interface.md §8.4.5).
+pub fn ic_reads(flat: &FlattenedSystem) -> BTreeSet<String> {
+    let defs: BTreeMap<&str, &Expr> = flat
+        .equations
+        .iter()
+        .filter_map(|eq| defined_observed(&eq.lhs).map(|o| (o, &eq.rhs)))
+        .collect();
+    let names = |e: &Expr| {
+        let mut out = Vec::new();
+        collect_strings(&serde_json::to_value(e).unwrap_or(Value::Null), &mut |s| {
+            out.push(s.to_string())
+        });
+        out
+    };
+    let mut out = BTreeSet::new();
+    let mut todo: Vec<String> = flat.field_ics.iter().flat_map(|(_, e)| names(e)).collect();
+    while let Some(n) = todo.pop() {
+        if out.insert(n.clone()) {
+            if let Some(d) = defs.get(n.as_str()) {
+                todo.extend(names(d));
+            }
+        }
+    }
+    out
 }
 
 /// Every string value in a serialized expression (object keys excluded).
@@ -298,16 +440,83 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
             format!("parameter {name} has a crossing update rule, which is not in v1 (D22)"),
         );
     }
-    if let Some((name, _)) = flat.parameters.iter().find(|(_, v)| v.update.is_some()) {
+    // Data-fed parameters (§4.1): those a `loader_fields` entry names. Each
+    // one's rule must be a single `data` rule with `from`; any other rule,
+    // on any parameter, is refused.
+    let fed: BTreeMap<&str, &earthsci_ast::LoaderField> = flat
+        .loader_fields
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect();
+    let allowed = |name: &str, v: &earthsci_ast::ModelVariable| match &v.update {
+        None => true,
+        Some(u) => {
+            fed.contains_key(name)
+                && matches!(u.rules(), [r @ earthsci_ast::ParameterUpdate::Data { .. }]
+                    if r.value().is_some_and(|x| x.from.is_some()))
+        }
+    };
+    if let Some((name, v)) = flat.parameters.iter().find(|(n, v)| !allowed(n, v)) {
+        let kinds: Vec<&str> = v
+            .update
+            .iter()
+            .flat_map(|u| u.rules().iter().map(|r| r.kind()))
+            .collect();
         return scope(
             codes::UNSUPPORTED_PARAMETER_UPDATE,
-            format!("parameter {name} has an update rule, which M2 does not plan (D75)"),
+            format!(
+                "parameter {name} has the update rules {kinds:?}; M2 plans only a data-fed parameter's single data rule (D75, D87)"
+            ),
         );
     }
-    if let Some(f) = flat.loader_fields.first() {
+    if let Some(f) = flat
+        .loader_fields
+        .iter()
+        .find(|f| !flat.parameters.contains_key(&f.name))
+    {
         return scope(
             codes::UNSUPPORTED_FORCING,
-            format!("the flattened model reads the data-loader field {f:?}; forcing arrives at M3"),
+            format!(
+                "the loader_fields entry {} (source {}, file variable {}) names no parameter of the flattened model",
+                f.name, f.source, f.file_variable
+            ),
+        );
+    }
+    let mut data_fed = BTreeMap::new();
+    for f in &flat.loader_fields {
+        let src = file.data_sources.as_ref().and_then(|d| d.get(&f.source));
+        let temporal = src.and_then(|s| s.temporal.as_ref());
+        let discrete = temporal.is_some_and(|t| {
+            t.start.is_some() && (t.frequency.is_some() || t.file_period.is_some())
+        });
+        if f.records_per_sample == 2 && !discrete {
+            return scope(
+                codes::FORCING_RECORDS_INVALID,
+                format!(
+                    "data-fed parameter {} asks for 2 records per sample, but its source {}'s temporal block is not time-varying (it needs a start and a frequency or file_period), so there is no successor record",
+                    f.name, f.source
+                ),
+            );
+        }
+        let source_kind = src
+            .and_then(|s| serde_json::to_value(&s.kind).ok())
+            .and_then(|k| k.as_str().map(str::to_string))
+            .ok_or_else(|| {
+                PlanError::Internal(format!(
+                    "data-fed parameter {} names the source {}, which the loaded model does not hold",
+                    f.name, f.source
+                ))
+            })?;
+        data_fed.insert(
+            f.name.clone(),
+            DataFed {
+                shape: flat.parameters[&f.name].shape.clone().unwrap_or_default(),
+                source: f.source.clone(),
+                source_kind,
+                file_variable: f.file_variable.clone(),
+                cadence: if discrete { "discrete" } else { "const" },
+                records_per_sample: f.records_per_sample,
+            },
         );
     }
     let mut index_sets = IndexMap::new();
@@ -360,6 +569,8 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         shapes: BTreeMap::new(),
         observed_defs,
         domain: None,
+        data_fed,
+        used: BTreeSet::new(),
     };
     if let Some(d) = &info.flat.domain {
         info.domain = crate::derived::domain_json(d)?;

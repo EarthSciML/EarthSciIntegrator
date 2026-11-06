@@ -5,6 +5,7 @@
 //! implicit method (SDIRK/ESDIRK, the θ-method, IMEX Euler). All share the
 //! step loop below (landing on stops, control, domain, return codes).
 
+use crate::forcing::{StepScope, StepSpan};
 use crate::operator::{Call, JacOverScratch, MatrixStorage, MuPair, Operator, Structure};
 use crate::tape::{LeafPersist, Retcode};
 use crate::{Error, Scalar};
@@ -19,7 +20,7 @@ use earthsci_integrator_solvers::norm::{error_norm, Tolerances};
 use earthsci_integrator_solvers::rosenbrock::{RosForm, RosOutcome, RosWork, Rosenbrock};
 use earthsci_integrator_solvers::scalar::eps_f64;
 use earthsci_integrator_solvers::{NormFn, RhsFn};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};
 
 /// The leaf's method.
@@ -360,6 +361,11 @@ pub struct LeafCall<'a> {
     pub macro_dt: f64,
     /// Interior stops in `(t0, t1)`, ascending (output times).
     pub stops: &'a [f64],
+    /// Stops at which the forcing changes (refresh times), ascending: a
+    /// step ending at one does not reuse its last stage as the next step's
+    /// first, which is evaluated with the new epoch's forcing
+    /// (operator-interface.md §8.4.1).
+    pub no_reuse: &'a [f64],
     /// Replay: the recorded steps and clip masks; the controller is off.
     pub replay: Option<Replay<'a>>,
     /// Keep the stage values of every accepted step for the adjoint.
@@ -458,6 +464,7 @@ impl<T: Scalar> LeafSpec<T> {
         Bound {
             leaf: self,
             w: RefCell::new(Some(w)),
+            step: Cell::new(None),
         }
     }
 
@@ -774,6 +781,9 @@ impl<T: Scalar> LeafSpec<T> {
             }
             u.copy_from_slice(w.unew());
         }
+        if stop.is_some_and(|ts| call.no_reuse.binary_search_by(|x| x.total_cmp(&ts)).is_ok()) {
+            *cache = None;
+        }
         if let Some(mk) = clip {
             out.clips.push((out.steps.len(), mk));
         }
@@ -928,6 +938,9 @@ impl<T: Scalar> LeafSpec<T> {
                     want_err: bool|
          -> Attempt {
             let pb = self.params(call.p, pbuf, h, call);
+            // The forcing of each call is the one this step takes
+            // (operator-interface.md §8.4.1).
+            b.set_step(t, h);
             let reuse = cache.filter(|&(_, hb)| !leaf_bound || hb == h);
             let mut f = |o: &mut [T], uu: &[T], tt: f64| b.rhs(o, uu, pb, tt);
             let tol = &self.tol;
@@ -1096,6 +1109,10 @@ impl<T: Scalar> LeafSpec<T> {
                         tol: &self.tol,
                         order: self.method.order(),
                     };
+                    // Its evaluations at t0 and t0 + h belong to a first step
+                    // from t0, which ends at the first stop at the latest
+                    // (operator-interface.md §8.4.1).
+                    b.set_step(t0, inp.dtmax);
                     let (h0, nf) = initial_dt(&inp, &mut |o, uu, tt| b.rhs(o, uu, pb, tt));
                     out.rhs_calls += nf as u64;
                     h0
@@ -1288,6 +1305,9 @@ pub struct Bound<'a, T: Scalar> {
     pub leaf: &'a LeafSpec<T>,
     /// The buffers, returned to the leaf's pool when the invocation ends.
     w: RefCell<Option<BoundWork<T>>>,
+    /// The step the calls belong to ([`set_step`](Bound::set_step)), which
+    /// chooses the forcing they take (operator-interface.md §8.4.1).
+    step: Cell<Option<StepSpan>>,
 }
 
 /// The model-state buffers of a [`Bound`], kept by its leaf across
@@ -1339,6 +1359,29 @@ fn put<T: Copy>(v: &mut [T], dofs: &[usize], x: &[T]) {
 }
 
 impl<T: Scalar> Bound<'_, T> {
+    /// Says that the calls that follow belong to the step from `t` of size
+    /// `h` (operator-interface.md §8.4.1): every call evaluates its
+    /// operators with the forcing that step takes at the call's time
+    /// ([`crate::forcing::ForcingTimeline::select`]). The forward step,
+    /// its replay, its adjoint and the initial step-size estimate each set
+    /// it before their first call, so the same evaluation in each takes
+    /// the same buffers.
+    pub fn set_step(&self, t: f64, h: f64) {
+        self.step.set(Some(StepSpan { start: t, h }));
+    }
+
+    /// The step of the calls on the calling thread, for the duration of one
+    /// call. A call before any [`set_step`](Bound::set_step) is a bug.
+    fn scope(&self) -> StepScope {
+        let span = self.step.get();
+        assert!(
+            span.is_some(),
+            "leaf {}: an operator call outside a step (no Bound::set_step)",
+            self.leaf.id
+        );
+        StepScope::enter(span)
+    }
+
     /// Runs `g(u, xs, out)` in the model state: the leaf's state `u` with
     /// the background, its `u`-shaped arguments `xs` spread, and, when
     /// there is an output, a model-state output holding the leaf's `out`
@@ -1351,6 +1394,7 @@ impl<T: Scalar> Bound<'_, T> {
         out: Option<(&mut [T], bool)>,
         g: impl FnOnce(&[T], &[&[T]], Option<&mut [T]>),
     ) {
+        let _scope = self.scope();
         let out = out.map(|(o, zero)| {
             if zero {
                 o.iter_mut().for_each(|x| *x = T::zero());
@@ -1416,6 +1460,7 @@ impl<T: Scalar> Bound<'_, T> {
     /// otherwise their `jac_over` its DOFs, which fills the leaf's storage
     /// directly.
     fn lift_jac(&self, part: Part, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
+        let _scope = self.scope();
         out.clear();
         let leaf = self.leaf;
         if !leaf.is_partial() {

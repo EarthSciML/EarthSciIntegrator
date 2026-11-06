@@ -1,0 +1,7 @@
+name,rate,cell
+s1,1.0e-3,a
+s2,NaN,b
+s3,2.0e-3,b
+s4,5.0e-4,c
+s5,NaN,a
+s6,3.0e-3,a

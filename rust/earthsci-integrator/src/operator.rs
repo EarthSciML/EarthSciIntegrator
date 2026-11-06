@@ -156,6 +156,15 @@ pub trait Operator<T: Scalar>: Send + Sync {
             n_model,
         ))
     }
+    /// The times inside the problem's interval at which the forcing the
+    /// operator reads changes, ascending: a plan's `forcing_refresh` times
+    /// for an operator that reads data (operator-interface.md §8.4.3),
+    /// none for one that reads none. Every run of the operator stops at
+    /// each ([`crate::schedule::RunSpec::with_problem`]), so no step crosses
+    /// one.
+    fn forcing_refresh_times(&self) -> Vec<f64> {
+        Vec::new()
+    }
     /// Whether the operator implements `call`.
     fn provides(&self, call: Call) -> bool {
         matches!(call, Call::Rhs | Call::JvpU | Call::VjpU)

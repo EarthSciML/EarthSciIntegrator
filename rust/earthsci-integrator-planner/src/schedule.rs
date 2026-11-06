@@ -307,6 +307,7 @@ pub fn check(root: &Node, cx: &CheckContext) -> Result<()> {
     rule_8(root)?;
     rule_9(root, cx)?;
     rule_12(root, cx)?;
+    forcing_refresh_hit(cx)?;
     rule_13(root)?;
     rule_15(root, cx)?;
     Ok(())
@@ -922,6 +923,35 @@ fn rule_12(root: &Node, cx: &CheckContext) -> Result<()> {
         codes::STEP_CONTROL_MISSING,
         "/step",
         "step has neither dt nor limits, and the schedule root is not a single adaptive leaf",
+    ))
+}
+
+/// spec/plan.md §7.3 (rule 17, D87): when some operator reads a data-fed
+/// parameter of `discrete` cadence, `step.hit` names `forcing_refresh`, so
+/// no step crosses a forcing epoch. Checked after rule 12.
+fn forcing_refresh_hit(cx: &CheckContext) -> Result<()> {
+    let discrete = cx.ops.values().flat_map(|o| &o.forcing).find(|p| {
+        cx.info
+            .data_fed
+            .get(*p)
+            .is_some_and(|d| d.cadence == "discrete")
+    });
+    let Some(p) = discrete else {
+        return Ok(());
+    };
+    let hit = cx.rc.at("/step/hit");
+    if hit
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.iter().any(|h| h == "forcing_refresh"))
+    {
+        return Ok(());
+    }
+    Err(refuse(
+        codes::FORCING_REFRESH_NOT_HIT,
+        if hit.is_some() { "/step/hit" } else { "/step" },
+        format!(
+            "an operator reads the time-varying data-fed parameter {p}, so step.hit must name forcing_refresh"
+        ),
     ))
 }
 
