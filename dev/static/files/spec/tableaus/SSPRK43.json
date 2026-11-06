@@ -1,0 +1,62 @@
+{
+  "alpha": [
+    [1.0],
+    [0.0, 1.0],
+    [0.6666666666666666, 0.0, 0.3333333333333333],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "beta": [
+    [0.5],
+    [0.0, 0.5],
+    [0.0, 0.0, 0.16666666666666666],
+    [0.0, 0.0, 0.0, 0.5]
+  ],
+  "c": [0.0, 0.5, 1.0, 0.5],
+  "controller": {
+    "beta1": 0.23333333333333334,
+    "beta2": 0.13333333333333333,
+    "failfactor": 2,
+    "gamma": 0.9,
+    "pid_accept_safety": 0.81,
+    "pid_beta3": 0,
+    "qmax": 10,
+    "qmax_first_step": 10000,
+    "qmin": 0.2,
+    "qoldinit": 0.0001,
+    "qsteady_max": 1,
+    "qsteady_min": 1,
+    "source": {
+      "file": "src/alg_utils.jl",
+      "line": 776,
+      "note": "beta1_default, beta2_default, gamma_default, qmin_default, qmax_default, qsteady_*_default, qmax_first_step_default and failfactor_default for this algorithm; qoldinit and the PID constants from src/integrators/controllers.jl (PIController, PIDController).",
+      "package": "OrdinaryDiffEqCore",
+      "version": "4.19.0"
+    }
+  },
+  "embedded": {
+    "alpha": [0.3333333333333333, 0.0, 0.6666666666666666, 0.0, 0.0],
+    "beta": [0.0, 0.0, 0.3333333333333333, 0.0],
+    "scale": 0.5
+  },
+  "embedded_order": 2,
+  "error_estimate": "shu_osher_embedded",
+  "family": "explicit_rk",
+  "first_same_as_last": false,
+  "form": "shu_osher",
+  "name": "SSPRK43",
+  "notes": [
+    "The embedded solution is u~ = u0/3 + 2/3 (u2 + h/2 f(u2)); the error is scale * (u~ - u_new), which OrdinaryDiffEq comments as bhat = (1/4, 1/4, 1/4, 1/4)."
+  ],
+  "order": 3,
+  "ordinarydiffeq_algorithm": "SSPRK43",
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "src/ssprk_perform_step.jl",
+    "line": 766,
+    "note": "Transcribed from the perform_step! body, which writes the stages inline; alpha and beta are the same arithmetic regrouped (spec/methods.md §3.1).",
+    "package": "OrdinaryDiffEqSSPRK",
+    "version": "2.3.2"
+  },
+  "stages": 4,
+  "stiffly_accurate": false
+}

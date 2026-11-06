@@ -1,0 +1,53 @@
+{
+  "A": [
+    [0.0, 0.0, 0.0, 0.0],
+    [0.5, 0.0, 0.0, 0.0],
+    [0.0, 0.5, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0]
+  ],
+  "b": [0.16666666666666666, 0.3333333333333333, 0.3333333333333333, 0.16666666666666666],
+  "c": [0.0, 0.5, 0.5, 1.0],
+  "controller": {
+    "beta1": 0.175,
+    "beta2": 0.1,
+    "failfactor": 2,
+    "gamma": 0.9,
+    "pid_accept_safety": 0.81,
+    "pid_beta3": 0,
+    "qmax": 10,
+    "qmax_first_step": 10000,
+    "qmin": 0.2,
+    "qoldinit": 0.0001,
+    "qsteady_max": 1,
+    "qsteady_min": 1,
+    "source": {
+      "file": "src/alg_utils.jl",
+      "line": 776,
+      "note": "beta1_default, beta2_default, gamma_default, qmin_default, qmax_default, qsteady_*_default, qmax_first_step_default and failfactor_default for this algorithm; qoldinit and the PID constants from src/integrators/controllers.jl (PIController, PIDController).",
+      "package": "OrdinaryDiffEqCore",
+      "version": "4.19.0"
+    }
+  },
+  "embedded_order": 3,
+  "error_estimate": "residual_control",
+  "family": "explicit_rk",
+  "first_same_as_last": true,
+  "form": "butcher",
+  "name": "RK4",
+  "order": 4,
+  "ordinarydiffeq_algorithm": "RK4",
+  "residual_control": {
+    "scale": 2.1342,
+    "sigma": [0.21132486540518713, 0.7886751345948129]
+  },
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "src/fixed_timestep_perform_step.jl",
+    "line": 252,
+    "note": "Transcribed from the perform_step! body, which writes the coefficients inline; the error estimate is Shampine's residual control (two extra f evaluations), spec/methods.md §3.2.",
+    "package": "OrdinaryDiffEqLowOrderRK",
+    "version": "2.2.6"
+  },
+  "stages": 4,
+  "stiffly_accurate": false
+}

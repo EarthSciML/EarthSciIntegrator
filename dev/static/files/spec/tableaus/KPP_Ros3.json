@@ -1,0 +1,72 @@
+{
+  "A": [
+    [0.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0]
+  ],
+  "C": [
+    [0.0, 0.0, 0.0],
+    [-1.0156171083877703, 0.0, 0.0],
+    [4.07599564525377, 9.20767942983308, 0.0]
+  ],
+  "b": [1.0, 6.1697947043828245, -0.42772256543218573],
+  "btilde": [0.5, -2.907955871680547, 0.2235406989781157],
+  "c": [0.0, 0.435866521508459, 0.435866521508459],
+  "controller": {
+    "beta1": 0.23333333333333334,
+    "beta2": 0.13333333333333333,
+    "failfactor": 2,
+    "gamma": 0.9,
+    "pid_accept_safety": 0.81,
+    "pid_beta3": 0,
+    "qmax": 10,
+    "qmax_first_step": 10000,
+    "qmin": 0.2,
+    "qoldinit": 0.0001,
+    "qsteady_max": 1.2,
+    "qsteady_min": 1,
+    "source": {
+      "file": "src/alg_utils.jl",
+      "line": 776,
+      "note": "OrdinaryDiffEqCore's defaults for an adaptive Rosenbrock method of this order; KPP's own controller is under kpp.controller for WRF-Chem parity.",
+      "package": "OrdinaryDiffEqCore",
+      "version": "4.19.0"
+    }
+  },
+  "d": [0.435866521508459, 0.24291996454816805, 2.185138002766406],
+  "embedded_order": 2,
+  "error_estimate": "embedded",
+  "family": "rosenbrock",
+  "first_same_as_last": false,
+  "form": "rosenbrock_transformed",
+  "gamma": 0.435866521508459,
+  "kpp": {
+    "controller": {
+      "fac_max": 6.0,
+      "fac_min": 0.2,
+      "fac_rej": 0.1,
+      "fac_safe": 0.9,
+      "source": {
+        "file": "WRF/chem/KPP/kpp/kpp-2.1/int/WRF_conform/rosenbrock.f90",
+        "line": 317,
+        "note": "KPP's defaults FacMin, FacMax, FacRej, FacSafe (lines 317-348) and its step-size rule (lines 631-660): an I controller with exponent 1/ros_ELO, no growth after a rejection, FacRej after two rejections in a row."
+      }
+    },
+    "elo": 3.0,
+    "new_f": [
+      true,
+      true,
+      false
+    ]
+  },
+  "name": "KPP_Ros3",
+  "order": 3,
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "WRF/chem/KPP/kpp/kpp-2.1/int/WRF_conform/rosenbrock.f90",
+    "line": 922,
+    "note": "KPP 2.1 (WRF_conform) subroutine KPP_ROOT_Ros3, lines 922-982; KPP's (ros_A, ros_C, ros_Gamma(1), ros_Alpha, ros_Gamma, ros_M, ros_E) are (A, C, gamma, c, d, b, btilde) of the transformed form. Sandu et al. (1997), Atmos. Environ. 31, 3459-3472."
+  },
+  "stages": 3,
+  "stiffly_accurate": false
+}
