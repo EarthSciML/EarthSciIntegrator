@@ -263,6 +263,10 @@ fn leaf_adjoint_steps<T: Scalar>(
             // A tiny stop step taken without computing it: the identity.
             continue;
         }
+        // Every evaluation takes the forcing the forward step took
+        // (operator-interface.md §8.4.1, spec/adjoint.md §2.4), so the
+        // Rosenbrock W at u_n is the forward factorization (§3).
+        leaf.set_step(st.t, st.h);
         let pc = match &leaf.method {
             LeafMethod::Erk(m) => erk_adjoint_step(leaf, m, st, l),
             LeafMethod::Ros(m, _) => {

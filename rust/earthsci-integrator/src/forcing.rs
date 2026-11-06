@@ -11,8 +11,10 @@
 //! discrete provider inside `(t0, t_f]`. Every epoch is sampled when the
 //! plan is loaded, in order on the calling thread, which is before the first
 //! call whose `t` reaches it; EarthSciIO's prefetch may replace this without
-//! changing a result. A call takes the set of the epoch its `t` falls in
-//! (§8.4.1); a stage at exactly a boundary reads the new epoch for a
+//! changing a result. A call takes the set of the epoch its step starts in
+//! (§8.4.1), which the leaf names for every call it makes, forward, in
+//! replay and in the adjoint alike ([`StepSpan`]); the stage at the right
+//! end of a step that ends on a boundary reads the new epoch for a
 //! two-record parameter and the old one for a one-record parameter, and a
 //! step that ends on a boundary does not lend its last stage to the next
 //! (the leaf's `no_reuse`).
@@ -27,30 +29,42 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// The step a call belongs to (§8.4.1): it starts at `start` and is `h`
+/// long. The leaf that takes the step says which it is
+/// ([`crate::leaf::Bound::set_step`]), in its forward step, in replay, in
+/// the adjoint of the step and in the initial step-size estimate, and the
+/// forcing a call takes is chosen from it ([`ForcingTimeline::select`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StepSpan {
+    pub start: f64,
+    pub h: f64,
+}
+
 thread_local! {
-    /// The start time of the step the calling thread is taking, NaN outside
-    /// a step: a stage at exactly a refresh time that starts the step takes
-    /// the new epoch, one that ends it the boundary set (§8.4.1).
-    static STEP_START: Cell<f64> = const { Cell::new(f64::NAN) };
+    /// The step of the leaf call the calling thread is making, for the
+    /// duration of that call only ([`StepScope`]); `None` outside one.
+    static STEP: Cell<Option<StepSpan>> = const { Cell::new(None) };
 }
 
-/// Marks the calling thread as taking a step from `t` until the guard is
-/// dropped; the leaf holds one around each step it takes.
-pub struct StepGuard {
-    prev: f64,
+/// Marks the calling thread as making a leaf's call inside the step `span`
+/// until it is dropped. A leaf enters one around each call it passes to
+/// its operators, on the thread that makes the call, so the operators,
+/// which take only `t`, find the step it belongs to.
+pub(crate) struct StepScope {
+    prev: Option<StepSpan>,
 }
 
-impl StepGuard {
-    pub fn new(t: f64) -> StepGuard {
-        StepGuard {
-            prev: STEP_START.with(|c| c.replace(t)),
+impl StepScope {
+    pub(crate) fn enter(span: Option<StepSpan>) -> StepScope {
+        StepScope {
+            prev: STEP.with(|c| c.replace(span)),
         }
     }
 }
 
-impl Drop for StepGuard {
+impl Drop for StepScope {
     fn drop(&mut self) {
-        STEP_START.with(|c| c.set(self.prev));
+        STEP.with(|c| c.set(self.prev));
     }
 }
 
@@ -135,22 +149,49 @@ impl ForcingTimeline {
         }
     }
 
-    /// The forcing a call at `t` takes (§8.4.1): epoch `k` with
-    /// `B_k <= t < B_{k+1}`, the last epoch for `t` at or after its start
-    /// and the first for `t` before `t0`; except that a stage at exactly a
-    /// later boundary `B_k` of a step that does not start there (a stage
-    /// at the right end of the step that ends on it) takes each parameter's
-    /// buffer by its records per sample (`at_boundary`).
+    /// The forcing a call at `t` takes (§8.4.1), inside the step of the
+    /// calling thread's leaf call ([`StepScope`]) if it is making one; see
+    /// [`select`](Self::select).
     pub fn at(&self, t: f64) -> &Forcing {
-        let k = self
-            .boundaries
+        self.select(STEP.with(|c| c.get()), t)
+    }
+
+    /// The index of the epoch `t` falls in: `k` with `B_k <= t < B_{k+1}`,
+    /// the last for `t` at or after its start and the first for `t` before
+    /// `t0`.
+    fn epoch_of(&self, t: f64) -> usize {
+        self.boundaries
             .partition_point(|&b| b <= t)
-            .saturating_sub(1);
-        let starts_here = STEP_START.with(|c| c.get()) == t;
-        if k >= 1 && self.boundaries[k] == t && !starts_here {
-            &self.at_boundary[k]
-        } else {
+            .saturating_sub(1)
+    }
+
+    /// The forcing a call at `t` inside the step `span` takes (§8.4.1).
+    /// The epoch is the one the step's start falls in, `k`, so a step that
+    /// starts at a boundary takes the new epoch at every stage, its first
+    /// included. A stage at the right end of a step that ends at the next
+    /// boundary `B_{k+1}` takes each parameter's limit from the left there
+    /// (the boundary set): its time is the step's end, and it is recognized
+    /// as within the landing tolerance of `B_{k+1}` (spec/methods.md §10),
+    /// so a stage time `t_n + c h` with `c = 1` that rounds above or below
+    /// the boundary takes the same buffers. A step never crosses a boundary
+    /// (§8.4.3); a call past one anyway takes the epoch of its `t`. With no
+    /// step (a call outside any leaf's step, such as the check of a
+    /// document at the initial state) the epoch is the one `t` falls in.
+    pub fn select(&self, span: Option<StepSpan>, t: f64) -> &Forcing {
+        let Some(span) = span else {
+            return &self.epochs[self.epoch_of(t)];
+        };
+        let k = self.epoch_of(span.start);
+        let Some(&b) = self.boundaries.get(k + 1) else {
+            return &self.epochs[k];
+        };
+        let tol = crate::leaf::landing_tol(b, b);
+        if t < b - tol || span.start + span.h < b - tol {
             &self.epochs[k]
+        } else if t <= b + tol {
+            &self.at_boundary[k + 1]
+        } else {
+            &self.epochs[self.epoch_of(t)]
         }
     }
 
@@ -394,16 +435,38 @@ mod tests {
         assert_eq!(at(-1.0), (0.0, 0.0));
         assert_eq!(at(0.0), (0.0, 0.0));
         assert_eq!(at(9.999), (0.0, 0.0));
-        assert_eq!(at(10.0), (1.0, 0.0));
+        assert_eq!(at(10.0), (1.0, -1.0));
         assert_eq!(at(10.001), (1.0, -1.0));
         assert_eq!(at(19.0), (1.0, -1.0));
-        assert_eq!(at(20.0), (2.0, -1.0));
-        // The first stage of a step that starts on a boundary.
+        assert_eq!(at(20.0), (2.0, -2.0));
+        // Inside a step: the epoch of the step's start, and at the right end
+        // of a step that ends on a boundary the boundary set, however the
+        // stage time rounds; the first stage of a step that starts on a
+        // boundary takes the new epoch.
+        let span = |start: f64, h: f64| Some(StepSpan { start, h });
+        let sel = |s, t: f64| {
+            (
+                tl.select(s, t).bufs()["P"][0],
+                tl.select(s, t).bufs()["Q"][0],
+            )
+        };
+        assert_eq!(sel(span(10.0, 5.0), 10.0), (1.0, -1.0));
+        assert_eq!(sel(span(10.0, 10.0), 10.0), (1.0, -1.0));
+        assert_eq!(sel(span(10.0, 10.0), 15.0), (1.0, -1.0));
+        assert_eq!(sel(span(5.0, 5.0), 9.0), (0.0, 0.0));
+        let above = f64::from_bits(10.0f64.to_bits() + 1);
+        let below = f64::from_bits(10.0f64.to_bits() - 1);
+        for end in [10.0, above, below] {
+            assert_eq!(sel(span(5.0, end - 5.0), end), (1.0, 0.0), "{end}");
+        }
+        // A step that does not end on the boundary reads its own epoch.
+        assert_eq!(sel(span(5.0, 4.0), 9.0), (0.0, 0.0));
+        assert_eq!(sel(span(10.0, 10.0), 20.0), (2.0, -1.0));
         {
-            let _g = StepGuard::new(10.0);
+            let _s = StepScope::enter(span(10.0, 2.0));
             assert_eq!(at(10.0), (1.0, -1.0));
         }
-        assert_eq!(at(10.0), (1.0, 0.0));
+        assert_eq!(at(10.0), (1.0, -1.0));
         assert_eq!(tl.refresh_times(), [10.0, 20.0]);
         assert_eq!(ForcingTimeline::empty(3.0).refresh_times(), [] as [f64; 0]);
     }
