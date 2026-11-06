@@ -494,6 +494,9 @@ function check_schedule(ctx, root::SNode)
             "step has neither dt nor limits, and the schedule root is not a single adaptive leaf or coupled node"
         )
     end
+    # §7.3 (rule 17): an operator that reads a discrete data-fed parameter
+    # needs forcing_refresh in step.hit, checked after rule 12.
+    check_forcing_refresh(ctx, step)
     # Rule 13: adaptive leaves need an error estimate.
     for n in nodes
         is_leaflike(n) || continue
@@ -616,6 +619,13 @@ function operator_stiffness!(ctx, root::SNode, Δ::Dict{String, Float64})
         elseif need_locality(op) === :pointwise && hint == "high"
             (:stiff, "solver_hint")
         else
+            rf = jacobian_reads_forcing(ctx.backend, ctx, op)
+            rf === nothing && throw(PlannerStageError("whether operator $o's Jacobian reads data needs its EarthSciASTDiff bands"))
+            rf && refuse(
+                "auto_stiffness_reads_forcing", nptr(n),
+                "operator $o's stiffness would be classified by its Gershgorin bound, but its Jacobian reads a data-fed parameter, " *
+                    "whose sampled values are synthetic; name the alg of the leaf that advances it (spec/plan.md §5.5.2, D87)"
+            )
             ρ = gershgorin_bound(ctx.backend, ctx, op)
             ρ === nothing && throw(PlannerStageError("the Gershgorin bound of operator $o needs its EarthSciASTDiff Jacobian document"))
             (ρ * Δ[n.id] >= 10 ? :stiff : :nonstiff, "gershgorin")
@@ -824,4 +834,27 @@ function resolve_tree(ctx, n::SNode, stiff)
         out["hold"] = get(n.spec, "hold", "none")
     end
     return out
+end
+
+"""
+    check_forcing_refresh(ctx, step)
+
+spec/plan.md §7.3: a model in which some operator reads a data-fed
+parameter of `discrete` cadence needs `forcing_refresh` in `step.hit`, else
+`forcing_refresh_not_hit` at `/step/hit` (`/step` when `step` has no `hit`).
+"""
+function check_forcing_refresh(ctx, step::AbstractDict)
+    m = ctx.model
+    isempty(m.forcing) && return nothing
+    hit = get(step, "hit", nothing)
+    hit !== nothing && "forcing_refresh" in hit && return nothing
+    for o in sort!(collect(keys(ctx.ops))), n in forcing_among(m, ctx.ops[o].reads)
+        m.forcing[n].cadence == "discrete" || continue
+        refuse(
+            "forcing_refresh_not_hit", hit === nothing ? "/step" : "/step/hit",
+            "operator $o reads the time-varying data-fed parameter $n, so step.hit must name forcing_refresh: " *
+                "a step must not cross a forcing epoch (spec/plan.md §7.3)"
+        )
+    end
+    return nothing
 end

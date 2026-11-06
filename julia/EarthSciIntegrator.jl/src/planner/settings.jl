@@ -250,8 +250,10 @@ function check_adjoint(ctx, root::SNode)
     for (_, op) in ctx.ops
         op.bind_dt === nothing || union!(bound, String.(keys(op.bind_dt)))
     end
-    scalars = [p for p in m.params if !haskey(m.shapes, p)]
-    arrays = [p for p in m.params if haskey(m.shapes, p)]
+    # §7.6: data-fed parameters match `forcing:` only, and only the used ones.
+    scalars = [p for p in m.params if !haskey(m.shapes, p) && !is_forcing(m, p)]
+    arrays = [p for p in m.params if haskey(m.shapes, p) && !is_forcing(m, p)]
+    fed = used_forcing(m)
     for (i, w) in enumerate(adj["wrt"])
         at = jptr("/adjoint/wrt", i - 1)
         if w == "u0"
@@ -259,7 +261,7 @@ function check_adjoint(ctx, root::SNode)
             continue
         end
         prefix, pat = split(w, ':'; limit = 2)
-        pool = prefix == "params" ? scalars : prefix == "fields" ? arrays : String[]
+        pool = prefix == "params" ? scalars : prefix == "fields" ? arrays : prefix == "forcing" ? fed : String[]
         if prefix == "params" && pat == "numeric"
             matched = [p for p in pool if m.flat.parameters[p].default isa Real]
         else

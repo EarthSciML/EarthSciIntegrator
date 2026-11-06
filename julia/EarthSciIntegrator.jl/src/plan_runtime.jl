@@ -77,9 +77,23 @@ end
 
 """Load and build the derived document at `path` (§8.1). A build failure is a [`ConfigError`](@ref) naming the operator and the document."""
 function build_plan_document(path::AbstractString, opname::AbstractString, tspan)
-    prob, prog = try
+    # A document whose `ic` equations read one of its data-fed parameters
+    # (spec/plan.md §6.3) is built twice: EarthSciAST's `rhs_program` cannot
+    # yet rebuild such an `ic` equation, so the program is built without the
+    # `ic` equations and the initial state from the document as written.
+    prob, prog, u0 = try
         prob = EarthSciAST.esm_problem(path, tspan; compiler = :native, base_path = dirname(path))
-        prob, EarthSciAST.rhs_program(prob)
+        flat = EarthSciAST.flatten(EarthSciAST.load_path(path))
+        if ic_reads(flat, Set(fed_parameters(flat)))
+            pp = EarthSciAST.esm_problem(
+                EarthSciAST.FlattenedSystem(flat; field_ics = empty(flat.field_ics)), tspan; compiler = :native
+            )
+            Dict(String(k) => Int(v) for (k, v) in pp.var_map) == Dict(String(k) => Int(v) for (k, v) in prob.var_map) ||
+                error("its two builds lay out the states differently")
+            pp, EarthSciAST.rhs_program(pp), prob.u0
+        else
+            prob, EarthSciAST.rhs_program(prob), prob.u0
+        end
     catch e
         e isa InterruptException && rethrow()
         throw(ConfigError("operator '$opname': building $(basename(path)) failed: " * sprint(showerror, e)))
@@ -107,7 +121,7 @@ function build_plan_document(path::AbstractString, opname::AbstractString, tspan
         throw(ConfigError("operator '$opname': $(basename(path)): the problem names $(length(prob.var_map)) of the program's $nslots states"))
     w = DocWorkspace(prog, nslots, length(EarthSciAST.parameters(prog)))
     return PlanDocument(
-        String(path), prog, nslots, Int[], Int[], slots, Float64.(prob.u0), [w], ReentrantLock()
+        String(path), prog, nslots, Int[], Int[], slots, Float64.(u0), [w], ReentrantLock()
     )
 end
 
@@ -150,10 +164,12 @@ end
     evaluate(f, d, u, p, t)
 
 Evaluate document `d` at the canonical state `u` (every other slot, band
-fields included, zero) and the model parameters `p`, then call `f(du)` on
-the program's output in its own slot order, and return what `f` returns.
+fields included, zero) and the model parameters `p`, with the forcing set
+`fs` (the program's default set when `nothing`, for a document that reads no
+data), then call `f(du)` on the program's output in its own slot order, and
+return what `f` returns.
 """
-function evaluate(f, d::PlanDocument, u, p, t)
+function evaluate(f, d::PlanDocument, u, p, t, fs = nothing)
     _check_f64(u, p)
     w = _acquire(d)
     try
@@ -165,7 +181,7 @@ function evaluate(f, d::PlanDocument, u, p, t)
         @inbounds for j in eachindex(d.pidx)
             P[j] = p[d.pidx[j]]
         end
-        EarthSciAST.rhs!(w.du, d.prog, w.ws, U, w.aux, P, Float64(t), w.fs)
+        EarthSciAST.rhs!(w.du, d.prog, w.ws, U, w.aux, P, Float64(t), fs === nothing ? w.fs : fs)
         return f(w.du)
     finally
         _release(d, w)
@@ -176,19 +192,23 @@ end
     BandCache
 
 The values of a planned operator's band points at the last linearization
-point `(u, p, t)` it was evaluated at, so `jac`, `jvp_u` and `vjp_u` at one
-point evaluate the Jacobian document once. `vals` is replaced, never written
-in place.
+point `(u, p, t)` and forcing it was evaluated at, so `jac`, `jvp_u` and
+`vjp_u` at one point evaluate the Jacobian document once. `fkey` is the
+[`forcing_key`](@ref) of the call (`(0, 0)` for an operator that reads no
+data): at a forcing epoch boundary two calls at one `(u, p, t)` can take
+different buffers (spec/operator-interface.md §8.4.1, D88). `vals` is
+replaced, never written in place.
 """
 mutable struct BandCache
     valid::Bool
     t::Float64
+    fkey::NTuple{2, Int}
     u::Vector{Float64}
     p::Vector{Float64}
     vals::Vector{Float64}
     const lock::ReentrantLock
 end
-BandCache() = BandCache(false, NaN, Float64[], Float64[], Float64[], ReentrantLock())
+BandCache() = BandCache(false, NaN, (0, 0), Float64[], Float64[], Float64[], ReentrantLock())
 
 """
     PlannedOperator
@@ -212,7 +232,23 @@ struct PlannedOperator{R <: PlanDocument, J <: PlanDocument} <: AbstractOperator
     cache::BandCache
     layout::DofLayout            # the model's canonical layout
     blockable::Bool              # pointwise, with a block plan (`structure.block`)
+    # The run's data (spec/operator-interface.md §8.4), when the operator reads
+    # any, and each document's set of the epoch it last evaluated in.
+    forcing::Union{Nothing, ForcingRuntime}
+    rhs_fs::EpochSetRef
+    jac_fs::EpochSetRef
 end
+
+forcing_boundary(op::PlannedOperator, t) = op.forcing !== nothing && is_epoch_start(op.forcing, t)
+
+"""The forcing set of `op`'s right-hand-side (`jac = false`) or Jacobian program at `t` (§8.4.1), or `nothing` without data."""
+op_forcing(op::PlannedOperator, t, jac::Bool)::Union{Nothing, EarthSciAST.ForcingSet} = op.forcing === nothing ? nothing :
+    forcing_set_for(op.forcing, (jac ? op.jac : op.rhs).prog, t, jac ? op.jac_fs : op.rhs_fs)
+
+"""The [`forcing_key`](@ref) of a call of `op` at `t`; `(0, 0)` without data."""
+op_forcing_key(op::PlannedOperator, t) = op.forcing === nothing ? (0, 0) : forcing_key(op.forcing, t)
+
+forcing_epochs(op::PlannedOperator) = op.forcing === nothing ? Float64[] : discrete_epochs(op.forcing)
 
 opname(op::PlannedOperator) = op.name
 structure(op::PlannedOperator) = op.structure
@@ -232,7 +268,7 @@ ft_refused_on_rosenbrock(::PlannedOperator) = true
 
 function rhs!(op::PlannedOperator, out, u, p, t)
     d = op.rhs
-    return evaluate(d, u, p, t) do du
+    return evaluate(d, u, p, t, op_forcing(op, t, false)) do du
         @inbounds for i in op.writes
             out[i] += du[d.perm[i]]
         end
@@ -245,22 +281,24 @@ end
 
 `f(vals)`, with `vals[k]` the value of the Jacobian document at band point
 `op.points[k]` at `(u, p, t)`. The document is evaluated once per point
-`(u, p, t)`, compared bitwise; the calls at the point it last saw reuse it.
+`(u, p, t)`, compared bitwise, and forcing (the call's [`forcing_key`](@ref));
+the calls at the point it last saw reuse it.
 """
 function with_band_values(f, op::PlannedOperator, u, p, t)
     _check_f64(u, p)
     c, tt = op.cache, Float64(t)
+    fkey = op_forcing_key(op, tt)
     hit, res = lock(c.lock) do
-        c.valid && c.t === tt && bitwise_same(c.u, u) && bitwise_same(c.p, p) ? (true, f(c.vals)) : (false, nothing)
+        c.valid && c.t === tt && c.fkey == fkey && bitwise_same(c.u, u) && bitwise_same(c.p, p) ? (true, f(c.vals)) : (false, nothing)
     end
     hit && return res
-    vals = evaluate(op.jac, u, p, tt) do du
+    vals = evaluate(op.jac, u, p, tt, op_forcing(op, tt, true)) do du
         Float64[du[s] for (s, _, _) in op.points]
     end
     lock(c.lock) do
         resize!(c.u, length(u)) .= u
         resize!(c.p, length(p)) .= p
-        c.t, c.vals, c.valid = tt, vals, true
+        c.t, c.fkey, c.vals, c.valid = tt, fkey, vals, true
     end
     return f(vals)
 end
@@ -356,7 +394,7 @@ end
 function rhs!(o::LeafOperator, out, x, p, t)
     d = o.op.rhs
     return with_full_state(o, x) do u
-        evaluate(d, u, p, t) do du
+        evaluate(d, u, p, t, op_forcing(o.op, t, false)) do du
             @inbounds for (i, c) in zip(o.writes, o.op.writes)
                 out[i] += du[d.perm[c]]
             end
@@ -397,6 +435,9 @@ function vjp_u!(o::LeafOperator, out, x, p, t, w)
         end
     end
 end
+
+forcing_boundary(o::LeafOperator, t) = forcing_boundary(o.op, t)
+forcing_epochs(o::LeafOperator) = forcing_epochs(o.op)
 
 binds_to_leaf(::PlannedOperator) = true
 
@@ -475,6 +516,7 @@ struct PlanProblem
     prob::ToyProblem
     plan::AbstractDict
     layout::DofLayout
+    forcing::Union{Nothing, ForcingRuntime}
 end
 
 """
@@ -486,8 +528,18 @@ its entry `operators.<name>` and its documents `derived/<name>.rhs.esm` and
 document whose bytes do not hash to the plan's `derived` entry is refused:
 the plan is stale. `cache`, a dictionary, keeps built documents by their hash
 across plans, so a document many plans share is built once.
+
+A plan with `forcing` reads data (§8.4): its model, at `model` (default: its
+`inputs.model.path` relative to `dir`) and checked against the plan's hash,
+gives the providers, through EarthSciAST's `providers_from_document` with
+EarthSciIO's cache under `cache_root` (default `dir/data-cache`) and the
+source-name-to-URL-template map `url_overrides`. These three are run-time
+options, in neither the run config nor the plan.
 """
-function plan_problem(dir::AbstractString; cache::Union{Nothing, AbstractDict} = nothing)
+function plan_problem(
+        dir::AbstractString; cache::Union{Nothing, AbstractDict} = nothing, model::Union{Nothing, AbstractString} = nothing,
+        cache_root::Union{Nothing, AbstractString} = nothing, url_overrides::AbstractDict = Dict{String, String}()
+    )
     planfile = joinpath(dir, "plan.json")
     plan = JSON.parsefile(planfile)
     VersionNumber(plan["esm_integrator"]) == SPEC_VERSION ||
@@ -534,6 +586,31 @@ function plan_problem(dir::AbstractString; cache::Union{Nothing, AbstractDict} =
     end
     pnames = sort!(collect(keys(defaults)))
     p = Float64[defaults[x] for x in pnames]
+    # The data (spec/operator-interface.md §8.4): the plan's model, located by
+    # its `inputs` entry and checked against its hash, gives the providers.
+    F, mfile = nothing, nothing
+    if haskey(plan, "forcing")
+        mpath = model === nothing ? joinpath(dir, String(plan["inputs"]["model"]["path"])) : String(model)
+        isfile(mpath) || throw(ConfigError("the plan's model $(plan["inputs"]["model"]["path"]) is not at $mpath; pass its path as `model`"))
+        bytes2hex(sha256(read(mpath))) == plan["inputs"]["model"]["sha256"] ||
+            throw(ConfigError("the model at $mpath does not match the plan's hash (the plan is stale)"))
+        mfile = EarthSciAST.load_path(mpath)
+        readers = sort!(unique!(String[x for n in names for x in get(plan["operators"][n], "forcing", Any[])]))
+        # Every program's forcing slots must be data-fed parameters some
+        # operator's forcing lists, of their planned shapes (§8.4.1), checked
+        # before any data is read.
+        shapes = forcing_shapes(mfile, plan["forcing"])
+        for n in names, d in built[n], s in EarthSciAST.forcing_slots(d.prog)
+            (s.name in readers && haskey(shapes, s.name)) || throw(
+                ConfigError("operator '$n': $(basename(d.path)) has a forcing slot $(s.name), which no operator's forcing in the plan lists")
+            )
+            collect(Int, s.shape) == shapes[s.name] || throw(
+                ConfigError("operator '$n': $(basename(d.path))'s forcing slot $(s.name) has shape $(s.shape), the plan's $(shapes[s.name])")
+            )
+        end
+        root = cache_root === nothing ? joinpath(dir, "data-cache") : String(cache_root)
+        F = forcing_runtime(mfile, plan, tspan, readers; cache_root = root, url_overrides)
+    end
     ops = Dict{String, AbstractOperator}()
     u0 = nothing
     for n in names
@@ -545,7 +622,15 @@ function plan_problem(dir::AbstractString; cache::Union{Nothing, AbstractDict} =
         u0 === nothing && (u0 = x0)
         bitwise_same(u0, x0) ||
             throw(ConfigError("operator '$n': derived/$n.rhs.esm gives another initial state than derived/$(first(names)).rhs.esm"))
-        push!(ops, n => planned_operator(n, plan["operators"][n], L, r, j))
+        op = planned_operator(n, plan["operators"][n], L, r, j)
+        haskey(plan["operators"][n], "forcing") && (op = _with_forcing(op, F))
+        push!(ops, n => op)
+    end
+    # §8.4.5: when an `ic` equation of the plan's model reads a data-fed
+    # parameter, the run starts from EarthSciAST's initial state of the model
+    # with its providers, not from the derived documents' (bound to defaults).
+    if mfile !== nothing && ic_reads(EarthSciAST.flatten(mfile), Set(keys(plan["forcing"])))
+        u0 = data_initial_state(mfile, F, tspan, L)
     end
     variables = Pair{String, Vector{Int}}[
         x => collect((L.offset[x] + 1):(L.offset[x] + prod(L.extents[x]; init = 1))) for x in sort!(collect(keys(L.offset)))
@@ -555,7 +640,40 @@ function plan_problem(dir::AbstractString; cache::Union{Nothing, AbstractDict} =
         name, length(L.names), u0, p, pnames, tspan, ops, Dict{String, AbstractMapOperator}(), variables,
         Function[], nothing, false
     )
-    return PlanProblem(prob, plan, L)
+    return PlanProblem(prob, plan, L, F)
+end
+
+_with_forcing(op::PlannedOperator, F) = PlannedOperator(
+    op.name, op.writes, op.structure, op.depends_on_t, op.linear_in_u, op.rhs, op.jac, op.points, op.cache,
+    op.layout, op.blockable, F, EpochSetRef(), EpochSetRef()
+)
+
+"""
+    data_problem(file, F, tspan) -> EsmProblem
+
+EarthSciAST's problem of the plan's model with the run's providers (the
+plan's `forcing` only), the one whose own solve a planned run reproduces
+(spec/operator-interface.md §8.4.2 step 3, §8.4.5).
+"""
+data_problem(file::EarthSciAST.EsmFile, F::ForcingRuntime, tspan) =
+    EarthSciAST.esm_problem(file, tspan; compiler = :native, providers = F.providers)
+
+"""The initial state of [`data_problem`](@ref), in the canonical order of `L` (§8.4.5)."""
+function data_initial_state(file, F, tspan, L::DofLayout)
+    prob = try
+        data_problem(file, F, tspan)
+    catch e
+        e isa InterruptException && rethrow()
+        throw(ConfigError("building the plan's model with its data, for the initial state, failed: " * sprint(showerror, e)))
+    end
+    vm = Dict{String, Int}(String(k) => Int(v) for (k, v) in prob.var_map)
+    return Float64[
+        prob.u0[
+            get(vm, n) do
+                throw(ConfigError("the plan's model built with its data has no state element $n"))
+            end,
+        ] for n in L.names
+    ]
 end
 
 bitwise_same(a, b) = length(a) == length(b) && all(i -> reinterpret(UInt64, a[i]) == reinterpret(UInt64, b[i]), eachindex(a))
@@ -578,7 +696,7 @@ function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDoc
     points = NTuple{3, Int}[(fields[k][f], row, col) for (k, f, row, col) in band_points(L, bands)]
     return PlannedOperator(
         String(name), w, planned_structure(entry, L), Bool(st["depends_on_t"]), Bool(st["linear_in_u"]), r, j, points,
-        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block")
+        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block"), nothing, EpochSetRef(), EpochSetRef()
     )
 end
 
@@ -618,8 +736,11 @@ A run of the plan in `dir` (spec/operator-interface.md §8, spec/toy-problems.md
 step, over the plan's `time`. A caller's `tspan` other than the plan's is
 refused (the plan is stale, spec/plan.md §3). Run it with [`forward!`](@ref).
 """
-function build_plan_run(dir::AbstractString; saveat = nothing, tspan = nothing, cache = nothing)
-    pp = plan_problem(dir; cache)
+function build_plan_run(
+        dir::AbstractString; saveat = nothing, tspan = nothing, cache = nothing, model = nothing,
+        cache_root = nothing, url_overrides = Dict{String, String}()
+    )
+    pp = plan_problem(dir; cache, model, cache_root, url_overrides)
     prob, plan = pp.prob, pp.plan
     if tspan !== nothing && (Float64(tspan[1]), Float64(tspan[2])) != prob.tspan
         throw(ConfigError("run interval $(tspan) differs from the plan's time $(prob.tspan): the plan is stale (spec/plan.md §3)"))
@@ -627,6 +748,7 @@ function build_plan_run(dir::AbstractString; saveat = nothing, tspan = nothing, 
     config = Dict{String, Any}(
         "esm_integrator" => plan["esm_integrator"], "schedule" => plan["schedule"], "step" => plan["step"]
     )
+    # build_run makes the forcing epochs' starts tstops (§8.4.3).
     return build_run(config; tspan = prob.tspan, saveat, prob), pp
 end
 

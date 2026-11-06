@@ -127,7 +127,10 @@ function leaf_forward(
         else
             # dtmax capped at the first stop, as OrdinaryDiffEqCore's
             # _determine_initdt does (spec/methods.md §9).
-            cs.h, n0 = initial_step(fp(p), u, t, tab.order, leaf.tol, dtmin, min(dtmax, stops[1] - t))
+            # Its evaluations belong to the first step, which starts at t (§8.4.1).
+            cs.h, n0 = with_step_start(t) do
+                initial_step(fp(p), u, t, tab.order, leaf.tol, dtmin, min(dtmax, stops[1] - t))
+            end
             nf += n0
         end
     end
@@ -182,7 +185,7 @@ function leaf_forward(
         end
         pp = pstep(h)
         k1 = (fsal !== nothing && (!leaf_bound || fsal_h == h)) ? fsal : nothing
-        res = method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive, hist)
+        res = with_step_start(() -> method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive, hist), t)
         nf += res.nf
         unew = res.u
         # A negative stage state under domain.check_stages is a violation whatever
@@ -249,6 +252,8 @@ function leaf_forward(
         # (spec/methods.md §3.3). It is reused even when tₙ₊₁ was snapped to a
         # stop, as OrdinaryDiffEq does; replay reproduces this (leaf_replay).
         fsal = (res.fsal !== nothing && !clipped) ? res.fsal : nothing
+        # Never reused across a forcing epoch boundary (spec/operator-interface.md §8.4.1, D88).
+        forcing_boundary(leaf.ops, tnew) && (fsal = nothing)
         fsal_h = h
         hist = (u, t)
         res.dq === nothing || (qint = qint + res.dq)
@@ -308,7 +313,7 @@ function leaf_replay(
             else
                 u = leaf_step(leaf, u, pp, t, h, mask, tk1)
             end
-            tk1_next = fsal_method && mask === nothing ? t + h : nothing
+            tk1_next = fsal_method && mask === nothing && !forcing_boundary(leaf.ops, tnew) ? t + h : nothing
             hprev = h
         end
         visit === nothing || visit(tnew, u)
@@ -354,8 +359,13 @@ end
 One replayed step (stages from `u`; `mask` is `nothing` or the 0-based
 indices of the DOFs the step clipped, as recorded on the tape),
 generic over element types; the frozen-tape step map `Φₙ` of spec/adjoint.md §1.
+Its evaluations take `t` as the step's start (§8.4.1, [`with_step_start`](@ref)).
 """
 function leaf_step(leaf::LeafNode, u, p, t, h, mask, tk1 = t; withq::Bool = false)
+    return with_step_start(() -> _leaf_step(leaf, u, p, t, h, mask, tk1, withq), t)
+end
+
+function _leaf_step(leaf::LeafNode, u, p, t, h, mask, tk1, withq::Bool)
     ψ = withq ? leaf.ψ : nothing
     dq = nothing
     u1 = if leaf.method isa RosenbrockMethod
@@ -396,8 +406,15 @@ end
 
 The adjoint of [`leaf_step`](@ref): the clip mask first (spec/adjoint.md §5.7),
 then the method's adjoint step. A skipped (sub-eps) stop step is the identity.
+The adjoint step re-evaluates the step's stages with `t` as the step's start,
+so they take the forcing buffers the forward step took (spec/operator-interface.md
+§8.4.1, D88; [`with_step_start`](@ref)).
 """
 function leaf_step_adjoint(leaf::LeafNode, u, p, t, h, mask, λ, skipped::Bool = false, tk1 = t)
+    return with_step_start(() -> _leaf_step_adjoint(leaf, u, p, t, h, mask, λ, skipped, tk1), t)
+end
+
+function _leaf_step_adjoint(leaf::LeafNode, u, p, t, h, mask, λ, skipped::Bool, tk1)
     if mask !== nothing
         λ = copy(λ)
         for i in mask

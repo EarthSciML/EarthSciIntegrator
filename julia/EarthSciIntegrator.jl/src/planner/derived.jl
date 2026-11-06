@@ -248,9 +248,15 @@ function _rhs_document(
     flat = m.flat
     live = live_observeds(m, reduce(vcat, (t.refs for t in terms); init = String[]))
     models = Dict{String, Any}()
+    # §6.3: the data-fed parameters this document's terms read, directly or
+    # through live observeds, are its forcing slots.
+    fed = forcing_among(m, observed_closure(m, reduce(vcat, (t.refs for t in terms); init = String[])))
     for dict in (flat.state_variables, flat.parameters, flat.observed_variables), (vname, v) in dict
         (is_state(m, vname) || is_param(m, vname) || vname in live) || continue
-        component_model!(models, component_of(vname))["variables"][last_segment(vname)] = variable_object(m, vname, v)
+        is_forcing(m, vname) && !(vname in m.used_forcing) && continue        # unused: not declared
+        obj = variable_object(m, vname, v)
+        vname in fed && (obj["update"] = forcing_update(m, vname))
+        component_model!(models, component_of(vname))["variables"][last_segment(vname)] = obj
     end
     by_eq = Dict{Int, Vector{Term}}()
     for t in terms
@@ -307,7 +313,37 @@ function _rhs_document(
     )
     dom = derived_domain(flat.domain)
     dom === nothing || (doc["domain"] = dom)
+    ds = forcing_stubs(m, fed)
+    ds === nothing || (doc["data_sources"] = ds)
     return doc
+end
+
+"""
+The `update` a data-fed parameter in a document's forcing is declared with
+(§6.3): its `data` rule naming its source and file variable, nothing else
+of the original.
+"""
+forcing_update(m::PlanModel, n::AbstractString) = Dict{String, Any}(
+    "kind" => "data", "source" => m.forcing[n].source,
+    "from" => Dict{String, Any}("file_variable" => m.forcing[n].file_variable)
+)
+
+"""The placeholder location of every forcing stub (§6.3): substitution-led, so EarthSciAST keeps it as written and it names no file."""
+const FORCING_STUB_URL = "{esm_integrator_forcing}"
+
+"""
+§6.3's `data_sources`: one stub per source the data-fed parameters `fed`
+name, `{"kind": <the source's kind>, "source": {"url_template":
+"{esm_integrator_forcing}"}}`; `nothing` when `fed` is empty.
+"""
+function forcing_stubs(m::PlanModel, fed)
+    isempty(fed) && return nothing
+    return Dict{String, Any}(
+        m.forcing[n].source => Dict{String, Any}(
+            "kind" => m.forcing[n].source_kind,
+            "source" => Dict{String, Any}("url_template" => FORCING_STUB_URL)
+        ) for n in fed
+    )
 end
 
 """The equation `D(var) = …` of state `var`, flattened equation `ei`, holding the terms `ts` (§6.1.2): their left fold, inside the lift's `faq` when `lifted`, or the zero right-hand side when there are none."""
@@ -370,8 +406,8 @@ computes its own bands, with the same `jacobian_bands(sysview(rhs); wrt =
 against `entries`: their names, and each field's row region against the
 band's `rows`. (The `band_model` check of §8.1 compares the values.)
 """
-function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVector)
-    doc, fields = EarthSciASTDiff.evaluation_document(rhs; cse = false)
+function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVector; data_sources = nothing)
+    doc, fields = EarthSciASTDiff.evaluation_document(rhs; cse = false, data_sources)
     fields == ["J_$k" for k in eachindex(entries)] || error(
         "EarthSciASTDiff's evaluation document has band fields $fields, " *
             "but the operator has $(length(entries)) bands (spec/plan.md §6.2)"

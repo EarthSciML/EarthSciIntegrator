@@ -62,7 +62,28 @@ function golden_bandvalues_mismatch(d, o, want)
         s["t"] == t0 + (tf - t0) * q || return "sample $k: t is $(s["t"]), quantile $q of the interval is $(t0 + (tf - t0) * q)"
         Set(keys(s["u"])) == Set(L.names) || return "sample $k: u does not name exactly the model's DOFs"
         u = Float64[s["u"][n] for n in L.names]
-        JB = EarthSciIntegrator.band_jacobian(B, b.ops[o].points, u, Float64(s["t"]))
+        # §8.2: a model with data-fed parameters carries each sample's forcing,
+        # at every element of the used ones, and is evaluated there.
+        m = ctx.model
+        F = nothing
+        if isempty(m.forcing)
+            haskey(s, "forcing") && return "sample $k: forcing given for a model without data-fed parameters"
+        else
+            haskey(s, "forcing") || return "sample $k: no forcing"
+            names = Dict{String, Tuple{String, Int}}()
+            for n in EarthSciIntegrator.used_forcing(m)
+                ext = Int[m.sizes[X] for X in m.forcing[n].shape]
+                for (i, c) in enumerate(EarthSciIntegrator.cells(ext))
+                    names[EarthSciIntegrator.element_name(n, c)] = (n, i)
+                end
+            end
+            Set(keys(s["forcing"])) == Set(keys(names)) || return "sample $k: forcing does not name exactly the used data-fed parameters' elements"
+            F = Dict{String, Vector{Float64}}(n => zeros(length(EarthSciIntegrator.cells(Int[m.sizes[X] for X in m.forcing[n].shape]))) for n in EarthSciIntegrator.used_forcing(m))
+            for (e, (n, i)) in names
+                F[n][i] = Float64(s["forcing"][e])
+            end
+        end
+        JB = EarthSciIntegrator.band_jacobian(B, b.ops[o].points, u, Float64(s["t"]), F)
         G = Dict((L.names[r], L.names[c]) => v for ((r, c), v) in JB)
         W = Dict{Tuple{String, String}, Float64}()
         for e in s["entries"]
@@ -99,6 +120,10 @@ block(vars, pattern, lu = pattern; ordering = collect(1:length(vars))) =
     Dict("block" => Dict("vars" => vars, "ordering" => ordering, "pattern" => pattern, "lu_pattern" => lu))
 const CHEM3 = ["Chem.NO", "Chem.NO2", "Chem.O3"]
 const EXPECTED_OPERATORS = Dict(
+    "forced_column/named" => Dict(
+        "default_column" => ("column", ("stiff", "run_config"), "general", Dict("column" => Dict("axis" => "lev", "kl" => 3, "ku" => 3))),
+        "default_pointwise" => ("pointwise", ("nonstiff", "gershgorin"), "block_diagonal", block(["Col.c"], [[1, 1]])),
+    ),
     "column_contraction/auto" => Dict(
         "default_column" => ("column", ("stiff", "gershgorin"), "general", Dict("column" => Dict("axis" => "lev", "kl" => 4, "ku" => 4))),
     ),
@@ -148,6 +173,7 @@ const EXPECTED_OPERATORS = Dict(
 )
 # `linear_in_u` and `depends_on_t` where expected.md names them.
 const EXPECTED_FLAGS = Dict(
+    "forced_column/named" => Dict("default_column" => (true, true), "default_pointwise" => (true, false)),
     "toy_photostationary_cells/kvaerno4" => Dict("photochemistry" => (false, true)),
     "toy_robertson/rodas4" => Dict("kinetics" => (false, false)),
     "toy_advection_reaction/strang" => Dict("transport" => (true, false), "reaction" => (true, false)),
@@ -167,6 +193,13 @@ const PLAN_FILES = String[]
         @test r(1, 1) == 0.12603102042098713
         @test r(2, 0) == 0.905065227878185
         @test r(3, 2) == 0.03750424614895098
+        # The forcing stream (§5.5.1): sample indices 4, 5, 6.
+        @test r(4, 0) == 0.5689035232967019
+        @test r(4, 1) == 0.4280676132950757
+        @test r(5, 0) == 0.7116989708490432
+        @test r(6, 2) == 0.7714896152704298
+        F = EarthSciIntegrator.sampled_forcing(["b", "a"], Dict("a" => [2.0, 3.0], "b" => fill(-1.0)))
+        @test length(F) == 3 && F[2]["a"] == [2.0 * (0.5 + r(5, 0)), 3.0 * (0.5 + r(5, 1))] && F[2]["b"] == [-(0.5 + r(5, 2))]
         S = EarthSciIntegrator.sampled_states([2.0, 0.0, -1.0], (10.0, 30.0))
         @test [t for (t, _) in S] == [15.0, 20.0, 25.0]
         @test S[1][2] == [2.0 * (0.5 + r(1, 0)), 1.0 * (0.5 + r(1, 1)), -1.0 * (0.5 + r(1, 2))]
@@ -324,6 +357,30 @@ const PLAN_FILES = String[]
             @test p["operators"][o]["structure"]["depends_on_t"] == dt
         end
         haskey(EXPECTED_OPERATORS, key) && @test Set(ops) == Set(keys(EXPECTED_OPERATORS[key]))
+        if key == "forced_column/named"
+            # Data-fed parameters (spec/plan.md §3, §5.3, §6.3, §8.2).
+            @test sort!(collect(keys(p["forcing"]))) == ["Col.c0", "Col.g", "Met.T"]
+            @test p["forcing"]["Met.T"] == Dict(
+                "shape" => ["rec", "x", "lev"], "source" => "MetFields", "file_variable" => "T",
+                "cadence" => "discrete", "records_per_sample" => 2
+            )
+            @test p["forcing"]["Col.g"]["shape"] == [] && p["forcing"]["Col.g"]["cadence"] == "const"
+            @test p["operators"]["default_column"]["forcing"] == ["Met.T"]
+            @test p["operators"]["default_pointwise"]["forcing"] == ["Col.g"]
+            for f in readdir(joinpath(dir, "derived"))
+                text = read(joinpath(dir, "derived", f), String)
+                @test !occursin("QV", text) && !occursin("met_", text) && !occursin("surface.nc", text)
+                @test occursin("{esm_integrator_forcing}", text)
+            end
+            o = "default_column"
+            want = JSON.parsefile(joinpath(golden, "validation", "$o.bandvalues.json"))
+            @test all(s -> length(s["forcing"]) == 25 && haskey(s["forcing"], "Col.g"), want["samples"])
+            bad2(f) = (w = deepcopy(want); f(w); golden_bandvalues_mismatch(d, o, w) !== nothing)
+            @test bad2(w -> delete!(w["samples"][1], "forcing"))
+            # (At the second sample, t = 10800 s, the blend weight is 0, so Met.T[2,…] is not read.)
+            @test bad2(w -> (w["samples"][2]["forcing"]["Met.T[1,1,3]"] *= 1.5))
+            @test bad2(w -> (w["samples"][2]["forcing"]["Met.QV[1,1]"] = 1.0))
+        end
         if key == "unnamed_lift/auto"
             # No index set is declared, so `flatten` names the lift's
             # dimension `_liftdim1_4` (§6.1.3): it is the default axis and in
@@ -699,7 +756,7 @@ const PLAN_FILES = String[]
             b = DiffBackend()
             ctx, terms = try
                 inp = EarthSciIntegrator.read_inputs(joinpath(dir, name, "run.json"))
-                EarthSciIntegrator.check_scope(inp.flat)
+                EarthSciIntegrator.check_scope(inp.flat, inp.file)
                 EarthSciIntegrator.check_reserved_names(inp.file)
                 c = EarthSciIntegrator.plan_context(inp, b)
                 c, EarthSciIntegrator.build_terms(c.model)
@@ -726,6 +783,33 @@ const PLAN_FILES = String[]
             end
         end
         @test checked > 0 && failed > 0
+    end
+
+    @testset "a used data-fed parameter's default must be nonzero everywhere (§4.1)" begin
+        # A default with a zero element (refusal fixture forcing-without-scale
+        # has the missing default); the paths of the data are never opened.
+        dir = mktempdir()
+        src = joinpath(PFIX, "forced_column")
+        doc = JSON.parsefile(joinpath(src, "model.esm"))
+        doc["models"]["Col"]["variables"]["c0"]["default"] = [[1.0, 2.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]]
+        write(joinpath(dir, "model.esm"), JSON.json(doc))
+        cp(joinpath(src, "named.run.json"), joinpath(dir, "run.json"))
+        e = try
+            EarthSciIntegrator.plan(joinpath(dir, "run.json")); nothing
+        catch err
+            err
+        end
+        @test e isa PlannerRefusal && (e.code, e.at) == ("forcing_without_scale", "/model") && occursin("Col.c0", e.msg)
+        # Unused, it needs none: Met.QV has no default and is planned.
+        doc["models"]["Col"]["variables"]["c0"]["default"] = 1.5
+        doc["models"]["Met"]["variables"]["QV"]["default"] = 0.0
+        write(joinpath(dir, "model.esm"), JSON.json(doc))
+        r = try
+            EarthSciIntegrator.plan(joinpath(dir, "run.json")); nothing
+        catch err
+            err
+        end
+        @test r === nothing
     end
 
     @testset "write_plan removes an earlier plan's files" begin

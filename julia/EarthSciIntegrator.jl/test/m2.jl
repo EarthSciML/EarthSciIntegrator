@@ -74,6 +74,27 @@ function m1_result(id, m1cases)
     return JSON.parsefile(res), open(read_tape, tp)
 end
 
+const M2_REFERENCE_DIR = joinpath(REPO, "tests", "conformance", "m2", "reference")
+
+"""The `reference` check (spec/toy-problems.md §2.1) of an M2 case against its exact solution in tests/conformance/m2/reference/, on the case's layout."""
+function check_m2_reference(case, run, pp, chk)
+    id = case["id"]
+    ref = JSON.parsefile(joinpath(M2_REFERENCE_DIR, "$id.json"))
+    dofs = layout_dofs(pp, case["layout"])
+    rt = Float64.(ref["t"])
+    ru = [Float64.(x) for x in ref["u"]]
+    scale = [maximum(abs(ru[i][j]) for i in eachindex(ru)) for j in eachindex(ru[1])]
+    worst = 0.0
+    for (t, u) in run.outputs
+        i = findfirst(==(t), rt)
+        i === nothing && return record!(id, "reference", false, "reference has no output at t = $t")
+        worst = max(worst, maximum(abs(u[dofs[j]] - ru[i][j]) / max(scale[j], floatmin()) for j in eachindex(dofs)))
+    end
+    ok = worst <= chk["rtol"]
+    @test ok
+    return record!(id, "reference", ok, "largest scaled difference from the exact solution $worst, rtol $(chk["rtol"])")
+end
+
 """Plan, build and run one M2 case, write its result file and tape, and run its checks."""
 function run_m2_case(case, m1cases, cache)
     id = case["id"]
@@ -96,6 +117,15 @@ function run_m2_case(case, m1cases, cache)
         m2res = JSON.parsefile(joinpath(RESULTS_DIR, "$id.json"))
         for chk in case["checks"]
             name = chk["check"]
+            # The data-input cases (§4.4–§4.6) are checked against their exact
+            # solutions; cross_language is compared in CI.
+            name == "cross_language" && continue
+            if name == "reference"
+                @testset "reference" begin
+                    check_m2_reference(case, run, pp, chk)
+                end
+                continue
+            end
             @test name == "toy_equivalence"
             @testset "$name" begin
                 m1res, m1tape = m1_result(chk["against"], m1cases)
@@ -109,7 +139,7 @@ end
 @testset "M2 end-to-end cases" begin
     file = JSON.parsefile(M2_CASES_FILE)
     cases = file["cases"]
-    @test length(cases) == 41
+    @test length(cases) == 45
     @test file["esm_integrator"] == string(SPEC_VERSION)
     m1cases = JSON.parsefile(CASES_FILE)["cases"]
     only = get(ENV, "EARTHSCIINTEGRATOR_CASES", "")

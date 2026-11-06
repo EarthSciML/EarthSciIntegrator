@@ -186,6 +186,62 @@ operators written by hand; true for the operators a plan supplies
 """
 ft_refused_on_rosenbrock(op) = false
 
+"""
+    forcing_boundary(op, t) -> Bool
+
+Whether `t` is the start of one of `op`'s forcing epochs other than the first
+(spec/operator-interface.md §8.4.1, D88): a step that starts there does not
+reuse the first-same-as-last stage of the step that ended there. `false` for
+an operator that reads no data.
+"""
+forcing_boundary(op, t) = false
+
+"""
+    set_step_start!(t) -> previous
+
+Make `t` the start of the step whose stages are evaluated next, until
+`set_step_start!(previous)`: the time that picks the epoch of the one-record
+data-fed parameters at a stage on the step's right end
+(spec/operator-interface.md §8.4.1, D88). `nothing` clears it.
+"""
+function set_step_start!(t)
+    tls = task_local_storage()
+    prev = get(tls, :esi_step_start, nothing)
+    t === nothing ? delete!(tls, :esi_step_start) : (tls[:esi_step_start] = Float64(t))
+    return prev
+end
+
+"""The start of the step being evaluated, or `t` itself outside one."""
+step_start(t) = something(get(task_local_storage(), :esi_step_start, nothing), Float64(t))::Float64
+
+"""
+    with_step_start(f, t)
+
+`f()` with `t` the start of the step being evaluated ([`set_step_start!`](@ref)),
+restored afterwards. Every evaluation that belongs to a step goes through it:
+the forward step and the first-step estimate ([`leaf_forward`](@ref)), the
+replayed step ([`leaf_step`](@ref)) and the adjoint step
+([`leaf_step_adjoint`](@ref)), so a stage at the step's right end takes the
+same forcing buffers in all three (spec/operator-interface.md §8.4.1, D88).
+"""
+function with_step_start(f, t)
+    prev = set_step_start!(t)
+    try
+        return f()
+    finally
+        set_step_start!(prev)
+    end
+end
+
+"""
+    forcing_epochs(op) -> Vector{Float64}
+
+The starts of the forcing epochs of the data `op` reads, other than the
+first (spec/operator-interface.md §8.4.3): the times no step may cross. Empty
+for an operator that reads no discrete data.
+"""
+forcing_epochs(op) = Float64[]
+
 # ---------------------------------------------------------------------------
 # Matrix storage (operator-interface.md §4)
 
@@ -271,6 +327,9 @@ struct OperatorSum{O <: Tuple}
     # The same operators bound afresh (`with_background`) form the same cotangents.
     OperatorSum(ops::Tuple, forms_p::NamedTuple) = new{typeof(ops)}(ops, forms_p)
 end
+
+forcing_boundary(s::OperatorSum, t) = any(op -> forcing_boundary(op, t), s.ops)
+forcing_epochs(s::OperatorSum) = sort!(unique!(reduce(vcat, (forcing_epochs(op) for op in s.ops); init = Float64[])))
 OperatorSum(ops::AbstractVector) = OperatorSum(Tuple(ops))
 
 structure(s::OperatorSum) = leaf_structure(map(structure, s.ops))

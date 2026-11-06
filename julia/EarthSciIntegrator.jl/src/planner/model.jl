@@ -4,6 +4,23 @@
 # definitions.
 
 """
+    ForcingInfo
+
+A data-fed parameter (spec/plan.md §4.1): its shape (index-set names, empty
+for a scalar), the data source and file variable its `loader_fields` entry
+names, the source's `kind`, its cadence (`"const"` or `"discrete"`) and its
+effective records per sample.
+"""
+struct ForcingInfo
+    shape::Vector{String}
+    source::String
+    file_variable::String
+    source_kind::String
+    cadence::String
+    records_per_sample::Int
+end
+
+"""
     PlanModel
 
 The flattened model as the passes read it.
@@ -36,7 +53,47 @@ struct PlanModel
     observed_defs::Dict{String, ASTExpr}
     observed_rhs::Dict{String, Vector{ASTExpr}}
     reaction_systems::Set{String}
+    # Data-fed parameters (§4.1), every one, by flattened name in code-point
+    # order, and the used ones among them (§4.1: read by a term, directly or
+    # through observed definitions, or by an `ic` equation), filled once the
+    # terms are known ([`mark_used_forcing!`](@ref)).
+    forcing::OrderedDict{String, ForcingInfo}
+    used_forcing::Set{String}
 end
+
+"""The data source `name` of the loaded document, or `nothing`."""
+data_source(file, name) = (file === nothing || file.data_sources === nothing) ? nothing : get(file.data_sources, name, nothing)
+
+"""
+Whether a data source is `discrete` (spec/plan.md §4.1): its `temporal` has a
+`start` and a `frequency` or a `file_period`.
+"""
+function is_discrete(src)
+    t = src.temporal
+    t === nothing && return false
+    has(x) = x !== nothing && x != ""
+    return has(t.start) && (has(t.frequency) || has(t.file_period))
+end
+
+"""The data-fed parameters of the flattened model (§4.1), by name in code-point order."""
+function forcing_info(file, flat)
+    out = OrderedDict{String, ForcingInfo}()
+    for lf in sort(flat.loader_fields; by = lf -> lf.name)
+        v = flat.parameters[lf.name]
+        src = data_source(file, lf.subkey)
+        src === nothing && error("data-fed parameter $(lf.name) names data source $(lf.subkey), which the loaded model does not declare")
+        shape = v.shape === nothing ? String[] : String.(v.shape)
+        out[lf.name] = ForcingInfo(
+            shape, lf.subkey, lf.var, src.kind, is_discrete(src) ? "discrete" : "const", lf.records_per_sample
+        )
+    end
+    return out
+end
+
+is_forcing(m, n) = haskey(m.forcing, n)
+
+"""The data-fed parameters among `names`, sorted (an operator's `forcing`, §5.3)."""
+forcing_among(m, names) = sort!([n for n in names if is_forcing(m, n)])
 
 is_state(m::PlanModel, n) = n in m.state_set
 is_param(m::PlanModel, n) = haskey(m.flat.parameters, n)
@@ -134,7 +191,8 @@ function plan_model(inp::PlanInputs)
     return PlanModel(
         inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
         collect(keys(flat.observed_variables)), shapes, sizes, Set(keys(flat.lifted_shapes)), state_eqs,
-        observed_defs, observed_definitions(flat), reaction_system_paths(inp.file)
+        observed_defs, observed_definitions(flat), reaction_system_paths(inp.file),
+        forcing_info(inp.file, flat), Set{String}()
     )
 end
 

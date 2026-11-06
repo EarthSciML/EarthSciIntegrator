@@ -115,6 +115,14 @@ function read_inputs(config_path::AbstractString)
         r === nothing || throw(r)
         refuse("model_load_failed", "/model", "EarthSciAST refused to load $model: " * _load_error_message(e))
     end
+    # A validation failure is a load failure too (§4 step 3): EarthSciAST's
+    # `validate` reports what `load_path` does not refuse, such as a data
+    # source's temporal block without a start, as the Rust planner does.
+    v = EarthSciAST.validate(file)
+    v.is_valid || refuse(
+        "model_load_failed", "/model",
+        "the model does not validate: " * join(vcat([sprint(show, x) for x in v.schema_errors], [sprint(show, x) for x in v.structural_errors]), "; ")
+    )
     # Step 4: solver.external.
     ext = try
         EarthSciAST.solver_external_location(file; base_path = dirname(model_path))
@@ -148,10 +156,12 @@ end
     check_scope(flat)
 
 spec/plan.md §4 step 6: refuse, in this order, algebraic variables, events,
-parameter update rules, loader fields, and an index set that is not an
+parameter update rules other than a data-fed parameter's single data rule,
+a loader field naming no parameter, two records per sample from a source
+that is not time-varying (`file`'s data sources, §4.1), and an index set that is not an
 `interval` with an integer size.
 """
-function check_scope(flat::EarthSciAST.FlattenedSystem)
+function check_scope(flat::EarthSciAST.FlattenedSystem, file::Union{Nothing, EarthSciAST.EsmFile} = nothing)
     isempty(flat.algebraic_variables) || refuse(
         "unsupported_algebraic_equation", "/model",
         "the flattened model has algebraic unknowns ($(join(keys(flat.algebraic_variables), ", "))); algebraic operators need U6 (M4b)"
@@ -164,19 +174,42 @@ function check_scope(flat::EarthSciAST.FlattenedSystem)
     # §4 step 6: at the parameter-update place, unsupported_crossing_update when
     # any parameter has a crossing rule (reported for the first such
     # parameter), else unsupported_parameter_update; algebraic equations and
-    # events come first whatever the rules.
+    # events come first whatever the rules. A data-fed parameter (§4.1, one a
+    # `loader_fields` entry names) may carry one `data` rule with `from`.
+    fed = Set{String}(lf.name for lf in flat.loader_fields)
     kinds(v) = v.update === nothing ? String[] : [u.kind for u in v.update]
-    updated = [(name, kinds(v)) for (name, v) in flat.parameters if !isempty(kinds(v))]
+    allowed(name, v) = name in fed && v.update !== nothing && length(v.update) == 1 &&
+        v.update[1].kind == "data" && v.update[1].from !== nothing
+    updated = [(name, kinds(v)) for (name, v) in flat.parameters if !isempty(kinds(v)) && !allowed(name, v)]
     if !isempty(updated)
         i = something(findfirst(u -> "crossing" in u[2], updated), 1)
         name, ks = updated[i]
         code = "crossing" in ks ? "unsupported_crossing_update" : "unsupported_parameter_update"
-        refuse(code, "/model", "parameter $name has update rules of kind $(join(ks, ", ")); none is planned at M2 (D75)")
+        refuse(
+            code, "/model",
+            "parameter $name has update rules of kind $(join(ks, ", ")); only a data-fed parameter's single data rule is planned at M2 (D75, D87)"
+        )
     end
-    isempty(flat.loader_fields) || refuse(
-        "unsupported_forcing", "/model",
-        "the flattened model reads data-loader fields; forcing epochs arrive at M3"
-    )
+    for lf in flat.loader_fields
+        haskey(flat.parameters, lf.name) || refuse(
+            "unsupported_forcing", "/model",
+            "loader field $(lf.name) (source $(lf.subkey), file variable $(lf.var)) names no parameter of the flattened model (spec/plan.md §4.1)"
+        )
+    end
+    # §4.1: two records per sample need a successor record, so a source whose
+    # temporal block is not discrete cannot serve them (EarthSciAST refuses
+    # the rest at load).
+    for lf in flat.loader_fields
+        lf.records_per_sample == 2 || continue
+        src = data_source(file, lf.subkey)
+        (src !== nothing && src.temporal !== nothing && !is_discrete(src)) || continue
+        refuse(
+            "forcing_records_invalid", "/model",
+            "data-fed parameter $(lf.name) asks for two records per sample, but its source $(lf.subkey) " *
+                "is not time-varying (its temporal block has no start, or neither frequency nor file_period), " *
+                "so there is no successor record (spec/plan.md §4.1)"
+        )
+    end
     for (name, s) in flat.index_sets
         (s.kind == "interval" && s.size !== nothing) || refuse(
             "unsupported_index_set", "/model",
