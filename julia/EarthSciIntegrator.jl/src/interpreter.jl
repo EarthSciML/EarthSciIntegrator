@@ -134,9 +134,17 @@ function build_run(
         (t0 <= τ <= tf) || throw(ConfigError("output time $τ outside [$t0, $tf]"))
     end
     filter!(!=(t0), outs)
-    # The caller's tstops (a plan's forcing epochs, spec/operator-interface.md
-    # §8.4.3) are tstops like the output times, and are not reported.
-    stops = sort!(unique!(vcat(outs, Float64[Float64(x) for x in tstops if t0 < x <= tf])))
+    # The forcing epochs of the data the schedule's operators read
+    # (spec/operator-interface.md §8.4.3) are tstops, however the run is
+    # built: no step crosses one. They need forcing_refresh in step.hit, as
+    # the planner requires (spec/plan.md §7.3). They and the caller's tstops
+    # are tstops like the output times, and are not reported.
+    epochs = sort!(unique!(reduce(vcat, (forcing_epochs(l.ops) for l in values(leaves)); init = Float64[])))
+    filter!(x -> t0 < x <= tf, epochs)
+    isempty(epochs) || "forcing_refresh" in hit || throw(
+        ConfigError("an operator of the schedule reads discrete data, so step.hit must list forcing_refresh: no step may cross a forcing refresh time (spec/operator-interface.md §8.4.3, spec/plan.md §7.3)")
+    )
+    stops = sort!(unique!(vcat(outs, epochs, Float64[Float64(x) for x in tstops if t0 < x <= tf])))
     bounds, reasons = macro_bounds(t0, tf, dt, stops)
     for τ in stops
         # Output times are tstops. Under a fixed step.dt they must be macro-step

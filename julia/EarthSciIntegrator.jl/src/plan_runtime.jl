@@ -192,19 +192,23 @@ end
     BandCache
 
 The values of a planned operator's band points at the last linearization
-point `(u, p, t)` it was evaluated at, so `jac`, `jvp_u` and `vjp_u` at one
-point evaluate the Jacobian document once. `vals` is replaced, never written
-in place.
+point `(u, p, t)` and forcing it was evaluated at, so `jac`, `jvp_u` and
+`vjp_u` at one point evaluate the Jacobian document once. `fkey` is the
+[`forcing_key`](@ref) of the call (`(0, 0)` for an operator that reads no
+data): at a forcing epoch boundary two calls at one `(u, p, t)` can take
+different buffers (spec/operator-interface.md §8.4.1, D88). `vals` is
+replaced, never written in place.
 """
 mutable struct BandCache
     valid::Bool
     t::Float64
+    fkey::NTuple{2, Int}
     u::Vector{Float64}
     p::Vector{Float64}
     vals::Vector{Float64}
     const lock::ReentrantLock
 end
-BandCache() = BandCache(false, NaN, Float64[], Float64[], Float64[], ReentrantLock())
+BandCache() = BandCache(false, NaN, (0, 0), Float64[], Float64[], Float64[], ReentrantLock())
 
 """
     PlannedOperator
@@ -231,15 +235,20 @@ struct PlannedOperator{R <: PlanDocument, J <: PlanDocument} <: AbstractOperator
     # The run's data (spec/operator-interface.md §8.4), when the operator reads
     # any, and each document's set of the epoch it last evaluated in.
     forcing::Union{Nothing, ForcingRuntime}
-    rhs_fs::Base.RefValue{Any}
-    jac_fs::Base.RefValue{Any}
+    rhs_fs::EpochSetRef
+    jac_fs::EpochSetRef
 end
 
 forcing_boundary(op::PlannedOperator, t) = op.forcing !== nothing && is_epoch_start(op.forcing, t)
 
 """The forcing set of `op`'s right-hand-side (`jac = false`) or Jacobian program at `t` (§8.4.1), or `nothing` without data."""
-op_forcing(op::PlannedOperator, t, jac::Bool) = op.forcing === nothing ? nothing :
+op_forcing(op::PlannedOperator, t, jac::Bool)::Union{Nothing, EarthSciAST.ForcingSet} = op.forcing === nothing ? nothing :
     forcing_set_for(op.forcing, (jac ? op.jac : op.rhs).prog, t, jac ? op.jac_fs : op.rhs_fs)
+
+"""The [`forcing_key`](@ref) of a call of `op` at `t`; `(0, 0)` without data."""
+op_forcing_key(op::PlannedOperator, t) = op.forcing === nothing ? (0, 0) : forcing_key(op.forcing, t)
+
+forcing_epochs(op::PlannedOperator) = op.forcing === nothing ? Float64[] : discrete_epochs(op.forcing)
 
 opname(op::PlannedOperator) = op.name
 structure(op::PlannedOperator) = op.structure
@@ -272,13 +281,15 @@ end
 
 `f(vals)`, with `vals[k]` the value of the Jacobian document at band point
 `op.points[k]` at `(u, p, t)`. The document is evaluated once per point
-`(u, p, t)`, compared bitwise; the calls at the point it last saw reuse it.
+`(u, p, t)`, compared bitwise, and forcing (the call's [`forcing_key`](@ref));
+the calls at the point it last saw reuse it.
 """
 function with_band_values(f, op::PlannedOperator, u, p, t)
     _check_f64(u, p)
     c, tt = op.cache, Float64(t)
+    fkey = op_forcing_key(op, tt)
     hit, res = lock(c.lock) do
-        c.valid && c.t === tt && bitwise_same(c.u, u) && bitwise_same(c.p, p) ? (true, f(c.vals)) : (false, nothing)
+        c.valid && c.t === tt && c.fkey == fkey && bitwise_same(c.u, u) && bitwise_same(c.p, p) ? (true, f(c.vals)) : (false, nothing)
     end
     hit && return res
     vals = evaluate(op.jac, u, p, tt, op_forcing(op, tt, true)) do du
@@ -287,7 +298,7 @@ function with_band_values(f, op::PlannedOperator, u, p, t)
     lock(c.lock) do
         resize!(c.u, length(u)) .= u
         resize!(c.p, length(p)) .= p
-        c.t, c.vals, c.valid = tt, vals, true
+        c.t, c.fkey, c.vals, c.valid = tt, fkey, vals, true
     end
     return f(vals)
 end
@@ -426,6 +437,7 @@ function vjp_u!(o::LeafOperator, out, x, p, t, w)
 end
 
 forcing_boundary(o::LeafOperator, t) = forcing_boundary(o.op, t)
+forcing_epochs(o::LeafOperator) = forcing_epochs(o.op)
 
 binds_to_leaf(::PlannedOperator) = true
 
@@ -584,18 +596,20 @@ function plan_problem(
             throw(ConfigError("the model at $mpath does not match the plan's hash (the plan is stale)"))
         mfile = EarthSciAST.load_path(mpath)
         readers = sort!(unique!(String[x for n in names for x in get(plan["operators"][n], "forcing", Any[])]))
-        root = cache_root === nothing ? joinpath(dir, "data-cache") : String(cache_root)
-        F = forcing_runtime(mfile, plan, tspan, readers; cache_root = root, url_overrides)
-        # Every program's forcing slots must be data-fed parameters of the
-        # plan's `forcing`, of their planned shapes (§8.4.1).
+        # Every program's forcing slots must be data-fed parameters some
+        # operator's forcing lists, of their planned shapes (§8.4.1), checked
+        # before any data is read.
+        shapes = forcing_shapes(mfile, plan["forcing"])
         for n in names, d in built[n], s in EarthSciAST.forcing_slots(d.prog)
-            haskey(F.shapes, s.name) || throw(
+            (s.name in readers && haskey(shapes, s.name)) || throw(
                 ConfigError("operator '$n': $(basename(d.path)) has a forcing slot $(s.name), which no operator's forcing in the plan lists")
             )
-            prod(s.shape; init = 1) == prod(F.shapes[s.name]; init = 1) || throw(
-                ConfigError("operator '$n': $(basename(d.path))'s forcing slot $(s.name) has shape $(s.shape), the plan's $(F.shapes[s.name])")
+            collect(Int, s.shape) == shapes[s.name] || throw(
+                ConfigError("operator '$n': $(basename(d.path))'s forcing slot $(s.name) has shape $(s.shape), the plan's $(shapes[s.name])")
             )
         end
+        root = cache_root === nothing ? joinpath(dir, "data-cache") : String(cache_root)
+        F = forcing_runtime(mfile, plan, tspan, readers; cache_root = root, url_overrides)
     end
     ops = Dict{String, AbstractOperator}()
     u0 = nothing
@@ -631,7 +645,7 @@ end
 
 _with_forcing(op::PlannedOperator, F) = PlannedOperator(
     op.name, op.writes, op.structure, op.depends_on_t, op.linear_in_u, op.rhs, op.jac, op.points, op.cache,
-    op.layout, op.blockable, F, Ref{Any}(nothing), Ref{Any}(nothing)
+    op.layout, op.blockable, F, EpochSetRef(), EpochSetRef()
 )
 
 """
@@ -682,7 +696,7 @@ function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDoc
     points = NTuple{3, Int}[(fields[k][f], row, col) for (k, f, row, col) in band_points(L, bands)]
     return PlannedOperator(
         String(name), w, planned_structure(entry, L), Bool(st["depends_on_t"]), Bool(st["linear_in_u"]), r, j, points,
-        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block"), nothing, Ref{Any}(nothing), Ref{Any}(nothing)
+        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block"), nothing, EpochSetRef(), EpochSetRef()
     )
 end
 
@@ -734,14 +748,8 @@ function build_plan_run(
     config = Dict{String, Any}(
         "esm_integrator" => plan["esm_integrator"], "schedule" => plan["schedule"], "step" => plan["step"]
     )
-    # The forcing epochs' starts inside the run are tstops (§8.4.3), when the
-    # plan's step.hit names forcing_refresh (spec/plan.md §7.3 requires it
-    # whenever an operator reads a discrete data-fed parameter).
-    stops = Float64[]
-    if pp.forcing !== nothing && "forcing_refresh" in get(plan["step"], "hit", Any[])
-        stops = Float64[B for B in pp.forcing.epochs if prob.tspan[1] < B < prob.tspan[2]]
-    end
-    return build_run(config; tspan = prob.tspan, saveat, prob, tstops = stops), pp
+    # build_run makes the forcing epochs' starts tstops (§8.4.3).
+    return build_run(config; tspan = prob.tspan, saveat, prob), pp
 end
 
 """
