@@ -825,4 +825,29 @@ const PLAN_FILES = String[]
         @test read(joinpath(dir, "notes.txt"), String) == "kept"
         @test sort!(readdir(joinpath(dir, "derived"))) == ["kinetics.jacobian.esm", "kinetics.rhs.esm"]
     end
+
+    # §6.2 item 4: a Jacobian document has no `ic` equations, so a state that
+    # only an `ic` equation starts has no starting value in it. The planner
+    # (Gershgorin bound, pass 8) and the runtime build it with every state
+    # element at zero, a value no evaluation reads.
+    @testset "a state with an ic equation and no default" begin
+        src = joinpath(PFIX, "column_contraction")
+        dir = mktempdir()
+        cp(joinpath(src, "auto.run.json"), joinpath(dir, "auto.run.json"))
+        doc = JSON.parsefile(joinpath(src, "model.esm"))
+        delete!(doc["models"]["Mix"]["variables"]["q"], "default")
+        write(joinpath(dir, "model.esm"), JSON.json(doc))
+        d = EarthSciIntegrator.plan(joinpath(dir, "auto.run.json"))
+        write_plan(d, joinpath(dir, "plan"))
+        jac = JSON.parsefile(joinpath(dir, "plan", "derived", "default_column.jacobian.esm"))
+        @test !haskey(jac["models"]["Mix"]["variables"]["q"], "default")
+        # The initial state is the `ic` equation's, as with the default.
+        golden = EarthSciIntegrator.plan_problem(joinpath(src, "auto.golden")).prob
+        pp = EarthSciIntegrator.plan_problem(joinpath(dir, "plan")).prob
+        @test pp.u0 == golden.u0
+        op, gop = pp.operators["default_column"], golden.operators["default_column"]
+        @test op.jac.u0 == zeros(length(op.jac.u0))
+        @test EarthSciIntegrator.evaluate(copy, op.jac, pp.u0, pp.p, pp.tspan[1]) ==
+            EarthSciIntegrator.evaluate(copy, gop.jac, golden.u0, golden.p, golden.tspan[1])
+    end
 end
