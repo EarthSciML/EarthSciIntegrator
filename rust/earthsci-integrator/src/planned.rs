@@ -317,6 +317,16 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
         r.dedup();
         Some(r)
     }
+    fn forcing_refresh_times(&self) -> Vec<f64> {
+        // The run's epochs are shared by every operator that reads data
+        // (§8.4.3); one that reads none adds no stops.
+        if self.rhs.prog.forcing_slot_names().is_empty()
+            && self.jacobian.prog.forcing_slot_names().is_empty()
+        {
+            return Vec::new();
+        }
+        self.rhs.timeline.refresh_times().to_vec()
+    }
     fn provides(&self, call: Call) -> bool {
         // ft, vjp_p and the second-order calls wait for U17, U7 and U8
         // (operator-interface.md §8.3).

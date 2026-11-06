@@ -1125,6 +1125,9 @@ impl<T: Scalar> RunSpec<T> {
     /// Builds a run of `rc`'s schedule and step against a problem already
     /// built: a toy problem, or the operators of a plan
     /// ([`crate::planned`]). `rc.model` and `rc.operators` are not read.
+    /// The forcing refresh times of the problem's operators
+    /// ([`Operator::forcing_refresh_times`](crate::operator::Operator::forcing_refresh_times))
+    /// are tstops, as [`with_problem_and_tstops`](Self::with_problem_and_tstops) takes them.
     pub fn with_problem(
         problem: ToyProblem<T>,
         rc: &RunConfig,
@@ -1360,9 +1363,18 @@ impl<T: Scalar> RunSpec<T> {
         // Macro-step boundaries t0 + k·dt, the last one t_f exactly by the stop
         // rule of spec/methods.md §10 (multiplied, not accumulated); a boundary
         // within the landing tolerance of a tstop is that tstop (run-config §5).
+        // The forcing refresh times of the operators that read data are
+        // tstops of every run (operator-interface.md §8.4.3), whether or not
+        // the caller gives them.
         let mut extra: Vec<f64> = tstops
             .iter()
             .copied()
+            .chain(
+                problem
+                    .operators
+                    .iter()
+                    .flat_map(|o| o.forcing_refresh_times()),
+            )
             .filter(|&x| x > tspan.0 && x <= tspan.1)
             .collect();
         extra.sort_by(f64::total_cmp);

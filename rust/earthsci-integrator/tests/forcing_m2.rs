@@ -164,8 +164,7 @@ fn adjoint_takes_the_forward_steps_forcing() {
             "adjoint": {"functional": {"sum": "Emis.c", "over": "final"}, "wrt": ["u0"]},
         }))
         .unwrap();
-        let tstops = lp.timeline.refresh_times().to_vec();
-        let s = RunSpec::with_problem_and_tstops(lp.problem, &rc, tspan, None, &tstops).unwrap();
+        let s = RunSpec::with_problem(lp.problem, &rc, tspan, None).unwrap();
         let u0 = s.u0();
         let p = s.problem.p.clone();
         let fwd = s.forward(&u0, &p).unwrap();
@@ -266,8 +265,7 @@ fn provider_clock_without_a_time_origin() {
         "schedule": pj["schedule"], "step": pj["step"],
     }))
     .unwrap();
-    let tstops = lp.timeline.refresh_times().to_vec();
-    let s = RunSpec::with_problem_and_tstops(lp.problem, &rc, tspan, None, &tstops).unwrap();
+    let s = RunSpec::with_problem(lp.problem, &rc, tspan, None).unwrap();
     let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
     let u1 = fwd.final_state();
     for (i, &ci) in u1.iter().enumerate() {
@@ -278,5 +276,42 @@ fn provider_clock_without_a_time_origin() {
             (ci - want).abs() < 1e-9 * want,
             "c[{i}] = {ci}, want {want}"
         );
+    }
+}
+
+/// §8.4.3: a run of a plan whose operators read discrete data stops at
+/// every refresh time, however the run is built: `RunSpec::with_problem`
+/// takes them from the operators, with no tstops given, so no step crosses
+/// one, forward or in the adjoint's replay.
+#[test]
+fn every_run_of_a_plan_hits_the_refresh_times() {
+    let tspan = (19.0 * DAY, 69.0 * DAY);
+    let ctl = json!({"dt_scope": "global", "reltol": 1e-8, "abstol": 1e-12});
+    let (lp, _, pj) = planned(
+        "monthly_decay_hits",
+        &decay_doc(),
+        json!({"leaf": "emis", "alg": "Tsit5", "control": ctl}),
+        50.0 * DAY,
+        tspan,
+    );
+    let rc = RunConfig::from_value(&json!({
+        "esm_integrator": "0.1.0", "model": "monthly_decay.esm",
+        "schedule": pj["schedule"], "step": pj["step"],
+        "adjoint": {"functional": {"sum": "Emis.c", "over": "final"}, "wrt": ["u0"]},
+    }))
+    .unwrap();
+    let s = RunSpec::with_problem(lp.problem, &rc, tspan, None).unwrap();
+    assert_eq!(s.refresh_times, [31.0 * DAY, 60.0 * DAY]);
+    let fwd = s.forward(&s.u0(), &s.problem.p).unwrap();
+    for r in &fwd.tape.records {
+        if let earthsci_integrator::tape::TapeRecord::Leaf { steps, .. } = r {
+            for b in [31.0 * DAY, 60.0 * DAY] {
+                assert!(steps.iter().any(|s| s[0] == b), "no step starts at {b}");
+            }
+        }
+    }
+    let g = s.gradient(&fwd, &s.problem.p).unwrap();
+    for (&gi, &ci) in g.u0.iter().zip(fwd.final_state()) {
+        assert!((gi - ci).abs() < 1e-12 * ci.abs().max(1.0), "{gi} vs {ci}");
     }
 }
