@@ -443,7 +443,7 @@ function jac_built!(b::DiffBackend, ctx, op::PlanOperator)
     if a.jac_built === nothing
         L = layout!(b, ctx)
         fields = [vcat(L.extents[x.row], Int[hi for (_, _, hi) in x.contracted]) for x in a.bands]
-        a.jac_built = build_document(jacobian_document!(b, ctx, op).file, L, ctx.time; fields, u0 = jacobian_u0(L.names))
+        a.jac_built = build_document(jacobian_document!(b, ctx, op).file, L, ctx.time; fields)
         a.points = band_points(L, a.bands)
     end
     return a.jac_built

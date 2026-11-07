@@ -94,6 +94,21 @@ crossed(run, epochs) = [B for r in run.tape.records if r isa EarthSciIntegrator.
         end
     end
 
+    # spec/plan.md §6.2 item 4: the Jacobian document of an operator that
+    # reads data, whose state has no `default` and an `ic` equation that reads
+    # data, gets the `default` 0.0; planner and runtime both build it.
+    @testset "an initial condition that reads data, with no default (§6.2 item 4)" begin
+        doc = toy_doc("data_decay_ic.esm")
+        delete!(doc["models"]["Decay"]["variables"]["u"], "default")
+        dir = plan_data_case("data.decay_ic_nodefault", decay_config(write_toy("data_decay_ic_nodefault.esm", doc)), tspan)
+        jac = JSON.parsefile(joinpath(dir, "derived", "decay.jacobian.esm"))
+        @test jac["models"]["Decay"]["variables"]["u"]["default"] === 0.0
+        run, pp = build_plan_run(dir; saveat, tspan)
+        @test run.u0 == [1.0, 1.25, 1.5]
+        forward!(run)
+        @test run.retcode == "Success"
+    end
+
     @testset "an extent the data contradicts refuses the run before its first step (§8.4.2 step 4)" begin
         doc = JSON.parsefile(joinpath(REPO, "tests", "conformance", "toys", "data_points.esm"))
         doc["metaparameters"]["N_STN"]["default"] = 5
