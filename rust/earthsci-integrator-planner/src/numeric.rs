@@ -402,16 +402,6 @@ pub fn forcing_from_elements(
     })
 }
 
-/// The caller `u0` a Jacobian document is built with (§6.2 item 4): every
-/// state element of `dofs`, by EarthSciAST's element name, at zero. The
-/// document has no `ic` equations, so a state without a `default` has no
-/// other starting value, which EarthSciAST refuses at construction
-/// (`E_TREEWALK_MISSING_INITIAL_VALUE`). No evaluation reads these values:
-/// each is at a state its caller passes.
-pub fn jacobian_u0(dofs: &Dofs) -> HashMap<String, f64> {
-    dofs.element_names().into_iter().map(|n| (n, 0.0)).collect()
-}
-
 /// The initial state `u_0` in canonical order: EarthSciAST's
 /// `initial_state` of the model's Problem (defaults, initialization and `ic`
 /// equations, field initial conditions), matched to the DOFs by
@@ -491,18 +481,7 @@ impl Program {
         tspan: (f64, f64),
         dofs: &Dofs,
     ) -> Result<Program, String> {
-        Program::build(input, tspan, dofs, HashMap::new(), HashMap::new())
-    }
-
-    /// [`Program::new`] for a Jacobian document, which has no `ic`
-    /// equations: built with every state element of `dofs` at zero as the
-    /// caller's `u0` ([`jacobian_u0`], §6.2 item 4).
-    pub fn jacobian<'a>(
-        input: impl Into<ProblemInput<'a>>,
-        tspan: (f64, f64),
-        dofs: &Dofs,
-    ) -> Result<Program, String> {
-        Program::build(input, tspan, dofs, HashMap::new(), jacobian_u0(dofs))
+        Program::new_with(input, tspan, dofs, HashMap::new())
     }
 
     /// [`Program::new`] with `providers` bound at construction (§4: how the
@@ -514,23 +493,12 @@ impl Program {
         dofs: &Dofs,
         providers: HashMap<String, Box<dyn CadenceProvider>>,
     ) -> Result<Program, String> {
-        Program::build(input, tspan, dofs, providers, HashMap::new())
-    }
-
-    fn build<'a>(
-        input: impl Into<ProblemInput<'a>>,
-        tspan: (f64, f64),
-        dofs: &Dofs,
-        providers: HashMap<String, Box<dyn CadenceProvider>>,
-        u0: HashMap<String, f64>,
-    ) -> Result<Program, String> {
         let prob = esm_problem(
             input,
             tspan,
             ProblemOptions {
                 compiler: Some(Compiler::Native),
                 providers,
-                u0,
                 ..Default::default()
             },
         )

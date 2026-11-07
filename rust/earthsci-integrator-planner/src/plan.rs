@@ -194,7 +194,7 @@ impl<'a> Numbers<'a> {
             let samples = &self.states.as_ref().expect("set above").2;
             let tspan = self.tspan();
             let rhs_prog = Program::new(rhs, tspan, &self.dofs).map_err(internal)?;
-            let jac_prog = Program::jacobian(jacobian, tspan, &self.dofs).map_err(internal)?;
+            let jac_prog = Program::new(jacobian, tspan, &self.dofs).map_err(internal)?;
             let pattern = numeric::pattern(&self.dofs, &st.bands).map_err(internal)?;
             let owners = self.dofs.owners();
             let rows = owners
@@ -805,7 +805,7 @@ impl Planned {
             .ok_or_else(|| internal(format!("no operator {op}")))?;
         let doc: Value = serde_json::from_slice(&docs.jacobian).map_err(internal)?;
         let dofs = self.dofs();
-        let prog = Program::jacobian(&doc, (self.interval.start, self.interval.end), &dofs)
+        let prog = Program::new(&doc, (self.interval.start, self.interval.end), &dofs)
             .map_err(internal)?;
         let names = dofs.element_names();
         let bands = &self.structures[op].bands;
