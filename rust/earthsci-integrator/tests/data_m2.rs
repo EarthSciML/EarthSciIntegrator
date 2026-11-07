@@ -18,9 +18,14 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Plans `m2.data_decay.tsit5`'s run config with `model` in place of its
-/// own, beside the toys, into a directory of the target's.
+/// Plans `m2.data_decay.tsit5`'s run config with the toy `model` in place
+/// of its own into a directory of the target's.
 fn planned(name: &str, model: &str) -> (Case, PathBuf, DataOptions) {
+    planned_at(name, &repo().join("tests/conformance/toys").join(model))
+}
+
+/// [`planned`] for the model at `model`, any path.
+fn planned_at(name: &str, model: &Path) -> (Case, PathBuf, DataOptions) {
     let cases: Value = serde_json::from_str(
         &std::fs::read_to_string(repo().join("tests/conformance/m2/cases.json")).unwrap(),
     )
@@ -34,13 +39,12 @@ fn planned(name: &str, model: &str) -> (Case, PathBuf, DataOptions) {
         .clone();
     case["id"] = json!(name);
     case["checks"] = json!([]);
-    let toys = repo().join("tests/conformance/toys");
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("data_m2");
     std::fs::create_dir_all(&work).unwrap();
     // The run config names the toy by its absolute path; the plan goes to
     // the target's directory.
     let mut run_config = case["run_config"].clone();
-    run_config["model"] = json!(toys.join(model).to_string_lossy());
+    run_config["model"] = json!(model.to_string_lossy());
     let rc_path = work.join(format!("{name}.run.json"));
     std::fs::write(&rc_path, run_config.to_string()).unwrap();
     let plan_dir = work.join(name);
@@ -53,7 +57,7 @@ fn planned(name: &str, model: &str) -> (Case, PathBuf, DataOptions) {
         .and_then(|p| p.write(&plan_dir))
         .unwrap();
     let data = DataOptions {
-        model: Some(toys.join(model)),
+        model: Some(model.to_path_buf()),
         cache_dir: Some(work.join("esio-cache")),
         ..Default::default()
     };
@@ -103,4 +107,37 @@ fn initial_state_reads_data() {
         Outcome::Pass(_) => {}
         o => panic!("{o:?}"),
     }
+}
+
+/// spec/plan.md §6.2 item 4: `data_decay_ic` with its state's `default`
+/// removed, so only the `ic` equation, which reads data, starts it. The
+/// planner gives the state the `default` 0.0 in the Jacobian document; the
+/// plan builds, loads and starts from the data.
+#[test]
+fn initial_state_reads_data_without_default() {
+    let toys = repo().join("tests/conformance/toys");
+    let mut doc: Value =
+        serde_json::from_slice(&std::fs::read(toys.join("data_decay_ic.esm")).unwrap()).unwrap();
+    assert!(doc["models"]["Decay"]["variables"]["u"]
+        .as_object_mut()
+        .unwrap()
+        .remove("default")
+        .is_some());
+    // The data by absolute path, so the model can live outside the toys.
+    for (_, src) in doc["data_sources"].as_object_mut().unwrap() {
+        let t = src["source"]["url_template"].as_str().unwrap();
+        src["source"]["url_template"] = json!(toys.join(t).to_string_lossy());
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("data_m2");
+    std::fs::create_dir_all(&dir).unwrap();
+    let model = dir.join("data_decay_ic_nodefault.esm");
+    std::fs::write(&model, doc.to_string()).unwrap();
+    let (_, plan_dir, data) = planned_at("data_decay_ic_nodefault", &model);
+    let jac: Value = serde_json::from_slice(
+        &std::fs::read(plan_dir.join("derived/decay.jacobian.esm")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(jac["models"]["Decay"]["variables"]["u"]["default"], 0.0);
+    let lp = load_plan_with::<f64>(&plan_dir, &data).unwrap();
+    assert_eq!(lp.problem.u0, [1.0, 1.25, 1.5]);
 }

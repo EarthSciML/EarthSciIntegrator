@@ -603,9 +603,10 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u6
 /// The Jacobian document of an operator (§6.2): EarthSciASTDiff's
 /// evaluation document (`evaluation_document`, coefficient hoisting off) of
 /// `sv`, the view of the operator's flattened right-hand-side document, for
-/// its band list `entries`, without its `ic` equations. Band `k` (1-based)
-/// is the field `JacobianEval.J_k`; the document's `esm` version and
-/// `metadata.name` are EarthSciASTDiff's.
+/// its band list `entries`, without its `ic` equations, and with a
+/// `default` of `0.0` on every state that has none (§6.2 item 4). Band `k`
+/// (1-based) is the field `JacobianEval.J_k`; the document's `esm` version
+/// and `metadata.name` are EarthSciASTDiff's.
 pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
     let (mut doc, fields) = earthsci_astdiff::evaluation_document(sv, entries, false, 0)
         .map_err(|e| PlanError::Internal(format!("evaluation_document: {}", e.0)))?;
@@ -630,7 +631,69 @@ pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
         )));
     }
     models.values_mut().for_each(drop_ic);
+    default_states_to_zero(models)?;
     Ok(doc)
+}
+
+/// Gives every state of `models` without a `default` the `default` `0.0`
+/// (§6.2 item 4). With its `ic` equations dropped, such a state (one only
+/// an `ic` equation or `field_ics` entry starts) has no starting value,
+/// which EarthSciAST refuses when it builds the document
+/// (`E_TREEWALK_MISSING_INITIAL_VALUE`). No evaluation reads the value. A
+/// state is a variable a `D` equation defines: by its fully scoped name
+/// (§6.2 item 2), or by its name in the equation's own model or subsystem.
+fn default_states_to_zero(models: &mut Map<String, Value>) -> Result<()> {
+    fn states(node: &Value, path: &[String], out: &mut Vec<Vec<String>>) {
+        for eq in node["equations"].as_array().into_iter().flatten() {
+            if eq["lhs"]["op"] == "D" {
+                if let Some(x) = eq["lhs"]["args"][0].as_str() {
+                    let mut local = path.to_vec();
+                    local.push(x.to_string());
+                    out.push(local);
+                }
+            }
+        }
+        for (k, sub) in node["subsystems"].as_object().into_iter().flatten() {
+            let mut p = path.to_vec();
+            p.push(k.clone());
+            states(sub, &p, out);
+        }
+    }
+    // The declaration of the variable `name` (dot-separated) under `models`.
+    fn variable<'a>(models: &'a mut Map<String, Value>, name: &[&str]) -> Option<&'a mut Value> {
+        let (var, path) = name.split_last()?;
+        let (top, subs) = path.split_first()?;
+        let mut node = models.get_mut(*top)?;
+        for s in subs {
+            node = node.get_mut("subsystems")?.get_mut(*s)?;
+        }
+        node.get_mut("variables")?.get_mut(*var)
+    }
+    let mut found = Vec::new();
+    for (k, m) in models.iter() {
+        states(m, std::slice::from_ref(k), &mut found);
+    }
+    for local in found {
+        let x = local.last().expect("pushed above").clone();
+        let scoped: Vec<&str> = x.split('.').collect();
+        let local: Vec<&str> = local[..local.len() - 1]
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(x.as_str()))
+            .collect();
+        let decl = if variable(models, &scoped).is_some() {
+            variable(models, &scoped)
+        } else {
+            variable(models, &local)
+        };
+        let Some(Value::Object(decl)) = decl else {
+            return Err(PlanError::Internal(format!(
+                "the Jacobian document declares no state {x}"
+            )));
+        };
+        decl.entry("default").or_insert(json!(0.0));
+    }
+    Ok(())
 }
 
 /// Removes the `ic` equations of a model and of its subsystems.

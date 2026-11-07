@@ -413,6 +413,7 @@ pub fn initial_state(info: &ModelInfo, dofs: &Dofs, t0: f64) -> Result<Vec<f64>,
         ProblemOptions {
             base_path: info.path.parent().map(|p| p.to_path_buf()),
             providers: binding_providers(info)?,
+            compiler: Some(Compiler::Native),
             ..Default::default()
         },
     )
@@ -471,45 +472,38 @@ pub struct Program {
 }
 
 impl Program {
-    /// Compiles `input` (`native`, falling back to the interpreter when the
-    /// native compiler declines a rule) for the DOF order `dofs`. Every
-    /// state of `dofs` must be a block of the program's state layout with
-    /// the same number of elements.
+    /// Compiles `input` with EarthSciAST's native compiler for the DOF
+    /// order `dofs`. A native refusal is an error: there is no fallback to
+    /// the interpreter (§8, D89). Every state of `dofs` must be a block of
+    /// the program's state layout with the same number of elements.
     pub fn new<'a>(
-        input: impl Into<ProblemInput<'a>> + Copy,
+        input: impl Into<ProblemInput<'a>>,
         tspan: (f64, f64),
         dofs: &Dofs,
     ) -> Result<Program, String> {
-        Program::new_with(input, tspan, dofs, &|| Ok(HashMap::new()))
+        Program::new_with(input, tspan, dofs, HashMap::new())
     }
 
-    /// [`Program::new`] with the providers `providers` gives bound at
-    /// construction (§4: how the planner builds the flattened model, whose
-    /// data-fed parameters it binds to fixed values).
-    #[allow(clippy::type_complexity)]
+    /// [`Program::new`] with `providers` bound at construction (§4: how the
+    /// planner builds the flattened model, whose data-fed parameters it
+    /// binds to fixed values).
     pub fn new_with<'a>(
-        input: impl Into<ProblemInput<'a>> + Copy,
+        input: impl Into<ProblemInput<'a>>,
         tspan: (f64, f64),
         dofs: &Dofs,
-        providers: &dyn Fn() -> Result<HashMap<String, Box<dyn CadenceProvider>>, String>,
+        providers: HashMap<String, Box<dyn CadenceProvider>>,
     ) -> Result<Program, String> {
-        let build = |c: Compiler| -> Result<RhsProgram, String> {
-            let prob = esm_problem(
-                input,
-                tspan,
-                ProblemOptions {
-                    compiler: Some(c),
-                    providers: providers()?,
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| format!("EarthSciAST esm_problem: {e}"))?;
-            rhs_program(&prob).map_err(|e| format!("EarthSciAST rhs_program: {e}"))
-        };
-        let prog = build(Compiler::Native).or_else(|native| {
-            build(Compiler::Interpreter)
-                .map_err(|interp| format!("native compiler: {native}; interpreter: {interp}"))
-        })?;
+        let prob = esm_problem(
+            input,
+            tspan,
+            ProblemOptions {
+                compiler: Some(Compiler::Native),
+                providers,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| format!("EarthSciAST esm_problem: {e}"))?;
+        let prog = rhs_program(&prob).map_err(|e| format!("EarthSciAST rhs_program: {e}"))?;
         Program::from_program(prog, dofs)
     }
 

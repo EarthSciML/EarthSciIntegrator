@@ -99,8 +99,8 @@ A runtime that executes a plan (spec/plan.md) builds each operator the schedule 
 ### 8.1 Building the kernels
 
 - **Right-hand side.** Load `derived/<name>.rhs.esm` with EarthSciAST and build its right-hand side as the public reentrant program of U4 (EarthSciAST 0.5.0), the same way in both languages: `rhs_program(esm_problem(path, tspan))` with the native compiler, which returns an `RhsProgram`. `esm_problem` flattens the document, so both languages build from the flattened document, whose names and parameter order §8.2 refers to. `tspan` is the run's interval; it does not affect the program, which takes $t$ as an argument. Derived documents carry no data and no data location: a data-fed parameter is declared with a stub source (spec/plan.md §6.3), bound at construction to placeholder values that no evaluation reads, and supplied at every call through the forcing set (§8.4). Runtimes do not use the problem's `f!`, which is not reentrant (architecture §7.3), nor `build_evaluator`, deprecated since EarthSciAST 0.4.0 (spec/plan.md §10 item 3). A runtime calls one `RhsProgram` from as many threads as it runs shards on.
-- **Jacobian.** Load and build `derived/<name>.jacobian.esm` the same way. Its right-hand side at $(u, p, t)$ holds band field `J_k` in the slots of the state `JacobianEval.J_k` (spec/plan.md §6.2).
-- A build failure refuses the leaf, naming the operator and the document.
+- **Jacobian.** Load and build `derived/<name>.jacobian.esm` the same way. It has no `ic` equations, and every state in it has a `default` (spec/plan.md §6.2 item 4), so it needs no caller `u0`. Its right-hand side at $(u, p, t)$ holds band field `J_k` in the slots of the state `JacobianEval.J_k` (spec/plan.md §6.2).
+- A build failure refuses the leaf, naming the operator and the document. A native refusal (`compiler_refused_rule`) is such a failure: a runtime never falls back to EarthSciAST's interpreter. Only tests build with the interpreter, and they ask for it by name (D89).
 
 ### 8.2 Layout and arguments
 

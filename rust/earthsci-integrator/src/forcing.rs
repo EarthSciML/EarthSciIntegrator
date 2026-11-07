@@ -441,6 +441,7 @@ impl ModelData {
             earthsci_ast::ProblemOptions {
                 base_path: self.path.parent().map(Path::to_path_buf),
                 providers: self.providers(names, tspan, opts)?,
+                compiler: Some(earthsci_ast::Compiler::Native),
                 ..Default::default()
             },
         )

@@ -32,6 +32,8 @@ use std::sync::{Arc, Mutex};
 const JACOBIAN_MODEL: &str = earthsci_integrator_planner::derived::JACOBIAN_MODEL;
 
 /// `esm_problem(path, tspan)` with the native compiler, then `rhs_program`.
+/// A native refusal is a build failure: there is no fallback to the
+/// interpreter (§8.1).
 fn build_program(
     path: &Path,
     tspan: (f64, f64),

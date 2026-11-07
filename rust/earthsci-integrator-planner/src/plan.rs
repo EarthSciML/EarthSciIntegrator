@@ -487,11 +487,13 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
 
     // Pass 8: validation.
     let mut report = Map::new();
-    let model_prog =
-        Program::new_with(info.path.as_path(), numbers.tspan(), &numbers.dofs, &|| {
-            numeric::binding_providers(&info)
-        })
-        .map_err(internal)?;
+    let model_prog = Program::new_with(
+        info.path.as_path(),
+        numbers.tspan(),
+        &numbers.dofs,
+        numeric::binding_providers(&info).map_err(internal)?,
+    )
+    .map_err(internal)?;
     // The flattened model has a slot for every data-fed parameter; an
     // unused one's buffer holds 1, which nothing reads (§8).
     let unused = numeric::unused_forcing(&info);
