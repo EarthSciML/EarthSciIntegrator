@@ -75,18 +75,23 @@ function program_slots(prog)
     return slots
 end
 
-"""Load and build the derived document at `path` (§8.1). A build failure is a [`ConfigError`](@ref) naming the operator and the document."""
-function build_plan_document(path::AbstractString, opname::AbstractString, tspan)
+"""
+Load and build the derived document at `path` (§8.1). A build failure is a
+[`ConfigError`](@ref) naming the operator and the document. `u0` is the
+build's caller `u0`: for a Jacobian document, every state element at zero
+(spec/plan.md §6.2 item 4; see [`jacobian_u0`](@ref)), `nothing` otherwise.
+"""
+function build_plan_document(path::AbstractString, opname::AbstractString, tspan; u0 = nothing)
     # A document whose `ic` equations read one of its data-fed parameters
     # (spec/plan.md §6.3) is built twice: EarthSciAST's `rhs_program` cannot
     # yet rebuild such an `ic` equation, so the program is built without the
     # `ic` equations and the initial state from the document as written.
     prob, prog, u0 = try
-        prob = EarthSciAST.esm_problem(path, tspan; compiler = :native, base_path = dirname(path))
+        prob = EarthSciAST.esm_problem(path, tspan; compiler = :native, base_path = dirname(path), u0)
         flat = EarthSciAST.flatten(EarthSciAST.load_path(path))
         if ic_reads(flat, Set(fed_parameters(flat)))
             pp = EarthSciAST.esm_problem(
-                EarthSciAST.FlattenedSystem(flat; field_ics = empty(flat.field_ics)), tspan; compiler = :native
+                EarthSciAST.FlattenedSystem(flat; field_ics = empty(flat.field_ics)), tspan; compiler = :native, u0
             )
             Dict(String(k) => Int(v) for (k, v) in pp.var_map) == Dict(String(k) => Int(v) for (k, v) in prob.var_map) ||
                 error("its two builds lay out the states differently")
@@ -550,7 +555,7 @@ function plan_problem(
     end
     names = schedule_operators(plan["schedule"])
     isempty(names) && throw(ConfigError("the plan's schedule advances no operator"))
-    function doc(op, kind)
+    function doc(op, kind; u0 = nothing)
         rel = "derived/$op.$kind.esm"
         entry = get(plan["derived"], rel, nothing)
         entry === nothing && throw(ConfigError("operator '$op': the plan lists no derived document $rel"))
@@ -558,15 +563,20 @@ function plan_problem(
         isfile(path) || throw(ConfigError("operator '$op': $rel is missing from the plan directory"))
         h = bytes2hex(sha256(read(path)))
         h == entry["sha256"] || throw(ConfigError("operator '$op': $rel does not match the plan's hash (the plan is stale)"))
-        cache === nothing && return build_plan_document(path, op, tspan)
+        cache === nothing && return build_plan_document(path, op, tspan; u0)
         # A derived document is self-contained (spec/plan.md §6.1: no data
         # sources, function tables or other files), so its bytes and the
         # interval determine its build; a document another plan built is
-        # reused, under this plan's path.
-        d = get!(() -> build_plan_document(path, op, tspan), cache, (h, tspan))
+        # reused, under this plan's path. A Jacobian document's caller `u0`
+        # is zero and never read, so it does not enter the key.
+        d = get!(() -> build_plan_document(path, op, tspan; u0), cache, (h, tspan))
         return _with(d; path)
     end
-    built = Dict{String, Tuple{PlanDocument, PlanDocument}}(n => (doc(n, "rhs"), doc(n, "jacobian")) for n in names)
+    built = Dict{String, Tuple{PlanDocument, PlanDocument}}()
+    for n in names
+        r = doc(n, "rhs")
+        built[n] = (r, doc(n, "jacobian"; u0 = jacobian_u0(keys(r.slots))))
+    end
     # The layout comes from the first operator's right-hand side; every other
     # document must declare the same states (§8.2). The parameters are the
     # model's: every scalar parameter any of the documents reads, at its

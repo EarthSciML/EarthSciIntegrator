@@ -197,9 +197,23 @@ function ic_reads(flat::EarthSciAST.FlattenedSystem, fed)
 end
 
 """
+    jacobian_u0(names) -> Dict{String, Float64}
+
+The caller `u0` a Jacobian document is built with: every state element
+`names` names (EarthSciAST's element names, `X` or `X[i,j]`) at zero.
+A Jacobian document has no `ic` equations (spec/plan.md §6.2 item 4), so a
+state without a `default` has no starting value in it, which EarthSciAST
+refuses when it builds the problem (`E_TREEWALK_MISSING_INITIAL_VALUE`).
+No evaluation reads these values: every one is at a state the caller passes.
+"""
+jacobian_u0(names) = Dict{String, Float64}(String(n) => 0.0 for n in names)
+
+"""
 Build `file` (a loaded EarthSciAST document or a flattened model) as
 [`BuiltDocument`](@ref) describes and map its state layout to canonical
-order; `fields` gives each band field's extents for a Jacobian document.
+order; `fields` gives each band field's extents for a Jacobian document,
+and `u0` is the build's caller `u0`, which a Jacobian document needs
+([`jacobian_u0`](@ref): it has no `ic` equations, spec/plan.md §6.2 item 4).
 The program's `u` is the problem's flat layout, so the problem's `var_map`
 names the slots of both.
 
@@ -212,20 +226,20 @@ rebuild an `ic` equation that reads a data-fed array parameter, so when one
 does, the program is built without the `ic` equations, and the initial state
 is taken from a second build that keeps them.
 """
-function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
+function build_document(file, L::DofLayout, time; fields = Vector{Int}[], u0 = nothing)
     flat = file isa EarthSciAST.FlattenedSystem ? file : EarthSciAST.flatten(file)
     fed = fed_parameters(flat)
     arrays = Dict{String, Array{Float64}}(n => default_array(flat, n) for n in fed)
     u0prob = nothing
     prob = if isempty(fed)
-        EarthSciAST.esm_problem(file, time; compiler = :native)
+        EarthSciAST.esm_problem(file, time; compiler = :native, u0)
     else
         src = flat
         if ic_reads(flat, Set(fed))
-            u0prob = EarthSciAST.esm_problem(flat, time; compiler = :native)
+            u0prob = EarthSciAST.esm_problem(flat, time; compiler = :native, u0)
             src = EarthSciAST.FlattenedSystem(flat; field_ics = empty(flat.field_ics))
         end
-        EarthSciAST.esm_problem(src, time; compiler = :native, param_arrays = Dict{String, Any}(arrays))
+        EarthSciAST.esm_problem(src, time; compiler = :native, u0, param_arrays = Dict{String, Any}(arrays))
     end
     prog = EarthSciAST.rhs_program(prob)
     EarthSciAST.n_states(prog) == length(prob.u0) ||
@@ -235,14 +249,14 @@ function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
         error("EarthSciAST's state layout of a derived document has no element $name")
     perm = Int[slot(n) for n in L.names]
     fslots = [Int[slot(element_name("JacobianEval.J_$k", c)) for c in cells(ext)] for (k, ext) in enumerate(fields)]
-    u0 = u0prob === nothing ? prob.u0 : u0prob.u0
+    x0 = u0prob === nothing ? prob.u0 : u0prob.u0
     if u0prob !== nothing
         Dict{String, Int}(String(k) => Int(v) for (k, v) in u0prob.var_map) == vm ||
             error("EarthSciAST's two builds of a derived document lay out its states differently")
     end
     return BuiltDocument(
         prog, EarthSciAST.rhs_workspace(prog), EarthSciAST.default_forcing_set(prog), EarthSciAST.parameter_vector(prog),
-        zeros(EarthSciAST.tile_layout(prog).n_aux), prob.f!, prob.p, u0, length(prob.u0), perm, fslots, arrays
+        zeros(EarthSciAST.tile_layout(prog).n_aux), prob.f!, prob.p, x0, length(prob.u0), perm, fslots, arrays
     )
 end
 
