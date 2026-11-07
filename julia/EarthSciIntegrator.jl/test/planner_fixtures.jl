@@ -825,4 +825,43 @@ const PLAN_FILES = String[]
         @test read(joinpath(dir, "notes.txt"), String) == "kept"
         @test sort!(readdir(joinpath(dir, "derived"))) == ["kinetics.jacobian.esm", "kinetics.rhs.esm"]
     end
+
+    # §6.2 item 4: a Jacobian document has no `ic` equations, so the planner
+    # gives every state without a `default` the `default` 0.0, which no
+    # evaluation reads; otherwise EarthSciAST refuses to build the document.
+    @testset "a state with an ic equation and no default" begin
+        src = joinpath(PFIX, "column_contraction")
+        dir = mktempdir()
+        cp(joinpath(src, "auto.run.json"), joinpath(dir, "auto.run.json"))
+        doc = JSON.parsefile(joinpath(src, "model.esm"))
+        delete!(doc["models"]["Mix"]["variables"]["q"], "default")
+        write(joinpath(dir, "model.esm"), JSON.json(doc))
+        d = EarthSciIntegrator.plan(joinpath(dir, "auto.run.json"))
+        write_plan(d, joinpath(dir, "plan"))
+        jacpath = joinpath(dir, "plan", "derived", "default_column.jacobian.esm")
+        jac = JSON.parsefile(jacpath)
+        @test jac["models"]["Mix"]["variables"]["q"]["default"] === 0.0
+        @test jac["models"]["JacobianEval"]["variables"]["J_1"]["default"] === 0.0
+        # The right-hand-side document keeps the `ic` equation and no default.
+        rhs = JSON.parsefile(joinpath(dir, "plan", "derived", "default_column.rhs.esm"))
+        @test !haskey(rhs["models"]["Mix"]["variables"]["q"], "default")
+        # The Jacobian document builds on its own, with no caller `u0`.
+        @test EarthSciAST.esm_problem(jacpath, (0.0, 1.0); compiler = :native) isa Any
+        # The initial state is the `ic` equation's, as with the default, both
+        # built afresh and through a cache: once filling it, once reusing it.
+        golden = EarthSciIntegrator.plan_problem(joinpath(src, "auto.golden")).prob
+        cache = Dict{Any, Any}()
+        for pp in (
+                EarthSciIntegrator.plan_problem(joinpath(dir, "plan")).prob,
+                EarthSciIntegrator.plan_problem(joinpath(dir, "plan"); cache).prob,
+                EarthSciIntegrator.plan_problem(joinpath(dir, "plan"); cache).prob,
+            )
+            @test pp.u0 == golden.u0
+            op, gop = pp.operators["default_column"], golden.operators["default_column"]
+            @test op.jac.u0 == zeros(length(op.jac.u0))
+            @test EarthSciIntegrator.evaluate(copy, op.jac, pp.u0, pp.p, pp.tspan[1]) ==
+                EarthSciIntegrator.evaluate(copy, gop.jac, golden.u0, golden.p, golden.tspan[1])
+        end
+        @test length(cache) == 2
+    end
 end

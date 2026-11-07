@@ -405,6 +405,8 @@ computes its own bands, with the same `jacobian_bands(sysview(rhs); wrt =
 :states)` call as [`document_bands`](@ref), so its fields are checked
 against `entries`: their names, and each field's row region against the
 band's `rows`. (The `band_model` check of §8.1 compares the values.)
+Every state without a `default` gets the `default` `0.0` (§6.2 item 4; see
+[`default_states_to_zero!`](@ref)).
 """
 function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVector; data_sources = nothing)
     doc, fields = EarthSciASTDiff.evaluation_document(rhs; cse = false, data_sources)
@@ -426,7 +428,53 @@ function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVe
         )
     end
     drop_ic!(doc["models"])
+    default_states_to_zero!(doc["models"])
     return doc
+end
+
+"""
+Give every state of `models` without a `default` the `default` `0.0`
+(spec/plan.md §6.2 item 4). With its `ic` equations dropped, such a state (one
+only an `ic` equation or `field_ics` entry starts) has no starting value, which
+EarthSciAST refuses when it builds the document
+(`E_TREEWALK_MISSING_INITIAL_VALUE`). No evaluation reads the value. A state is
+a variable a `D` equation defines: by its fully scoped name (§6.2 item 2), or
+by its name in the equation's own model or subsystem.
+"""
+function default_states_to_zero!(models::AbstractDict)
+    found = Vector{Vector{String}}()
+    function states(node, path)
+        for eq in get(node, "equations", [])
+            l = eq["lhs"]
+            l isa AbstractDict && get(l, "op", nothing) == "D" && push!(found, vcat(path, String(l["args"][1])))
+        end
+        for (k, sub) in get(node, "subsystems", Dict())
+            states(sub, vcat(path, String(k)))
+        end
+        return
+    end
+    for (k, m) in models
+        states(m, [String(k)])
+    end
+    # The declaration of the variable `name` (its components) under `models`.
+    function variable(name)
+        length(name) >= 2 || return nothing
+        node = get(models, name[1], nothing)
+        for s in name[2:(end - 1)]
+            node === nothing && return nothing
+            node = get(get(node, "subsystems", Dict()), s, nothing)
+        end
+        node === nothing && return nothing
+        return get(get(node, "variables", Dict()), name[end], nothing)
+    end
+    for local_name in found
+        x = local_name[end]
+        decl = variable(String.(split(x, '.')))
+        decl === nothing && (decl = variable(vcat(local_name[1:(end - 1)], x)))
+        decl isa AbstractDict || error("the Jacobian document declares no state $x (spec/plan.md §6.2)")
+        haskey(decl, "default") || (decl["default"] = 0.0)
+    end
+    return models
 end
 
 """Remove the `ic` equations of every model and subsystem in `models`."""

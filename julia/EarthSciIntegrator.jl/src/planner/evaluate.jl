@@ -197,6 +197,23 @@ function ic_reads(flat::EarthSciAST.FlattenedSystem, fed)
 end
 
 """
+    without_ic(flat, full) -> (FlattenedSystem, u0)
+
+`flat` without its `ic` equations, for a build whose program is used but whose
+initial state is not (EarthSciAST's `rhs_program` cannot yet rebuild an `ic`
+equation that reads a data-fed parameter), and the caller `u0` that build
+needs: a state with no `default`, started only by an `ic` equation, would
+otherwise have no starting value (`E_TREEWALK_MISSING_INITIAL_VALUE`). `full`
+is the problem built from `flat` as written; its slots name the states. Each
+such state is set to zero by its name, which sets every element of an array.
+"""
+function without_ic(flat::EarthSciAST.FlattenedSystem, full)
+    slotted = Set{String}(first(split(String(k), '[')) for k in keys(full.var_map))
+    u0 = Dict{String, Float64}(n => 0.0 for (n, v) in flat.state_variables if v.default === nothing && n in slotted)
+    return EarthSciAST.FlattenedSystem(flat; field_ics = empty(flat.field_ics)), (isempty(u0) ? nothing : u0)
+end
+
+"""
 Build `file` (a loaded EarthSciAST document or a flattened model) as
 [`BuiltDocument`](@ref) describes and map its state layout to canonical
 order; `fields` gives each band field's extents for a Jacobian document.
@@ -216,16 +233,16 @@ function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
     flat = file isa EarthSciAST.FlattenedSystem ? file : EarthSciAST.flatten(file)
     fed = fed_parameters(flat)
     arrays = Dict{String, Array{Float64}}(n => default_array(flat, n) for n in fed)
-    u0prob = nothing
+    u0prob = zero_u0 = nothing
     prob = if isempty(fed)
         EarthSciAST.esm_problem(file, time; compiler = :native)
     else
         src = flat
         if ic_reads(flat, Set(fed))
             u0prob = EarthSciAST.esm_problem(flat, time; compiler = :native)
-            src = EarthSciAST.FlattenedSystem(flat; field_ics = empty(flat.field_ics))
+            src, zero_u0 = without_ic(flat, u0prob)
         end
-        EarthSciAST.esm_problem(src, time; compiler = :native, param_arrays = Dict{String, Any}(arrays))
+        EarthSciAST.esm_problem(src, time; compiler = :native, u0 = zero_u0, param_arrays = Dict{String, Any}(arrays))
     end
     prog = EarthSciAST.rhs_program(prob)
     EarthSciAST.n_states(prog) == length(prob.u0) ||
