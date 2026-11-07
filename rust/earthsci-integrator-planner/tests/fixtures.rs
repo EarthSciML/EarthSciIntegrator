@@ -362,7 +362,7 @@ fn band_model_catches_errors() {
         let jac: Value = serde_json::from_slice(&docs.jacobian).unwrap();
         let dofs = Dofs::new(&p.model);
         let f = numeric::Program::new(&rhs, tspan, &dofs).unwrap();
-        let jp = numeric::Program::new(&jac, tspan, &dofs).unwrap();
+        let jp = numeric::Program::jacobian(&jac, tspan, &dofs).unwrap();
         let names = dofs.element_names();
         let u0 = numeric::initial_state(&p.model, &dofs, p.interval.start).unwrap();
         let base = numeric::sampling_base(&u0);

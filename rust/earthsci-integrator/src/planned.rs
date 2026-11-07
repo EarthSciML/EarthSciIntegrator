@@ -21,7 +21,9 @@ use crate::operator::{Call, JacOverScratch, MatrixStorage, Operator, Structure};
 use crate::toy::ToyProblem;
 use crate::{Error, Scalar};
 use earthsci_ast::{esm_problem, rhs_program, Compiler, ProblemInput, ProblemOptions, RhsProgram};
-use earthsci_integrator_planner::numeric::{band_field, band_scatter, Dofs, Forcing, Program};
+use earthsci_integrator_planner::numeric::{
+    band_field, band_scatter, jacobian_u0, Dofs, Forcing, Program,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -31,16 +33,20 @@ use std::sync::{Arc, Mutex};
 /// (spec/plan.md §6.2).
 const JACOBIAN_MODEL: &str = earthsci_integrator_planner::derived::JACOBIAN_MODEL;
 
-/// `esm_problem(path, tspan)` with the native compiler, then `rhs_program`.
+/// `esm_problem(path, tspan)` with the native compiler and the caller's
+/// `u0`, then `rhs_program`. A native refusal is a build failure: there is
+/// no fallback to the interpreter (§8.1).
 fn build_program(
     path: &Path,
     tspan: (f64, f64),
+    u0: HashMap<String, f64>,
 ) -> Result<(earthsci_ast::EsmProblem, RhsProgram), String> {
     let prob = esm_problem(
         ProblemInput::Path(path),
         tspan,
         ProblemOptions {
             compiler: Some(Compiler::Native),
+            u0,
             ..Default::default()
         },
     )
@@ -576,12 +582,15 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
                 .ok_or_else(|| cfg(format!("operator {name}: the plan has no {kind} document")))
         };
         let (rhs_path, jac_path) = (path_of("rhs")?, path_of("jacobian")?);
-        let (rhs_prob, rhs_prog) =
-            build_program(&dir.join(&rhs_path), tspan).map_err(|e| refuse(name, &rhs_path, e))?;
-        let (_, jac_prog) =
-            build_program(&dir.join(&jac_path), tspan).map_err(|e| refuse(name, &jac_path, e))?;
-
+        let (rhs_prob, rhs_prog) = build_program(&dir.join(&rhs_path), tspan, HashMap::new())
+            .map_err(|e| refuse(name, &rhs_path, e))?;
         let this = program_dofs(&rhs_prog, |_| false);
+        // The Jacobian document has no `ic` equations: every state element
+        // at zero as its `u0`, which no evaluation reads (spec/plan.md §6.2
+        // item 4).
+        let (_, jac_prog) = build_program(&dir.join(&jac_path), tspan, jacobian_u0(&this))
+            .map_err(|e| refuse(name, &jac_path, e))?;
+
         let jac_states = program_dofs(&jac_prog, |n| n.starts_with(&format!("{JACOBIAN_MODEL}.")));
         if jac_states.states != this.states {
             return Err(refuse(
