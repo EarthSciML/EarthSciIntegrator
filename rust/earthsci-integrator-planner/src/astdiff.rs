@@ -37,8 +37,11 @@ impl FlatView {
     /// The document `doc`, loaded from its wire form in memory
     /// ([`derived::wire_form`]) and flattened. EarthSciAST's
     /// `load_document` runs the pipeline `load_string` runs on the
-    /// document's bytes, without writing and parsing them.
-    pub fn of_document(doc: &Value) -> Result<FlatView, String> {
+    /// document's bytes, without writing and parsing them. It takes the
+    /// document, whose keys it sorts in place; EarthSciAST 0.9's
+    /// `load_document` still copies it, having no public load that takes
+    /// the document by value.
+    pub fn of_document(doc: Value) -> Result<FlatView, String> {
         let loaded = earthsci_ast::load_document(&derived::wire_form(doc))
             .map_err(|e| format!("EarthSciAST load: {e}"))?;
         FlatView::of_loaded(loaded)
@@ -120,7 +123,7 @@ pub fn structure_entry(en: &StructureEntry) -> BandEntry {
 /// `read` of the view of the document `doc`, loaded and flattened. A
 /// failure anywhere is a message for `band_model_failed`.
 fn document_view<T>(
-    doc: &Value,
+    doc: Value,
     read: impl FnOnce(&SysView) -> Result<T, BandError>,
 ) -> Result<T, String> {
     let view = FlatView::of_document(doc)?;
@@ -131,14 +134,14 @@ fn document_view<T>(
 /// The band list of the document `doc` (§5.2.2, §5.4): loaded, flattened,
 /// viewed and differentiated. A failure anywhere is a message for
 /// `band_model_failed`.
-pub fn document_bands(doc: &Value) -> Result<Vec<JacEntry>, String> {
+pub fn document_bands(doc: Value) -> Result<Vec<JacEntry>, String> {
     document_view(doc, bands)
 }
 
 /// The structure-only entries of the document `doc` (§5.2.2): loaded,
 /// flattened, viewed and read for its pattern. A failure anywhere is a
 /// message for `band_model_failed`.
-pub fn document_structure(doc: &Value) -> Result<Vec<StructureEntry>, String> {
+pub fn document_structure(doc: Value) -> Result<Vec<StructureEntry>, String> {
     document_view(doc, structure)
 }
 
@@ -156,7 +159,7 @@ pub enum Mode {
 
 /// The entries of the document `doc` in `mode`, as the locality rules
 /// read them; a full band list's coefficients are dropped here.
-fn document_entries(doc: &Value, mode: Mode) -> Result<Vec<BandEntry>, String> {
+fn document_entries(doc: Value, mode: Mode) -> Result<Vec<BandEntry>, String> {
     match mode {
         Mode::Structure => Ok(document_structure(doc)?
             .iter()
@@ -282,7 +285,7 @@ impl AstDiffBands {
         mode: Mode,
     ) -> Result<Probe, BandSourceError> {
         let entries =
-            match document_entries(&derived::probe_document_with(info, terms, min_nodes), mode) {
+            match document_entries(derived::probe_document_with(info, terms, min_nodes), mode) {
                 Ok(e) => e,
                 Err(message) => return Ok(Err(message)),
             };
@@ -319,9 +322,9 @@ impl AstDiffBands {
         let doc = derived::rhs_document(info, "term", &[t]);
         let failed = |message| BandSourceError::Failed(BandFailure { term: i, message });
         match mode {
-            Mode::Structure => document_entries(&doc, mode).map_err(failed),
+            Mode::Structure => document_entries(doc, mode).map_err(failed),
             Mode::Full => {
-                let view = FlatView::of_document(&doc).map_err(BandSourceError::Internal)?;
+                let view = FlatView::of_document(doc).map_err(BandSourceError::Internal)?;
                 let sv = view.sysview().map_err(|e| failed(astdiff_message(e)))?;
                 let list = bands(&sv).map_err(|e| failed(astdiff_message(e)))?;
                 Ok(list.iter().map(band_entry).collect())

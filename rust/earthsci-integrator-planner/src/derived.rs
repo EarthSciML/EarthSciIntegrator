@@ -27,11 +27,11 @@ pub const JACOBIAN_MODEL: &str = "JacobianEval";
 /// The document `doc` as parsing its bytes ([`to_bytes`]) gives it: every
 /// object's keys in code-point order, the order `stable_json` writes them
 /// in. EarthSciAST keeps a document's key order, so a document loaded from
-/// this form is laid out as one loaded from its bytes.
-pub fn wire_form(doc: &Value) -> Value {
-    let mut v = doc.clone();
-    v.sort_all_objects();
-    v
+/// this form is laid out as one loaded from its bytes. The keys are sorted
+/// in place: nothing is copied.
+pub fn wire_form(mut doc: Value) -> Value {
+    doc.sort_all_objects();
+    doc
 }
 
 /// A derived document's bytes: EarthSciASTDiff's `stable_json` (§2.2).
