@@ -25,6 +25,7 @@ const CASES: &[(&str, &str)] = &[
     ("cross_component_term", "by-owner"),
     ("emission_compose", "named"),
     ("forced_column", "named"),
+    ("interp_slope", "named"),
     ("periodic_stencil", "auto"),
     ("periodic_stencil", "partitioned"),
     ("pointwise_chemistry", "auto"),
@@ -44,6 +45,33 @@ fn lhs_ops(model: &Value, out: &mut Vec<String>) {
     }
     for sub in model["subsystems"].as_object().into_iter().flatten() {
         lhs_ops(sub.1, out);
+    }
+}
+
+/// The numbers of `const` values in `v` written as integral floats, which
+/// §2.2's canonical number form writes as integers wherever the `const`
+/// node came from.
+fn integral_float_consts(v: &Value, out: &mut Vec<String>) {
+    fn numbers(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Number(n) if n.is_f64() && n.as_f64().unwrap().fract() == 0.0 => {
+                out.push(n.to_string())
+            }
+            Value::Array(a) => a.iter().for_each(|x| numbers(x, out)),
+            _ => {}
+        }
+    }
+    match v {
+        Value::Object(m) => {
+            if m.get("op").and_then(Value::as_str) == Some("const") {
+                if let Some(x) = m.get("value") {
+                    numbers(x, out);
+                }
+            }
+            m.values().for_each(|x| integral_float_consts(x, out));
+        }
+        Value::Array(a) => a.iter().for_each(|x| integral_float_consts(x, out)),
+        _ => {}
     }
 }
 
@@ -189,6 +217,16 @@ fn every_case() {
         // document has one band field per band and no `ic` equation.
         for (op, d) in &p.documents {
             let jac_json: Value = serde_json::from_slice(&d.jacobian).unwrap();
+            // §2.2: every `const` value of both documents in the canonical
+            // number form.
+            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+                let mut bad = Vec::new();
+                integral_float_consts(&serde_json::from_slice(bytes).unwrap(), &mut bad);
+                assert!(
+                    bad.is_empty(),
+                    "{fixture}/{case} {op}.{kind}: const values {bad:?} written as integral floats"
+                );
+            }
             let mut ops = Vec::new();
             for m in jac_json["models"].as_object().unwrap().values() {
                 lhs_ops(m, &mut ops);
