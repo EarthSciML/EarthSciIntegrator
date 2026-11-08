@@ -328,9 +328,10 @@ EarthSciAST CONFORMANCE_SPEC §5.5.3.1 rule 1): an integral value in
 EarthSciAST.jl already holds an authored `const` value that way from load,
 but a `const` node that reaches a derived document by another road (a
 `table_lookup` lowering, or one EarthSciASTDiff writes into the Jacobian
-document) may hold floats; the Rust planner runs the same rewrite
-(`canonical_const_values`) over both documents, so the two write every
-`const` value alike wherever it came from.
+document) may hold floats. The Rust planner needs no rewrite: from
+EarthSciAST#670 its binding writes every `const` value in this form, and it
+refuses a `table_lookup` (§4 step 5), so the two write every `const` value
+alike wherever it came from.
 """
 function canonical_const_values!(x)
     if x isa AbstractDict

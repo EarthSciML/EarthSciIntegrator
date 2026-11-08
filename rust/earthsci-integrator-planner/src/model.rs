@@ -33,9 +33,6 @@ pub struct ModelInfo {
     pub shapes: BTreeMap<String, Vec<String>>,
     /// Observed definitions: observed name → its right-hand side.
     pub observed_defs: BTreeMap<String, Expr>,
-    /// Each observed's shape as the derived documents declare it
-    /// ([`crate::derived::observed_shapes`], §6.1.1); empty for none.
-    pub observed_shapes: BTreeMap<String, Vec<String>>,
     /// The derived documents' `domain` ([`crate::derived::domain_json`] of
     /// the flattened model's), built once; `None` when they have none.
     pub domain: Option<Value>,
@@ -562,7 +559,6 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
             }
         }
     }
-    let observed_shapes = crate::derived::observed_shapes(&file, &flat)?;
     let mut info = ModelInfo {
         path,
         bytes,
@@ -572,7 +568,6 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         states: states.into_iter().collect(),
         shapes: BTreeMap::new(),
         observed_defs,
-        observed_shapes,
         domain: None,
         data_fed,
         used: BTreeSet::new(),

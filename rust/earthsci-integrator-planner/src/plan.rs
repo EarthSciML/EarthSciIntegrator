@@ -341,10 +341,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             band_list,
             &state_dependent,
         )?;
-        jac_docs.insert(
-            name.clone(),
-            derived::jacobian_document(&sv, &st.bands, &doc)?,
-        );
+        jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
         structures.insert(name.clone(), st);
     }
