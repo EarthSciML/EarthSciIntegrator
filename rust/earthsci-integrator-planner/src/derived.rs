@@ -604,7 +604,7 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u6
 /// evaluation document (`evaluation_document`, coefficient hoisting off) of
 /// `sv`, the view of the operator's flattened right-hand-side document, for
 /// its band list `entries`, without its `ic` equations, and with a
-/// `default` of `0.0` on every state that has none (§6.2 item 4). Band `k`
+/// `default` of `1.0` on every state that has none (§6.2 item 4). Band `k`
 /// (1-based) is the field `JacobianEval.J_k`; the document's `esm` version
 /// and `metadata.name` are EarthSciASTDiff's.
 pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
@@ -631,18 +631,20 @@ pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
         )));
     }
     models.values_mut().for_each(drop_ic);
-    default_states_to_zero(models)?;
+    default_states(models)?;
     Ok(doc)
 }
 
-/// Gives every state of `models` without a `default` the `default` `0.0`
+/// Gives every state of `models` without a `default` the `default` `1.0`
 /// (§6.2 item 4). With its `ic` equations dropped, such a state (one only
 /// an `ic` equation or `field_ics` entry starts) has no starting value,
 /// which EarthSciAST refuses when it builds the document
-/// (`E_TREEWALK_MISSING_INITIAL_VALUE`). No evaluation reads the value. A
-/// state is a variable a `D` equation defines: by its fully scoped name
-/// (§6.2 item 2), or by its name in the equation's own model or subsystem.
-fn default_states_to_zero(models: &mut Map<String, Value>) -> Result<()> {
+/// (`E_TREEWALK_MISSING_INITIAL_VALUE`). A state with a `default` keeps it.
+/// One, not zero, so that a coefficient dividing by the state is finite at
+/// the document's own initial state (D89). A state is a variable a `D`
+/// equation defines: by its fully scoped name (§6.2 item 2), or by its name
+/// in the equation's own model or subsystem.
+fn default_states(models: &mut Map<String, Value>) -> Result<()> {
     fn states(node: &Value, path: &[String], out: &mut Vec<Vec<String>>) {
         for eq in node["equations"].as_array().into_iter().flatten() {
             if eq["lhs"]["op"] == "D" {
@@ -691,7 +693,7 @@ fn default_states_to_zero(models: &mut Map<String, Value>) -> Result<()> {
                 "the Jacobian document declares no state {x}"
             )));
         };
-        decl.entry("default").or_insert(json!(0.0));
+        decl.entry("default").or_insert(json!(1.0));
     }
     Ok(())
 }
