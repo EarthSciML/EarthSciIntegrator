@@ -1,0 +1,112 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "interp_slope",
+    "description": "M2 planner fixture: numbers the Jacobian document gets from EarthSciASTDiff rather than from the model (spec/plan.md §2.2, §9): the segment slopes and knots of the derivative of interp.linear of a state, all integral, and an authored const table the band coefficient keeps."
+  },
+  "models": {
+    "Chem": {
+      "variables": {
+        "z": {
+          "type": "unknown",
+          "default": 0.5
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.0125
+        },
+        "zsel": {
+          "type": "parameter",
+          "default": 1.5
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "z"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "k",
+                  {
+                    "op": "+",
+                    "args": [
+                      {
+                        "op": "fn",
+                        "name": "interp.linear",
+                        "args": [
+                          {
+                            "op": "const",
+                            "args": [],
+                            "value": [
+                              100.0,
+                              300.0,
+                              700.0
+                            ]
+                          },
+                          {
+                            "op": "const",
+                            "args": [],
+                            "value": [
+                              0.0,
+                              1.0,
+                              2.0
+                            ]
+                          },
+                          "z"
+                        ]
+                      },
+                      {
+                        "op": "*",
+                        "args": [
+                          "z",
+                          {
+                            "op": "fn",
+                            "name": "interp.linear",
+                            "args": [
+                              {
+                                "op": "const",
+                                "args": [],
+                                "value": [
+                                  2.0,
+                                  4.0
+                                ]
+                              },
+                              {
+                                "op": "const",
+                                "args": [],
+                                "value": [
+                                  1.0,
+                                  2.0
+                                ]
+                              },
+                              "zsel"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 3600
+    }
+  }
+}
