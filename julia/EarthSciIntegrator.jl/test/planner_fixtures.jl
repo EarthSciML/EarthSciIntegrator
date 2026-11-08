@@ -317,7 +317,11 @@ const PLAN_FILES = String[]
                 @test doc["esm"] == "1.1.0" && doc["metadata"] == Dict("name" => "JacobianEval")
                 @test !occursin("\"op\":\"ic\"", String(copy(bytes)))
                 nb = length(p["operators"][x["operator"]]["structure"]["bands"])
-                @test sort(collect(keys(doc["models"]["JacobianEval"]["variables"]))) == sort(["J_$k" for k in 1:nb])
+                # The band fields, plus the observeds subtree sharing hoists
+                # (`Jcse<n>`, esm-jacobian-spec §8.1; D90).
+                jvars = collect(keys(doc["models"]["JacobianEval"]["variables"]))
+                @test sort(filter(startswith("J_"), jvars)) == sort(["J_$k" for k in 1:nb])
+                @test all(v -> startswith(v, "J_") || startswith(v, "Jcse"), jvars)
             end
         end
         # The planner loads each derived document from its wire form in memory
@@ -566,9 +570,11 @@ const PLAN_FILES = String[]
     @testset "the Jacobian document's band fields are the operator's bands" begin
         d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"))
         a = d.ctx.backend.ops["kinetics"]
-        @test EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries) isa AbstractDict
-        # A band count that differs from the fields EarthSciASTDiff writes is an error.
-        @test_throws ErrorException EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries[1:(end - 1)])
+        # The bands are passed to EarthSciASTDiff as given: one field `J_k`
+        # per band passed, in their order.
+        nfields(doc) = count(startswith("J_"), keys(doc["models"]["JacobianEval"]["variables"]))
+        @test nfields(EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries)) == length(a.entries)
+        @test nfields(EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries[1:(end - 1)])) == length(a.entries) - 1
         # `drop_ic!` passes over a node with no `equations`.
         models = Dict{String, Any}(
             "A" => Dict{String, Any}(

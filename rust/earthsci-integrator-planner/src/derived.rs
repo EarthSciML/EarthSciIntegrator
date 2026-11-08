@@ -780,16 +780,17 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u6
 }
 
 /// The Jacobian document of an operator (§6.2): EarthSciASTDiff's
-/// evaluation document (`evaluation_document`, coefficient hoisting off) of
-/// `sv`, the view of the operator's right-hand-side document `rhs`
-/// flattened, for its band list `entries`, without its `ic` equations, with
+/// evaluation document (`evaluation_document`, subtree sharing on with
+/// `cse_min_nodes` 12; D90) of `sv`, the view of the operator's
+/// right-hand-side document `rhs` flattened, for its band list `entries`
+/// (pass 4's, used as given), without its `ic` equations, with
 /// a `default` of `1.0` on every state that has none (§6.2 item 4), each
 /// variable `rhs` declares declared with `rhs`'s shape (§6.2 item 2), and
 /// every `const` value in the canonical number form (§2.2). Band `k`
 /// (1-based) is the field `JacobianEval.J_k`; the document's `esm` version
 /// and `metadata.name` are EarthSciASTDiff's.
 pub fn jacobian_document(sv: &SysView, entries: &[JacEntry], rhs: &Value) -> Result<Value> {
-    let (mut doc, fields) = earthsci_astdiff::evaluation_document(sv, entries, false, 0)
+    let (mut doc, fields) = earthsci_astdiff::evaluation_document(sv, entries, true, 12)
         .map_err(|e| PlanError::Internal(format!("evaluation_document: {}", e.0)))?;
     // Band `k` is the field `J_k` (§6.2).
     let want: Vec<String> = (1..=entries.len()).map(|k| format!("J_{k}")).collect();

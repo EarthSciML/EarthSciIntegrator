@@ -424,39 +424,27 @@ end
     jacobian_document(rhs, entries) -> Dict
 
 §6.2: the Jacobian document of an operator whose right-hand-side document,
-loaded and flattened, is `rhs` and whose bands are `entries` (§5.4):
-EarthSciASTDiff's evaluation document of `rhs` with coefficient hoisting off
-(`cse = false`), its band fields `J_k` in the model `JacobianEval`, without
-its `ic` equations.
+loaded and flattened, is `rhs` and whose bands are `entries` (pass 4's,
+§5.4): EarthSciASTDiff's evaluation document of `rhs` for those bands, with
+subtree sharing on (`cse = true`, `cse_min_nodes = 12`; D90), its band
+fields `J_k` and the shared subtrees' observeds in the model `JacobianEval`,
+without its `ic` equations.
 
-Band `k` must be field `J_k`. EarthSciASTDiff's public `evaluation_document`
-computes its own bands, with the same `jacobian_bands(sysview(rhs); wrt =
-:states)` call as [`document_bands`](@ref), so its fields are checked
-against `entries`: their names, and each field's row region against the
-band's `rows`. (The `band_model` check of §8.1 compares the values.)
+The bands are passed to `evaluation_document`, which uses them as given
+rather than computing them again (EarthSciASTDiff#64), as the Rust planner
+does; band `k` must be field `J_k`.
 Every state without a `default` gets the `default` `1.0` (§6.2 item 4; see
 [`default_states!`](@ref)), and every `const` value is written in the
 canonical number form (§2.2; [`canonical_const_values!`](@ref)).
 """
 function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVector; data_sources = nothing)
-    doc, fields = EarthSciASTDiff.evaluation_document(rhs; cse = false, data_sources)
+    doc, fields = EarthSciASTDiff.evaluation_document(
+        rhs, collect(EarthSciASTDiff.JacEntry, entries); cse = true, cse_min_nodes = 12, data_sources
+    )
     fields == ["J_$k" for k in eachindex(entries)] || error(
         "EarthSciASTDiff's evaluation document has band fields $fields, " *
             "but the operator has $(length(entries)) bands (spec/plan.md §6.2)"
     )
-    eqs = Dict(
-        eq["lhs"]["args"][1] => eq["rhs"] for eq in doc["models"]["JacobianEval"]["equations"]
-            if eq["lhs"] isa AbstractDict && get(eq["lhs"], "op", nothing) == "D"
-    )
-    for (k, en) in enumerate(entries)
-        r = eqs["J_$k"]
-        r isa AbstractDict && get(r, "op", nothing) == "makearray" || continue
-        rows = [Int.(x) for x in r["regions"][2][1:length(en.band.rows)]]
-        rows == [Int[lo, hi] for (lo, hi) in en.band.rows] || error(
-            "band field J_$k of EarthSciASTDiff's evaluation document covers rows $rows, " *
-                "but band $k has rows $(en.band.rows) (spec/plan.md §6.2)"
-        )
-    end
     drop_ic!(doc["models"])
     default_states!(doc["models"])
     # §2.2: every `const` value, whether EarthSciASTDiff copied it from the
