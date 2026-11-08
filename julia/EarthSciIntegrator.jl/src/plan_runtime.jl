@@ -85,8 +85,8 @@ function build_plan_document(path::AbstractString, opname::AbstractString, tspan
         prob = EarthSciAST.esm_problem(path, tspan; compiler = :native, base_path = dirname(path))
         flat = EarthSciAST.flatten(EarthSciAST.load_path(path))
         if ic_reads(flat, Set(fed_parameters(flat)))
-            src, zero_u0 = without_ic(flat, prob)
-            pp = EarthSciAST.esm_problem(src, tspan; compiler = :native, u0 = zero_u0)
+            src, ic_u0 = without_ic(flat, prob)
+            pp = EarthSciAST.esm_problem(src, tspan; compiler = :native, u0 = ic_u0)
             Dict(String(k) => Int(v) for (k, v) in pp.var_map) == Dict(String(k) => Int(v) for (k, v) in prob.var_map) ||
                 error("its two builds lay out the states differently")
             pp, EarthSciAST.rhs_program(pp), prob.u0

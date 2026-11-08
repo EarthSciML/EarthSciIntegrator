@@ -405,8 +405,8 @@ computes its own bands, with the same `jacobian_bands(sysview(rhs); wrt =
 :states)` call as [`document_bands`](@ref), so its fields are checked
 against `entries`: their names, and each field's row region against the
 band's `rows`. (The `band_model` check of §8.1 compares the values.)
-Every state without a `default` gets the `default` `0.0` (§6.2 item 4; see
-[`default_states_to_zero!`](@ref)).
+Every state without a `default` gets the `default` `1.0` (§6.2 item 4; see
+[`default_states!`](@ref)).
 """
 function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVector; data_sources = nothing)
     doc, fields = EarthSciASTDiff.evaluation_document(rhs; cse = false, data_sources)
@@ -428,20 +428,22 @@ function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVe
         )
     end
     drop_ic!(doc["models"])
-    default_states_to_zero!(doc["models"])
+    default_states!(doc["models"])
     return doc
 end
 
 """
-Give every state of `models` without a `default` the `default` `0.0`
+Give every state of `models` without a `default` the `default` `1.0`
 (spec/plan.md §6.2 item 4). With its `ic` equations dropped, such a state (one
 only an `ic` equation or `field_ics` entry starts) has no starting value, which
 EarthSciAST refuses when it builds the document
-(`E_TREEWALK_MISSING_INITIAL_VALUE`). No evaluation reads the value. A state is
-a variable a `D` equation defines: by its fully scoped name (§6.2 item 2), or
-by its name in the equation's own model or subsystem.
+(`E_TREEWALK_MISSING_INITIAL_VALUE`). A state with a `default` keeps it. One,
+not zero, so that a coefficient dividing by the state is finite at the
+document's own initial state (D89). A state is a variable a `D` equation
+defines: by its fully scoped name (§6.2 item 2), or by its name in the
+equation's own model or subsystem.
 """
-function default_states_to_zero!(models::AbstractDict)
+function default_states!(models::AbstractDict)
     found = Vector{Vector{String}}()
     function states(node, path)
         for eq in get(node, "equations", [])
@@ -472,7 +474,7 @@ function default_states_to_zero!(models::AbstractDict)
         decl = variable(String.(split(x, '.')))
         decl === nothing && (decl = variable(vcat(local_name[1:(end - 1)], x)))
         decl isa AbstractDict || error("the Jacobian document declares no state $x (spec/plan.md §6.2)")
-        haskey(decl, "default") || (decl["default"] = 0.0)
+        haskey(decl, "default") || (decl["default"] = 1.0)
     end
     return models
 end

@@ -827,8 +827,8 @@ const PLAN_FILES = String[]
     end
 
     # §6.2 item 4: a Jacobian document has no `ic` equations, so the planner
-    # gives every state without a `default` the `default` 0.0, which no
-    # evaluation reads; otherwise EarthSciAST refuses to build the document.
+    # gives every state without a `default` the `default` 1.0; otherwise
+    # EarthSciAST refuses to build the document.
     @testset "a state with an ic equation and no default" begin
         src = joinpath(PFIX, "column_contraction")
         dir = mktempdir()
@@ -840,7 +840,7 @@ const PLAN_FILES = String[]
         write_plan(d, joinpath(dir, "plan"))
         jacpath = joinpath(dir, "plan", "derived", "default_column.jacobian.esm")
         jac = JSON.parsefile(jacpath)
-        @test jac["models"]["Mix"]["variables"]["q"]["default"] === 0.0
+        @test jac["models"]["Mix"]["variables"]["q"]["default"] === 1.0
         @test jac["models"]["JacobianEval"]["variables"]["J_1"]["default"] === 0.0
         # The right-hand-side document keeps the `ic` equation and no default.
         rhs = JSON.parsefile(joinpath(dir, "plan", "derived", "default_column.rhs.esm"))
@@ -858,10 +858,53 @@ const PLAN_FILES = String[]
             )
             @test pp.u0 == golden.u0
             op, gop = pp.operators["default_column"], golden.operators["default_column"]
-            @test op.jac.u0 == zeros(length(op.jac.u0))
+            # The Jacobian document's own initial state: q at its `default`
+            # 1.0 (§6.2 item 4), the band fields at zero.
+            @test op.jac.u0[op.jac.perm] == ones(length(op.jac.perm))
+            @test sort!(unique(op.jac.u0)) == [0.0, 1.0]
             @test EarthSciIntegrator.evaluate(copy, op.jac, pp.u0, pp.p, pp.tspan[1]) ==
                 EarthSciIntegrator.evaluate(copy, gop.jac, golden.u0, golden.p, golden.tspan[1])
         end
         @test length(cache) == 2
+    end
+
+    # §6.2 item 4, D89: a coefficient that divides by a state with no
+    # `default`. At the `default` 1.0 the Jacobian document's right-hand side
+    # at its own initial state is finite; at the former zero, -k/x's
+    # coefficient k/x^2 was infinite.
+    @testset "a band coefficient dividing by a state with no default" begin
+        dir = mktempdir()
+        model = Dict(
+            "esm" => "1.3.0", "metadata" => Dict("name" => "inverse_decay"),
+            "models" => Dict(
+                "M" => Dict(
+                    "variables" => Dict(
+                        "x" => Dict("type" => "unknown"),
+                        "k" => Dict("type" => "parameter", "default" => 0.5),
+                    ),
+                    "equations" => [
+                        Dict(
+                            "lhs" => Dict("op" => "D", "args" => ["x"], "wrt" => "t"),
+                            "rhs" => Dict("op" => "-", "args" => [Dict("op" => "/", "args" => ["k", "x"])]),
+                        ),
+                        Dict("lhs" => Dict("op" => "ic", "args" => ["x"]), "rhs" => 2.5),
+                    ],
+                ),
+            ),
+            "solver" => Dict("time_span" => Dict("start" => 0, "end" => 1)),
+        )
+        write(joinpath(dir, "model.esm"), JSON.json(model))
+        write(
+            joinpath(dir, "auto.run.json"),
+            JSON.json(Dict("esm_integrator" => "0.1.0", "model" => "model.esm", "schedule" => "auto"))
+        )
+        write_plan(EarthSciIntegrator.plan(joinpath(dir, "auto.run.json")), joinpath(dir, "plan"))
+        jacpath = only(filter(endswith(".jacobian.esm"), readdir(joinpath(dir, "plan", "derived"); join = true)))
+        @test JSON.parsefile(jacpath)["models"]["M"]["variables"]["x"]["default"] === 1.0
+        prob = EarthSciAST.esm_problem(jacpath, (0.0, 1.0); compiler = :native)
+        du = similar(prob.u0)
+        prob.f!(du, prob.u0, prob.p, 0.0)
+        @test all(isfinite, du)
+        @test du[prob.var_map["JacobianEval.J_1"]] == 0.5
     end
 end
