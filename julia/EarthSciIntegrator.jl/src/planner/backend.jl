@@ -5,20 +5,51 @@
 """
     DerivedDocument
 
-A derived document as the planner holds it: its JSON object, its bytes
-(`stable_json`, §2.2), and the document loaded and flattened by EarthSciAST.
+A derived document as the planner holds it: its JSON object in wire form
+([`wire_form`](@ref)), its bytes (`stable_json`, §2.2), the document loaded
+by EarthSciAST and, when asked for, flattened (`nothing` otherwise).
 """
 struct DerivedDocument
     doc::AbstractDict{String, Any}
     bytes::String
     file::EarthSciAST.EsmFile
-    flat::EarthSciAST.FlattenedSystem
+    flat::Union{Nothing, EarthSciAST.FlattenedSystem}
 end
 
-function DerivedDocument(doc::AbstractDict{String, Any})
-    bytes = document_bytes(doc)
-    file = EarthSciAST.load_string(bytes)
-    return DerivedDocument(doc, bytes, file, EarthSciAST.flatten(file))
+"""
+    DerivedDocument(doc; flatten = true)
+
+The derived document `doc`, written as its bytes and loaded by EarthSciAST
+from its wire form in memory (`load_document`), which runs the pipeline
+`load_string` runs on the bytes but skips parsing the text the planner has
+just written. The loaded document is the one the bytes load to (the planner's
+tests check this on every golden case). `flatten = false` leaves `flat`
+`nothing`, for a document only built (the Jacobian document, §6.2).
+"""
+function DerivedDocument(doc::AbstractDict{String, Any}; flatten::Bool = true)
+    wire = wire_form(doc)
+    bytes = document_bytes(wire)
+    file = EarthSciAST.load_document(wire)
+    return DerivedDocument(wire, bytes, file, flatten ? EarthSciAST.flatten(file) : nothing)
+end
+
+"""
+    wire_form(x)
+
+The JSON value `x` as parsing its `stable_json` text gives it (§2.2): every
+object an `OrderedDict{String, Any}` with its keys in code-point order, every
+array a `Vector{Any}`, every string a `String`. A document loaded from this
+form is laid out as one loaded from its bytes, whose objects are in the order
+`stable_json` writes them.
+"""
+wire_form(x::AbstractDict) = OrderedDict{String, Any}(k => wire_form(x[k]) for k in sort!(collect(String.(keys(x)))))
+wire_form(x::Union{AbstractVector, Tuple}) = Any[wire_form(v) for v in x]
+wire_form(x::AbstractString) = String(x)
+wire_form(x::Union{Nothing, Bool, Int64, Float64}) = x
+function wire_form(x)
+    y = JSON.parse(EarthSciASTDiff.stable_json(x))
+    typeof(y) == typeof(x) && error("a derived document holds the value $x of type $(typeof(x)), which has no wire form")
+    return wire_form(y)
 end
 
 """
@@ -369,7 +400,7 @@ function jacobian_document!(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
     # §6.2 item 5: the right-hand-side document's stubs, so the data-fed
     # parameters keep their data rules (EarthSciASTDiff#55).
-    a.jac === nothing && (a.jac = DerivedDocument(jacobian_document(a.rhs.flat, a.entries; data_sources = a.rhs.file.data_sources)))
+    a.jac === nothing && (a.jac = DerivedDocument(jacobian_document(a.rhs.flat, a.entries; data_sources = a.rhs.file.data_sources); flatten = false))
     return a.jac
 end
 

@@ -289,6 +289,28 @@ const PLAN_FILES = String[]
                 @test sort(collect(keys(doc["models"]["JacobianEval"]["variables"]))) == sort(["J_$k" for k in 1:nb])
             end
         end
+        # The planner loads each derived document from its wire form in memory
+        # (`DerivedDocument`), not from its bytes: what it loads and builds is
+        # what the bytes load and build to.
+        let b = d.ctx.backend, ctx = d.ctx, L = EarthSciIntegrator.layout!(b, ctx)
+            for o in ops
+                a = b.ops[o]
+                jfields = [vcat(L.extents[x.row], Int[hi for (_, _, hi) in x.contracted]) for x in a.bands]
+                rb = EarthSciIntegrator.rhs_built!(b, ctx, ctx.ops[o])
+                jb = EarthSciIntegrator.jac_built!(b, ctx, ctx.ops[o])
+                for (dd, built, fields) in ((a.rhs, rb, Vector{Int}[]), (a.jac, jb, jfields))
+                    parsed = EarthSciAST.load_string(dd.bytes)
+                    @test EarthSciAST.serialize_esm_file(parsed) == EarthSciAST.serialize_esm_file(dd.file)
+                    B = EarthSciIntegrator.build_document(parsed, L, ctx.time; fields)
+                    @test B.perm == built.perm && B.fields == built.fields && B.nslots == built.nslots
+                    @test B.u0 == built.u0 && B.pvec == built.pvec
+                    for (s, (t, u)) in enumerate(EarthSciIntegrator.samples!(b, ctx))
+                        F = EarthSciIntegrator.sample_forcing(b, ctx, s)
+                        @test EarthSciIntegrator.eval_slots(B, u, t, F) == EarthSciIntegrator.eval_slots(built, u, t, F)
+                    end
+                end
+            end
+        end
         # §8: the validation entries, and the band-value files (§8.2).
         @test p["validation"] == vcat(
             Any[Dict("check" => "rhs_sum", "passed" => true)],
