@@ -39,6 +39,28 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
         @test_throws ArgumentError ecma_number(2^60 + 1)
     end
 
+    @testset "const values in the canonical number form (§2.2)" begin
+        # Every number of every `const` node's `value`, at any depth, as an
+        # integer when integral and in [-2^63, 2^63), the same rewrite as the
+        # Rust planner's; nothing else changes.
+        doc = Dict{String, Any}(
+            "op" => "+", "args" => Any[
+                Dict{String, Any}("op" => "const", "args" => Any[], "value" => Any[Any[100.0, 0.5, 2], Any[-0.0, 1.0e300]]),
+                Dict{String, Any}("op" => "const", "args" => Any[], "value" => 4.0),
+                Dict{String, Any}("op" => "const", "args" => Any[], "value" => "NO2"),
+                Dict{String, Any}("op" => "const", "args" => Any[], "value" => [-2.0^63, 2.0^63]),
+                Dict{String, Any}("op" => "*", "args" => Any[2.0, "x"]),
+                Dict{String, Any}("op" => "makearray", "args" => Any[], "regions" => Any[Any[Any[1, 3]]], "values" => Any[0.0]),
+            ]
+        )
+        EarthSciIntegrator.canonical_const_values!(doc)
+        @test EarthSciIntegrator.document_bytes(doc) ==
+            """{"args":[{"args":[],"op":"const","value":[[100,0.5,2],[0,1.0e300]]},{"args":[],"op":"const","value":4},""" *
+            """{"args":[],"op":"const","value":"NO2"},{"args":[],"op":"const","value":[-9223372036854775808,9.223372036854776e18]},""" *
+            """{"args":[2.0,"x"],"op":"*"},{"args":[],"op":"makearray","regions":[[[1,3]]],"values":[0.0]}],"op":"+"}"""
+        @test doc["args"][4]["value"][1] === typemin(Int64)
+    end
+
     @testset "RFC 8785 strings and key order" begin
         # RFC 8785 §3.2.3's sorting example: UTF-16 code-unit order.
         keys_ = ["\u20ac", "\r", "\ufb33", "1", "\u0080", "\U0001f600", "\u00f6"]
