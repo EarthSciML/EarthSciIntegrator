@@ -31,18 +31,26 @@ impl FlatView {
     pub fn new(text: &str) -> Result<FlatView, String> {
         let loaded =
             earthsci_ast::load_string(text).map_err(|e| format!("EarthSciAST load: {e}"))?;
+        FlatView::of_loaded(loaded)
+    }
+
+    /// The document `doc`, loaded from its wire form in memory
+    /// ([`derived::wire_form`]) and flattened. EarthSciAST's
+    /// `load_document` runs the pipeline `load_string` runs on the
+    /// document's bytes, without writing and parsing them.
+    pub fn of_document(doc: &Value) -> Result<FlatView, String> {
+        let loaded = earthsci_ast::load_document(&derived::wire_form(doc))
+            .map_err(|e| format!("EarthSciAST load: {e}"))?;
+        FlatView::of_loaded(loaded)
+    }
+
+    fn of_loaded(loaded: earthsci_ast::EsmFile) -> Result<FlatView, String> {
         let flat =
             earthsci_ast::flatten(&loaded).map_err(|e| format!("EarthSciAST flatten: {e}"))?;
         Ok(FlatView {
             flat,
             data_sources: loaded.data_sources,
         })
-    }
-
-    /// The document `doc`, written as its bytes, loaded and flattened.
-    pub fn of_document(doc: &Value) -> Result<FlatView, String> {
-        let text = String::from_utf8(derived::to_bytes(doc)).map_err(|e| e.to_string())?;
-        FlatView::new(&text)
     }
 
     /// EarthSciASTDiff's view of the flattened system (`sysview_flat`),

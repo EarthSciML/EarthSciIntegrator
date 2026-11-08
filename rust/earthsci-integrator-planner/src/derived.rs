@@ -24,6 +24,16 @@ pub const ESM_VERSION: &str = "1.3.0";
 /// [`jacobian_document`] checks the document it writes against this one.
 pub const JACOBIAN_MODEL: &str = "JacobianEval";
 
+/// The document `doc` as parsing its bytes ([`to_bytes`]) gives it: every
+/// object's keys in code-point order, the order `stable_json` writes them
+/// in. EarthSciAST keeps a document's key order, so a document loaded from
+/// this form is laid out as one loaded from its bytes.
+pub fn wire_form(doc: &Value) -> Value {
+    let mut v = doc.clone();
+    v.sort_all_objects();
+    v
+}
+
 /// A derived document's bytes: EarthSciASTDiff's `stable_json` (§2.2).
 pub fn to_bytes(doc: &Value) -> Vec<u8> {
     earthsci_astdiff::stable_json(doc).into_bytes()

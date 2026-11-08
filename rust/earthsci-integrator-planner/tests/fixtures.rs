@@ -46,6 +46,27 @@ fn lhs_ops(model: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// `x` serialized with every object's keys sorted: EarthSciAST holds some
+/// maps (a `faq` node's `ranges`) as hash maps, whose order varies.
+fn canonical(mut v: Value) -> String {
+    v.sort_all_objects();
+    v.to_string()
+}
+
+/// `v` with every object's keys in reverse order.
+fn reversed_keys(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .rev()
+                .map(|(k, x)| (k.clone(), reversed_keys(x)))
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().map(reversed_keys).collect()),
+        x => x.clone(),
+    }
+}
+
 fn run_config(fixture: &str, case: &str) -> PathBuf {
     conformance()
         .join("plans/fixtures")
@@ -200,8 +221,37 @@ fn every_case() {
                 !ops.contains(&"ic".to_string()),
                 "{fixture}/{case} {op}.jacobian has an ic equation"
             );
-            FlatView::new(std::str::from_utf8(&d.rhs).unwrap())
+            let rhs = FlatView::new(std::str::from_utf8(&d.rhs).unwrap())
                 .unwrap_or_else(|e| panic!("{fixture}/{case} {op}.rhs: {e}"));
+            // The planner loads a document from its wire form in memory, not
+            // from its bytes (`FlatView::of_document`): the same document
+            // with its keys in another order loads and flattens as the
+            // bytes do.
+            for (kind, bytes, from_text) in
+                [("rhs", &d.rhs, Some(&rhs)), ("jacobian", &d.jacobian, None)]
+            {
+                let doc = reversed_keys(&serde_json::from_slice(bytes).unwrap());
+                let mem = FlatView::of_document(&doc)
+                    .unwrap_or_else(|e| panic!("{fixture}/{case} {op}.{kind}: {e}"));
+                let owned;
+                let text = match from_text {
+                    Some(v) => v,
+                    None => {
+                        owned = FlatView::new(std::str::from_utf8(bytes).unwrap()).unwrap();
+                        &owned
+                    }
+                };
+                assert_eq!(
+                    canonical(serde_json::to_value(&mem.flat).unwrap()),
+                    canonical(serde_json::to_value(&text.flat).unwrap()),
+                    "{fixture}/{case} {op}.{kind}: loaded from memory"
+                );
+                assert_eq!(
+                    canonical(serde_json::to_value(&mem.data_sources).unwrap()),
+                    canonical(serde_json::to_value(&text.data_sources).unwrap()),
+                    "{fixture}/{case} {op}.{kind}: data sources loaded from memory"
+                );
+            }
             let jac = FlatView::new(std::str::from_utf8(&d.jacobian).unwrap())
                 .unwrap_or_else(|e| panic!("{fixture}/{case} {op}.jacobian: {e}"));
             let fields = jac
