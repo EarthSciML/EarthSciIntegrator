@@ -695,7 +695,7 @@ fn default_states(models: &mut Map<String, Value>) -> Result<()> {
                 "the Jacobian document declares no state {x}"
             )));
         };
-        if decl.get("default").map_or(true, Value::is_null) {
+        if decl.get("default").is_none_or(Value::is_null) {
             decl.insert("default".to_string(), json!(1.0));
         }
     }
