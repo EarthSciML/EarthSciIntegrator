@@ -437,11 +437,13 @@ Give every state of `models` without a `default` the `default` `1.0`
 (spec/plan.md §6.2 item 4). With its `ic` equations dropped, such a state (one
 only an `ic` equation or `field_ics` entry starts) has no starting value, which
 EarthSciAST refuses when it builds the document
-(`E_TREEWALK_MISSING_INITIAL_VALUE`). A state with a `default` keeps it. One,
-not zero, so that a coefficient dividing by the state is finite at the
-document's own initial state (D89). A state is a variable a `D` equation
-defines: by its fully scoped name (§6.2 item 2), or by its name in the
-equation's own model or subsystem.
+(`E_TREEWALK_MISSING_INITIAL_VALUE`). A `"default": null` in the built
+document counts as no `default` and is replaced (a model's own `default` is
+never null: the schema refuses it at load). A state with a `default` keeps
+it, `0.0` included. One, not zero, so that no coefficient divides by a
+placeholder zero the planner wrote (D89). A state is a variable a `D`
+equation defines: by its fully scoped name (§6.2 item 2), or by its name in
+the equation's own model or subsystem.
 """
 function default_states!(models::AbstractDict)
     found = Vector{Vector{String}}()
@@ -474,7 +476,7 @@ function default_states!(models::AbstractDict)
         decl = variable(String.(split(x, '.')))
         decl === nothing && (decl = variable(vcat(local_name[1:(end - 1)], x)))
         decl isa AbstractDict || error("the Jacobian document declares no state $x (spec/plan.md §6.2)")
-        haskey(decl, "default") || (decl["default"] = 1.0)
+        get(decl, "default", nothing) === nothing && (decl["default"] = 1.0)
     end
     return models
 end

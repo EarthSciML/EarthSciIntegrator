@@ -56,6 +56,7 @@ The script rewrites `plan.json`, `derived/` and `validation/` of each `<case>.go
 | `reseact_shaped` | reseact's shape: chemistry, transport and mixing as three `operator_compose` contributions; operators by provenance and by default locality; `auto` and named schedules |
 | `unnamed_lift` | a pointwise lift onto a grid no index set is declared for: `flatten`'s synthetic index set `_liftdim1_4` as the lifted states' shape, the default axis and every derived document's `index_sets` (spec/plan.md §6.1.3) |
 | `forced_column` | data-fed parameters (D87): a two-record field reached through a `param_to_var` coupling and blended in time, a `const` scalar, an `ic` read from data, an unused field with no default; the plan's and operators' `forcing`, the derived documents' forcing slots and `data_sources` stubs, the band-value files' `forcing` (spec/plan.md §4.1, §5.5.1, §6.3, §8.2) |
+| `inverse_decay` | a state with no `default`, started only by its `ic` equation, that the band coefficient divides by: the Jacobian document gives it the `default` `1.0` (spec/plan.md §6.2 item 4, D89) |
 | `cross_component_term` | a `couple` term that reads two other components' variables, which provenance alone cannot place (D65), selected by provenance label and by owner |
 | `toy_robertson`, `toy_photostationary_cells`, `toy_advection_reaction` | the toy problems' `.esm` versions under their M2 cases' run configs |
 

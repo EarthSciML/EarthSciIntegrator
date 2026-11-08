@@ -205,8 +205,11 @@ equation that reads a data-fed parameter), and the caller `u0` that build
 needs: a state with no `default`, started only by an `ic` equation, would
 otherwise have no starting value (`E_TREEWALK_MISSING_INITIAL_VALUE`). `full`
 is the problem built from `flat` as written; its slots name the states. Each
-such state is set to one by its name, which sets every element of an array:
-the value a Jacobian document gives such a state (spec/plan.md §6.2 item 4).
+such state is set to one by its name, which sets every element of an array.
+The value is a placeholder that nothing reads: the caller takes the initial
+state from `full` and evaluates the program only at states it passes. One
+rather than zero only so that, were it ever evaluated there, a term dividing
+by the state would not be infinite.
 """
 function without_ic(flat::EarthSciAST.FlattenedSystem, full)
     slotted = Set{String}(first(split(String(k), '[')) for k in keys(full.var_map))
