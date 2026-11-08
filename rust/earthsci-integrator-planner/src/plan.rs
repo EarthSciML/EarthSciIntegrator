@@ -290,7 +290,9 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 format!("operator {name}: {m}"),
             )
         };
-        let view = astdiff::FlatView::of_document(&doc).map_err(band_model_failed)?;
+        // The document is kept as built: the numbers below build it again
+        // (`Program::new`) and pass 6 writes it.
+        let view = astdiff::FlatView::of_document(doc.clone()).map_err(band_model_failed)?;
         let sv = view
             .sysview()
             .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;

@@ -6,7 +6,8 @@
     DerivedDocument
 
 A derived document as the planner holds it: its JSON object, its bytes
-(`stable_json`, §2.2), and the document loaded and flattened by EarthSciAST.
+(`stable_json`, §2.2), and the document loaded from its wire form
+([`load_wire`](@ref)) and flattened by EarthSciAST.
 """
 struct DerivedDocument
     doc::AbstractDict{String, Any}
@@ -15,10 +16,55 @@ struct DerivedDocument
     flat::EarthSciAST.FlattenedSystem
 end
 
+"""
+    DerivedDocument(doc)
+
+The derived document `doc`, written as its bytes and loaded by EarthSciAST
+from its wire form in memory ([`load_wire`](@ref)), which runs the pipeline
+`load_string` runs on the bytes but skips parsing the text the planner has
+just written. The loaded document is the one the bytes load to (the planner's
+tests check this on every golden case). The bytes are written from `doc`
+itself, whose keys `stable_json` sorts as it writes them; the wire form is
+built only for the load and is not kept.
+"""
 function DerivedDocument(doc::AbstractDict{String, Any})
     bytes = document_bytes(doc)
-    file = EarthSciAST.load_string(bytes)
+    file = load_wire(doc)
     return DerivedDocument(doc, bytes, file, EarthSciAST.flatten(file))
+end
+
+"""
+    load_wire(doc) -> EarthSciAST.EsmFile
+
+The document `doc` loaded by EarthSciAST (`load_document`) from its wire form
+([`wire_form`](@ref)), so it is laid out as the document its `stable_json`
+bytes load to. Every document the planner builds and loads (a derived,
+term or probe document) is loaded through this, as the Rust planner's
+`FlatView::of_document` loads each from its sorted form.
+"""
+load_wire(doc::AbstractDict) = EarthSciAST.load_document(wire_form(doc))
+
+"""
+    wire_form(x)
+
+The JSON value `x` as parsing its `stable_json` text gives it (§2.2): every
+object an `OrderedDict{String, Any}` with its keys in code-point order, every
+array a `Vector{Any}`, every string a `String`. A document loaded from this
+form is laid out as one loaded from its bytes, whose objects are in the order
+`stable_json` writes them. Any other value is its JSON text as EarthSciAST
+parses it: a `Symbol` its name, an `Int32` an `Int64`, a `Float32` or
+`BigFloat` a `Float64`, and an integer beyond `Int64` a `Float64`.
+"""
+wire_form(x::AbstractDict) = OrderedDict{String, Any}(k => wire_form(x[k]) for k in sort!(collect(String.(keys(x)))))
+wire_form(x::Union{AbstractVector, Tuple}) = Any[wire_form(v) for v in x]
+wire_form(x::AbstractString) = String(x)
+wire_form(x::Union{Nothing, Bool, Int64, Float64}) = x
+function wire_form(x)
+    y = JSON.parse(EarthSciASTDiff.stable_json(x))
+    # EarthSciAST parses a document's text with JSON3, which reads an integer
+    # beyond `Int64` as a `Float64`; JSON reads it as a `BigInt`.
+    y isa Integer && !(y isa Union{Bool, Int64}) && return Float64(y)
+    return y isa Union{AbstractDict, AbstractVector, AbstractString} ? wire_form(y) : y
 end
 
 """
@@ -119,9 +165,9 @@ true`. An EarthSciASTDiff failure is `band_model_failed`, naming the term.
 """
 function term_entries(b::DiffBackend, ctx, t::Term; coefficients::Bool = false)
     bind!(b, ctx)
-    # A term's document is never written, so it is loaded from memory rather
-    # than through its bytes.
-    flat = EarthSciAST.flatten(EarthSciAST.load_document(rhs_document(ctx.model, "term", [t])))
+    # A term's document is never written; it is loaded from memory, from its
+    # wire form, as a derived document is.
+    flat = EarthSciAST.flatten(load_wire(rhs_document(ctx.model, "term", [t])))
     return document_bands(flat, "term ($(t.variable), $(t.contribution), $(t.summand))"; coefficients)
 end
 
@@ -197,7 +243,7 @@ function _probe_entries(b::DiffBackend, ctx, terms::AbstractVector{Term}; coeffi
     bind!(b, ctx)
     doc = probe_document(ctx.model, terms)
     return try
-        document_bands(EarthSciAST.flatten(EarthSciAST.load_document(doc)), "the probe document"; coefficients)
+        document_bands(EarthSciAST.flatten(load_wire(doc)), "the probe document"; coefficients)
     catch e
         e isa InterruptException && rethrow()
         e isa PlannerRefusal && e.code != "band_model_failed" && rethrow()
@@ -434,16 +480,25 @@ end
 
 function rhs_built!(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
-    a.rhs_built === nothing && (a.rhs_built = build_document(a.rhs.file, layout!(b, ctx), ctx.time))
+    a.rhs_built === nothing && (a.rhs_built = build_document(a.rhs.flat, layout!(b, ctx), ctx.time))
     return a.rhs_built
 end
+
+"""
+    band_fields(L, bands) -> Vector{Vector{Int}}
+
+Each band field's extents in the Jacobian document (§6.2), as
+[`build_document`](@ref) takes them: the extents of the band's row state,
+then the upper bound of each contracted index.
+"""
+band_fields(L::DofLayout, bands::AbstractVector{BandEntry}) =
+    [vcat(L.extents[x.row], Int[hi for (_, _, hi) in x.contracted]) for x in bands]
 
 function jac_built!(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
     if a.jac_built === nothing
         L = layout!(b, ctx)
-        fields = [vcat(L.extents[x.row], Int[hi for (_, _, hi) in x.contracted]) for x in a.bands]
-        a.jac_built = build_document(jacobian_document!(b, ctx, op).file, L, ctx.time; fields)
+        a.jac_built = build_document(jacobian_document!(b, ctx, op).flat, L, ctx.time; fields = band_fields(L, a.bands))
         a.points = band_points(L, a.bands)
     end
     return a.jac_built

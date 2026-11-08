@@ -293,6 +293,28 @@ const PLAN_FILES = String[]
                 @test sort(collect(keys(doc["models"]["JacobianEval"]["variables"]))) == sort(["J_$k" for k in 1:nb])
             end
         end
+        # The planner loads each derived document from its wire form in memory
+        # (`DerivedDocument`), not from its bytes: what it loads and builds is
+        # what the bytes load and build to.
+        let b = d.ctx.backend, ctx = d.ctx, L = EarthSciIntegrator.layout!(b, ctx)
+            for o in ops
+                a = b.ops[o]
+                jfields = EarthSciIntegrator.band_fields(L, a.bands)
+                rb = EarthSciIntegrator.rhs_built!(b, ctx, ctx.ops[o])
+                jb = EarthSciIntegrator.jac_built!(b, ctx, ctx.ops[o])
+                for (dd, built, fields) in ((a.rhs, rb, Vector{Int}[]), (a.jac, jb, jfields))
+                    parsed = EarthSciAST.load_string(dd.bytes)
+                    @test EarthSciAST.serialize_esm_file(parsed) == EarthSciAST.serialize_esm_file(dd.file)
+                    B = EarthSciIntegrator.build_document(parsed, L, ctx.time; fields)
+                    @test B.perm == built.perm && B.fields == built.fields && B.nslots == built.nslots
+                    @test B.u0 == built.u0 && B.pvec == built.pvec
+                    for (s, (t, u)) in enumerate(EarthSciIntegrator.samples!(b, ctx))
+                        F = EarthSciIntegrator.sample_forcing(b, ctx, s)
+                        @test EarthSciIntegrator.eval_slots(B, u, t, F) == EarthSciIntegrator.eval_slots(built, u, t, F)
+                    end
+                end
+            end
+        end
         # §8: the validation entries, and the band-value files (§8.2).
         @test p["validation"] == vcat(
             Any[Dict("check" => "rhs_sum", "passed" => true)],
@@ -422,6 +444,30 @@ const PLAN_FILES = String[]
         d2 = EarthSciIntegrator.plan(joinpath(PFIX, "reseact_shaped", "named.run.json"))
         @test EarthSciIntegrator.plan_json(d2) == EarthSciIntegrator.plan_json(d)
         @test EarthSciIntegrator.derived_files(d2.ctx.backend) == EarthSciIntegrator.derived_files(d.ctx.backend)
+    end
+
+    @testset "a derived document loads from memory whatever JSON values it holds" begin
+        # Each value is its JSON text as EarthSciAST parses it (JSON3): an
+        # integer beyond Int64 is a Float64.
+        wf = EarthSciIntegrator.wire_form
+        @test wf(Int128(2)^100) === 1.2676506002282294e30
+        @test wf(big(2)^200) === Float64(big(2)^200)
+        @test wf(Int128(5)) === 5 && wf(Int32(3)) === 3 && wf(UInt8(7)) === 7
+        @test wf(Float32(0.5)) === 0.5 && wf(big"0.25") === 0.25 && wf(1 // 2) === 0.5
+        @test wf(:a) == "a" && wf((1, "b")) == Any[1, "b"]
+        d = EarthSciIntegrator.plan(joinpath(PFIX, "reseact_shaped", "named.run.json"))
+        a = first(values(d.ctx.backend.ops))
+        doc = deepcopy(a.rhs.doc)
+        set = 0
+        for m in values(doc["models"]), v in values(m["variables"])
+            v["type"] == "parameter" && haskey(v, "default") || continue
+            v["default"] = Int128(2)^100
+            set += 1
+        end
+        @test set > 0
+        dd = EarthSciIntegrator.DerivedDocument(doc)
+        @test occursin("1267650600228229401496703205376", dd.bytes)
+        @test EarthSciAST.serialize_esm_file(dd.file) == EarthSciAST.serialize_esm_file(EarthSciAST.load_string(dd.bytes))
     end
 
     @testset "validation refuses" begin
