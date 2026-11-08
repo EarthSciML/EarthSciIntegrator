@@ -1,0 +1,1 @@
+{"esm":"1.3.0","index_sets":{},"metadata":{"name":"default_pointwise"},"models":{"M":{"equations":[{"lhs":{"args":["M.x"],"op":"D","wrt":"t"},"rhs":{"args":[{"args":["M.k","M.x"],"op":"/"}],"op":"-"}},{"lhs":{"args":["M.x"],"op":"ic"},"rhs":2.5}],"variables":{"k":{"default":0.5,"type":"parameter"},"x":{"type":"unknown"}}}}}

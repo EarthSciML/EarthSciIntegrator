@@ -1,0 +1,6 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "A state with no default that a band coefficient divides by: the Jacobian document gives it the default 1.0.",
+  "model": "model.esm",
+  "schedule": "auto"
+}

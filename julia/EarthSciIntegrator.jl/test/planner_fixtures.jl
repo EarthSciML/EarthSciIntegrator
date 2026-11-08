@@ -161,6 +161,9 @@ const EXPECTED_OPERATORS = Dict(
     "unnamed_lift/auto" => Dict(
         "default_pointwise" => ("pointwise", ("stiff", "reaction_systems"), "block_diagonal", block(CHEM3, FULL3)),
     ),
+    "inverse_decay/auto" => Dict(
+        "default_pointwise" => ("pointwise", ("nonstiff", "gershgorin"), "block_diagonal", block(["M.x"], [[1, 1]])),
+    ),
     "toy_photostationary_cells/kvaerno4" => Dict(
         "photochemistry" => ("pointwise", ("stiff", "run_config"), "block_diagonal", block(["Photo.NO", "Photo.NO2", "Photo.O3"], FULL3)),
     ),
@@ -181,6 +184,7 @@ const EXPECTED_FLAGS = Dict(
     "column_contraction/auto" => Dict("default_column" => (true, false)),
     "pointwise_chemistry/auto" => Dict("default_pointwise" => (false, false)),
     "unnamed_lift/auto" => Dict("default_pointwise" => (false, false)),
+    "inverse_decay/auto" => Dict("default_pointwise" => (false, false)),
     "reseact_shaped/named" => Dict("transport" => (true, false), "mixing" => (true, false), "chemistry" => (false, false)),
 )
 
@@ -827,8 +831,8 @@ const PLAN_FILES = String[]
     end
 
     # §6.2 item 4: a Jacobian document has no `ic` equations, so the planner
-    # gives every state without a `default` the `default` 0.0, which no
-    # evaluation reads; otherwise EarthSciAST refuses to build the document.
+    # gives every state without a `default` the `default` 1.0; otherwise
+    # EarthSciAST refuses to build the document.
     @testset "a state with an ic equation and no default" begin
         src = joinpath(PFIX, "column_contraction")
         dir = mktempdir()
@@ -840,7 +844,7 @@ const PLAN_FILES = String[]
         write_plan(d, joinpath(dir, "plan"))
         jacpath = joinpath(dir, "plan", "derived", "default_column.jacobian.esm")
         jac = JSON.parsefile(jacpath)
-        @test jac["models"]["Mix"]["variables"]["q"]["default"] === 0.0
+        @test jac["models"]["Mix"]["variables"]["q"]["default"] === 1.0
         @test jac["models"]["JacobianEval"]["variables"]["J_1"]["default"] === 0.0
         # The right-hand-side document keeps the `ic` equation and no default.
         rhs = JSON.parsefile(joinpath(dir, "plan", "derived", "default_column.rhs.esm"))
@@ -858,10 +862,66 @@ const PLAN_FILES = String[]
             )
             @test pp.u0 == golden.u0
             op, gop = pp.operators["default_column"], golden.operators["default_column"]
-            @test op.jac.u0 == zeros(length(op.jac.u0))
+            # The Jacobian document's own initial state: q at its `default`
+            # 1.0 (§6.2 item 4), the band fields at zero.
+            @test op.jac.u0[op.jac.perm] == ones(length(op.jac.perm))
+            fields = setdiff(eachindex(op.jac.u0), op.jac.perm)
+            @test length(fields) == op.jac.nslots - length(op.jac.perm) > 0
+            @test all(iszero, op.jac.u0[fields])
             @test EarthSciIntegrator.evaluate(copy, op.jac, pp.u0, pp.p, pp.tspan[1]) ==
                 EarthSciIntegrator.evaluate(copy, gop.jac, golden.u0, golden.p, golden.tspan[1])
         end
         @test length(cache) == 2
+    end
+
+    # §6.2 item 4, D89: a coefficient that divides by a state with no
+    # `default`, the fixture `inverse_decay` (D(x) = -k/x, x started only by
+    # its `ic` equation). At the `default` 1.0 the Jacobian document's
+    # right-hand side at its own initial state is finite; at the former zero,
+    # -k/x's coefficient k/x^2 was infinite. The document is evaluated as a
+    # runtime evaluates it (spec/operator-interface.md §8.1): EarthSciAST's
+    # native right-hand-side program.
+    @testset "a band coefficient dividing by a state with no default" begin
+        dir = mktempdir()
+        write_plan(EarthSciIntegrator.plan(joinpath(PFIX, "inverse_decay", "auto.run.json")), joinpath(dir, "plan"))
+        jacpath = only(filter(endswith(".jacobian.esm"), readdir(joinpath(dir, "plan", "derived"); join = true)))
+        @test JSON.parsefile(jacpath)["models"]["M"]["variables"]["x"]["default"] === 1.0
+        prob = EarthSciAST.esm_problem(jacpath, (0.0, 1.0); compiler = :native)
+        prog = EarthSciAST.rhs_program(prob)
+        @test EarthSciAST.n_states(prog) == length(prob.u0)
+        du = fill(NaN, length(prob.u0))
+        EarthSciAST.rhs!(
+            du, prog, EarthSciAST.rhs_workspace(prog), prob.u0, zeros(EarthSciAST.tile_layout(prog).n_aux),
+            EarthSciAST.parameter_vector(prog), 0.0, EarthSciAST.default_forcing_set(prog)
+        )
+        @test all(isfinite, du)
+        b = only(filter(b -> b.name == "JacobianEval.J_1", EarthSciAST.state_layout(prog)))
+        @test du[b.offset] == 0.5
+    end
+
+    # §6.2 item 4: a state with no `default`, or with `"default": null`, gets
+    # 1.0; a state's own `default`, 0.0 included, is kept; a variable no `D`
+    # equation defines is left alone. A model document with a null `default`
+    # fails EarthSciAST's schema at load, so the null case is checked here, on
+    # the documents' models directly.
+    @testset "default_states! writes 1.0 where a state has none" begin
+        D(x) = Dict{String, Any}("lhs" => Dict{String, Any}("op" => "D", "args" => ["M.$x"], "wrt" => "t"), "rhs" => 0.0)
+        models = Dict{String, Any}(
+            "M" => Dict{String, Any}(
+                "variables" => Dict{String, Any}(
+                    "a" => Dict{String, Any}("type" => "unknown"),
+                    "b" => Dict{String, Any}("type" => "unknown", "default" => nothing),
+                    "c" => Dict{String, Any}("type" => "unknown", "default" => 0.0),
+                    "k" => Dict{String, Any}("type" => "parameter", "default" => nothing),
+                ),
+                "equations" => Any[D("a"), D("b"), D("c")],
+            ),
+        )
+        EarthSciIntegrator.default_states!(models)
+        v = models["M"]["variables"]
+        @test v["a"]["default"] === 1.0
+        @test v["b"]["default"] === 1.0
+        @test v["c"]["default"] === 0.0
+        @test v["k"]["default"] === nothing
     end
 end

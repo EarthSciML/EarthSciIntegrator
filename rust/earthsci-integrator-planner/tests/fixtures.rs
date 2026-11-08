@@ -24,6 +24,7 @@ const CASES: &[(&str, &str)] = &[
     ("cross_component_term", "by-label"),
     ("cross_component_term", "by-owner"),
     ("forced_column", "named"),
+    ("inverse_decay", "auto"),
     ("periodic_stencil", "auto"),
     ("periodic_stencil", "partitioned"),
     ("pointwise_chemistry", "auto"),
