@@ -127,6 +127,12 @@ const EXPECTED_OPERATORS = Dict(
     "column_contraction/auto" => Dict(
         "default_column" => ("column", ("stiff", "gershgorin"), "general", Dict("column" => Dict("axis" => "lev", "kl" => 4, "ku" => 4))),
     ),
+    "emission_compose/named" => Dict(
+        "chemistry" => (
+            "pointwise", ("nonstiff", "run_config"), "block_diagonal",
+            block(["Chem.A", "Chem.B", "Chem.C", "Chem.q"], [[1, 1], [2, 1], [2, 2], [3, 2], [3, 3], [4, 4]]),
+        ),
+    ),
     "cross_component_term/by-owner" => Dict(
         "chemistry" => ("pointwise", ("stiff", "run_config"), "block_diagonal", block(["Chem.NO", "Chem.O3"], [[1, 1], [1, 2], [2, 1], [2, 2]])),
         "deposition" => ("pointwise", ("stiff", "run_config"), "block_diagonal", block(["Chem.NO"], [[1, 1]])),
@@ -179,6 +185,7 @@ const EXPECTED_FLAGS = Dict(
     "toy_advection_reaction/strang" => Dict("transport" => (true, false), "reaction" => (true, false)),
     "periodic_stencil/auto" => Dict("default_stencil" => (true, false)),
     "column_contraction/auto" => Dict("default_column" => (true, false)),
+    "emission_compose/named" => Dict("chemistry" => (true, false)),
     "pointwise_chemistry/auto" => Dict("default_pointwise" => (false, false)),
     "unnamed_lift/auto" => Dict("default_pointwise" => (false, false)),
     "reseact_shaped/named" => Dict("transport" => (true, false), "mixing" => (true, false), "chemistry" => (false, false)),
