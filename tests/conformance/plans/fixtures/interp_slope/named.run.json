@@ -1,0 +1,18 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "One named operator over the one component, advanced by Tsit5.",
+  "model": "model.esm",
+  "operators": {
+    "chemistry": {
+      "select": {
+        "components": [
+          "Chem"
+        ]
+      }
+    }
+  },
+  "schedule": {
+    "leaf": "chemistry",
+    "alg": "Tsit5"
+  }
+}

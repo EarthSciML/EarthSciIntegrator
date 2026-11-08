@@ -105,6 +105,20 @@ function golden_bandvalues_mismatch(d, o, want)
     return nothing
 end
 
+"""The numbers of `const` values in a parsed document `x` written as integral floats, which §2.2 writes as integers."""
+function integral_float_consts(x, out = Float64[])
+    if x isa AbstractDict
+        get(x, "op", nothing) == "const" && _floats!(out, get(x, "value", nothing))
+        foreach(v -> integral_float_consts(v, out), values(x))
+    elseif x isa AbstractVector
+        foreach(v -> integral_float_consts(v, out), x)
+    end
+    return out
+end
+_floats!(out, y::AbstractVector) = (foreach(z -> _floats!(out, z), y); out)
+_floats!(out, y::AbstractFloat) = (isinteger(y) && push!(out, y); out)
+_floats!(out, y) = out
+
 """Every fixture case, `(fixture, case)`, in code-point order."""
 fixture_cases() = [
     (f, c[1:(end - length(".run.json"))]) for f in sort!(readdir(PFIX)) for c in sort!(readdir(joinpath(PFIX, f)))
@@ -126,6 +140,15 @@ const EXPECTED_OPERATORS = Dict(
     ),
     "column_contraction/auto" => Dict(
         "default_column" => ("column", ("stiff", "gershgorin"), "general", Dict("column" => Dict("axis" => "lev", "kl" => 4, "ku" => 4))),
+    ),
+    "emission_compose/named" => Dict(
+        "chemistry" => (
+            "pointwise", ("nonstiff", "run_config"), "block_diagonal",
+            block(["Chem.A", "Chem.B", "Chem.C", "Chem.q"], [[1, 1], [2, 1], [2, 2], [3, 2], [3, 3], [4, 4]]),
+        ),
+    ),
+    "interp_slope/named" => Dict(
+        "chemistry" => ("pointwise", ("nonstiff", "run_config"), "block_diagonal", block(["Chem.z"], [[1, 1]])),
     ),
     "cross_component_term/by-owner" => Dict(
         "chemistry" => ("pointwise", ("stiff", "run_config"), "block_diagonal", block(["Chem.NO", "Chem.O3"], [[1, 1], [1, 2], [2, 1], [2, 2]])),
@@ -182,6 +205,8 @@ const EXPECTED_FLAGS = Dict(
     "toy_advection_reaction/strang" => Dict("transport" => (true, false), "reaction" => (true, false)),
     "periodic_stencil/auto" => Dict("default_stencil" => (true, false)),
     "column_contraction/auto" => Dict("default_column" => (true, false)),
+    "emission_compose/named" => Dict("chemistry" => (true, false)),
+    "interp_slope/named" => Dict("chemistry" => (false, false)),
     "pointwise_chemistry/auto" => Dict("default_pointwise" => (false, false)),
     "unnamed_lift/auto" => Dict("default_pointwise" => (false, false)),
     "inverse_decay/auto" => Dict("default_pointwise" => (false, false)),
@@ -283,6 +308,8 @@ const PLAN_FILES = String[]
             @test x["sha256"] == bytes2hex(EarthSciIntegrator.sha256(bytes))
             doc = JSON.parse(String(copy(bytes)))
             @test EarthSciASTDiff.stable_json(doc) == String(bytes)
+            # §2.2: no `const` value written as an integral float.
+            @test isempty(integral_float_consts(doc))
             if x["kind"] == "rhs"
                 @test doc["esm"] == "1.3.0" && doc["metadata"] == Dict("name" => x["operator"])
             else
@@ -331,11 +358,20 @@ const PLAN_FILES = String[]
         golden = joinpath(PFIX, fixture, "$case.golden")
         @test isfile(joinpath(golden, "plan.json"))
         if isfile(joinpath(golden, "plan.json"))
-            @test text == read(joinpath(golden, "plan.json"), String)
+            # The golden of `emission_compose/named` holds the conforming
+            # equation order of an `operator_compose` merge (spec/plan.md
+            # §6.1.2, §10 item 25), which EarthSciAST.jl writes only from
+            # EarthSciAST#669 on. Released EarthSciAST.jl up to 0.9.0 lacks
+            # it, so there this case's plan.json and derived documents differ
+            # from the golden in that order alone, and those comparisons are
+            # marked broken; with a later release installed they are real
+            # tests again (and an unexpected pass on 0.9.0 is reported).
+            awaits_669 = key == "emission_compose/named" && pkgversion(EarthSciAST) <= v"0.9.0"
+            @test text == read(joinpath(golden, "plan.json"), String) broken = awaits_669
             gd = isdir(joinpath(golden, "derived")) ? sort!(readdir(joinpath(golden, "derived"))) : String[]
             @test gd == sort!(readdir(joinpath(dir, "derived")))
             for f in gd
-                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f))
+                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f)) broken = awaits_669
             end
             for o in ops
                 path = joinpath(golden, "validation", "$o.bandvalues.json")
