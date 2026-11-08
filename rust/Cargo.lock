@@ -773,8 +773,7 @@ checksum = "e1d926b4d407d372f141f93bb444696142c29d32962ccbd3531117cf3aa0bfa9"
 [[package]]
 name = "earthsci-ast"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8721805359d0811c48dbd5c05d6659b17d0117195288f6bda8b5a3451846a9a6"
+source = "git+https://github.com/EarthSciML/EarthSciAST?branch=main#dd5afebdea0b98571a07515d37fabd14d7101718"
 dependencies = [
  "clap",
  "diffsol",
@@ -798,8 +797,7 @@ dependencies = [
 [[package]]
 name = "earthsci-astdiff"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6514c260ff79d259e64ba652ab29a8663089fabdba432c7d13a6a57d8b470de"
+source = "git+https://github.com/EarthSciML/EarthSciASTDiff?branch=main#7a4074a480bd882678e501b25fbeab318ccdfe5a"
 dependencies = [
  "earthsci-ast",
  "indexmap",
@@ -3639,7 +3637,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

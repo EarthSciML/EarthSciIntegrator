@@ -366,7 +366,10 @@ const PLAN_FILES = String[]
             # from the golden in that order alone, and those comparisons are
             # marked broken; with a later release installed they are real
             # tests again (and an unexpected pass on 0.9.0 is reported).
-            awaits_669 = key == "emission_compose/named" && pkgversion(EarthSciAST) <= v"0.9.0"
+            # Development only: EarthSciAST main has #669 but still says
+            # 0.9.0, so the version test is off while the dependencies point
+            # at main (revert with the rest of this commit).
+            awaits_669 = false && key == "emission_compose/named" && pkgversion(EarthSciAST) <= v"0.9.0"
             @test text == read(joinpath(golden, "plan.json"), String) broken = awaits_669
             gd = isdir(joinpath(golden, "derived")) ? sort!(readdir(joinpath(golden, "derived"))) : String[]
             @test gd == sort!(readdir(joinpath(dir, "derived")))
