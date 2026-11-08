@@ -111,7 +111,7 @@ fn initial_state_reads_data() {
 
 /// spec/plan.md §6.2 item 4: `data_decay_ic` with its state's `default`
 /// removed, so only the `ic` equation, which reads data, starts it. The
-/// planner gives the state the `default` 0.0 in the Jacobian document; the
+/// planner gives the state the `default` 1.0 in the Jacobian document; the
 /// plan builds, loads and starts from the data.
 #[test]
 fn initial_state_reads_data_without_default() {
@@ -137,7 +137,7 @@ fn initial_state_reads_data_without_default() {
         &std::fs::read(plan_dir.join("derived/decay.jacobian.esm")).unwrap(),
     )
     .unwrap();
-    assert_eq!(jac["models"]["Decay"]["variables"]["u"]["default"], 0.0);
+    assert_eq!(jac["models"]["Decay"]["variables"]["u"]["default"], 1.0);
     let lp = load_plan_with::<f64>(&plan_dir, &data).unwrap();
     assert_eq!(lp.problem.u0, [1.0, 1.25, 1.5]);
 }

@@ -24,6 +24,16 @@ pub const ESM_VERSION: &str = "1.3.0";
 /// [`jacobian_document`] checks the document it writes against this one.
 pub const JACOBIAN_MODEL: &str = "JacobianEval";
 
+/// The document `doc` as parsing its bytes ([`to_bytes`]) gives it: every
+/// object's keys in code-point order, the order `stable_json` writes them
+/// in. EarthSciAST keeps a document's key order, so a document loaded from
+/// this form is laid out as one loaded from its bytes. The keys are sorted
+/// in place: nothing is copied.
+pub fn wire_form(mut doc: Value) -> Value {
+    doc.sort_all_objects();
+    doc
+}
+
 /// A derived document's bytes: EarthSciASTDiff's `stable_json` (§2.2).
 pub fn to_bytes(doc: &Value) -> Vec<u8> {
     earthsci_astdiff::stable_json(doc).into_bytes()
@@ -773,7 +783,7 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u6
 /// evaluation document (`evaluation_document`, coefficient hoisting off) of
 /// `sv`, the view of the operator's right-hand-side document `rhs`
 /// flattened, for its band list `entries`, without its `ic` equations, with
-/// a `default` of `0.0` on every state that has none (§6.2 item 4), each
+/// a `default` of `1.0` on every state that has none (§6.2 item 4), each
 /// variable `rhs` declares declared with `rhs`'s shape (§6.2 item 2), and
 /// every `const` value in the canonical number form (§2.2). Band `k`
 /// (1-based) is the field `JacobianEval.J_k`; the document's `esm` version
@@ -802,7 +812,7 @@ pub fn jacobian_document(sv: &SysView, entries: &[JacEntry], rhs: &Value) -> Res
         )));
     }
     models.values_mut().for_each(drop_ic);
-    default_states_to_zero(models)?;
+    default_states(models)?;
     declared_shapes_as_in(&mut doc, rhs);
     // §2.2: every `const` value, whether EarthSciASTDiff copied it from the
     // right-hand-side document or wrote it, in the canonical number form.
@@ -810,14 +820,18 @@ pub fn jacobian_document(sv: &SysView, entries: &[JacEntry], rhs: &Value) -> Res
     Ok(doc)
 }
 
-/// Gives every state of `models` without a `default` the `default` `0.0`
+/// Gives every state of `models` without a `default` the `default` `1.0`
 /// (§6.2 item 4). With its `ic` equations dropped, such a state (one only
 /// an `ic` equation or `field_ics` entry starts) has no starting value,
 /// which EarthSciAST refuses when it builds the document
-/// (`E_TREEWALK_MISSING_INITIAL_VALUE`). No evaluation reads the value. A
-/// state is a variable a `D` equation defines: by its fully scoped name
-/// (§6.2 item 2), or by its name in the equation's own model or subsystem.
-fn default_states_to_zero(models: &mut Map<String, Value>) -> Result<()> {
+/// (`E_TREEWALK_MISSING_INITIAL_VALUE`). A `"default": null` in the built
+/// document counts as no `default` and is replaced (a model's own
+/// `default` is never null: the schema refuses it at load). A state with a `default` keeps
+/// it, `0.0` included. One, not zero, so that no coefficient divides by a
+/// placeholder zero the planner wrote (D89). A state is a variable a `D`
+/// equation defines: by its fully scoped name (§6.2 item 2), or by its name
+/// in the equation's own model or subsystem.
+fn default_states(models: &mut Map<String, Value>) -> Result<()> {
     fn states(node: &Value, path: &[String], out: &mut Vec<Vec<String>>) {
         for eq in node["equations"].as_array().into_iter().flatten() {
             if eq["lhs"]["op"] == "D" {
@@ -856,7 +870,9 @@ fn default_states_to_zero(models: &mut Map<String, Value>) -> Result<()> {
                 "the Jacobian document declares no state {x}"
             )));
         };
-        decl.entry("default").or_insert(json!(0.0));
+        if decl.get("default").is_none_or(Value::is_null) {
+            decl.insert("default".to_string(), json!(1.0));
+        }
     }
     Ok(())
 }
@@ -1142,5 +1158,37 @@ mod tests {
         let sv = view.sysview().unwrap();
         let jac = jacobian_document(&sv, &crate::astdiff::bands(&sv).unwrap(), &src).unwrap();
         assert_eq!(jac.get("domain").cloned(), ours);
+    }
+
+    /// §6.2 item 4: a state with no `default`, or with `"default": null`,
+    /// gets `1.0`; a state's own `default`, `0.0` included, is kept; a
+    /// variable no `D` equation defines is left alone. A model document
+    /// with a null `default` fails EarthSciAST's schema at load, so the
+    /// null case is checked here, on the documents' models directly.
+    #[test]
+    fn default_states_writes_one_where_a_state_has_none() {
+        let equations: Vec<Value> = ["a", "b", "c"]
+            .iter()
+            .map(
+                |x| json!({"lhs": {"op": "D", "args": [format!("M.{x}")], "wrt": "t"}, "rhs": 0.0}),
+            )
+            .collect();
+        let mut models = json!({
+            "M": {
+                "variables": {
+                    "a": {"type": "unknown"},
+                    "b": {"type": "unknown", "default": null},
+                    "c": {"type": "unknown", "default": 0.0},
+                    "k": {"type": "parameter", "default": null},
+                },
+                "equations": equations,
+            }
+        });
+        default_states(models.as_object_mut().unwrap()).unwrap();
+        let v = &models["M"]["variables"];
+        assert_eq!(v["a"]["default"], json!(1.0));
+        assert_eq!(v["b"]["default"], json!(1.0));
+        assert_eq!(v["c"]["default"], json!(0.0));
+        assert_eq!(v["k"]["default"], Value::Null);
     }
 }

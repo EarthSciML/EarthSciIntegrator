@@ -1,0 +1,36 @@
+{
+  "esm": "1.3.0",
+  "metadata": {
+    "name": "inverse_decay",
+    "description": "M2 planner fixture: x' = -k/x with no default on x, started only by its ic equation, so the Jacobian document gives x the default 1.0 (spec/plan.md §6.2 item 4, D89)."
+  },
+  "models": {
+    "M": {
+      "variables": {
+        "x": {
+          "type": "unknown"
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.5
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["x"], "wrt": "t"},
+          "rhs": {"op": "-", "args": [{"op": "/", "args": ["k", "x"]}]}
+        },
+        {
+          "lhs": {"op": "ic", "args": ["x"]},
+          "rhs": 2.5
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}
