@@ -93,7 +93,48 @@ impl Tree {
 }
 
 fn expr_json(e: &Expr) -> Value {
-    serde_json::to_value(e).unwrap_or(Value::Null)
+    let mut v = serde_json::to_value(e).unwrap_or(Value::Null);
+    canonical_const_values(&mut v);
+    v
+}
+
+/// Writes every number of every `const` node's `value` in `v` in the esm
+/// canonical number form (§2.2; EarthSciAST CONFORMANCE_SPEC §5.5.3.1 rule
+/// 1): an integral value that fits `i64` as an integer, whatever its source
+/// spelling, so `[100.0, 0.5]` is written `[100,0.5]`. EarthSciAST's Julia
+/// binding holds such a `value` that way from load, as it does every
+/// numeric literal, and its Rust binding writes a literal `Expr::Number`
+/// so, but EarthSciAST 0.9.0's Rust binding keeps a `const` node's `value`
+/// as the source spelled it (`100.0`). Until a release fixes that
+/// (EarthSciAST#670), the planner rewrites it. Only authored `const` nodes
+/// reach here: a `table_lookup`, whose lowering writes `const` nodes of
+/// its own, is refused (§4 step 5).
+pub fn canonical_const_values(v: &mut Value) {
+    fn narrow(v: &mut Value) {
+        match v {
+            Value::Number(n) if n.is_f64() => {
+                let x = n.as_f64().expect("an f64 number");
+                // 2^63: an integral f64 below it in magnitude fits `i64`.
+                if x.is_finite() && x.fract() == 0.0 && x.abs() < 9_223_372_036_854_775_808.0 {
+                    *v = json!(x as i64);
+                }
+            }
+            Value::Array(a) => a.iter_mut().for_each(narrow),
+            _ => {}
+        }
+    }
+    match v {
+        Value::Object(m) => {
+            if m.get("op").and_then(Value::as_str) == Some("const") {
+                if let Some(x) = m.get_mut("value") {
+                    narrow(x);
+                }
+            }
+            m.values_mut().for_each(canonical_const_values);
+        }
+        Value::Array(a) => a.iter_mut().for_each(canonical_const_values),
+        _ => {}
+    }
 }
 
 /// A variable's declaration (§6.1.1): `{"type": T}` plus `shape` and
@@ -226,7 +267,9 @@ fn tree(
     }
     for o in live {
         let v = &flat.observed_variables[o];
-        let shape = v.shape.clone().unwrap_or_default();
+        let shape = declared_observed_shape(info, o)
+            .unwrap_or_else(|| v.shape.clone())
+            .unwrap_or_default();
         tree.declare(o, variable_json(v, &shape));
     }
     for (i, eq) in flat.equations.iter().enumerate() {
@@ -243,6 +286,75 @@ fn tree(
         tree.push(x, ic_equation(x, e));
     }
     tree
+}
+
+/// The `shape` the model declares on the observed `name` (§6.1.1): `Some`
+/// with the declaration's `shape` (`None` when it declares none) when the
+/// model as loaded declares `name` in the component its flattened name
+/// places it in, and `None` when it does not (a variable a coupling
+/// introduced), where the flattened model's is used. A shape flatten infers
+/// for an observed declared without one (esm-spec §4.3.4's elementwise
+/// `ifelse` over an array; EarthSciAST's Rust binding records it from
+/// EarthSciAST#667 on, its Julia binding does not) is not the declared
+/// shape, so it is not written: the document's loader infers it again.
+fn declared_observed_shape(info: &ModelInfo, name: &str) -> Option<Option<Vec<String>>> {
+    let mut path = name.split('.');
+    let top = info.file.models.as_ref()?.get(path.next()?)?;
+    let rest: Vec<&str> = path.collect();
+    let (var, subs) = rest.split_last()?;
+    let shape_of =
+        |v: &Value| -> Option<Vec<String>> { serde_json::from_value(v.get("shape")?.clone()).ok() };
+    if subs.is_empty() {
+        return Some(top.variables.get(*var)?.shape.clone());
+    }
+    let mut node = top.subsystems.as_ref()?.get(subs[0])?;
+    for s in &subs[1..] {
+        node = node.get("subsystems")?.get(*s)?;
+    }
+    Some(shape_of(node.get("variables")?.get(*var)?))
+}
+
+/// Gives every variable the Jacobian document `jac` declares the shape the
+/// right-hand-side document `rhs` declares it with (§6.1.1, §6.2 item 2):
+/// a `shape` the right-hand-side document leaves out is left out of the
+/// Jacobian document too. EarthSciASTDiff writes the Jacobian document's
+/// declarations from the flattened right-hand-side document, whose
+/// observeds, from EarthSciAST#667 on, carry the shape the Rust binding's
+/// `flatten` infers for one declared without a shape (§10 item 24).
+pub fn declared_shapes_as_in(jac: &mut Value, rhs: &Value) {
+    fn walk(jac: &mut Value, rhs: &Value) {
+        if let (Some(jv), Some(rv)) = (
+            jac.get_mut("variables").and_then(Value::as_object_mut),
+            rhs.get("variables").and_then(Value::as_object),
+        ) {
+            for (name, r) in rv {
+                if r.get("shape").is_none() {
+                    if let Some(Value::Object(j)) = jv.get_mut(name) {
+                        j.remove("shape");
+                    }
+                }
+            }
+        }
+        if let (Some(js), Some(rs)) = (
+            jac.get_mut("subsystems").and_then(Value::as_object_mut),
+            rhs.get("subsystems").and_then(Value::as_object),
+        ) {
+            for (k, r) in rs {
+                if let Some(j) = js.get_mut(k) {
+                    walk(j, r);
+                }
+            }
+        }
+    }
+    if let (Some(Value::Object(jm)), Some(Value::Object(rm))) =
+        (jac.get_mut("models"), rhs.get("models"))
+    {
+        for (k, r) in rm {
+            if let Some(j) = jm.get_mut(k) {
+                walk(j, r);
+            }
+        }
+    }
 }
 
 /// The `ic` equation of state `x` whose initial value is `e` (§6.1.1).
@@ -632,6 +744,9 @@ pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
     }
     models.values_mut().for_each(drop_ic);
     default_states_to_zero(models)?;
+    // §2.2: the `const` values EarthSciASTDiff copies from the
+    // right-hand-side document, in the canonical number form.
+    canonical_const_values(&mut doc);
     Ok(doc)
 }
 
@@ -713,6 +828,24 @@ mod tests {
 
     fn domain(v: Value) -> Domain {
         serde_json::from_value(v).unwrap()
+    }
+
+    /// §2.2: the integral numbers of a `const` node's `value`, at any
+    /// depth, are written as integers; nothing else changes.
+    #[test]
+    fn const_values_in_canonical_number_form() {
+        let mut v = json!({"op": "+", "args": [
+            {"op": "const", "args": [], "value": [[100.0, 0.5, 2], [-0.0, 1.0e300]]},
+            {"op": "const", "args": [], "value": 4.0},
+            {"op": "const", "args": [], "value": "NO2"},
+            {"op": "*", "args": [2.0, "x"]},
+            {"op": "makearray", "args": [], "regions": [[[1, 3]]], "values": [0.0]}
+        ]});
+        canonical_const_values(&mut v);
+        assert_eq!(
+            to_bytes(&v),
+            br#"{"args":[{"args":[],"op":"const","value":[[100,0.5,2],[0,1.0e300]]},{"args":[],"op":"const","value":4},{"args":[],"op":"const","value":"NO2"},{"args":[2.0,"x"],"op":"*"},{"args":[],"op":"makearray","regions":[[[1,3]]],"values":[0.0]}],"op":"+"}"#
+        );
     }
 
     #[test]

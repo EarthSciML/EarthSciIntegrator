@@ -23,6 +23,7 @@ const CASES: &[(&str, &str)] = &[
     ("column_contraction", "auto"),
     ("cross_component_term", "by-label"),
     ("cross_component_term", "by-owner"),
+    ("emission_compose", "named"),
     ("forced_column", "named"),
     ("periodic_stencil", "auto"),
     ("periodic_stencil", "partitioned"),
