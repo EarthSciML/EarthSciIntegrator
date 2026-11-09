@@ -317,7 +317,11 @@ const PLAN_FILES = String[]
                 @test doc["esm"] == "1.1.0" && doc["metadata"] == Dict("name" => "JacobianEval")
                 @test !occursin("\"op\":\"ic\"", String(copy(bytes)))
                 nb = length(p["operators"][x["operator"]]["structure"]["bands"])
-                @test sort(collect(keys(doc["models"]["JacobianEval"]["variables"]))) == sort(["J_$k" for k in 1:nb])
+                # The band fields, plus the observeds subtree sharing hoists
+                # (`Jcse<n>`, esm-jacobian-spec §8.1; D90).
+                jvars = collect(keys(doc["models"]["JacobianEval"]["variables"]))
+                @test sort(filter(startswith("J_"), jvars)) == sort(["J_$k" for k in 1:nb])
+                @test all(v -> startswith(v, "J_") || startswith(v, "Jcse"), jvars)
             end
         end
         # The planner loads each derived document from its wire form in memory
@@ -358,20 +362,11 @@ const PLAN_FILES = String[]
         golden = joinpath(PFIX, fixture, "$case.golden")
         @test isfile(joinpath(golden, "plan.json"))
         if isfile(joinpath(golden, "plan.json"))
-            # The golden of `emission_compose/named` holds the conforming
-            # equation order of an `operator_compose` merge (spec/plan.md
-            # §6.1.2, §10 item 25), which EarthSciAST.jl writes only from
-            # EarthSciAST#669 on. Released EarthSciAST.jl up to 0.9.0 lacks
-            # it, so there this case's plan.json and derived documents differ
-            # from the golden in that order alone, and those comparisons are
-            # marked broken; with a later release installed they are real
-            # tests again (and an unexpected pass on 0.9.0 is reported).
-            awaits_669 = key == "emission_compose/named" && pkgversion(EarthSciAST) <= v"0.9.0"
-            @test text == read(joinpath(golden, "plan.json"), String) broken = awaits_669
+            @test text == read(joinpath(golden, "plan.json"), String)
             gd = isdir(joinpath(golden, "derived")) ? sort!(readdir(joinpath(golden, "derived"))) : String[]
             @test gd == sort!(readdir(joinpath(dir, "derived")))
             for f in gd
-                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f)) broken = awaits_669
+                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f))
             end
             for o in ops
                 path = joinpath(golden, "validation", "$o.bandvalues.json")
@@ -563,9 +558,11 @@ const PLAN_FILES = String[]
     @testset "the Jacobian document's band fields are the operator's bands" begin
         d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"))
         a = d.ctx.backend.ops["kinetics"]
-        @test EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries) isa AbstractDict
-        # A band count that differs from the fields EarthSciASTDiff writes is an error.
-        @test_throws ErrorException EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries[1:(end - 1)])
+        # The bands are passed to EarthSciASTDiff as given: one field `J_k`
+        # per band passed, in their order.
+        nfields(doc) = count(startswith("J_"), keys(doc["models"]["JacobianEval"]["variables"]))
+        @test nfields(EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries)) == length(a.entries)
+        @test nfields(EarthSciIntegrator.jacobian_document(a.rhs.flat, a.entries[1:(end - 1)])) == length(a.entries) - 1
         # `drop_ic!` passes over a node with no `equations`.
         models = Dict{String, Any}(
             "A" => Dict{String, Any}(

@@ -10,7 +10,7 @@
 use crate::error::{PlanError, Result};
 use crate::model::{defined_observed, differentiated, lifted_ranges, node, ModelInfo};
 use crate::terms::{component_of, Term};
-use earthsci_ast::{Domain, EsmFile, Expr, FlattenedSystem, ModelVariable, VariableType};
+use earthsci_ast::{Domain, Expr, ModelVariable, VariableType};
 use earthsci_astdiff::{JacEntry, SysView};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -103,52 +103,7 @@ impl Tree {
 }
 
 fn expr_json(e: &Expr) -> Value {
-    let mut v = serde_json::to_value(e).unwrap_or(Value::Null);
-    canonical_const_values(&mut v);
-    v
-}
-
-/// Writes every number of every `const` node's `value` in `v` in the esm
-/// canonical number form (§2.2; EarthSciAST CONFORMANCE_SPEC §5.5.3.1 rule
-/// 1): an integral value that fits `i64` as an integer, whatever its source
-/// spelling, so `[100.0, 0.5]` is written `[100,0.5]`. The planner runs it
-/// over the whole of both derived documents, so it reaches every `const`
-/// node wherever it came from: one the model authors, one EarthSciASTDiff
-/// copies into the Jacobian document from the right-hand-side document, and
-/// any EarthSciASTDiff writes itself (0.4 writes none: the slopes and knots
-/// of an `interp.linear` derivative are literal numbers, which both
-/// bindings already write in this form). The Julia planner runs the same
-/// rewrite (`canonical_const_values!`), so a `const` value holding a float
-/// in either binding is written alike. EarthSciAST 0.9.0's Rust binding
-/// keeps a `const` node's `value` as the source spelled it (`100.0`) until
-/// EarthSciAST#670.
-pub fn canonical_const_values(v: &mut Value) {
-    fn narrow(v: &mut Value) {
-        match v {
-            Value::Number(n) if n.is_f64() => {
-                let x = n.as_f64().expect("an f64 number");
-                // An integral f64 in [-2^63, 2^63) fits `i64`.
-                const TWO_63: f64 = 9_223_372_036_854_775_808.0;
-                if x.is_finite() && x.fract() == 0.0 && (-TWO_63..TWO_63).contains(&x) {
-                    *v = json!(x as i64);
-                }
-            }
-            Value::Array(a) => a.iter_mut().for_each(narrow),
-            _ => {}
-        }
-    }
-    match v {
-        Value::Object(m) => {
-            if m.get("op").and_then(Value::as_str) == Some("const") {
-                if let Some(x) = m.get_mut("value") {
-                    narrow(x);
-                }
-            }
-            m.values_mut().for_each(canonical_const_values);
-        }
-        Value::Array(a) => a.iter_mut().for_each(canonical_const_values),
-        _ => {}
-    }
+    serde_json::to_value(e).unwrap_or(Value::Null)
 }
 
 /// A variable's declaration (§6.1.1): `{"type": T}` plus `shape` and
@@ -281,7 +236,7 @@ fn tree(
     }
     for o in live {
         let v = &flat.observed_variables[o];
-        tree.declare(o, variable_json(v, &info.observed_shapes[o]));
+        tree.declare(o, variable_json(v, v.shape.as_deref().unwrap_or_default()));
     }
     for (i, eq) in flat.equations.iter().enumerate() {
         if let Some(x) = differentiated(&eq.lhs).filter(|x| info.is_state(x)) {
@@ -319,109 +274,6 @@ pub(crate) fn declaration_mut<'a>(
         .into_iter()
         .find(|b| node.get(*b).and_then(|m| m.get(*var)).is_some())?;
     node.get_mut(block)?.get_mut(*var)
-}
-
-/// The `shape` of `decl`, the declaration of variable `name`: `None` when it
-/// has none, an error when it is not a list of index-set names.
-fn declared_shape(decl: &Value, name: &str) -> Result<Option<Vec<String>>> {
-    let Some(shape) = decl.get("shape") else {
-        return Ok(None);
-    };
-    serde_json::from_value(shape.clone()).map(Some).map_err(|_| {
-        PlanError::Internal(format!(
-            "the declaration of {name} has the shape {shape}, which is not a list of index-set names"
-        ))
-    })
-}
-
-/// Each observed's shape as the derived documents declare it (§6.1.1): the
-/// one its declaration in the loaded model `file` gives (empty when it gives
-/// none), or for an observed the model does not declare (one a coupling
-/// introduces) the flattened model's. The declaration is looked up in the
-/// loaded document, whose subsystem `ref`s EarthSciAST inlines at load, in
-/// any component layout: a model or reaction system, at any subsystem
-/// depth. A shape `flatten` infers for an observed declared without one
-/// (esm-spec §4.3.4's elementwise `ifelse` over an array; EarthSciAST's Rust
-/// binding records it from EarthSciAST#667 on, its Julia binding does not)
-/// is not the declared shape, so it is not written: the document's loader
-/// infers it again (§10 item 24).
-pub fn observed_shapes(
-    file: &EsmFile,
-    flat: &FlattenedSystem,
-) -> Result<BTreeMap<String, Vec<String>>> {
-    let mut components = Map::new();
-    if !flat.observed_variables.is_empty() {
-        let doc = serde_json::to_value(file)
-            .map_err(|e| PlanError::Internal(format!("serializing the loaded model: {e}")))?;
-        if let Value::Object(mut doc) = doc {
-            for block in ["models", "reaction_systems"] {
-                if let Some(Value::Object(m)) = doc.remove(block) {
-                    components.extend(m);
-                }
-            }
-        }
-    }
-    let mut out = BTreeMap::new();
-    for (o, v) in &flat.observed_variables {
-        let parts: Vec<&str> = o.split('.').collect();
-        let shape = match declaration_mut(&mut components, &parts) {
-            Some(decl) => declared_shape(decl, o)?,
-            None => v.shape.clone(),
-        };
-        out.insert(o.clone(), shape.unwrap_or_default());
-    }
-    Ok(out)
-}
-
-/// Gives every variable the Jacobian document `jac` declares that the
-/// right-hand-side document `rhs` declares too the shape `rhs` declares it
-/// with (§6.1.1, §6.2 item 2): the `shape` is set to the right-hand-side
-/// document's when it has one, and removed when it has none. EarthSciASTDiff
-/// writes the Jacobian document's declarations from the flattened
-/// right-hand-side document, whose observeds, from EarthSciAST#667 on, carry
-/// the shape the Rust binding's `flatten` infers for one declared without a
-/// shape (§10 item 24). A variable only `jac` declares (a band field) is
-/// left as it is.
-fn declared_shapes_as_in(jac: &mut Value, rhs: &Value) {
-    fn walk(jac: &mut Value, rhs: &Value) {
-        if let (Some(jv), Some(rv)) = (
-            jac.get_mut("variables").and_then(Value::as_object_mut),
-            rhs.get("variables").and_then(Value::as_object),
-        ) {
-            for (name, r) in rv {
-                let Some(Value::Object(j)) = jv.get_mut(name) else {
-                    continue;
-                };
-                match r.get("shape") {
-                    Some(shape) => {
-                        j.insert("shape".into(), shape.clone());
-                    }
-                    None => {
-                        j.remove("shape");
-                    }
-                }
-            }
-        }
-        if let (Some(js), Some(rs)) = (
-            jac.get_mut("subsystems").and_then(Value::as_object_mut),
-            rhs.get("subsystems").and_then(Value::as_object),
-        ) {
-            for (k, r) in rs {
-                if let Some(j) = js.get_mut(k) {
-                    walk(j, r);
-                }
-            }
-        }
-    }
-    if let (Some(Value::Object(jm)), Some(Value::Object(rm))) =
-        (jac.get_mut("models"), rhs.get("models"))
-    {
-        for (k, r) in rm {
-            if let Some(j) = jm.get_mut(k) {
-                walk(j, r);
-            }
-        }
-    }
 }
 
 /// The `ic` equation of state `x` whose initial value is `e` (§6.1.1).
@@ -780,16 +632,15 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: Option<u6
 }
 
 /// The Jacobian document of an operator (§6.2): EarthSciASTDiff's
-/// evaluation document (`evaluation_document`, coefficient hoisting off) of
-/// `sv`, the view of the operator's right-hand-side document `rhs`
-/// flattened, for its band list `entries`, without its `ic` equations, with
-/// a `default` of `1.0` on every state that has none (§6.2 item 4), each
-/// variable `rhs` declares declared with `rhs`'s shape (§6.2 item 2), and
-/// every `const` value in the canonical number form (§2.2). Band `k`
+/// evaluation document (`evaluation_document`, subtree sharing on with
+/// `cse_min_nodes` 12; D90) of `sv`, the view of the operator's
+/// right-hand-side document flattened, for its band list `entries` (pass
+/// 4's, used as given), without its `ic` equations, with a `default` of
+/// `1.0` on every state that has none (§6.2 item 4). Band `k`
 /// (1-based) is the field `JacobianEval.J_k`; the document's `esm` version
 /// and `metadata.name` are EarthSciASTDiff's.
-pub fn jacobian_document(sv: &SysView, entries: &[JacEntry], rhs: &Value) -> Result<Value> {
-    let (mut doc, fields) = earthsci_astdiff::evaluation_document(sv, entries, false, 0)
+pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
+    let (mut doc, fields) = earthsci_astdiff::evaluation_document(sv, entries, true, 12)
         .map_err(|e| PlanError::Internal(format!("evaluation_document: {}", e.0)))?;
     // Band `k` is the field `J_k` (§6.2).
     let want: Vec<String> = (1..=entries.len()).map(|k| format!("J_{k}")).collect();
@@ -813,10 +664,6 @@ pub fn jacobian_document(sv: &SysView, entries: &[JacEntry], rhs: &Value) -> Res
     }
     models.values_mut().for_each(drop_ic);
     default_states(models)?;
-    declared_shapes_as_in(&mut doc, rhs);
-    // §2.2: every `const` value, whether EarthSciASTDiff copied it from the
-    // right-hand-side document or wrote it, in the canonical number form.
-    canonical_const_values(&mut doc);
     Ok(doc)
 }
 
@@ -896,115 +743,9 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
-    /// §2.2: the integral numbers of a `const` node's `value`, at any
-    /// depth, are written as integers; nothing else changes.
-    #[test]
-    fn const_values_in_canonical_number_form() {
-        let mut v = json!({"op": "+", "args": [
-            {"op": "const", "args": [], "value": [[100.0, 0.5, 2], [-0.0, 1.0e300]]},
-            {"op": "const", "args": [], "value": 4.0},
-            {"op": "const", "args": [], "value": "NO2"},
-            {"op": "*", "args": [2.0, "x"]},
-            {"op": "makearray", "args": [], "regions": [[[1, 3]]], "values": [0.0]}
-        ]});
-        canonical_const_values(&mut v);
-        assert_eq!(
-            to_bytes(&v),
-            br#"{"args":[{"args":[],"op":"const","value":[[100,0.5,2],[0,1.0e300]]},{"args":[],"op":"const","value":4},{"args":[],"op":"const","value":"NO2"},{"args":[2.0,"x"],"op":"*"},{"args":[],"op":"makearray","regions":[[[1,3]]],"values":[0.0]}],"op":"+"}"#
-        );
-    }
-
-    /// The range an integral f64 is narrowed over is `[-2^63, 2^63)`, the
-    /// values `i64` holds: -2^63 is written as an integer, 2^63 as a float.
-    #[test]
-    fn const_values_narrow_at_the_i64_edges() {
-        let mut v = json!({"op": "const", "args": [], "value": [-9223372036854775808.0, 9223372036854775808.0]});
-        canonical_const_values(&mut v);
-        assert_eq!(v["value"][0], json!(i64::MIN));
-        assert!(v["value"][1].is_f64());
-    }
-
-    /// §6.1.1, §6.2 item 2: each variable the right-hand-side document
-    /// declares has its shape in the Jacobian document, at the top of a
-    /// model and in nested subsystems: an inferred shape the right-hand-side
-    /// document lacks is removed, a different one replaced, a missing one
-    /// added; a band field, which only the Jacobian document declares, is
-    /// left alone.
-    #[test]
-    fn jacobian_declarations_take_the_rhs_shapes() {
-        let rhs = json!({"models": {
-            "M": {
-                "variables": {"wet": {"type": "unknown"}, "q": {"type": "unknown", "shape": ["cell"]}},
-                "subsystems": {"In": {
-                    "variables": {"o": {"type": "unknown"}},
-                    "subsystems": {"Deep": {"variables": {"r": {"type": "unknown"}, "a": {"type": "unknown", "shape": ["cell"]}}}},
-                }},
-            },
-            "RS": {"variables": {"p": {"type": "unknown"}}},
-        }});
-        let mut jac = json!({"models": {
-            "M": {
-                "variables": {"wet": {"type": "unknown", "shape": ["cell"]}, "q": {"type": "unknown"}},
-                "subsystems": {"In": {
-                    "variables": {"o": {"type": "unknown", "shape": ["cell"]}},
-                    "subsystems": {"Deep": {"variables": {"r": {"type": "unknown", "shape": ["cell"]}, "a": {"type": "unknown", "shape": ["lev"]}}}},
-                }},
-            },
-            "RS": {"variables": {"p": {"type": "unknown", "shape": ["cell"]}}},
-            "JacobianEval": {"variables": {"J_1": {"type": "unknown", "default": 0.0, "shape": ["cell"]}}},
-        }});
-        declared_shapes_as_in(&mut jac, &rhs);
-        let m = &jac["models"];
-        assert_eq!(m["M"]["variables"]["wet"], json!({"type": "unknown"}));
-        assert_eq!(
-            m["M"]["variables"]["q"],
-            json!({"type": "unknown", "shape": ["cell"]})
-        );
-        assert_eq!(
-            m["M"]["subsystems"]["In"]["variables"]["o"],
-            json!({"type": "unknown"})
-        );
-        let deep = &m["M"]["subsystems"]["In"]["subsystems"]["Deep"]["variables"];
-        assert_eq!(deep["r"], json!({"type": "unknown"}));
-        assert_eq!(deep["a"], json!({"type": "unknown", "shape": ["cell"]}));
-        assert_eq!(m["RS"]["variables"]["p"], json!({"type": "unknown"}));
-        assert_eq!(
-            m["JacobianEval"]["variables"]["J_1"],
-            json!({"type": "unknown", "default": 0.0, "shape": ["cell"]})
-        );
-    }
-
-    /// `jacobian_document` gives the Jacobian document the right-hand-side
-    /// document's shapes itself, so every caller gets them: here the
-    /// right-hand-side document passed in declares `M.x` with a shape the
-    /// flattened view does not have.
-    #[test]
-    fn jacobian_document_takes_the_rhs_shapes() {
-        let src = json!({
-            "esm": "1.3.0",
-            "metadata": {"name": "d"},
-            "models": {"M": {
-                "variables": {"x": {"type": "unknown", "default": 1.0}},
-                "equations": [{"lhs": {"op": "D", "args": ["x"], "wrt": "t"}, "rhs": {"op": "-", "args": ["x"]}}],
-            }},
-        });
-        let view = FlatView::new(&src.to_string()).unwrap();
-        let sv = view.sysview().unwrap();
-        let entries = crate::astdiff::bands(&sv).unwrap();
-        let jac = jacobian_document(&sv, &entries, &src).unwrap();
-        assert!(jac["models"]["M"]["variables"]["x"].get("shape").is_none());
-        let mut rhs = src.clone();
-        rhs["models"]["M"]["variables"]["x"]["shape"] = json!(["cell"]);
-        let jac = jacobian_document(&sv, &entries, &rhs).unwrap();
-        assert_eq!(
-            jac["models"]["M"]["variables"]["x"]["shape"],
-            json!(["cell"])
-        );
-    }
-
     /// A dotted name resolves to its declaration in a model, a nested
     /// subsystem and a reaction system (its `species` and `parameters`, its
-    /// subsystems); a malformed `shape` is an error, not "no shape".
+    /// subsystems).
     #[test]
     fn dotted_names_resolve_to_declarations() {
         let mut components = json!({
@@ -1029,32 +770,14 @@ mod tests {
         assert_eq!(decl("M.S.missing"), None);
         assert_eq!(decl("M.Nope.x"), None);
         assert_eq!(decl("x"), None);
-        assert_eq!(
-            declared_shape(&json!({"shape": ["cell", "lev"]}), "a").unwrap(),
-            Some(vec!["cell".to_string(), "lev".to_string()])
-        );
-        assert_eq!(
-            declared_shape(&json!({"type": "unknown"}), "a").unwrap(),
-            None
-        );
-        for bad in [
-            json!({"shape": "cell"}),
-            json!({"shape": [1]}),
-            json!({"shape": null}),
-        ] {
-            assert!(
-                matches!(declared_shape(&bad, "a"), Err(PlanError::Internal(_))),
-                "{bad}"
-            );
-        }
     }
 
-    /// §6.1.1, §10 item 24: an observed declared without a shape is written
-    /// without one even when `flatten` records the shape it infers (as
-    /// EarthSciAST's Rust binding does from EarthSciAST#667 on, simulated
-    /// here), in a model, an inline subsystem and a subsystem included by
-    /// `ref`; an observed declared with a shape keeps it, and one the model
-    /// does not declare takes the flattened model's.
+    /// §6.1.1, §10 item 24: the right-hand-side document declares each
+    /// observed with its declared shape, which from EarthSciAST#672 on is
+    /// the one `flatten` keeps. An observed declared without a shape whose
+    /// definition is an elementwise `ifelse` over an array is declared
+    /// without one, in a model, an inline subsystem and a subsystem
+    /// included by `ref`; one declared with a shape keeps it.
     #[test]
     fn observeds_take_their_declared_shape() {
         let dir = std::env::temp_dir().join(format!("esi-observed-shapes-{}", std::process::id()));
@@ -1067,41 +790,44 @@ mod tests {
         });
         let sub = json!({"esm": "1.3.0", "metadata": {"name": "sub"}, "index_sets": sets, "models": {"Sub": leaf}});
         std::fs::write(dir.join("sub.esm"), sub.to_string()).unwrap();
+        // Every observed is read by the state's equation, so each is live
+        // and declared in the right-hand-side document (§6.1.1).
+        let reads = ["wet", "s", "In.o", "Ref.o"]
+            .map(|o| json!({"op": "*", "args": ["x", format!("M.{o}")]}));
         let main = json!({"esm": "1.3.0", "metadata": {"name": "main"}, "index_sets": sets, "models": {"M": {
             "variables": {
-                "x": {"type": "unknown", "default": 1.0},
+                "x": {"type": "unknown", "shape": ["cell"], "default": 1.0},
                 "w": {"type": "parameter", "shape": ["cell"], "default": [0.5, 1.5]},
                 "wet": {"type": "unknown"},
                 "s": {"type": "unknown", "shape": ["cell"]},
             },
             "equations": [
-                {"lhs": {"op": "D", "args": ["x"], "wrt": "t"}, "rhs": {"op": "-", "args": ["x"]}},
+                {"lhs": {"op": "D", "args": ["x"], "wrt": "t"}, "rhs": {"op": "-", "args": [{"op": "+", "args": reads}]}},
                 {"lhs": "wet", "rhs": wet("w")},
                 {"lhs": "s", "rhs": wet("w")},
             ],
             "subsystems": {"In": leaf, "Ref": {"ref": "sub.esm"}},
         }}});
         std::fs::write(dir.join("main.esm"), main.to_string()).unwrap();
-        let file = earthsci_ast::load_path(dir.join("main.esm")).unwrap();
+        let run = json!({"esm_integrator": crate::runconfig::SPEC_VERSION, "model": "main.esm", "time": {"start": 0, "duration": 1}, "schedule": "auto"});
+        std::fs::write(dir.join("run.json"), run.to_string()).unwrap();
+        let rc = crate::runconfig::read(&dir.join("run.json")).unwrap();
+        let info = crate::model::read(&rc).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
-        let mut flat = earthsci_ast::flatten(&file).unwrap();
-        let cell = Some(vec!["cell".to_string()]);
-        for o in ["M.wet", "M.In.o", "M.Ref.o"] {
-            flat.observed_variables
-                .get_mut(o)
-                .unwrap_or_else(|| panic!("observed {o}"))
-                .shape = cell.clone();
+        let ts = crate::terms::terms(&info).unwrap();
+        let doc = rhs_document(&info, "op", &ts.iter().collect::<Vec<_>>());
+        let m = &doc["models"]["M"];
+        for (o, decl) in [
+            ("M.wet", &m["variables"]["wet"]),
+            ("M.In.o", &m["subsystems"]["In"]["variables"]["o"]),
+            ("M.Ref.o", &m["subsystems"]["Ref"]["variables"]["o"]),
+        ] {
+            assert_eq!(decl, &json!({"type": "unknown"}), "{o}");
         }
-        let mut coupled = flat.observed_variables["M.wet"].clone();
-        coupled.shape = cell.clone();
-        flat.observed_variables.insert("M.coupled".into(), coupled);
-        let shapes = observed_shapes(&file, &flat).unwrap();
-        let none: Vec<String> = vec![];
-        assert_eq!(shapes["M.wet"], none);
-        assert_eq!(shapes["M.In.o"], none);
-        assert_eq!(shapes["M.Ref.o"], none);
-        assert_eq!(shapes["M.s"], vec!["cell".to_string()]);
-        assert_eq!(shapes["M.coupled"], vec!["cell".to_string()]);
+        assert_eq!(
+            m["variables"]["s"],
+            json!({"type": "unknown", "shape": ["cell"]})
+        );
     }
 
     #[test]
@@ -1156,7 +882,7 @@ mod tests {
             }))
         );
         let sv = view.sysview().unwrap();
-        let jac = jacobian_document(&sv, &crate::astdiff::bands(&sv).unwrap(), &src).unwrap();
+        let jac = jacobian_document(&sv, &crate::astdiff::bands(&sv).unwrap()).unwrap();
         assert_eq!(jac.get("domain").cloned(), ours);
     }
 

@@ -341,10 +341,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             band_list,
             &state_dependent,
         )?;
-        jac_docs.insert(
-            name.clone(),
-            derived::jacobian_document(&sv, &st.bands, &doc)?,
-        );
+        jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
         structures.insert(name.clone(), st);
     }
@@ -590,8 +587,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         "planner": "earthsci-integrator-planner (Rust)",
         "version": env!("CARGO_PKG_VERSION"),
         "upstream": {
-            "earthsci-ast": "0.9.0",
-            "earthsci-astdiff": "0.4.0",
+            "earthsci-ast": "0.10.0",
+            "earthsci-astdiff": "0.5.0",
         },
         "validation": Value::Object(report),
     });

@@ -38,7 +38,7 @@ impl FlatView {
     /// ([`derived::wire_form`]) and flattened. EarthSciAST's
     /// `load_document` runs the pipeline `load_string` runs on the
     /// document's bytes, without writing and parsing them. It takes the
-    /// document, whose keys it sorts in place; EarthSciAST 0.9's
+    /// document, whose keys it sorts in place; EarthSciAST 0.10's
     /// `load_document` still copies it, having no public load that takes
     /// the document by value.
     pub fn of_document(doc: Value) -> Result<FlatView, String> {

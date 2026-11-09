@@ -23,12 +23,12 @@ Chapters still to come: linear and nonlinear solvers beyond what methods.md stat
 
 ## Upstream versions
 
-The spec is written against these sibling releases; conformance tier 0 pins the first in CI (`earthsci-ast==0.9.0`, the Python binding):
+The spec is written against these sibling releases; conformance tier 0 pins the first in CI (`earthsci-ast==0.9.0`, the Python binding, until 0.10.0 is published on PyPI; no fixture `.esm` changed between the two):
 
 | Package | Version | Used for |
 |---|---|---|
-| EarthSciAST (Julia, Rust, Python bindings) | 0.9.0, esm format 1.3.0 | loading, flattening with per-term provenance (U2), the reaction lowering of esm-libraries-spec §4.6.2 and the lifted states' index sets, `solver.external` (U1), `solver.time_span` and `resolve_time_span` (U16), right-hand-side kernels, the public reentrant right-hand side `rhs_program` (U4), the clock accessors `time_origin` and `timestamp_to_seconds`, Rust's `initial_state` |
-| EarthSciASTDiff (Julia, Rust) | 0.4.0 (on EarthSciAST 0.6, 0.7, 0.8 and 0.9 in Julia, `>=0.5, <0.10` in Rust) | band models, structure-only band lists (`jacobian_bands(...; coefficients = false)`, Rust `jacobian_structure_view`), structure classes, the evaluation document (the Jacobian document, spec/plan.md §6.2), the block factorization plan (`plan_factorization`, `serialize_plan`), Rust's `sysview_flat`, `stable_json` (spec/plan.md §0.2) |
+| EarthSciAST (Julia, Rust, Python bindings) | 0.10.0, esm format 1.3.0 | loading, flattening with per-term provenance (U2), the reaction lowering of esm-libraries-spec §4.6.2 and the lifted states' index sets, `solver.external` (U1), `solver.time_span` and `resolve_time_span` (U16), right-hand-side kernels, the public reentrant right-hand side `rhs_program` (U4), the clock accessors `time_origin` and `timestamp_to_seconds`, Rust's `initial_state` |
+| EarthSciASTDiff (Julia, Rust) | 0.5.0 (on EarthSciAST 0.6 through 0.10 in Julia, `>=0.5, <0.11` in Rust) | band models, structure-only band lists (`jacobian_bands(...; coefficients = false)`, Rust `jacobian_structure_view`), structure classes, the evaluation document with subtree sharing (the Jacobian document, spec/plan.md §6.2), the block factorization plan (`plan_factorization`, `serialize_plan`), Rust's `sysview_flat`, `stable_json` (spec/plan.md §0.2) |
 
 ## Conventions
 
