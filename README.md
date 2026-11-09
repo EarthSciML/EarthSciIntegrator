@@ -5,10 +5,9 @@ conformance suite checks each implementation against the other.
 
 **Documentation:** <https://earthsci.dev/integrator/>.
 
-> **Status: under development (spec version 0.1.0).** Both implementations cover milestone M1: the core
-> methods, step-size control, operator-splitting combinators, the tape and discrete adjoints, all on
-> hand-written toy problems. Milestone M2, the planner, is in progress. Nothing here has run a production model
-> yet. See the [milestones](docs/architecture.md#14-milestones).
+> **Status: under development.** Both implementations include the core integrator
+> methods, step-size control, operator-splitting combinators, the tape and discrete adjoints, and an integration planner, all tested on toy problem
+s. Work is underway to scale to full size models.
 
 ## What it does
 
@@ -26,7 +25,7 @@ Design goals:
 - **Methods:** explicit (ERK/SSP), Rosenbrock, SDIRK/ESDIRK, IMEX, and legacy fixed-step and
   split-explicit schemes. Nested nonlinear solves, with index-1 DAEs specified for later.
 - **Structure-aware linear algebra by default:** batched block LU, banded column solves, and Krylov
-  methods with block-Jacobi or ASM preconditioning. It never forms a dense Jacobian.
+  methods with block-Jacobi or ASM preconditioning. We must never form a dense Jacobian.
 - **Operator splitting as a first-class schedule tree** (`leaf`, `sequence`, `strang`, `subcycle`, `map`,
   …) whose callbacks and tolerances actually propagate.
 - **Discrete adjoints of whole simulations,** with respect to parameters, the initial state, gridded fields
