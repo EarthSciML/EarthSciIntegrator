@@ -315,38 +315,8 @@ function _rhs_document(
     dom === nothing || (doc["domain"] = dom)
     ds = forcing_stubs(m, fed)
     ds === nothing || (doc["data_sources"] = ds)
-    return canonical_const_values!(doc)
+    return doc
 end
-
-"""
-    canonical_const_values!(x) -> x
-
-Writes every number of every `const` node's `value` in `x` (a derived
-document, or any part of one) in the esm canonical number form (§2.2;
-EarthSciAST CONFORMANCE_SPEC §5.5.3.1 rule 1): an integral value in
-[-2^63, 2^63) as an integer, so `[100.0, 0.5]` is written `[100,0.5]`.
-EarthSciAST.jl already holds an authored `const` value that way from load,
-but a `const` node that reaches a derived document by another road (a
-`table_lookup` lowering, or one EarthSciASTDiff writes into the Jacobian
-document) may hold floats. The Rust planner needs no rewrite: from
-EarthSciAST#670 its binding writes every `const` value in this form, and it
-refuses a `table_lookup` (§4 step 5), so the two write every `const` value
-alike wherever it came from.
-"""
-function canonical_const_values!(x)
-    if x isa AbstractDict
-        get(x, "op", nothing) == "const" && haskey(x, "value") && (x["value"] = canonical_number(x["value"]))
-        foreach(canonical_const_values!, values(x))
-    elseif x isa AbstractVector
-        foreach(canonical_const_values!, x)
-    end
-    return x
-end
-
-"""A `const` value's number in the canonical form (§2.2): an integral float in [-2^63, 2^63) as an `Int64`; arrays element by element."""
-canonical_number(v::AbstractVector) = Any[canonical_number(y) for y in v]
-canonical_number(v::AbstractFloat) = isfinite(v) && isinteger(v) && -2.0^63 <= v < 2.0^63 ? Int64(v) : v
-canonical_number(v) = v
 
 """
 The `update` a data-fed parameter in a document's forcing is declared with
@@ -435,8 +405,8 @@ The bands are passed to `evaluation_document`, which uses them as given
 rather than computing them again (EarthSciASTDiff#64), as the Rust planner
 does; band `k` must be field `J_k`.
 Every state without a `default` gets the `default` `1.0` (§6.2 item 4; see
-[`default_states!`](@ref)), and every `const` value is written in the
-canonical number form (§2.2; [`canonical_const_values!`](@ref)).
+[`default_states!`](@ref)). Every `const` value is written in the canonical
+number form by [`document_bytes`](@ref) (§2.2).
 """
 function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVector; data_sources = nothing)
     doc, fields = EarthSciASTDiff.evaluation_document(
@@ -448,9 +418,7 @@ function jacobian_document(rhs::EarthSciAST.FlattenedSystem, entries::AbstractVe
     )
     drop_ic!(doc["models"])
     default_states!(doc["models"])
-    # §2.2: every `const` value, whether EarthSciASTDiff copied it from the
-    # right-hand-side document or wrote it, in the canonical number form.
-    return canonical_const_values!(doc)
+    return doc
 end
 
 """

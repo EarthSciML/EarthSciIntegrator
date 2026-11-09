@@ -72,12 +72,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install "jsonschema>=4.18"
-      # EarthSciAST#669 and EarthSciASTDiff#64-#66 are merged but not
-      # released: install the main commits rust/Cargo.lock pins. Remove this
-      # step, and raise the compat entries, once releases carry them.
-      - name: EarthSciAST and EarthSciASTDiff main (unreleased)
-        run: |
-          julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.add([PackageSpec(url = "https://github.com/EarthSciML/EarthSciAST", rev = "dd5afebdea0b98571a07515d37fabd14d7101718", subdir = "pkg/EarthSciAST.jl"), PackageSpec(url = "https://github.com/EarthSciML/EarthSciASTDiff", rev = "7a4074a480bd882678e501b25fbeab318ccdfe5a", subdir = "pkg/EarthSciASTDiff.jl")])'
       - name: Test
         # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote)
         # live in julia/EarthSciIntegrator.jl/test/Project.toml.

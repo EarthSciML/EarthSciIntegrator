@@ -772,12 +772,12 @@ mod tests {
         assert_eq!(decl("x"), None);
     }
 
-    /// §6.1.1, §10 item 24: the right-hand-side document declares an
-    /// observed with the flattened model's shape, which from EarthSciAST#672
-    /// on is the declared one: an observed declared without a shape whose
-    /// definition is an elementwise `ifelse` over an array keeps none in a
-    /// model, an inline subsystem and a subsystem included by `ref`, and one
-    /// declared with a shape keeps it.
+    /// §6.1.1, §10 item 24: the right-hand-side document declares each
+    /// observed with its declared shape, which from EarthSciAST#672 on is
+    /// the one `flatten` keeps. An observed declared without a shape whose
+    /// definition is an elementwise `ifelse` over an array is declared
+    /// without one, in a model, an inline subsystem and a subsystem
+    /// included by `ref`; one declared with a shape keeps it.
     #[test]
     fn observeds_take_their_declared_shape() {
         let dir = std::env::temp_dir().join(format!("esi-observed-shapes-{}", std::process::id()));
@@ -790,30 +790,43 @@ mod tests {
         });
         let sub = json!({"esm": "1.3.0", "metadata": {"name": "sub"}, "index_sets": sets, "models": {"Sub": leaf}});
         std::fs::write(dir.join("sub.esm"), sub.to_string()).unwrap();
+        // Every observed is read by the state's equation, so each is live
+        // and declared in the right-hand-side document (§6.1.1).
+        let reads = ["wet", "s", "In.o", "Ref.o"]
+            .map(|o| json!({"op": "*", "args": ["x", format!("M.{o}")]}));
         let main = json!({"esm": "1.3.0", "metadata": {"name": "main"}, "index_sets": sets, "models": {"M": {
             "variables": {
-                "x": {"type": "unknown", "default": 1.0},
+                "x": {"type": "unknown", "shape": ["cell"], "default": 1.0},
                 "w": {"type": "parameter", "shape": ["cell"], "default": [0.5, 1.5]},
                 "wet": {"type": "unknown"},
                 "s": {"type": "unknown", "shape": ["cell"]},
             },
             "equations": [
-                {"lhs": {"op": "D", "args": ["x"], "wrt": "t"}, "rhs": {"op": "-", "args": ["x"]}},
+                {"lhs": {"op": "D", "args": ["x"], "wrt": "t"}, "rhs": {"op": "-", "args": [{"op": "+", "args": reads}]}},
                 {"lhs": "wet", "rhs": wet("w")},
                 {"lhs": "s", "rhs": wet("w")},
             ],
             "subsystems": {"In": leaf, "Ref": {"ref": "sub.esm"}},
         }}});
         std::fs::write(dir.join("main.esm"), main.to_string()).unwrap();
-        let file = earthsci_ast::load_path(dir.join("main.esm")).unwrap();
+        let run = json!({"esm_integrator": crate::runconfig::SPEC_VERSION, "model": "main.esm", "time": {"start": 0, "duration": 1}, "schedule": "auto"});
+        std::fs::write(dir.join("run.json"), run.to_string()).unwrap();
+        let rc = crate::runconfig::read(&dir.join("run.json")).unwrap();
+        let info = crate::model::read(&rc).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
-        let flat = earthsci_ast::flatten(&file).unwrap();
-        for o in ["M.wet", "M.In.o", "M.Ref.o"] {
-            assert_eq!(flat.observed_variables[o].shape, None, "{o}");
+        let ts = crate::terms::terms(&info).unwrap();
+        let doc = rhs_document(&info, "op", &ts.iter().collect::<Vec<_>>());
+        let m = &doc["models"]["M"];
+        for (o, decl) in [
+            ("M.wet", &m["variables"]["wet"]),
+            ("M.In.o", &m["subsystems"]["In"]["variables"]["o"]),
+            ("M.Ref.o", &m["subsystems"]["Ref"]["variables"]["o"]),
+        ] {
+            assert_eq!(decl, &json!({"type": "unknown"}), "{o}");
         }
         assert_eq!(
-            flat.observed_variables["M.s"].shape,
-            Some(vec!["cell".to_string()])
+            m["variables"]["s"],
+            json!({"type": "unknown", "shape": ["cell"]})
         );
     }
 

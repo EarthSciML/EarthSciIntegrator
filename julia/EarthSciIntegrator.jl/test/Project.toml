@@ -20,7 +20,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [compat]
-EarthSciAST = "0.9"
-EarthSciASTDiff = "0.4"
+EarthSciAST = "0.10"
+EarthSciASTDiff = "0.5"
 OrdinaryDiffEqSDIRK = "2"
 SciMLBase = "3"

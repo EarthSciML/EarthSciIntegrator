@@ -21,12 +21,3 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 [workspace.dependencies]
 earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.0.1" }
 earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.0.1" }
-
-# Development against EarthSciAST and EarthSciASTDiff main: EarthSciAST#669,
-# #670 and #672 and EarthSciASTDiff#64, #65 and #66 are merged but not
-# released. Remove this, and raise the `earthsci-ast` and `earthsci-astdiff`
-# requirements (and Julia's compat) to the releases that carry them, before
-# merging.
-[patch.crates-io]
-earthsci-ast = { git = "https://github.com/EarthSciML/EarthSciAST", branch = "main" }
-earthsci-astdiff = { git = "https://github.com/EarthSciML/EarthSciASTDiff", branch = "main" }

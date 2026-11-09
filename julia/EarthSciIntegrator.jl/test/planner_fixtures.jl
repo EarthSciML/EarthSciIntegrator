@@ -362,23 +362,11 @@ const PLAN_FILES = String[]
         golden = joinpath(PFIX, fixture, "$case.golden")
         @test isfile(joinpath(golden, "plan.json"))
         if isfile(joinpath(golden, "plan.json"))
-            # The golden of `emission_compose/named` holds the conforming
-            # equation order of an `operator_compose` merge (spec/plan.md
-            # §6.1.2, §10 item 25), which EarthSciAST.jl writes only from
-            # EarthSciAST#669 on. Released EarthSciAST.jl up to 0.9.0 lacks
-            # it, so there this case's plan.json and derived documents differ
-            # from the golden in that order alone, and those comparisons are
-            # marked broken; with a later release installed they are real
-            # tests again (and an unexpected pass on 0.9.0 is reported).
-            # Development only: EarthSciAST main has #669 but still says
-            # 0.9.0, so the version test is off while the dependencies point
-            # at main (revert with the rest of this commit).
-            awaits_669 = false && key == "emission_compose/named" && pkgversion(EarthSciAST) <= v"0.9.0"
-            @test text == read(joinpath(golden, "plan.json"), String) broken = awaits_669
+            @test text == read(joinpath(golden, "plan.json"), String)
             gd = isdir(joinpath(golden, "derived")) ? sort!(readdir(joinpath(golden, "derived"))) : String[]
             @test gd == sort!(readdir(joinpath(dir, "derived")))
             for f in gd
-                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f)) broken = awaits_669
+                @test read(joinpath(dir, "derived", f)) == read(joinpath(golden, "derived", f))
             end
             for o in ops
                 path = joinpath(golden, "validation", "$o.bandvalues.json")
