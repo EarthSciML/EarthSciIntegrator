@@ -6,8 +6,7 @@ conformance suite checks each implementation against the other.
 **Documentation:** <https://earthsci.dev/integrator/>.
 
 > **Status: under development.** Both implementations include the core integrator
-> methods, step-size control, operator-splitting combinators, the tape and discrete adjoints, and an integration planner, all tested on toy problem
-s. Work is underway to scale to full size models.
+> methods, step-size control, operator-splitting combinators, the tape and discrete adjoints, and an integration planner, all tested on toy problems. Work is underway to scale to full size models.
 
 ## What it does
 
@@ -97,10 +96,9 @@ cannot reach `spec/`. After changing a tableau, run `tools/sync-package-data.sh`
 
 ## Dependencies on sibling packages
 
-The specification targets [EarthSciAST](https://github.com/EarthSciML/EarthSciAST) 0.8 (esm format 1.3.0),
-which loads and flattens models, and [EarthSciASTDiff](https://github.com/EarthSciML/EarthSciASTDiff) 0.3,
-which provides Jacobian band models and block factorization plans. The integrator also needs some upstream
-changes, which are drafted as RFCs in [`docs/rfcs/`](docs/rfcs/).
+The specification targets [EarthSciAST](https://github.com/EarthSciML/EarthSciAST),
+which loads and flattens models, and [EarthSciASTDiff](https://github.com/EarthSciML/EarthSciASTDiff),
+which provides Jacobian band models and block factorization plans.
 
 ## License
 
