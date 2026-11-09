@@ -27,12 +27,17 @@ pub fn gershgorin(jb: &Sparse, rows: &[bool]) -> f64 {
 /// What `band_model` measured at one sampled state.
 #[derive(Debug, Clone, Default)]
 pub struct BandModelReport {
-    /// The largest `|J^B − J^I| / τ` over the pattern entries.
+    /// The largest `|J^B − J^I| / τ` over the pattern entries, where an
+    /// entry the central difference fails but an alternative difference
+    /// accepts (§8.2, "Kinks") contributes the accepting alternative's.
     pub worst_entry: f64,
     /// The largest off-pattern difference over its floor.
     pub worst_off_pattern: f64,
     /// The number of colours (right-hand-side pairs).
     pub colours: usize,
+    /// The number of entries the central difference failed and an
+    /// alternative difference accepted.
+    pub accepted_by_alternative: usize,
 }
 
 impl BandModelReport {
@@ -41,6 +46,7 @@ impl BandModelReport {
             "worst_entry_over_tolerance": self.worst_entry,
             "worst_off_pattern_over_floor": self.worst_off_pattern,
             "colours": self.colours,
+            "entries_accepted_by_alternative": self.accepted_by_alternative,
         })
     }
 }
@@ -103,17 +109,45 @@ pub fn band_model(
         base,
         names,
     } = *at;
-    let n = dofs.n;
-    let u = &s.u;
-    // Steps: h_n = ε^(1/3) max(|u_n|, |b_n|); the step taken is the exact
-    // distance (u_n + h_n) − u_n.
+    let eval = |v: &[f64]| f.eval(dofs, v, s.t, &s.forcing);
+    band_model_with(&eval, &s.u, base, names, jb, pattern, rows)
+}
+
+/// The divisors of the step at which §8.2's kink fallback takes central
+/// differences again, in the order they are tried.
+const SMALLER_STEPS: [f64; 2] = [10.0, 100.0];
+
+/// A right-hand side as a function of the state alone, in canonical order.
+type Rhs<'a> = dyn Fn(&[f64]) -> Result<Vec<f64>, String> + 'a;
+
+/// A pattern entry `(row, column)` with its tolerance τ.
+type Entry = ((usize, usize), f64);
+
+/// [`band_model`] with the right-hand side as a function of the state
+/// alone (`f(v)` in canonical order), at the sampled state `u`.
+pub(crate) fn band_model_with(
+    f: &Rhs,
+    u: &[f64],
+    base: &[f64],
+    names: &[String],
+    jb: &Sparse,
+    pattern: &Sparse,
+    rows: &[bool],
+) -> Result<BandModelReport, String> {
+    let n = u.len();
+    // Steps: h_n = ε^(1/3) max(|u_n|, |b_n|) / d; the step taken is the
+    // exact distance (u_n + h_n) − u_n. `d` is 1 for the check and 10, 100
+    // for the kink fallback.
     let cbrt_eps = EPS.cbrt();
-    let step: Vec<f64> = (0..n)
-        .map(|k| {
-            let h = cbrt_eps * u[k].abs().max(base[k].abs());
-            (u[k] + h) - u[k]
-        })
-        .collect();
+    let steps = |d: f64| -> Vec<f64> {
+        (0..n)
+            .map(|k| {
+                let h = cbrt_eps * u[k].abs().max(base[k].abs()) / d;
+                (u[k] + h) - u[k]
+            })
+            .collect()
+    };
+    let step = steps(1.0);
     let colour = colour_columns(n, pattern);
     let colours = colour.iter().copied().max().map_or(0, |m| m + 1);
     // The pattern columns of each row.
@@ -121,8 +155,9 @@ pub fn band_model(
     for (r, c) in pattern.keys() {
         cols_of.entry(*r).or_default().push(*c);
     }
-    // J^I and F_r per pattern entry.
-    let mut ji: BTreeMap<(usize, usize), (f64, f64)> = BTreeMap::new();
+    // f_r^+ and f_r^- per pattern entry, kept for the one-sided
+    // differences of the kink fallback.
+    let mut fpm: BTreeMap<(usize, usize), (f64, f64)> = BTreeMap::new();
     let mut report = BandModelReport {
         colours,
         ..Default::default()
@@ -131,25 +166,28 @@ pub fn band_model(
     for (c, k) in colour.iter().enumerate() {
         members_of[*k].push(c);
     }
-    for (k, members) in members_of.iter().enumerate() {
-        let mut up = u.clone();
-        let mut um = u.clone();
-        for &c in members {
+    // f at u moved by ±step_c in every column c of colour k.
+    let pair = |k: usize, step: &[f64]| -> Result<(Vec<f64>, Vec<f64>), String> {
+        let mut up = u.to_vec();
+        let mut um = u.to_vec();
+        for &c in &members_of[k] {
             up[c] = u[c] + step[c];
             um[c] = u[c] - step[c];
         }
-        let fp = f.eval(dofs, &up, s.t, &s.forcing)?;
-        let fm = f.eval(dofs, &um, s.t, &s.forcing)?;
+        Ok((f(&up)?, f(&um)?))
+    };
+    for k in 0..colours {
+        let (fp, fm) = pair(k, &step)?;
         for r in (0..n).filter(|r| rows[*r]) {
-            let big_f = fp[r].abs().max(fm[r].abs());
             let col = cols_of
                 .get(&r)
                 .and_then(|cs| cs.iter().find(|c| colour[**c] == k));
             match col {
                 Some(&c) => {
-                    ji.insert((r, c), ((fp[r] - fm[r]) / (2.0 * step[c]), big_f));
+                    fpm.insert((r, c), (fp[r], fm[r]));
                 }
                 None => {
+                    let big_f = fp[r].abs().max(fm[r].abs());
                     let d = ((fp[r] - fm[r]) / 2.0).abs();
                     let floor = 1e3 * EPS * big_f;
                     if d > floor {
@@ -165,28 +203,93 @@ pub fn band_model(
             }
         }
     }
+    // J^I, the central difference, of a pattern entry.
+    let ji = |r: usize, c: usize| -> f64 {
+        let (p, m) = fpm[&(r, c)];
+        (p - m) / (2.0 * step[c])
+    };
     // M_r: the largest magnitude in row r of either Jacobian.
     let mut m: BTreeMap<usize, f64> = BTreeMap::new();
-    for ((r, _), v) in jb {
-        let e = m.entry(*r).or_insert(0.0);
+    let central = fpm.keys().map(|&(r, c)| (r, ji(r, c)));
+    for (r, v) in jb.iter().map(|((r, _), v)| (*r, *v)).chain(central) {
+        let e = m.entry(r).or_insert(0.0);
         *e = e.max(v.abs());
     }
-    for ((r, _), (v, _)) in &ji {
-        let e = m.entry(*r).or_insert(0.0);
-        *e = e.max(v.abs());
-    }
-    for ((r, c), (vi, big_f)) in &ji {
-        let vb = jb.get(&(*r, *c)).copied().unwrap_or(0.0);
-        let tau = 1e-6 * m[r] + 1e3 * EPS * big_f / step[*c];
+    // The entries the central difference fails, with their τ, by colour.
+    let mut failing: BTreeMap<usize, Vec<Entry>> = BTreeMap::new();
+    for (&(r, c), &(p, mm)) in &fpm {
+        let vi = ji(r, c);
+        let big_f = p.abs().max(mm.abs());
+        let vb = jb.get(&(r, c)).copied().unwrap_or(0.0);
+        let tau = 1e-6 * m[&r] + 1e3 * EPS * big_f / step[c];
         let d = (vb - vi).abs();
         if d > tau {
-            return Err(format!(
-                "J[{}, {}]: bands give {vb:e}, central differences {vi:e}, beyond the tolerance {tau:e}",
-                names[*r], names[*c]
-            ));
-        }
-        if d > 0.0 {
+            failing.entry(colour[c]).or_default().push(((r, c), tau));
+        } else if d > 0.0 {
             report.worst_entry = report.worst_entry.max(d / tau);
+        }
+    }
+    if failing.is_empty() {
+        return Ok(report);
+    }
+    // The kink fallback (§8.2): an entry the central difference fails is
+    // accepted when its band value is within the same τ of the forward or
+    // the backward one-sided difference at the same step, or of the
+    // central difference at the step divided by 10, then by 100. The
+    // one-sided differences need f at u, once; the smaller steps two
+    // evaluations each, for the colours that still have failing entries.
+    let f0 = f(u)?;
+    let smaller: Vec<Vec<f64>> = SMALLER_STEPS.iter().map(|d| steps(*d)).collect();
+    for (k, entries) in failing {
+        // What each entry's alternatives gave, for the refusal message.
+        let mut tried: Vec<Vec<f64>> = vec![Vec::new(); entries.len()];
+        let mut open: Vec<usize> = Vec::new();
+        let accept = |i: usize, alt: f64, report: &mut BandModelReport| -> bool {
+            let ((r, c), tau) = entries[i];
+            let d = (jb.get(&(r, c)).copied().unwrap_or(0.0) - alt).abs();
+            if d <= tau {
+                report.worst_entry = report.worst_entry.max(d / tau);
+                report.accepted_by_alternative += 1;
+                true
+            } else {
+                false
+            }
+        };
+        for (i, &((r, c), _)) in entries.iter().enumerate() {
+            let (p, mm) = fpm[&(r, c)];
+            let forward = (p - f0[r]) / step[c];
+            let backward = (f0[r] - mm) / step[c];
+            tried[i].extend([forward, backward]);
+            if !(accept(i, forward, &mut report) || accept(i, backward, &mut report)) {
+                open.push(i);
+            }
+        }
+        for st in &smaller {
+            if open.is_empty() {
+                break;
+            }
+            let (fp, fm) = pair(k, st)?;
+            open.retain(|&i| {
+                let ((r, c), _) = entries[i];
+                let central = (fp[r] - fm[r]) / (2.0 * st[c]);
+                tried[i].push(central);
+                !accept(i, central, &mut report)
+            });
+        }
+        if let Some(&i) = open.first() {
+            let ((r, c), tau) = entries[i];
+            let t = &tried[i];
+            return Err(format!(
+                "J[{}, {}]: bands give {:e}, central differences {:e}, beyond the tolerance {tau:e}; forward {:e}, backward {:e}, central at the step over 10 {:e} and over 100 {:e} are beyond it too",
+                names[r],
+                names[c],
+                jb.get(&(r, c)).copied().unwrap_or(0.0),
+                ji(r, c),
+                t[0],
+                t[1],
+                t[2],
+                t[3],
+            ));
         }
     }
     Ok(report)
@@ -206,6 +309,83 @@ mod tests {
         assert_eq!(gershgorin(&jb, &[true, true, false]), 5.0);
         assert_eq!(gershgorin(&jb, &[true, false, false]), 3.0);
         assert_eq!(gershgorin(&Sparse::new(), &[true]), 0.0);
+    }
+
+    /// `band_model_with` on `f` at `u` (its own sampling base), every row
+    /// written, with the band Jacobian `jb` (its keys the pattern).
+    fn check(
+        f: impl Fn(&[f64]) -> Vec<f64>,
+        u: &[f64],
+        jb: &Sparse,
+    ) -> Result<BandModelReport, String> {
+        let names: Vec<String> = (0..u.len()).map(|i| format!("x[{}]", i + 1)).collect();
+        let f = |v: &[f64]| Ok(f(v));
+        band_model_with(&f, u, u, &names, jb, jb, &vec![true; u.len()])
+    }
+
+    /// The step `band_model` takes at a component of magnitude 1.
+    fn h1() -> f64 {
+        (1.0 + EPS.cbrt()) - 1.0
+    }
+
+    #[test]
+    fn kink_within_one_step_is_accepted_one_sided() {
+        // An upwind-style |·| limiter whose kink lies half a step above the
+        // sample: the slope is 1 below the kink, -1 above it. The central
+        // difference straddles the kink; the backward difference does not.
+        let kink = 1.0 + 0.5 * h1();
+        let f = |v: &[f64]| vec![-(v[0] - kink).abs(), 3.0 * v[1]];
+        let jb = sparse(&[((0, 0), 1.0), ((1, 1), 3.0)]);
+        let r = check(f, &[1.0, 2.0], &jb).expect("the backward difference matches");
+        assert_eq!(r.accepted_by_alternative, 1);
+        assert!(r.worst_entry <= 1.0);
+        // The same kink half a step below: the forward difference matches.
+        let kink = 1.0 - 0.5 * h1();
+        let f = |v: &[f64]| vec![(v[0] - kink).abs(), 3.0 * v[1]];
+        let r = check(f, &[1.0, 2.0], &jb).expect("the forward difference matches");
+        assert_eq!(r.accepted_by_alternative, 1);
+        // A min/max limiter clamping within a fifth of a step on both
+        // sides: both one-sided differences straddle a kink, the central
+        // one at a tenth of the step does not.
+        let w = 0.2 * h1();
+        let f = |v: &[f64]| vec![v[0].clamp(1.0 - w, 1.0 + w), 3.0 * v[1]];
+        let r = check(f, &[1.0, 2.0], &jb).expect("a smaller step matches");
+        assert_eq!(r.accepted_by_alternative, 1);
+        // A clamp within a twentieth of a step needs the step over 100.
+        let w = 0.05 * h1();
+        let f = |v: &[f64]| vec![v[0].clamp(1.0 - w, 1.0 + w), 3.0 * v[1]];
+        let r = check(f, &[1.0, 2.0], &jb).expect("the smallest step matches");
+        assert_eq!(r.accepted_by_alternative, 1);
+        // With no kink near the sample nothing needs an alternative.
+        let f = |v: &[f64]| vec![-(v[0] - 5.0).abs(), 3.0 * v[1]];
+        let r = check(f, &[1.0, 2.0], &jb).unwrap();
+        assert_eq!(r.accepted_by_alternative, 0);
+    }
+
+    #[test]
+    fn wrong_band_value_still_fails() {
+        // A smooth row with a band value off by 1e-3 relative.
+        let f = |v: &[f64]| vec![2.0 * v[0] * v[0], 3.0 * v[1]];
+        let jb = sparse(&[((0, 0), 4.004), ((1, 1), 3.0)]);
+        let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
+        assert!(e.starts_with("J[x[1], x[1]]: bands give"), "{e}");
+        assert!(e.contains("forward"), "{e}");
+        // A kinked row whose band value is no difference's: below the kink
+        // the slope is 1, above it -1, and at half a step from the kink the
+        // forward difference is 0 and the central one 0.5.
+        let kink = 1.0 + 0.5 * h1();
+        let f = |v: &[f64]| vec![-(v[0] - kink).abs(), 3.0 * v[1]];
+        for wrong in [0.9, 1.001, -1.0, 2.0] {
+            let jb = sparse(&[((0, 0), wrong), ((1, 1), 3.0)]);
+            let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
+            assert!(e.starts_with("J[x[1], x[1]]"), "{wrong}: {e}");
+        }
+        // Within a clamp narrower than a hundredth of a step no difference
+        // sees the slope, so the check refuses: the fallback's limit.
+        let w = 1e-3 * h1();
+        let f = |v: &[f64]| vec![v[0].clamp(1.0 - w, 1.0 + w), 3.0 * v[1]];
+        let jb = sparse(&[((0, 0), 1.0), ((1, 1), 3.0)]);
+        assert!(check(f, &[1.0, 2.0], &jb).is_err());
     }
 
     #[test]
