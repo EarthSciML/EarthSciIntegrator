@@ -704,6 +704,42 @@ fn rhs_sum_catches_broken_splits() {
         true
     });
     assert!(matches!(r, Some(Err(_))), "an initial condition");
+    // An observed the document declares with its definition dropped.
+    let docs: Vec<(String, Value)> = p
+        .documents
+        .iter()
+        .map(|(o, d)| (o.clone(), serde_json::from_slice(&d.rhs).unwrap()))
+        .collect();
+    let k = docs
+        .iter()
+        .position(|(_, d)| d.to_string().contains("\"lhs\":\""))
+        .expect("a document defining an observed");
+    let mut doc = docs[k].1.clone();
+    let mut dropped = false;
+    for c in doc["models"].as_object_mut().unwrap().values_mut() {
+        let eqs = c["equations"].as_array_mut().unwrap();
+        if let Some(i) = eqs.iter().position(|e| e["lhs"].is_string()) {
+            if !dropped {
+                eqs.remove(i);
+                dropped = true;
+            }
+        }
+    }
+    assert!(dropped);
+    let views: Vec<FlatView> = docs
+        .iter()
+        .enumerate()
+        .map(|(j, (_, d))| {
+            FlatView::of_document(if j == k { doc.clone() } else { d.clone() }).unwrap()
+        })
+        .collect();
+    let refs: Vec<(&str, &earthsci_ast::FlattenedSystem)> = docs
+        .iter()
+        .zip(&views)
+        .map(|((o, _), v)| (o.as_str(), &v.flat))
+        .collect();
+    let e = sumcheck::rhs_sum(&p.model, &refs).unwrap_err();
+    assert!(e.contains("without defining it"), "{e}");
 }
 
 /// The hand-written bands of stage 1 and EarthSciASTDiff's give every term

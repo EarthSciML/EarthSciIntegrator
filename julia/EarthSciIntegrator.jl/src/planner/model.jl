@@ -123,6 +123,20 @@ function lifted_variable(eq::Equation, lifted_shapes)
     return haskey(lifted_shapes, name) ? name : nothing
 end
 
+"""
+The variable a left-hand side differentiates, at any spelling, or `nothing`:
+`D(x)`, `D(index(x, …))`, or either inside a `faq` (Rust's `differentiated`).
+"""
+function differentiated_variable(lhs)
+    lhs isa OpExpr || return nothing
+    lhs.op == "faq" && return differentiated_variable(lhs.expr_body)
+    (lhs.op == "D" && !isempty(lhs.args)) || return nothing
+    x = lhs.args[1]
+    x isa VarExpr && return x.name
+    (x isa OpExpr && x.op == "index" && !isempty(x.args) && x.args[1] isa VarExpr) || return nothing
+    return x.args[1].name
+end
+
 """The variable a non-lifted `D(x, t)` equation differentiates, or `nothing`."""
 function derivative_variable(eq::Equation)
     lhs = eq.lhs

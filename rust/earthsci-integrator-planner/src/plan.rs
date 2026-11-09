@@ -316,7 +316,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     // document (§6.2), which is built here: the Gershgorin bound evaluates
     // it, and it is written with the other derived documents.
     let mut rhs_docs = BTreeMap::new();
-    let mut rhs_views = BTreeMap::new();
+    let mut rhs_flats = BTreeMap::new();
     let mut jac_docs = BTreeMap::new();
     let mut structures = BTreeMap::new();
     let state_dependent = info.state_dependent();
@@ -384,7 +384,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
         // Kept for `rhs_sum` (§8.1), which compares the document as loaded.
-        rhs_views.insert(name.clone(), view);
+        rhs_flats.insert(name.clone(), view.flat);
         structures.insert(name.clone(), st);
     }
 
@@ -526,10 +526,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     // Pass 8: validation. `rhs_sum` is structural: it builds and evaluates
     // nothing (§8.1, D91).
     let mut report = Map::new();
-    let views: Vec<(&str, &earthsci_ast::FlattenedSystem)> = rhs_views
-        .iter()
-        .map(|(o, v)| (o.as_str(), &v.flat))
-        .collect();
+    let views: Vec<(&str, &earthsci_ast::FlattenedSystem)> =
+        rhs_flats.iter().map(|(o, f)| (o.as_str(), f)).collect();
     let summands = sumcheck::rhs_sum(&info, &views)
         .map_err(|m| refuse(codes::VALIDATION_RHS_SUM_FAILED, "/model", m))?;
     report.insert("rhs_sum".into(), json!({"summands": summands}));

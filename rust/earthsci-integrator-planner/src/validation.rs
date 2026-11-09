@@ -28,16 +28,16 @@ pub fn gershgorin(jb: &Sparse, rows: &[bool]) -> f64 {
 #[derive(Debug, Clone, Default)]
 pub struct BandModelReport {
     /// The largest `|J^B − J^I| / τ` over the pattern entries, where an
-    /// entry the central difference fails but an alternative difference
-    /// accepts (§8.2, "Kinks") contributes the accepting alternative's.
+    /// entry the central difference fails but one at a smaller step accepts
+    /// (§8.2, "Kinks") contributes that smaller step's ratio.
     pub worst_entry: f64,
     /// The largest off-pattern difference over its floor.
     pub worst_off_pattern: f64,
     /// The number of colours (right-hand-side pairs).
     pub colours: usize,
-    /// The number of entries the central difference failed and an
-    /// alternative difference accepted.
-    pub accepted_by_alternative: usize,
+    /// The number of entries the central difference failed and one at a
+    /// smaller step accepted.
+    pub accepted_at_smaller_step: usize,
 }
 
 impl BandModelReport {
@@ -46,7 +46,7 @@ impl BandModelReport {
             "worst_entry_over_tolerance": self.worst_entry,
             "worst_off_pattern_over_floor": self.worst_off_pattern,
             "colours": self.colours,
-            "entries_accepted_by_alternative": self.accepted_by_alternative,
+            "entries_accepted_at_smaller_step": self.accepted_at_smaller_step,
         })
     }
 }
@@ -155,8 +155,7 @@ pub(crate) fn band_model_with(
     for (r, c) in pattern.keys() {
         cols_of.entry(*r).or_default().push(*c);
     }
-    // f_r^+ and f_r^- per pattern entry, kept for the one-sided
-    // differences of the kink fallback.
+    // f_r^+ and f_r^- per pattern entry.
     let mut fpm: BTreeMap<(usize, usize), (f64, f64)> = BTreeMap::new();
     let mut report = BandModelReport {
         colours,
@@ -233,62 +232,46 @@ pub(crate) fn band_model_with(
         return Ok(report);
     }
     // The kink fallback (§8.2): an entry the central difference fails is
-    // accepted when its band value is within the same τ of the forward or
-    // the backward one-sided difference at the same step, or of the
-    // central difference at the step divided by 10, then by 100. The
-    // one-sided differences need f at u, once; the smaller steps two
-    // evaluations each, for the colours that still have failing entries.
-    let f0 = f(u)?;
+    // accepted when its band value is within τ of the central difference
+    // at the step divided by 10, then by 100, τ taken again at that step
+    // (its rounding term grows as the step shrinks). Two evaluations per
+    // smaller step, for the colours that still have failing entries.
     let smaller: Vec<Vec<f64>> = SMALLER_STEPS.iter().map(|d| steps(*d)).collect();
     for (k, entries) in failing {
-        // What each entry's alternatives gave, for the refusal message.
+        // What each entry's smaller steps gave, for the refusal message.
         let mut tried: Vec<Vec<f64>> = vec![Vec::new(); entries.len()];
-        let mut open: Vec<usize> = Vec::new();
-        let accept = |i: usize, alt: f64, report: &mut BandModelReport| -> bool {
-            let ((r, c), tau) = entries[i];
-            let d = (jb.get(&(r, c)).copied().unwrap_or(0.0) - alt).abs();
-            if d <= tau {
-                report.worst_entry = report.worst_entry.max(d / tau);
-                report.accepted_by_alternative += 1;
-                true
-            } else {
-                false
-            }
-        };
-        for (i, &((r, c), _)) in entries.iter().enumerate() {
-            let (p, mm) = fpm[&(r, c)];
-            let forward = (p - f0[r]) / step[c];
-            let backward = (f0[r] - mm) / step[c];
-            tried[i].extend([forward, backward]);
-            if !(accept(i, forward, &mut report) || accept(i, backward, &mut report)) {
-                open.push(i);
-            }
-        }
+        let mut open: Vec<usize> = (0..entries.len()).collect();
         for st in &smaller {
             if open.is_empty() {
                 break;
             }
             let (fp, fm) = pair(k, st)?;
             open.retain(|&i| {
-                let ((r, c), _) = entries[i];
+                let (r, c) = entries[i].0;
                 let central = (fp[r] - fm[r]) / (2.0 * st[c]);
                 tried[i].push(central);
-                !accept(i, central, &mut report)
+                let tau = 1e-6 * m[&r] + 1e3 * EPS * fp[r].abs().max(fm[r].abs()) / st[c];
+                let d = (jb.get(&(r, c)).copied().unwrap_or(0.0) - central).abs();
+                if d <= tau {
+                    report.worst_entry = report.worst_entry.max(d / tau);
+                    report.accepted_at_smaller_step += 1;
+                    false
+                } else {
+                    true
+                }
             });
         }
         if let Some(&i) = open.first() {
             let ((r, c), tau) = entries[i];
             let t = &tried[i];
             return Err(format!(
-                "J[{}, {}]: bands give {:e}, central differences {:e}, beyond the tolerance {tau:e}; forward {:e}, backward {:e}, central at the step over 10 {:e} and over 100 {:e} are beyond it too",
+                "J[{}, {}]: bands give {:e}, central differences {:e}, beyond the tolerance {tau:e}; central differences at the step over 10 ({:e}) and over 100 ({:e}) are beyond their tolerances too",
                 names[r],
                 names[c],
                 jb.get(&(r, c)).copied().unwrap_or(0.0),
                 ji(r, c),
                 t[0],
                 t[1],
-                t[2],
-                t[3],
             ));
         }
     }
@@ -329,37 +312,36 @@ mod tests {
     }
 
     #[test]
-    fn kink_within_one_step_is_accepted_one_sided() {
+    fn kink_within_one_step_is_accepted_at_a_smaller_step() {
         // An upwind-style |·| limiter whose kink lies half a step above the
         // sample: the slope is 1 below the kink, -1 above it. The central
-        // difference straddles the kink; the backward difference does not.
+        // difference straddles the kink; the one at a tenth of the step
+        // does not.
         let kink = 1.0 + 0.5 * h1();
         let f = |v: &[f64]| vec![-(v[0] - kink).abs(), 3.0 * v[1]];
         let jb = sparse(&[((0, 0), 1.0), ((1, 1), 3.0)]);
-        let r = check(f, &[1.0, 2.0], &jb).expect("the backward difference matches");
-        assert_eq!(r.accepted_by_alternative, 1);
+        let r = check(f, &[1.0, 2.0], &jb).expect("a tenth of the step matches");
+        assert_eq!(r.accepted_at_smaller_step, 1);
         assert!(r.worst_entry <= 1.0);
-        // The same kink half a step below: the forward difference matches.
+        // The same kink half a step below.
         let kink = 1.0 - 0.5 * h1();
         let f = |v: &[f64]| vec![(v[0] - kink).abs(), 3.0 * v[1]];
-        let r = check(f, &[1.0, 2.0], &jb).expect("the forward difference matches");
-        assert_eq!(r.accepted_by_alternative, 1);
-        // A min/max limiter clamping within a fifth of a step on both
-        // sides: both one-sided differences straddle a kink, the central
-        // one at a tenth of the step does not.
+        let r = check(f, &[1.0, 2.0], &jb).expect("a tenth of the step matches");
+        assert_eq!(r.accepted_at_smaller_step, 1);
+        // A min/max limiter clamping within a fifth of a step on both sides.
         let w = 0.2 * h1();
         let f = |v: &[f64]| vec![v[0].clamp(1.0 - w, 1.0 + w), 3.0 * v[1]];
         let r = check(f, &[1.0, 2.0], &jb).expect("a smaller step matches");
-        assert_eq!(r.accepted_by_alternative, 1);
+        assert_eq!(r.accepted_at_smaller_step, 1);
         // A clamp within a twentieth of a step needs the step over 100.
         let w = 0.05 * h1();
         let f = |v: &[f64]| vec![v[0].clamp(1.0 - w, 1.0 + w), 3.0 * v[1]];
         let r = check(f, &[1.0, 2.0], &jb).expect("the smallest step matches");
-        assert_eq!(r.accepted_by_alternative, 1);
-        // With no kink near the sample nothing needs an alternative.
+        assert_eq!(r.accepted_at_smaller_step, 1);
+        // With no kink near the sample nothing needs a smaller step.
         let f = |v: &[f64]| vec![-(v[0] - 5.0).abs(), 3.0 * v[1]];
         let r = check(f, &[1.0, 2.0], &jb).unwrap();
-        assert_eq!(r.accepted_by_alternative, 0);
+        assert_eq!(r.accepted_at_smaller_step, 0);
     }
 
     #[test]
@@ -369,13 +351,23 @@ mod tests {
         let jb = sparse(&[((0, 0), 4.004), ((1, 1), 3.0)]);
         let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
         assert!(e.starts_with("J[x[1], x[1]]: bands give"), "{e}");
-        assert!(e.contains("forward"), "{e}");
-        // A kinked row whose band value is no difference's: below the kink
-        // the slope is 1, above it -1, and at half a step from the kink the
-        // forward difference is 0 and the central one 0.5.
+        assert!(e.contains("over 100"), "{e}");
+        // A smooth, curved row whose band value is the forward difference:
+        // off by half the step times the curvature (about 3e-6 relative),
+        // beyond τ's 1e-6. A one-sided difference would accept it; the
+        // central differences at smaller steps do not.
+        let f = |v: &[f64]| vec![v[0] * v[0], 3.0 * v[1]];
+        let forward = ((1.0 + h1()) * (1.0 + h1()) - 1.0) / h1();
+        assert!((forward - 2.0) / 2.0 > 2e-6);
+        let jb = sparse(&[((0, 0), forward), ((1, 1), 3.0)]);
+        let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
+        assert!(e.starts_with("J[x[1], x[1]]"), "{e}");
+        // A kinked row whose band value is no side's slope: below the kink
+        // the slope is 1, above it -1 (0.5, the central difference across
+        // the kink, passes the check itself).
         let kink = 1.0 + 0.5 * h1();
         let f = |v: &[f64]| vec![-(v[0] - kink).abs(), 3.0 * v[1]];
-        for wrong in [0.9, 1.001, -1.0, 2.0] {
+        for wrong in [0.0, 0.9, 1.001, -1.0, 2.0] {
             let jb = sparse(&[((0, 0), wrong), ((1, 1), 3.0)]);
             let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
             assert!(e.starts_with("J[x[1], x[1]]"), "{wrong}: {e}");
@@ -386,6 +378,25 @@ mod tests {
         let f = |v: &[f64]| vec![v[0].clamp(1.0 - w, 1.0 + w), 3.0 * v[1]];
         let jb = sparse(&[((0, 0), 1.0), ((1, 1), 3.0)]);
         assert!(check(f, &[1.0, 2.0], &jb).is_err());
+    }
+
+    /// The tolerance at a smaller step has its own rounding term, which
+    /// grows as the step shrinks. A row near 1e8 with a kink half a step
+    /// above the sample and a jump of 1e-5 at the sample (standing in for
+    /// rounding error) gives, at a tenth of the step, a central difference
+    /// 8.3 from the right slope: beyond the full step's τ (about 3.7), within
+    /// the tenth's (about 37).
+    #[test]
+    fn smaller_steps_widen_the_rounding_term() {
+        let kink = 1.0 + 0.5 * h1();
+        let f = |v: &[f64]| {
+            let jump = if v[0] > 1.0 { 1e-5 } else { 0.0 };
+            vec![1e8 - 100.0 * (v[0] - kink).abs() + jump, 3.0 * v[1]]
+        };
+        let jb = sparse(&[((0, 0), 100.0), ((1, 1), 3.0)]);
+        let r = check(f, &[1.0, 2.0], &jb).expect("the right slope passes");
+        assert_eq!(r.accepted_at_smaller_step, 1);
+        assert!(r.worst_entry > 0.1 && r.worst_entry <= 1.0, "{r:?}");
     }
 
     #[test]

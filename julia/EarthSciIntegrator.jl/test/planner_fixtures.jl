@@ -705,6 +705,34 @@ const PLAN_FILES = String[]
         end
         @test failed(edited(eq -> eq["lhs"] isa AbstractString && (eq["rhs"] = Dict{String, Any}("op" => "*", "args" => Any[2, eq["rhs"]]); true)))
         @test failed(edited(eq -> eq["lhs"] isa AbstractDict && eq["lhs"]["op"] == "ic" && (eq["rhs"] = Dict{String, Any}("op" => "*", "args" => Any[2, eq["rhs"]]); true)))
+        # An observed the document declares with its definition dropped.
+        r = :no_edit
+        for o in names
+            doc = deepcopy(b.ops[o].rhs.doc)
+            hit = false
+            for c in values(doc["models"])
+                i = findfirst(eq -> eq["lhs"] isa AbstractString, c["equations"])
+                i === nothing && continue
+                deleteat!(c["equations"], i)
+                hit = true
+                break
+            end
+            hit || continue
+            ds = Any[(x == o ? (x, E.DerivedDocument(doc).flat) : (x, b.ops[x].rhs.flat)) for x in names]
+            r = refusal(() -> E.rhs_sum_check(ctx.model, ds))
+            break
+        end
+        @test failed(r) && occursin("without defining it", r.msg)
+        # A boolean default is not a number (as in Rust).
+        @test E.default_form(true) != E.default_form(1)
+        @test E.default_form(Any[1, 2]) == E.default_form(Any[1.0, 2.0])
+        # Every spelling of a state equation's left-hand side, as Rust's.
+        ex(j) = E.EarthSciAST.expression_from_json(j)
+        ixj = Dict{String, Any}("op" => "index", "args" => Any["x", "i"])
+        @test E.differentiated_variable(ex(Dict{String, Any}("op" => "D", "args" => Any["x"], "wrt" => "t"))) == "x"
+        @test E.differentiated_variable(ex(Dict{String, Any}("op" => "D", "args" => Any[ixj], "wrt" => "t"))) == "x"
+        @test E.defined_name(ex("x")) == "x"
+        @test E.defined_name(ex(ixj)) == "x"
     end
 
     @testset "the derived documents' domain" begin

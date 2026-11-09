@@ -18,19 +18,25 @@ end
 fold_sum(xs::AbstractVector) = foldl((a, b) -> Dict{String, Any}("op" => "+", "args" => Any[a, b]), xs)
 
 """
-The observed a flattened equation defines, or `nothing`: a bare left-hand
-side `y`, or an indexed one, `index(y, …)` or `faq{index(y, …)}` (an arrayed
-observed).
+The variable a non-differential equation's left-hand side defines, or
+`nothing`: a bare name `y`, `index(y, …)`, or either inside a `faq` (an
+arrayed observed).
+"""
+function defined_name(lhs)
+    lhs isa OpExpr && lhs.op == "faq" && lhs.expr_body !== nothing && (lhs = lhs.expr_body)
+    lhs isa VarExpr && return lhs.name
+    (lhs isa OpExpr && lhs.op == "index" && !isempty(lhs.args) && lhs.args[1] isa VarExpr) || return nothing
+    return lhs.args[1].name
+end
+
+"""
+The observed a flattened equation defines, or `nothing`: [`defined_name`](@ref)
+of its left-hand side when that is an observed of `flat`.
 """
 defined_observed(m::PlanModel, eq::Equation) = defined_observed(m.flat, eq)
 function defined_observed(flat::EarthSciAST.FlattenedSystem, eq::Equation)
-    isobs(n) = haskey(flat.observed_variables, n)
-    l = eq.lhs
-    l isa VarExpr && return isobs(l.name) ? l.name : nothing
-    l isa OpExpr || return nothing
-    l.op == "faq" && l.expr_body isa OpExpr && (l = l.expr_body)
-    (l.op == "index" && !isempty(l.args) && l.args[1] isa VarExpr && isobs(l.args[1].name)) || return nothing
-    return l.args[1].name
+    n = defined_name(eq.lhs)
+    return (n !== nothing && haskey(flat.observed_variables, n)) ? n : nothing
 end
 
 """Every right-hand side defining each observed of the flattened model, in equation order (`PlanModel.observed_rhs`)."""

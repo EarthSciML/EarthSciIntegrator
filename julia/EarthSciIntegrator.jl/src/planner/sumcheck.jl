@@ -6,6 +6,7 @@
 canonical_expr(e) = EarthSciASTDiff.stable_json(EarthSciAST.serialize_expression(e))
 
 """A JSON value with every number a `Float64`, as §8.1 compares declared `default`s."""
+_float_form(x::Bool) = x
 _float_form(x::Real) = Float64(x)
 _float_form(x::AbstractVector) = Any[_float_form(v) for v in x]
 _float_form(x::AbstractDict) = Dict{String, Any}(String(k) => _float_form(v) for (k, v) in x)
@@ -36,27 +37,12 @@ function state_summands(rhs, zero::AbstractString, lifted::Bool)
     return String[canonical_expr(t) for t in additive_terms(body) if !is_zero_literal(t)]
 end
 
-"""
-The variable an equation's left-hand side defines, at any spelling: a bare
-name, `index(y, …)` or `faq{index(y, …)}`; `nothing` for any other.
-A derived document declares the observeds it keeps as unknowns (§6.1.1), so
-its flattened form need not list them as observeds; the model says which
-names are observeds.
-"""
-function defined_name(eq::Equation)
-    l = eq.lhs
-    l isa VarExpr && return l.name
-    l isa OpExpr || return nothing
-    l.op == "faq" && l.expr_body isa OpExpr && (l = l.expr_body)
-    (l.op == "index" && !isempty(l.args) && l.args[1] isa VarExpr) || return nothing
-    return l.args[1].name
-end
-
 """The definitions of the model's observeds `observeds` in a flattened system, canonical, by observed: `(lhs, rhs)` in equation order."""
 function observed_forms(flat::EarthSciAST.FlattenedSystem, observeds)
     out = Dict{String, Vector{Tuple{String, String}}}()
     for eq in flat.equations
-        o = defined_name(eq)
+        differentiated_variable(eq.lhs) === nothing || continue
+        o = defined_name(eq.lhs)
         (o !== nothing && o in observeds) || continue
         push!(get!(out, o, Tuple{String, String}[]), (canonical_expr(eq.lhs), canonical_expr(eq.rhs)))
     end
@@ -101,8 +87,7 @@ function rhs_sum_check(m::PlanModel, docs::AbstractVector)
     for (o, d) in docs
         seen = Set{String}()
         for eq in d.equations
-            x = derivative_variable(eq)
-            x === nothing && (x = lifted_variable(eq, d.lifted_shapes))
+            x = differentiated_variable(eq.lhs)
             if x !== nothing
                 haskey(want, x) || fail("operator $o's right-hand-side document has an equation for $x, which is not a state of the model")
                 x in seen && fail("operator $o's right-hand-side document has two equations for $x")
@@ -115,16 +100,23 @@ function rhs_sum_check(m::PlanModel, docs::AbstractVector)
                 append!(got[x], s)
                 continue
             end
-            y = defined_name(eq)
+            y = defined_name(eq.lhs)
             (y !== nothing && y in obs) || fail("operator $o's right-hand-side document has an equation that defines neither a state nor an observed: $(canonical_expr(eq.lhs))")
         end
         for x in m.states
             x in seen || fail("operator $o's right-hand-side document has no equation for the state $x")
         end
-        # Observeds: the definitions the model gives them.
-        for (y, defs) in observed_forms(d, obs)
+        # Observeds: the definitions the model gives them, and one for every
+        # observed the document declares (§6.1.1 declares the observeds it
+        # keeps as unknowns).
+        defined = observed_forms(d, obs)
+        for (y, defs) in defined
             get(observeds, y, nothing) == defs ||
                 fail("operator $o's right-hand-side document defines the observed $y otherwise than the model")
+        end
+        for n in sort!(unique!(String[collect(keys(d.state_variables)); collect(keys(d.observed_variables))]))
+            (n in obs && !haskey(defined, n)) &&
+                fail("operator $o's right-hand-side document declares the observed $n without defining it")
         end
         # Declarations: every state and parameter, with the model's shape and default.
         dstates = Set{String}(n for n in keys(d.state_variables) if !(n in obs))

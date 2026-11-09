@@ -4,9 +4,9 @@
 //! evaluated.
 
 use crate::derived;
-use crate::model::{differentiated, node, ModelInfo};
+use crate::model::{defined_observed, differentiated, node, ModelInfo};
 use crate::terms::{additive_terms, is_literal_zero};
-use earthsci_ast::{Equation, Expr, FlattenedSystem, ModelVariable};
+use earthsci_ast::{Expr, FlattenedSystem, ModelVariable};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,27 +71,6 @@ fn faq_output_idx(e: &Expr) -> Option<Vec<String>> {
         .and_then(|n| n.output_idx.clone())
 }
 
-/// The variable an equation's left-hand side defines, at any spelling: a
-/// bare name, `index(y, …)` or `faq{index(y, …)}`. A derived document
-/// declares the observeds it keeps as unknowns (§6.1.1), so the model says
-/// which names are observeds.
-fn defined_name(eq: &Equation) -> Option<&str> {
-    let mut l = &eq.lhs;
-    if let Some(n) = node(l).filter(|n| n.op == "faq") {
-        l = n.expr.as_deref()?;
-    }
-    match l {
-        Expr::Variable(x) => Some(x),
-        _ => {
-            let n = node(l).filter(|n| n.op == "index")?;
-            match n.args.first()? {
-                Expr::Variable(x) => Some(x),
-                _ => None,
-            }
-        }
-    }
-}
-
 type Definitions = BTreeMap<String, Vec<(String, String)>>;
 
 /// The definitions of the model's observeds `obs` in `flat`, canonical, by
@@ -102,7 +81,7 @@ fn observed_forms(flat: &FlattenedSystem, obs: &BTreeSet<&str>) -> Definitions {
         if differentiated(&eq.lhs).is_some() {
             continue;
         }
-        if let Some(y) = defined_name(eq).filter(|y| obs.contains(y)) {
+        if let Some(y) = defined_observed(&eq.lhs).filter(|y| obs.contains(y)) {
             out.entry(y.to_string())
                 .or_default()
                 .push((canonical(&eq.lhs), canonical(&eq.rhs)));
@@ -190,7 +169,7 @@ pub fn rhs_sum(info: &ModelInfo, docs: &[(&str, &FlattenedSystem)]) -> Result<us
                 got.get_mut(x).expect("every state").extend(s);
                 continue;
             }
-            if !defined_name(eq).is_some_and(|y| obs.contains(y)) {
+            if !defined_observed(&eq.lhs).is_some_and(|y| obs.contains(y)) {
                 return Err(format!(
                     "operator {o}'s right-hand-side document has an equation that defines neither a state nor an observed: {}",
                     canonical(&eq.lhs)
@@ -202,13 +181,26 @@ pub fn rhs_sum(info: &ModelInfo, docs: &[(&str, &FlattenedSystem)]) -> Result<us
                 "operator {o}'s right-hand-side document has no equation for the state {x}"
             ));
         }
-        // Observeds: the definitions the model gives them.
-        for (y, defs) in observed_forms(d, &obs) {
-            if observeds.get(&y) != Some(&defs) {
+        // Observeds: the definitions the model gives them, and one for every
+        // observed the document declares (§6.1.1 declares the observeds it
+        // keeps as unknowns).
+        let defined = observed_forms(d, &obs);
+        for (y, defs) in &defined {
+            if observeds.get(y) != Some(defs) {
                 return Err(format!(
                     "operator {o}'s right-hand-side document defines the observed {y} otherwise than the model"
                 ));
             }
+        }
+        if let Some(y) = d
+            .state_variables
+            .keys()
+            .chain(d.observed_variables.keys())
+            .find(|n| obs.contains(n.as_str()) && !defined.contains_key(n.as_str()))
+        {
+            return Err(format!(
+                "operator {o}'s right-hand-side document declares the observed {y} without defining it"
+            ));
         }
         // Declarations: every state and parameter, with the model's shape
         // and default.
