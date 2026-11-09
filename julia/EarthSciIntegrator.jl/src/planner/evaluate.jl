@@ -86,9 +86,9 @@ function sampled_states(u0::AbstractVector{Float64}, time::Tuple{Float64, Float6
     t0, tf = time
     return [
         (
-                t0 + (tf - t0) * q,
-                [(u0[n] != 0 ? u0[n] : 1.0) * (0.5 + splitmix_unit(s, n - 1)) for n in eachindex(u0)],
-            ) for (s, q) in enumerate((0.25, 0.5, 0.75))
+            t0 + (tf - t0) * q,
+            [(u0[n] != 0 ? u0[n] : 1.0) * (0.5 + splitmix_unit(s, n - 1)) for n in eachindex(u0)],
+        ) for (s, q) in enumerate((0.25, 0.5, 0.75))
     ]
 end
 

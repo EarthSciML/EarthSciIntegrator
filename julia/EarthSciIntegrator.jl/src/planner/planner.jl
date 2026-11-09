@@ -161,10 +161,10 @@ function forcing_json(m::PlanModel)
     isempty(names) && return nothing
     return Dict{String, Any}(
         n => Dict{String, Any}(
-                "shape" => Any[m.forcing[n].shape...], "source" => m.forcing[n].source,
-                "file_variable" => m.forcing[n].file_variable, "cadence" => m.forcing[n].cadence,
-                "records_per_sample" => m.forcing[n].records_per_sample
-            ) for n in names
+            "shape" => Any[m.forcing[n].shape...], "source" => m.forcing[n].source,
+            "file_variable" => m.forcing[n].file_variable, "cadence" => m.forcing[n].cadence,
+            "records_per_sample" => m.forcing[n].records_per_sample
+        ) for n in names
     )
 end
 
