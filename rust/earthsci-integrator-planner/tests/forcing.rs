@@ -629,3 +629,42 @@ fn wrt_prefixes() {
         }
     }
 }
+
+/// A right-hand-side program built with every used data-fed parameter bound
+/// to its `default` (to build `u_0`, §4) still reads each evaluation's
+/// forcing, so pass 8 differences at the sampled forcing, as the Jacobian
+/// program does.
+#[test]
+fn bound_programs_read_the_sampled_forcing() {
+    use earthsci_integrator_planner::numeric::{self, Dofs, Program};
+    let (m, r) = inputs();
+    let p = plan_of("bound", &m, &r).unwrap();
+    let dofs = Dofs::new(&p.model);
+    let tspan = (p.interval.start, p.interval.end);
+    for (op, docs) in &p.documents {
+        let rhs: Value = serde_json::from_slice(&docs.rhs).unwrap();
+        let (bound, u0) = Program::with_initial_state(&p.model, &rhs, tspan, &dofs).unwrap();
+        let unbound = Program::new(&rhs, tspan, &dofs).unwrap();
+        assert_eq!(
+            bound.forcing_slot_names(),
+            unbound.forcing_slot_names(),
+            "{op}"
+        );
+        // A state that varies from cell to cell, so mixing is not zero.
+        let u: Vec<f64> = u0
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (if *x != 0.0 { *x } else { 1.0 }) * (1.0 + 0.1 * i as f64))
+            .collect();
+        let samples = numeric::sampled_forcing(&p.model).unwrap();
+        for f in &samples {
+            let a = bound.eval(&dofs, &u, tspan.0, f).unwrap();
+            let b = unbound.eval(&dofs, &u, tspan.0, f).unwrap();
+            assert_eq!(a, b, "{op}");
+        }
+        // The sampled forcings differ, and the right-hand side follows them.
+        let a = bound.eval(&dofs, &u, tspan.0, &samples[0]).unwrap();
+        let b = bound.eval(&dofs, &u, tspan.0, &samples[2]).unwrap();
+        assert_ne!(a, b, "{op}: {:?}", bound.forcing_slot_names());
+    }
+}

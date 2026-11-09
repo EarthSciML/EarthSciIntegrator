@@ -525,10 +525,214 @@ const PLAN_FILES = String[]
             e
         end
         @test err isa PlannerRefusal && err.code == "validation_empty_operator" && err.at == "/model"
-        # rhs_sum's measure (§8.1): an exact zero passes.
-        @test EarthSciIntegrator._rhs_sum_error(0.0, [0.0, 0.0]) == 0.0
-        @test EarthSciIntegrator._rhs_sum_error(1.0, [0.5, 0.5]) == 0.0
-        @test EarthSciIntegrator._rhs_sum_error(1.0, [1.0, 1.0e-3]) ≈ 1.0e-3 / 1.001
+    end
+
+    @testset "the colouring of §8.2" begin
+        E = EarthSciIntegrator
+        pat(n, pairs) = E.BandPattern(NTuple{4, Int}[(1, 1, r, c) for (r, c) in pairs], n)
+        # The cases of the Rust planner's `greedy_colouring` test, 1-based
+        # here: a tridiagonal pattern on 5 columns needs three colours, two
+        # 2 × 2 blocks two, and a column no row reads takes colour 0.
+        @test E.colour_columns(pat(5, [(r, c) for r in 1:5 for c in max(1, r - 1):min(5, r + 1)])) == [0, 1, 2, 0, 1]
+        @test E.colour_columns(pat(4, [(1, 1), (1, 2), (2, 1), (2, 2), (3, 3), (3, 4), (4, 3), (4, 4)])) == [0, 1, 0, 1]
+        @test E.colour_columns(pat(2, [(1, 1)])) == [0, 0]
+        # Duplicate points are one pattern entry, and the points' order does
+        # not matter.
+        P = E.BandPattern(NTuple{4, Int}[(2, 1, 3, 1), (1, 1, 1, 2), (1, 2, 1, 2), (3, 1, 2, 3)], 3)
+        @test P.cols == [2, 3, 1] && P.rowptr == [1, 2, 3, 4] && P.pos == [3, 1, 1, 2]
+        # The fixtures' colourings: the number of colours and Σ (c − 1)·colour(c),
+        # the same numbers the Rust planner's tests fix, and no row with two
+        # pattern columns of one colour.
+        want = Dict(
+            ("pointwise_chemistry/auto", "default_pointwise") => (3, 98),
+            ("periodic_stencil/auto", "default_stencil") => (8, 1904),
+            ("column_contraction/auto", "default_column") => (5, 1230),
+            ("reseact_shaped/named", "chemistry") => (3, 59760),
+            ("reseact_shaped/named", "mixing") => (4, 70632),
+            ("reseact_shaped/named", "transport") => (9, 147168),
+            ("toy_robertson/rodas4", "kinetics") => (3, 5),
+        )
+        for key in unique(first.(collect(keys(want))))
+            fixture, case = split(key, "/")
+            d = EarthSciIntegrator.plan(joinpath(PFIX, fixture, "$case.run.json"))
+            b, ctx = d.ctx.backend, d.ctx
+            L = E.layout!(b, ctx)
+            for o in sort!(collect(keys(b.ops)))
+                P = E.BandPattern(b.ops[o].points, E.ndofs(L))
+                col = E.colour_columns(P)
+                @test col == E.colour_columns(P)
+                @test (maximum(col) + 1, sum((c - 1) * col[c] for c in eachindex(col))) == want[(key, o)]
+                @test all(r -> allunique(col[P.cols[i]] for i in E.entry_range(P, r)), 1:P.n)
+            end
+        end
+    end
+
+    @testset "band_model on the colouring (§8.2)" begin
+        E = EarthSciIntegrator
+        d = EarthSciIntegrator.plan(joinpath(PFIX, "toy_robertson", "rodas4.run.json"))
+        b, ctx = d.ctx.backend, d.ctx
+        op = ctx.ops["kinetics"]
+        a = b.ops["kinetics"]
+        L = E.layout!(b, ctx)
+        full = copy(a.points)
+        y1, y2, y3 = 1, 2, 3
+        refusal(f) = try
+            f(); nothing
+        catch e
+            e
+        end
+        # The pattern without (y1, y3): y3 still meets row y2, so it keeps its
+        # own colour, which no pattern column of row y1 has, and y1's nonzero
+        # partial in that colour's direction is caught exactly.
+        a.points = filter(p -> (p[3], p[4]) != (y1, y3), full)
+        P = E.BandPattern(a.points, E.ndofs(L))
+        @test E.colour_columns(P) == [0, 1, 2]
+        err = refusal(() -> E.band_model_check!(b, ctx, op))
+        @test err isa PlannerRefusal && err.code == "validation_band_model_failed" && occursin("colour 2", err.msg)
+        # Without (y1, y3) and (y2, y3), y3 meets no pattern row and takes
+        # colour 0, y1's: rows y1 and y2 then hold y3's dependence inside y1's
+        # entry, and it is caught only by the entry's tolerance, as in Rust.
+        a.points = filter(p -> !((p[3], p[4]) in ((y1, y3), (y2, y3))), full)
+        P = E.BandPattern(a.points, E.ndofs(L))
+        @test E.colour_columns(P) == [0, 1, 0]
+        err = refusal(() -> E.band_model_check!(b, ctx, op))
+        @test err isa PlannerRefusal && err.code == "validation_band_model_failed" && occursin("band Jacobian entry", err.msg)
+        # ForwardDiff's value there is the sum over the colour: ∂f/∂y1 + ∂f/∂y3.
+        R = E.rhs_built!(b, ctx, op)
+        t, u = E.samples!(b, ctx)[1]
+        JI, off = E.forwarddiff_colours(R, u, t, P, E.colour_columns(P), 1:3)
+        @test off === nothing
+        J = ForwardDiff.jacobian(x -> E.eval_rhs(R, x, t), u)
+        i11 = only(i for i in E.entry_range(P, y1) if P.cols[i] == y1)
+        @test JI[i11] ≈ J[y1, y1] + J[y1, y3] rtol = 1.0e-12
+        # The whole pattern passes, and the chunk width changes no value.
+        a.points = full
+        P = E.BandPattern(full, E.ndofs(L))
+        col = E.colour_columns(P)
+        @test refusal(() -> E.band_model_check!(b, ctx, op)) === nothing
+        @test E.forwarddiff_colours(R, u, t, P, col, 1:3; chunk = 1)[1] == E.forwarddiff_colours(R, u, t, P, col, 1:3)[1]
+        @test E.forwarddiff_colours(R, u, t, P, col, 1:3)[1] == [J[r, P.cols[i]] for r in 1:3 for i in E.entry_range(P, r)]
+    end
+
+    @testset "rhs_sum (§8.1) catches a broken split" begin
+        E = EarthSciIntegrator
+        refusal(f) = try
+            f(); nothing
+        catch e
+            e
+        end
+        failed(e) = e isa PlannerRefusal && e.code == "validation_rhs_sum_failed" && e.at == "/model"
+        for (fixture, case) in (("reseact_shaped", "named"), ("forced_column", "named"), ("toy_advection_reaction", "strang"))
+            d = EarthSciIntegrator.plan(joinpath(PFIX, fixture, "$case.run.json"))
+            b, ctx = d.ctx.backend, d.ctx
+            m = ctx.model
+            names = sort!(collect(keys(b.ops)))
+            docs() = Any[(o, b.ops[o].rhs.flat) for o in names]
+            @test E.rhs_sum_check(m, docs()) > 0
+            # Each break edits one operator's document and loads it again.
+            function broken(edit!)
+                for o in names
+                    doc = deepcopy(b.ops[o].rhs.doc)
+                    edit!(doc) || continue
+                    ds = Any[(x == o ? (x, E.DerivedDocument(doc).flat) : (x, b.ops[x].rhs.flat)) for x in names]
+                    return refusal(() -> E.rhs_sum_check(m, ds))
+                end
+                return :no_edit
+            end
+            # The state equations, wherever they are in the component tree.
+            function state_eqs(doc)
+                out = Any[]
+                walk(c) = (append!(out, [e for e in c["equations"] if e["lhs"] isa AbstractDict && e["lhs"]["op"] == "D"]); foreach(walk, values(get(c, "subsystems", Dict()))))
+                foreach(walk, values(doc["models"]))
+                return out
+            end
+            nonzero(eq) = !(eq["rhs"] isa Real) && !(eq["rhs"]["op"] == "makearray" && eq["rhs"]["values"] == Any[0.0])
+            # A term dropped: a fold's last summand removed (forced_column's
+            # operators hold one term per equation).
+            r = broken() do doc
+                for eq in state_eqs(doc)
+                    r = eq["rhs"]
+                    body = r["op"] == "faq" ? r["expr"] : r
+                    body["op"] == "+" || continue
+                    r["op"] == "faq" ? (r["expr"] = body["args"][1]) : (eq["rhs"] = body["args"][1])
+                    return true
+                end
+                return false
+            end
+            @test fixture == "forced_column" ? r === :no_edit : failed(r)
+            # A sign flipped, and a term doubled: the operator's equation
+            # holding its own right-hand side negated, or twice.
+            for f in (r -> Dict{String, Any}("op" => "-", "args" => Any[r]), r -> Dict{String, Any}("op" => "+", "args" => Any[r, r]))
+                @test failed(
+                    broken() do doc
+                        for eq in state_eqs(doc)
+                            nonzero(eq) || continue
+                            r = eq["rhs"]
+                            r["op"] == "faq" ? (r["expr"] = f(r["expr"])) : (eq["rhs"] = f(r))
+                            return true
+                        end
+                        return false
+                    end
+                )
+            end
+            # A parameter's default changed.
+            @test failed(
+                broken() do doc
+                    for c in values(doc["models"]), v in values(c["variables"])
+                        (v["type"] == "parameter" && get(v, "default", nothing) isa Real) || continue
+                        v["default"] = 2 * v["default"] + 1
+                        return true
+                    end
+                    return false
+                end
+            )
+        end
+        # An observed defined otherwise than in the model, and an initial
+        # condition changed (forced_column has both).
+        d = EarthSciIntegrator.plan(joinpath(PFIX, "forced_column", "named.run.json"))
+        b, ctx = d.ctx.backend, d.ctx
+        names = sort!(collect(keys(b.ops)))
+        function edited(f)
+            for o in names
+                doc = deepcopy(b.ops[o].rhs.doc)
+                for c in values(doc["models"]), eq in c["equations"]
+                    f(eq) || continue
+                    ds = Any[(x == o ? (x, E.DerivedDocument(doc).flat) : (x, b.ops[x].rhs.flat)) for x in names]
+                    return refusal(() -> E.rhs_sum_check(ctx.model, ds))
+                end
+            end
+            return :no_edit
+        end
+        @test failed(edited(eq -> eq["lhs"] isa AbstractString && (eq["rhs"] = Dict{String, Any}("op" => "*", "args" => Any[2, eq["rhs"]]); true)))
+        @test failed(edited(eq -> eq["lhs"] isa AbstractDict && eq["lhs"]["op"] == "ic" && (eq["rhs"] = Dict{String, Any}("op" => "*", "args" => Any[2, eq["rhs"]]); true)))
+        # An observed the document declares with its definition dropped.
+        r = :no_edit
+        for o in names
+            doc = deepcopy(b.ops[o].rhs.doc)
+            hit = false
+            for c in values(doc["models"])
+                i = findfirst(eq -> eq["lhs"] isa AbstractString, c["equations"])
+                i === nothing && continue
+                deleteat!(c["equations"], i)
+                hit = true
+                break
+            end
+            hit || continue
+            ds = Any[(x == o ? (x, E.DerivedDocument(doc).flat) : (x, b.ops[x].rhs.flat)) for x in names]
+            r = refusal(() -> E.rhs_sum_check(ctx.model, ds))
+            break
+        end
+        @test failed(r) && occursin("without defining it", r.msg)
+        # A boolean default is not a number (as in Rust).
+        @test E.default_form(true) != E.default_form(1)
+        @test E.default_form(Any[1, 2]) == E.default_form(Any[1.0, 2.0])
+        # Every spelling of a state equation's left-hand side, as Rust's.
+        ex(j) = E.EarthSciAST.expression_from_json(j)
+        ixj = Dict{String, Any}("op" => "index", "args" => Any["x", "i"])
+        @test E.differentiated_variable(ex(Dict{String, Any}("op" => "D", "args" => Any["x"], "wrt" => "t"))) == "x"
+        @test E.differentiated_variable(ex(Dict{String, Any}("op" => "D", "args" => Any[ixj], "wrt" => "t"))) == "x"
+        @test E.defined_name(ex("x")) == "x"
+        @test E.defined_name(ex(ixj)) == "x"
     end
 
     @testset "the derived documents' domain" begin

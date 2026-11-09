@@ -17,6 +17,7 @@ use crate::schedule::{self, CheckContext, Kind, Node};
 use crate::settings;
 use crate::strategy::{self, LeafFacts, LeafStrategy, Stiffness, StiffnessSource};
 use crate::structure::{self, Structure};
+use crate::sumcheck;
 use crate::terms::{self, Term};
 use crate::time::{self, Interval};
 use crate::validation;
@@ -99,14 +100,20 @@ struct Numbers<'a> {
     interval: Interval,
     dofs: Dofs,
     names: Vec<String>,
-    /// `u_0`, the sampling base and the sampled states (§5.5.1).
-    states: Option<(Vec<f64>, Vec<f64>, Vec<Sample>)>,
-    /// Per operator: its programs, band pattern, rows and band Jacobians.
+    /// Each operator's right-hand-side document, by operator name.
+    rhs_docs: &'a BTreeMap<String, Value>,
+    /// `u_0` (§4), from the first right-hand-side document built: every one
+    /// builds the same, which [`Numbers::rhs`] checks.
+    u0: Option<Vec<f64>>,
+    /// The sampling base and the sampled states (§5.5.1).
+    states: Option<(Vec<f64>, Vec<Sample>)>,
+    /// Each operator's right-hand-side program, built on first use.
+    rhs: BTreeMap<String, Program>,
+    /// Per operator: its band pattern, rows and band Jacobians.
     ops: BTreeMap<String, OperatorNumbers>,
 }
 
 struct OperatorNumbers {
-    rhs: Program,
     pattern: Sparse,
     /// Whether each DOF is a row of the operator's `writes`.
     rows: Vec<bool>,
@@ -148,7 +155,7 @@ fn band_source_error(
 }
 
 impl<'a> Numbers<'a> {
-    fn new(info: &'a ModelInfo, interval: Interval) -> Self {
+    fn new(info: &'a ModelInfo, interval: Interval, rhs_docs: &'a BTreeMap<String, Value>) -> Self {
         let dofs = Dofs::new(info);
         let names = dofs.element_names();
         Numbers {
@@ -156,7 +163,10 @@ impl<'a> Numbers<'a> {
             interval,
             dofs,
             names,
+            rhs_docs,
+            u0: None,
             states: None,
+            rhs: BTreeMap::new(),
             ops: BTreeMap::new(),
         }
     }
@@ -165,35 +175,71 @@ impl<'a> Numbers<'a> {
         (self.interval.start, self.interval.end)
     }
 
-    fn states(&mut self) -> Result<&(Vec<f64>, Vec<f64>, Vec<Sample>)> {
-        if self.states.is_none() {
-            let (u0, samples) = numeric::sampled_states(
-                self.info,
-                &self.dofs,
-                self.interval.start,
-                self.interval.end,
-            )
+    /// Builds the operator's right-hand-side program on first use. Its
+    /// initial state must be the one every other right-hand-side document
+    /// builds, bit for bit (§4, §6.1.2); a difference is an internal
+    /// planner error. The first one built sets `u_0`: with that check,
+    /// which one is first does not matter.
+    fn rhs(&mut self, name: &str) -> Result<()> {
+        if self.rhs.contains_key(name) {
+            return Ok(());
+        }
+        let doc = self
+            .rhs_docs
+            .get(name)
+            .ok_or_else(|| internal(format!("no right-hand-side document for {name}")))?;
+        let (prog, u0) = Program::with_initial_state(self.info, doc, self.tspan(), &self.dofs)
             .map_err(internal)?;
-            let base = numeric::sampling_base(&u0);
-            self.states = Some((u0, base, samples));
+        match &self.u0 {
+            None => self.u0 = Some(u0),
+            Some(want) => {
+                if let Some(n) = (0..u0.len()).find(|&n| u0[n].to_bits() != want[n].to_bits()) {
+                    return Err(internal(format!(
+                        "operator {name}'s right-hand-side document builds an initial state other than the other operators': {} is {:e}, not {:e} (spec/plan.md §4, §6.1.2)",
+                        self.names[n], u0[n], want[n]
+                    )));
+                }
+            }
+        }
+        self.rhs.insert(name.to_string(), prog);
+        Ok(())
+    }
+
+    /// The sampling base and the sampled states of §5.5.1, around `u_0`
+    /// (§4): the initial state of the first operator's right-hand-side
+    /// document in code-point order. The flattened model is never built
+    /// (D91).
+    fn states(&mut self) -> Result<&(Vec<f64>, Vec<Sample>)> {
+        if self.states.is_none() {
+            if self.u0.is_none() {
+                let first = self.rhs_docs.keys().next().cloned().ok_or_else(|| {
+                    internal("the initial state is taken from an operator's right-hand-side document, and the plan has no operator (spec/plan.md §4)")
+                })?;
+                self.rhs(&first)?;
+            }
+            let u0 = self.u0.as_ref().expect("set above");
+            let samples =
+                numeric::sampled_states(self.info, u0, self.interval.start, self.interval.end)
+                    .map_err(internal)?;
+            self.states = Some((numeric::sampling_base(u0), samples));
         }
         Ok(self.states.as_ref().expect("set above"))
     }
 
-    /// The operator's numbers: `rhs` and `jacobian` are its documents.
+    /// The operator's numbers: `jacobian` is its Jacobian document. Its
+    /// right-hand-side program is built here too ([`Numbers::rhs`]).
     fn op(
         &mut self,
         name: &str,
         op: &Operator,
         st: &Structure,
-        rhs: &Value,
         jacobian: &Value,
     ) -> Result<&OperatorNumbers> {
         if !self.ops.contains_key(name) {
             self.states()?;
-            let samples = &self.states.as_ref().expect("set above").2;
+            self.rhs(name)?;
+            let samples = &self.states.as_ref().expect("set above").1;
             let tspan = self.tspan();
-            let rhs_prog = Program::new(rhs, tspan, &self.dofs).map_err(internal)?;
             let jac_prog = Program::new(jacobian, tspan, &self.dofs).map_err(internal)?;
             let pattern = numeric::pattern(&self.dofs, &st.bands).map_err(internal)?;
             let owners = self.dofs.owners();
@@ -208,15 +254,8 @@ impl<'a> Numbers<'a> {
                 })
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(internal)?;
-            self.ops.insert(
-                name.to_string(),
-                OperatorNumbers {
-                    rhs: rhs_prog,
-                    pattern,
-                    rows,
-                    jb,
-                },
-            );
+            self.ops
+                .insert(name.to_string(), OperatorNumbers { pattern, rows, jb });
         }
         Ok(&self.ops[name])
     }
@@ -277,6 +316,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     // document (§6.2), which is built here: the Gershgorin bound evaluates
     // it, and it is written with the other derived documents.
     let mut rhs_docs = BTreeMap::new();
+    let mut rhs_flats = BTreeMap::new();
     let mut jac_docs = BTreeMap::new();
     let mut structures = BTreeMap::new();
     let state_dependent = info.state_dependent();
@@ -343,6 +383,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         )?;
         jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
+        // Kept for `rhs_sum` (§8.1), which compares the document as loaded.
+        rhs_flats.insert(name.clone(), view.flat);
         structures.insert(name.clone(), st);
     }
 
@@ -380,7 +422,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         .solver
         .as_ref()
         .and_then(|s| s.stiffness.as_deref());
-    let mut numbers = Numbers::new(&info, interval);
+    let mut numbers = Numbers::new(&info, interval, &rhs_docs);
     let mut stiffness = BTreeMap::new();
     let mut gershgorin_report = Map::new();
     let mut facts = StructureFacts::default();
@@ -417,13 +459,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 let delta = leaf
                     .and_then(|n| reference_steps.get(n.id()).copied())
                     .ok_or_else(|| internal(format!("no leaf advances {name}")))?;
-                let on = numbers.op(
-                    name,
-                    op,
-                    &structures[name],
-                    &rhs_docs[name],
-                    &jac_docs[name],
-                )?;
+                let on = numbers.op(name, op, &structures[name], &jac_docs[name])?;
                 let rhos: Vec<f64> = on
                     .jb
                     .iter()
@@ -487,50 +523,14 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         );
     }
 
-    // Pass 8: validation.
+    // Pass 8: validation. `rhs_sum` is structural: it builds and evaluates
+    // nothing (§8.1, D91).
     let mut report = Map::new();
-    let model_prog = Program::new_with(
-        info.path.as_path(),
-        numbers.tspan(),
-        &numbers.dofs,
-        numeric::binding_providers(&info).map_err(internal)?,
-    )
-    .map_err(internal)?;
-    // The flattened model has a slot for every data-fed parameter; an
-    // unused one's buffer holds 1, which nothing reads (§8).
-    let unused = numeric::unused_forcing(&info);
-    for (name, op) in &planned.operators {
-        numbers.op(
-            name,
-            op,
-            &planned.structures[name],
-            &rhs_docs[name],
-            &jac_docs[name],
-        )?;
-    }
-    numbers.states()?;
-    let (_, base, samples) = numbers.states.as_ref().expect("set above");
-    let mut rhs_sum = Vec::new();
-    for s in samples {
-        let f = model_prog
-            .eval(&numbers.dofs, &s.u, s.t, &s.forcing.with_defaults(&unused))
-            .map_err(internal)?;
-        let parts = numbers
-            .ops
-            .values()
-            .map(|o| o.rhs.eval(&numbers.dofs, &s.u, s.t, &s.forcing))
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(internal)?;
-        let worst = validation::rhs_sum(&f, &parts, &numbers.names).map_err(|m| {
-            refuse(
-                codes::VALIDATION_RHS_SUM_FAILED,
-                "/model",
-                format!("at t = {}: {m}", s.t),
-            )
-        })?;
-        rhs_sum.push(worst);
-    }
-    report.insert("rhs_sum".into(), json!({"worst_relative_error": rhs_sum}));
+    let views: Vec<(&str, &earthsci_ast::FlattenedSystem)> =
+        rhs_flats.iter().map(|(o, f)| (o.as_str(), f)).collect();
+    let summands = sumcheck::rhs_sum(&info, &views)
+        .map_err(|m| refuse(codes::VALIDATION_RHS_SUM_FAILED, "/model", m))?;
+    report.insert("rhs_sum".into(), json!({"summands": summands}));
     planned
         .validation
         .push(json!({"check": "rhs_sum", "passed": true}));
@@ -554,7 +554,11 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 ),
             ));
         }
+        numbers.op(name, op, &planned.structures[name], &jac_docs[name])?;
+        numbers.states()?;
+        let (base, samples) = numbers.states.as_ref().expect("set above");
         let on = &numbers.ops[name];
+        let rhs = &numbers.rhs[name];
         let mut measured = Vec::new();
         for (s, jb) in samples.iter().zip(&on.jb) {
             let at = validation::At {
@@ -563,14 +567,13 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 base,
                 names: &numbers.names,
             };
-            let r =
-                validation::band_model(&on.rhs, &at, jb, &on.pattern, &on.rows).map_err(|m| {
-                    refuse(
-                        codes::VALIDATION_BAND_MODEL_FAILED,
-                        "/model",
-                        format!("operator {name} at t = {}: {m}", s.t),
-                    )
-                })?;
+            let r = validation::band_model(rhs, &at, jb, &on.pattern, &on.rows).map_err(|m| {
+                refuse(
+                    codes::VALIDATION_BAND_MODEL_FAILED,
+                    "/model",
+                    format!("operator {name} at t = {}: {m}", s.t),
+                )
+            })?;
             measured.push(r.to_json());
         }
         planned

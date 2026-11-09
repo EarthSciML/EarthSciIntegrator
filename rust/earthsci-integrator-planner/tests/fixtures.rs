@@ -104,6 +104,16 @@ fn run_config(fixture: &str, case: &str) -> PathBuf {
         .join(format!("{case}.run.json"))
 }
 
+/// The planner's `u_0` (spec/plan.md §4): the initial state the first
+/// operator's right-hand-side document builds.
+fn initial_state(p: &Planned, dofs: &Dofs) -> Vec<f64> {
+    let (_, docs) = p.documents.iter().next().unwrap();
+    let rhs: Value = serde_json::from_slice(&docs.rhs).unwrap();
+    numeric::Program::with_initial_state(&p.model, &rhs, (p.interval.start, p.interval.end), dofs)
+        .unwrap()
+        .1
+}
+
 fn planned(fixture: &str, case: &str) -> Planned {
     plan(
         &run_config(fixture, case),
@@ -385,8 +395,9 @@ fn band_value_comparison() {
     ] {
         let p = planned(fixture, case);
         let dofs = Dofs::new(&p.model);
-        let (_, states) =
-            numeric::sampled_states(&p.model, &dofs, p.interval.start, p.interval.end).unwrap();
+        let u0 = initial_state(&p, &dofs);
+        let states =
+            numeric::sampled_states(&p.model, &u0, p.interval.start, p.interval.end).unwrap();
         let op = p.operators.keys().next().unwrap().clone();
         let file = band_values_file(&p, &op, &states);
         compare_band_values(&p, &op, &file).unwrap();
@@ -444,7 +455,7 @@ fn band_model_catches_errors() {
         let f = numeric::Program::new(&rhs, tspan, &dofs).unwrap();
         let jp = numeric::Program::new(&jac, tspan, &dofs).unwrap();
         let names = dofs.element_names();
-        let u0 = numeric::initial_state(&p.model, &dofs, p.interval.start).unwrap();
+        let u0 = initial_state(&p, &dofs);
         let base = numeric::sampling_base(&u0);
         let s = &numeric::samples(&u0, tspan.0, tspan.1)[1];
         let bands = &p.structures[op].bands;
@@ -473,6 +484,262 @@ fn band_model_catches_errors() {
         pattern2.remove(k);
         assert!(check(&jb2, &pattern2).is_err(), "{fixture}: missing band");
     }
+}
+
+/// The colouring of §8.2 on the fixtures: the number of colours and
+/// Σ c·colour(c) (c 0-based), the numbers the Julia planner's tests fix,
+/// and no row with two pattern columns of one colour.
+#[test]
+fn colourings_match_julia() {
+    let want: &[(&str, &str, &str, usize, usize)] = &[
+        ("pointwise_chemistry", "auto", "default_pointwise", 3, 98),
+        ("periodic_stencil", "auto", "default_stencil", 8, 1904),
+        ("column_contraction", "auto", "default_column", 5, 1230),
+        ("reseact_shaped", "named", "chemistry", 3, 59760),
+        ("reseact_shaped", "named", "mixing", 4, 70632),
+        ("reseact_shaped", "named", "transport", 9, 147168),
+        ("toy_robertson", "rodas4", "kinetics", 3, 5),
+    ];
+    for (fixture, case, op, colours, sig) in want {
+        let p = planned(fixture, case);
+        let dofs = Dofs::new(&p.model);
+        let pattern = numeric::pattern(&dofs, &p.structures[*op].bands).unwrap();
+        let colour = validation::colour_columns(dofs.n, &pattern);
+        assert_eq!(colour, validation::colour_columns(dofs.n, &pattern));
+        let got = (
+            colour.iter().max().map_or(0, |m| m + 1),
+            colour.iter().enumerate().map(|(c, k)| c * k).sum::<usize>(),
+        );
+        assert_eq!(got, (*colours, *sig), "{fixture}/{case} {op}");
+        let mut seen = std::collections::BTreeSet::new();
+        for (r, c) in pattern.keys() {
+            assert!(
+                seen.insert((*r, colour[*c])),
+                "{fixture}/{case} {op}: row {r} has two columns of colour {}",
+                colour[*c]
+            );
+        }
+    }
+}
+
+/// `rhs_sum` (§8.1) passes the planner's documents and refuses a broken
+/// split: a term dropped, a sign flipped, a term doubled, a parameter's
+/// default, an observed's definition or an initial condition changed in
+/// one operator's document.
+#[test]
+fn rhs_sum_catches_broken_splits() {
+    use earthsci_integrator_planner::sumcheck;
+    fn walk_eqs(c: &mut Value, f: &mut dyn FnMut(&mut Value) -> bool) -> bool {
+        for eq in c["equations"].as_array_mut().unwrap() {
+            if f(eq) {
+                return true;
+            }
+        }
+        if let Some(subs) = c.get_mut("subsystems").and_then(Value::as_object_mut) {
+            for s in subs.values_mut() {
+                if walk_eqs(s, f) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    fn is_d(eq: &Value) -> bool {
+        eq["lhs"]["op"] == "D"
+    }
+    fn nonzero(eq: &Value) -> bool {
+        let zero = eq["rhs"]["op"] == "makearray" && eq["rhs"]["values"] == json!([0.0]);
+        !(eq["rhs"].is_number() || zero)
+    }
+    // Applies `f` to the first equation of the first operator's document
+    // it accepts, and runs `rhs_sum` on the documents with that one edited.
+    fn broken(p: &Planned, mut f: impl FnMut(&mut Value) -> bool) -> Option<Result<usize, String>> {
+        let docs: Vec<(String, Value)> = p
+            .documents
+            .iter()
+            .map(|(o, d)| (o.clone(), serde_json::from_slice(&d.rhs).unwrap()))
+            .collect();
+        for (k, (_, doc)) in docs.iter().enumerate() {
+            let mut doc = doc.clone();
+            let edited = doc["models"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .any(|c| walk_eqs(c, &mut f));
+            if !edited {
+                continue;
+            }
+            let views: Vec<FlatView> = docs
+                .iter()
+                .enumerate()
+                .map(|(j, (_, d))| {
+                    FlatView::of_document(if j == k { doc.clone() } else { d.clone() }).unwrap()
+                })
+                .collect();
+            let refs: Vec<(&str, &earthsci_ast::FlattenedSystem)> = docs
+                .iter()
+                .zip(&views)
+                .map(|((o, _), v)| (o.as_str(), &v.flat))
+                .collect();
+            return Some(sumcheck::rhs_sum(&p.model, &refs));
+        }
+        None
+    }
+    fn rhs_of(eq: &mut Value) -> &mut Value {
+        if eq["rhs"]["op"] == "faq" {
+            &mut eq["rhs"]["expr"]
+        } else {
+            &mut eq["rhs"]
+        }
+    }
+    for (fixture, case) in [
+        ("reseact_shaped", "named"),
+        ("forced_column", "named"),
+        ("toy_advection_reaction", "strang"),
+    ] {
+        let p = planned(fixture, case);
+        assert!(broken(&p, |_| true).is_some());
+        let views: Vec<(String, FlatView)> = p
+            .documents
+            .iter()
+            .map(|(o, d)| {
+                (
+                    o.clone(),
+                    FlatView::new(std::str::from_utf8(&d.rhs).unwrap()).unwrap(),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &earthsci_ast::FlattenedSystem)> =
+            views.iter().map(|(o, v)| (o.as_str(), &v.flat)).collect();
+        assert!(
+            sumcheck::rhs_sum(&p.model, &refs).unwrap() > 0,
+            "{fixture}/{case}"
+        );
+        // A term dropped: a fold's last summand removed.
+        let r = broken(&p, |eq| {
+            if !is_d(eq) {
+                return false;
+            }
+            let body = rhs_of(eq);
+            if body["op"] != "+" {
+                return false;
+            }
+            *body = body["args"][0].clone();
+            true
+        });
+        // (forced_column's operators hold one term per equation.)
+        match r {
+            None => assert_eq!(fixture, "forced_column"),
+            Some(r) => assert!(r.is_err(), "{fixture}/{case}: a term dropped"),
+        }
+        // A sign flipped; a term doubled.
+        for wrap in [
+            (|r: Value| json!({"op": "-", "args": [r]})) as fn(Value) -> Value,
+            |r: Value| json!({"op": "+", "args": [r.clone(), r]}),
+        ] {
+            let r = broken(&p, |eq| {
+                if !is_d(eq) || !nonzero(eq) {
+                    return false;
+                }
+                let body = rhs_of(eq);
+                *body = wrap(body.clone());
+                true
+            });
+            assert!(
+                matches!(r, Some(Err(_))),
+                "{fixture}/{case}: a sign or a double"
+            );
+        }
+        // A parameter's default changed: an edit of the declarations.
+        let docs: Vec<(String, Value)> = p
+            .documents
+            .iter()
+            .map(|(o, d)| (o.clone(), serde_json::from_slice(&d.rhs).unwrap()))
+            .collect();
+        let mut doc = docs[0].1.clone();
+        let mut changed = false;
+        for c in doc["models"].as_object_mut().unwrap().values_mut() {
+            for v in c["variables"].as_object_mut().unwrap().values_mut() {
+                if !changed && v["type"] == "parameter" && v["default"].is_number() {
+                    v["default"] = json!(2.0 * v["default"].as_f64().unwrap() + 1.0);
+                    changed = true;
+                }
+            }
+        }
+        assert!(changed, "{fixture}/{case}");
+        let views: Vec<FlatView> = docs
+            .iter()
+            .enumerate()
+            .map(|(j, (_, d))| {
+                FlatView::of_document(if j == 0 { doc.clone() } else { d.clone() }).unwrap()
+            })
+            .collect();
+        let refs: Vec<(&str, &earthsci_ast::FlattenedSystem)> = docs
+            .iter()
+            .zip(&views)
+            .map(|((o, _), v)| (o.as_str(), &v.flat))
+            .collect();
+        assert!(
+            sumcheck::rhs_sum(&p.model, &refs).is_err(),
+            "{fixture}/{case}: a default"
+        );
+    }
+    // An observed defined otherwise than in the model, and an initial
+    // condition changed (forced_column has both).
+    let p = planned("forced_column", "named");
+    let twice = |r: &Value| json!({"op": "*", "args": [2, r]});
+    let r = broken(&p, |eq| {
+        if !eq["lhs"].is_string() {
+            return false;
+        }
+        eq["rhs"] = twice(&eq["rhs"]);
+        true
+    });
+    assert!(matches!(r, Some(Err(_))), "an observed");
+    let r = broken(&p, |eq| {
+        if eq["lhs"]["op"] != "ic" {
+            return false;
+        }
+        eq["rhs"] = twice(&eq["rhs"]);
+        true
+    });
+    assert!(matches!(r, Some(Err(_))), "an initial condition");
+    // An observed the document declares with its definition dropped.
+    let docs: Vec<(String, Value)> = p
+        .documents
+        .iter()
+        .map(|(o, d)| (o.clone(), serde_json::from_slice(&d.rhs).unwrap()))
+        .collect();
+    let k = docs
+        .iter()
+        .position(|(_, d)| d.to_string().contains("\"lhs\":\""))
+        .expect("a document defining an observed");
+    let mut doc = docs[k].1.clone();
+    let mut dropped = false;
+    for c in doc["models"].as_object_mut().unwrap().values_mut() {
+        let eqs = c["equations"].as_array_mut().unwrap();
+        if let Some(i) = eqs.iter().position(|e| e["lhs"].is_string()) {
+            if !dropped {
+                eqs.remove(i);
+                dropped = true;
+            }
+        }
+    }
+    assert!(dropped);
+    let views: Vec<FlatView> = docs
+        .iter()
+        .enumerate()
+        .map(|(j, (_, d))| {
+            FlatView::of_document(if j == k { doc.clone() } else { d.clone() }).unwrap()
+        })
+        .collect();
+    let refs: Vec<(&str, &earthsci_ast::FlattenedSystem)> = docs
+        .iter()
+        .zip(&views)
+        .map(|((o, _), v)| (o.as_str(), &v.flat))
+        .collect();
+    let e = sumcheck::rhs_sum(&p.model, &refs).unwrap_err();
+    assert!(e.contains("without defining it"), "{e}");
 }
 
 /// The hand-written bands of stage 1 and EarthSciASTDiff's give every term

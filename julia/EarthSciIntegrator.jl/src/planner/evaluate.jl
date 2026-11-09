@@ -308,37 +308,149 @@ eval_rhs(B::BuiltDocument, u, t, F = nothing) = eval_slots(B, u, t, F)[B.perm]
 struct BandModelTag end
 
 """
-    forwarddiff_jacobian(B, u, t, rows; keep = Set()) -> Dict{Tuple{Int, Int}, Float64}
+    BandPattern
 
-ForwardDiff's Jacobian of the document's right-hand side at `(u, t)`, canonical
-order (§8.2), restricted to the rows `rows` and held sparsely: every nonzero
-entry, and every entry in `keep` whatever its value. The columns are seeded
-in chunks of `chunk`, so memory is O(rows × chunk) beyond the entries kept,
-never a dense n × n matrix; every column is still seeded, so a dependence
-outside any expected pattern is found exactly.
+An operator's band pattern (§8.2): the distinct `(row, column)` DOF pairs of
+its band points, held row by row (compressed sparse rows). Row `r`'s columns
+are `cols[rowptr[r]:(rowptr[r + 1] - 1)]`, ascending; `pos[i]` is the entry
+of band point `i` (in the order of the points it was built from), so the band
+Jacobian is assembled straight into a vector aligned with `cols`.
 """
-function forwarddiff_jacobian(
-        B::BuiltDocument, u::Vector{Float64}, t, rows;
-        keep = Set{Tuple{Int, Int}}(), chunk::Int = 8, F = nothing
-    )
-    n = length(u)
-    J = Dict{Tuple{Int, Int}, Float64}()
-    K = max(1, min(chunk, n))
-    D = ForwardDiff.Dual{BandModelTag, Float64, K}
-    x = Vector{D}(undef, n)
-    for c0 in 1:K:n
-        for j in 1:n
-            k = j - c0 + 1
-            x[j] = D(u[j], ForwardDiff.Partials(ntuple(i -> i == k ? 1.0 : 0.0, Val(K))))
+struct BandPattern
+    n::Int
+    rowptr::Vector{Int}
+    cols::Vector{Int}
+    pos::Vector{Int}
+end
+
+"""
+    BandPattern(points, n)
+
+The pattern of the band points `points` (`(k, f, r, c)`, [`band_points`](@ref))
+over `n` DOFs.
+"""
+function BandPattern(points::AbstractVector{NTuple{4, Int}}, n::Int)
+    pairs = sort!(unique!([(r, c) for (_, _, r, c) in points]))
+    rowptr = zeros(Int, n + 1)
+    rowptr[1] = 1
+    for (r, _) in pairs
+        rowptr[r + 1] += 1
+    end
+    cumsum!(rowptr, rowptr)
+    cols = Int[c for (_, c) in pairs]
+    index = Dict{Tuple{Int, Int}, Int}(p => i for (i, p) in enumerate(pairs))
+    pos = Int[index[(r, c)] for (_, _, r, c) in points]
+    return BandPattern(n, rowptr, cols, pos)
+end
+
+nentries(P::BandPattern) = length(P.cols)
+entry_range(P::BandPattern, r::Int) = P.rowptr[r]:(P.rowptr[r + 1] - 1)
+
+"""
+    colour_columns(P::BandPattern) -> Vector{Int}
+
+§8.2's colouring of the pattern's columns, 0-based colours: the columns in
+canonical order, each taking the lowest colour that no column before it
+sharing a pattern row with it has taken (Curtis, Powell and Reid; the Rust
+planner's `colour_columns`). A column in no pattern entry takes colour 0.
+"""
+function colour_columns(P::BandPattern)
+    rows_of = [Int[] for _ in 1:P.n]
+    for r in 1:P.n, i in entry_range(P, r)
+        push!(rows_of[P.cols[i]], r)
+    end
+    # The colours each row's columns have taken so far.
+    taken = [BitSet() for _ in 1:P.n]
+    colour = zeros(Int, P.n)
+    forbidden = BitSet()
+    for c in 1:P.n
+        empty!(forbidden)
+        for r in rows_of[c]
+            union!(forbidden, taken[r])
         end
-        du = eval_rhs(B, x, t, F)
-        for r in rows, k in 1:min(K, n - c0 + 1)
-            c = c0 + k - 1
-            v = ForwardDiff.partials(du[r], k)
-            (v != 0 || (r, c) in keep) && (J[(r, c)] = v)
+        k = 0
+        while k in forbidden
+            k += 1
+        end
+        colour[c] = k
+        for r in rows_of[c]
+            push!(taken[r], k)
         end
     end
-    return J
+    return colour
+end
+
+"""
+    forwarddiff_colours(B, u, t, P, colour, rows; chunk = 8, F = nothing) -> (JI, off)
+
+§8.2's ForwardDiff Jacobian of the document's right-hand side at `(u, t)`, on
+the pattern `P` with its column colouring `colour` ([`colour_columns`](@ref)):
+each colour's columns are seeded together, in direction `colour + 1`, `chunk`
+colours to a dual evaluation. `JI[i]` is the partial of row `r` in the
+direction of the colour of entry `i`'s column `c`, which is
+``∂f_r/∂u_c`` when no other column of that colour enters row `r`. `JI`
+covers every row of `P`. `off` is `nothing`, or the first `(r, k, v)`, `r` in
+`rows`, with a nonzero partial `v` in the direction of a colour `k` (0-based)
+that no pattern column of row `r` has: a dependence the bands omit.
+"""
+function forwarddiff_colours(
+        B::BuiltDocument, u::Vector{Float64}, t, P::BandPattern, colour::Vector{Int}, rows;
+        chunk::Int = 8, F = nothing
+    )
+    # The chunk width is a type parameter past this function barrier.
+    return _forwarddiff_colours(Val(chunk), B, u, t, P, colour, rows, F)
+end
+
+function _forwarddiff_colours(
+        ::Val{K}, B::BuiltDocument, u::Vector{Float64}, t, P::BandPattern, colour::Vector{Int}, rows, F
+    ) where {K}
+    n = length(u)
+    ncolours = isempty(colour) ? 0 : maximum(colour) + 1
+    D = ForwardDiff.Dual{BandModelTag, Float64, K}
+    zero_partials = ForwardDiff.Partials(ntuple(_ -> 0.0, Val(K)))
+    x = D[D(u[j], zero_partials) for j in 1:n]
+    members = [Int[] for _ in 1:ncolours]
+    for c in 1:n
+        push!(members[colour[c] + 1], c)
+    end
+    checked = falses(n)
+    for r in rows
+        checked[r] = true
+    end
+    JI = zeros(nentries(P))
+    has = falses(K)
+    off = nothing
+    for k0 in 0:K:(ncolours - 1)
+        kend = min(k0 + K, ncolours) - 1
+        # Seed this chunk's columns only; the previous chunk's are unseeded.
+        for k in k0:kend, c in members[k + 1]
+            x[c] = D(u[c], ForwardDiff.Partials(ntuple(i -> i == k - k0 + 1 ? 1.0 : 0.0, Val(K))))
+        end
+        du = eval_rhs(B, x, t, F)
+        for k in k0:kend, c in members[k + 1]
+            x[c] = D(u[c], zero_partials)
+        end
+        for r in 1:n
+            rng = entry_range(P, r)
+            (isempty(rng) && !checked[r]) && continue
+            p = ForwardDiff.partials(du[r])
+            fill!(has, false)
+            for i in rng
+                k = colour[P.cols[i]]
+                k0 <= k <= kend || continue
+                JI[i] = p[k - k0 + 1]
+                has[k - k0 + 1] = true
+            end
+            if checked[r] && off === nothing
+                for j in 1:(kend - k0 + 1)
+                    v = p[j]
+                    (v != 0 && !has[j]) && (off = (r, k0 + j - 1, v); break)
+                end
+            end
+        end
+        off === nothing || break
+    end
+    return JI, off
 end
 
 # ---------------------------------------------------------------------------
@@ -417,6 +529,21 @@ function band_jacobian(B::BuiltDocument, pts, u, t, F = nothing)
     J = Dict{Tuple{Int, Int}, Float64}()
     for (k, f, r, c) in pts
         J[(r, c)] = get(J, (r, c), 0.0) + du[B.fields[k][f]]
+    end
+    return J
+end
+
+"""
+    band_values(B, P, pts, u, t, F = nothing) -> Vector{Float64}
+
+[`band_jacobian`](@ref) on the pattern `P` built from the points `pts`: the
+band Jacobian's value at each entry of `P`, every band's contribution added.
+"""
+function band_values(B::BuiltDocument, P::BandPattern, pts, u, t, F = nothing)
+    du = eval_slots(B, u, t, F)
+    J = zeros(nentries(P))
+    for (i, (k, f, _, _)) in enumerate(pts)
+        J[P.pos[i]] += du[B.fields[k][f]]
     end
     return J
 end

@@ -128,7 +128,7 @@ end
 
 The planner's backend on EarthSciASTDiff (M2 stage 2), holding what one
 planning run derives: per operator its documents, bands and built
-evaluators, the flattened model's evaluator and the sampled states, and,
+evaluators, the initial state and the sampled states, and,
 after validation, the band values (§8.2) and measured errors for
 `plan.report.json`. All of it belongs to the planning context `ctx` it was
 derived from; a backend passed to `plan` again starts afresh.
@@ -137,7 +137,7 @@ mutable struct DiffBackend <: PlanBackend
     ctx::Any
     ops::Dict{String, OperatorArtifacts}
     layout::Union{Nothing, DofLayout}
-    model::Union{Nothing, BuiltDocument}
+    u0::Union{Nothing, Vector{Float64}}
     samples::Union{Nothing, Vector{Tuple{Float64, Vector{Float64}}}}
     forcing::Union{Nothing, Vector{Dict{String, Vector{Float64}}}}
     bandvalues::Dict{String, Any}
@@ -150,7 +150,7 @@ function bind!(b::DiffBackend, ctx)
     b.ctx === ctx && return b
     b.ctx = ctx
     empty!(b.ops)
-    b.layout = b.model = b.samples = b.forcing = nothing
+    b.layout = b.u0 = b.samples = b.forcing = nothing
     empty!(b.bandvalues)
     empty!(b.report)
     return b
@@ -421,66 +421,67 @@ end
 
 layout!(b::DiffBackend, ctx) = (bind!(b, ctx); b.layout === nothing ? (b.layout = DofLayout(ctx.model)) : b.layout)
 
-"""The flattened model built with EarthSciAST, whose `u0` is §4's initial state; built on first use."""
-function model_built!(b::DiffBackend, ctx)
-    bind!(b, ctx)
-    b.model === nothing || return b.model
-    return b.model = build_document(model_with_forcing_defaults(ctx.model), layout!(b, ctx), ctx.time)
-end
-
-"""
-The flattened model with every unused data-fed parameter's `default` set to
-1 (§4: the planner's build binds each used one to its `default`, nonzero by
-§4.1, and each unused one to 1, which nothing reads).
-"""
-function model_with_forcing_defaults(m::PlanModel)
-    flat = m.flat
-    any(n -> !(n in m.used_forcing), keys(m.forcing)) || return flat
-    ps = copy(flat.parameters)
-    for n in keys(m.forcing)
-        n in m.used_forcing && continue
-        v = ps[n]
-        ps[n] = EarthSciAST.ModelVariable(
-            v.type; default = 1.0, description = v.description, units = v.units, default_units = v.default_units,
-            shape = v.shape, location = v.location, distribution = v.distribution, update = v.update,
-            element_type = v.element_type
-        )
-    end
-    return EarthSciAST.FlattenedSystem(flat; parameters = ps)
-end
-
 """
 §5.5.1's sampled forcing values, one dictionary per sampled state: every used
-data-fed parameter's values by name, and every unused one's, all 1 (the
-flattened model's program has a slot for each; nothing reads an unused one).
-Empty dictionaries for a model without data-fed parameters.
+data-fed parameter's values by name (an unused one is declared in no derived
+document, so no program has a slot for it). Empty dictionaries for a model
+without data-fed parameters.
 """
 function forcing_samples!(b::DiffBackend, ctx)
     bind!(b, ctx)
     b.forcing === nothing || return b.forcing
     m = ctx.model
     used = used_forcing(m)
-    F = sampled_forcing(used, Dict(n => default_array(m.flat, n) for n in used))
-    for n in keys(m.forcing), f in F
-        n in m.used_forcing || (f[n] = ones(length(default_array(model_with_forcing_defaults(m), n))))
-    end
-    return b.forcing = F
+    return b.forcing = sampled_forcing(used, Dict(n => default_array(m.flat, n) for n in used))
 end
 
 """The forcing `F` of sampled state `s` a document is given (§8): `nothing` when the model has no data-fed parameters."""
 sample_forcing(b::DiffBackend, ctx, s::Int) = isempty(ctx.model.forcing) ? nothing : forcing_samples!(b, ctx)[s]
 
-"""The three sampled states of §5.5.1, from the flattened model's initial state."""
+"""
+The planner's initial state ``u_0`` in canonical order (§4): the one the
+right-hand-side document of the first operator in code-point order builds.
+Every right-hand-side document builds the same (§6.1.2), which
+[`rhs_built!`](@ref) checks as it builds each. The flattened model is never
+built (D91).
+"""
+function initial_state!(b::DiffBackend, ctx)
+    bind!(b, ctx)
+    b.u0 === nothing || return b.u0
+    isempty(ctx.ops) && error("the initial state is taken from an operator's right-hand-side document, and the plan has no operator (spec/plan.md §4)")
+    rhs_built!(b, ctx, ctx.ops[minimum(keys(ctx.ops))])
+    return b.u0
+end
+
+"""The three sampled states of §5.5.1, from the initial state of §4 ([`initial_state!`](@ref))."""
 function samples!(b::DiffBackend, ctx)
     bind!(b, ctx)
     b.samples === nothing || return b.samples
-    B = model_built!(b, ctx)
-    return b.samples = sampled_states(B.u0[B.perm], ctx.time)
+    return b.samples = sampled_states(initial_state!(b, ctx), ctx.time)
 end
 
+"""
+The operator's right-hand-side document, built on first use. Its initial
+state must be the one every other right-hand-side document builds, bit for
+bit (§4, §6.1.2); a difference is an internal planner error. The first one
+built sets the backend's [`initial_state!`](@ref): with that check, which one
+is first does not matter.
+"""
 function rhs_built!(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
-    a.rhs_built === nothing && (a.rhs_built = build_document(a.rhs.flat, layout!(b, ctx), ctx.time))
+    if a.rhs_built === nothing
+        a.rhs_built = build_document(a.rhs.flat, layout!(b, ctx), ctx.time)
+        u0 = a.rhs_built.u0[a.rhs_built.perm]
+        if b.u0 === nothing
+            b.u0 = u0
+        elseif !isequal(u0, b.u0)
+            n = findfirst(i -> !isequal(u0[i], b.u0[i]), eachindex(u0))
+            error(
+                "operator $(op.name)'s right-hand-side document builds an initial state other than the other operators': " *
+                    "$(layout!(b, ctx).names[n]) is $(u0[n]), not $(b.u0[n]) (spec/plan.md §4, §6.1.2)"
+            )
+        end
+    end
     return a.rhs_built
 end
 
@@ -640,14 +641,6 @@ end
 # ---------------------------------------------------------------------------
 # Passes 6 and 8: derived documents and validation (§6, §7.7, §8)
 
-"""The relative error measure of `rhs_sum` at one DOF (§8.1), 0 for an exact zero."""
-function _rhs_sum_error(f, fs)
-    s = sum(fs)
-    scale = max(abs(f), sum(abs, fs))
-    d = abs(s - f)
-    return d == 0 ? 0.0 : scale == 0 ? Inf : d / scale
-end
-
 function derived_and_validation(b::DiffBackend, ctx)
     m = ctx.model
     names = sort!(collect(keys(ctx.ops)))
@@ -664,25 +657,10 @@ function derived_and_validation(b::DiffBackend, ctx)
         end
     end
     # §8.1, in the order validation lists the checks; the first failure refuses.
-    L = layout!(b, ctx)
-    S = samples!(b, ctx)
-    M = model_built!(b, ctx)
-    worst = 0.0
-    for (s, (t, u)) in enumerate(S)
-        F = sample_forcing(b, ctx, s)
-        f = eval_rhs(M, u, t, F)
-        fk = [eval_rhs(rhs_built!(b, ctx, ctx.ops[o]), u, t, F) for o in names]
-        for n in eachindex(f)
-            e = _rhs_sum_error(f[n], [x[n] for x in fk])
-            worst = max(worst, e)
-            e <= 1.0e-12 || refuse(
-                "validation_rhs_sum_failed", "/model",
-                "at t = $t the operators' right-hand sides sum to $(sum(x[n] for x in fk)) at $(L.names[n]), " *
-                    "the model's is $(f[n]) (relative error $e > 1e-12)"
-            )
-        end
-    end
-    b.report["rhs_sum"] = worst
+    # `rhs_sum` is structural: it builds and evaluates nothing (D91).
+    b.report["rhs_sum"] = Dict{String, Any}(
+        "summands" => rhs_sum_check(m, [(o, b.ops[o].rhs.flat) for o in names])
+    )
     validation = Any[Dict{String, Any}("check" => "rhs_sum", "passed" => true)]
     for o in names
         op = ctx.ops[o]
@@ -702,64 +680,98 @@ end
 
 §8.1 `band_model`, Julia's form (§8.2): at each sampled state, the band
 Jacobian from the Jacobian document's fields and the bands against
-ForwardDiff's Jacobian of the right-hand-side document, rows of `writes`
-only: `|J^B − J^I| ≤ 1e-10 M_r` per entry, and every nonzero of `J^I` in the
-band pattern. Keeps the ForwardDiff values on the band pattern for the
-band-value file (§8.2). Both Jacobians are held sparsely, row by row; an
-entry absent from both is zero in both and passes.
+ForwardDiff's Jacobian of the right-hand-side document on the band pattern,
+the pattern's columns coloured as §8.2 colours them and each colour seeded as
+one direction, rows of `writes` only: `|J^B − J^I| ≤ 1e-10 M_r` per pattern
+entry, and no nonzero partial of a row in the direction of a colour none of
+its pattern columns has. Keeps the ForwardDiff values on the band pattern for
+the band-value file (§8.2).
 """
 function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
     L = layout!(b, ctx)
     R = rhs_built!(b, ctx, op)
     B = jac_built!(b, ctx, op)
     a = b.ops[op.name]
-    pattern = Set{Tuple{Int, Int}}((r, c) for (_, _, r, c) in a.points)
+    P = BandPattern(a.points, ndofs(L))
+    colour = colour_columns(P)
     rows = state_dofs(L, op.writes)
     worst = 0.0
-    samples = Any[]
-    jrows = sort!(collect(union(Set(rows), (r for (r, _) in pattern))))
+    samples = BandValueSample[]
     for (s, (t, u)) in enumerate(samples!(b, ctx))
         F = sample_forcing(b, ctx, s)
-        JB = band_jacobian(B, a.points, u, t, F)
-        JI = forwarddiff_jacobian(R, u, t, jrows; keep = pattern, F)
-        cols = Dict{Int, Set{Int}}(r => Set{Int}() for r in rows)
-        for J in (JB, JI), (r, c) in keys(J)
-            haskey(cols, r) && push!(cols[r], c)
+        JB = band_values(B, P, a.points, u, t, F)
+        JI, off = forwarddiff_colours(R, u, t, P, colour, rows; F)
+        if off !== nothing
+            r, k, v = off
+            refuse(
+                "validation_band_model_failed", "/model",
+                "operator $(op.name) at t = $t: its right-hand side in row $(L.names[r]) has the partial $v " *
+                    "in the direction of the columns of colour $k, none of which a band covers in that row"
+            )
         end
         for r in rows
+            rng = entry_range(P, r)
             Mr = 0.0
-            for c in cols[r]
-                Mr = max(Mr, abs(get(JB, (r, c), 0.0)), abs(get(JI, (r, c), 0.0)))
+            for i in rng
+                Mr = max(Mr, abs(JB[i]), abs(JI[i]))
             end
-            for c in sort!(collect(cols[r]))
-                jb, ji = get(JB, (r, c), 0.0), get(JI, (r, c), 0.0)
-                d = abs(jb - ji)
+            for i in rng
+                d = abs(JB[i] - JI[i])
                 worst = max(worst, d == 0 ? 0.0 : d / Mr)
                 d <= 1.0e-10 * Mr || refuse(
                     "validation_band_model_failed", "/model",
-                    "operator $(op.name) at t = $t: band Jacobian entry ($(L.names[r]), $(L.names[c])) is $jb, " *
-                        "ForwardDiff's is $ji (row scale $Mr)"
-                )
-                ji != 0 && !((r, c) in pattern) && refuse(
-                    "validation_band_model_failed", "/model",
-                    "operator $(op.name) at t = $t: its right-hand side depends on $(L.names[c]) in row $(L.names[r]), " *
-                        "which no band covers"
+                    "operator $(op.name) at t = $t: band Jacobian entry ($(L.names[r]), $(L.names[P.cols[i]])) is $(JB[i]), " *
+                        "ForwardDiff's is $(JI[i]) (row scale $Mr)"
                 )
             end
         end
-        entries = sort!([(L.names[r], L.names[c], JI[(r, c)]) for (r, c) in pattern]; by = e -> (e[1], e[2]))
+        push!(samples, BandValueSample(t, u, F, JI))
+    end
+    get!(b.report, "band_model", Dict{String, Any}())[op.name] = worst
+    get!(b.report, "band_model_colours", Dict{String, Any}())[op.name] = isempty(colour) ? 0 : maximum(colour) + 1
+    b.bandvalues[op.name] = BandValues(P, samples)
+    return
+end
+
+"""One sampled state of a band-value file (§8.2): `t`, `u`, the forcing `F` (or `nothing`) and ForwardDiff's values on the pattern."""
+struct BandValueSample
+    t::Float64
+    u::Vector{Float64}
+    F::Any
+    values::Vector{Float64}
+end
+
+"""An operator's band values (§8.2): its pattern and one [`BandValueSample`](@ref) per sampled state."""
+struct BandValues
+    pattern::BandPattern
+    samples::Vector{BandValueSample}
+end
+
+"""
+    bandvalues_json(b, ctx, v::BandValues) -> Dict
+
+The band-value file `validation/<operator>.bandvalues.json` (§8.2): per
+sampled state its `t`, `u` (every DOF), `forcing` (when the model has
+data-fed parameters) and `entries`, every distinct (row, column) of the band
+pattern with ForwardDiff's value, sorted by row then column element name.
+"""
+function bandvalues_json(b::DiffBackend, ctx, v::BandValues)
+    L = layout!(b, ctx)
+    P = v.pattern
+    rc = Tuple{Int, Int}[(r, P.cols[i]) for r in 1:P.n for i in entry_range(P, r)]
+    order = sortperm(rc; by = x -> (L.names[x[1]], L.names[x[2]]))
+    out = Any[]
+    for s in v.samples
         sample = Dict{String, Any}(
-            "t" => t, "u" => Dict{String, Any}(L.names[n] => u[n] for n in eachindex(u)),
-            "entries" => Any[Any[e...] for e in entries]
+            "t" => s.t, "u" => Dict{String, Any}(L.names[n] => s.u[n] for n in eachindex(s.u)),
+            "entries" => Any[Any[L.names[rc[i][1]], L.names[rc[i][2]], s.values[i]] for i in order]
         )
         # §8.2: the sampled forcing values at every element of the canonical
         # forcing order (the used data-fed parameters only).
-        F === nothing || (sample["forcing"] = forcing_element_values(ctx.model, F))
-        push!(samples, sample)
+        s.F === nothing || (sample["forcing"] = forcing_element_values(ctx.model, s.F))
+        push!(out, sample)
     end
-    get!(b.report, "band_model", Dict{String, Any}())[op.name] = worst
-    b.bandvalues[op.name] = Dict{String, Any}("samples" => samples)
-    return
+    return Dict{String, Any}("samples" => out)
 end
 
 """§8.1 `non_empty`: the operator has a term, and a band when any of its terms references a state."""
