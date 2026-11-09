@@ -77,7 +77,7 @@ programs run in CI.
 
 ```sh
 # Conformance tier 0: schemas and fixtures
-pip install "jsonschema>=4.18" "earthsci-ast==0.8.0"
+pip install "jsonschema>=4.18" "earthsci-ast"
 python tests/conformance/validate_schemas.py --require-esm
 
 # Julia (1.10+)
