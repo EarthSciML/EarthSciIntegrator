@@ -6,7 +6,7 @@
 
 use crate::numeric::{Dofs, Program, Sample, Sparse};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// ε = 2⁻⁵², the spacing of binary64 at 1.
 pub const EPS: f64 = f64::EPSILON;
@@ -22,31 +22,6 @@ pub fn gershgorin(jb: &Sparse, rows: &[bool]) -> f64 {
         }
     }
     sums.values().fold(0.0, |a, b| a.max(*b))
-}
-
-/// `rhs_sum` at one sampled state (§8.1): `f` the flattened model's
-/// right-hand side, `parts` every operator's. Returns the largest
-/// `|Σ f_k − f| / max(|f|, Σ |f_k|)` (0 where both sides are exactly 0), or
-/// the first DOF whose error exceeds 1e-12 of that scale.
-pub fn rhs_sum(f: &[f64], parts: &[Vec<f64>], names: &[String]) -> Result<f64, String> {
-    let mut worst = 0.0f64;
-    for (n, fx) in f.iter().enumerate() {
-        let sum: f64 = parts.iter().map(|p| p[n]).sum();
-        let abs: f64 = parts.iter().map(|p| p[n].abs()).sum();
-        let err = (sum - fx).abs();
-        let scale = fx.abs().max(abs);
-        if err == 0.0 {
-            continue;
-        }
-        if err > 1e-12 * scale {
-            return Err(format!(
-                "at {}: the operators sum to {sum:e}, the model gives {fx:e}",
-                names[n]
-            ));
-        }
-        worst = worst.max(err / scale);
-    }
-    Ok(worst)
 }
 
 /// What `band_model` measured at one sampled state.
@@ -71,25 +46,31 @@ impl BandModelReport {
 }
 
 /// The greedy column colouring of §8.2: columns in canonical order, each
-/// taking the lowest colour none of whose columns shares a pattern row with
-/// it (Curtis, Powell and Reid).
+/// taking the lowest colour that no earlier column sharing a pattern row
+/// with it has taken (Curtis, Powell and Reid); a column in no pattern
+/// entry takes colour 0. The Julia planner's `colour_columns` is the same.
 pub fn colour_columns(n: usize, pattern: &Sparse) -> Vec<usize> {
     let mut rows_of: Vec<Vec<usize>> = vec![vec![]; n];
     for (r, c) in pattern.keys() {
         rows_of[*c].push(*r);
     }
-    let mut used: Vec<HashSet<usize>> = Vec::new();
+    // The colours each row's columns have taken so far.
+    let mut taken: HashMap<usize, HashSet<usize>> = HashMap::new();
     let mut colour = vec![0usize; n];
+    let mut forbidden = HashSet::new();
     for (c, rows) in rows_of.iter().enumerate() {
-        // The first colour free of these rows, else a new one.
-        let k = used
-            .iter()
-            .position(|u| rows.iter().all(|r| !u.contains(r)))
-            .unwrap_or(used.len());
-        if k == used.len() {
-            used.push(HashSet::new());
+        forbidden.clear();
+        for r in rows {
+            if let Some(t) = taken.get(r) {
+                forbidden.extend(t.iter().copied());
+            }
         }
-        used[k].extend(rows.iter().copied());
+        let k = (0..)
+            .find(|k| !forbidden.contains(k))
+            .expect("a free colour");
+        for r in rows {
+            taken.entry(*r).or_default().insert(k);
+        }
         colour[c] = k;
     }
     colour
@@ -146,11 +127,14 @@ pub fn band_model(
         colours,
         ..Default::default()
     };
-    for k in 0..colours {
-        let members: Vec<usize> = (0..n).filter(|c| colour[*c] == k).collect();
+    let mut members_of: Vec<Vec<usize>> = vec![Vec::new(); colours];
+    for (c, k) in colour.iter().enumerate() {
+        members_of[*k].push(c);
+    }
+    for (k, members) in members_of.iter().enumerate() {
         let mut up = u.clone();
         let mut um = u.clone();
-        for &c in &members {
+        for &c in members {
             up[c] = u[c] + step[c];
             um[c] = u[c] - step[c];
         }
@@ -222,17 +206,6 @@ mod tests {
         assert_eq!(gershgorin(&jb, &[true, true, false]), 5.0);
         assert_eq!(gershgorin(&jb, &[true, false, false]), 3.0);
         assert_eq!(gershgorin(&Sparse::new(), &[true]), 0.0);
-    }
-
-    #[test]
-    fn rhs_sum_tolerance() {
-        let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        // Exact zeros pass; a rounding-level difference passes.
-        let f = [0.0, 1.0, 0.3];
-        let parts = vec![vec![0.0, 0.25, 0.1], vec![0.0, 0.75, 0.2]];
-        assert!(rhs_sum(&f, &parts, &names).unwrap() < 1e-15);
-        // A missing part fails.
-        assert!(rhs_sum(&f, &parts[..1], &names).is_err());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Numeric evaluation for passes 5 and 8 (spec/plan.md §5.5.1, §5.4, §8):
-//! the canonical DOF order, the initial state, the sampled states, a
-//! document's right-hand side through EarthSciAST's reentrant Rust
-//! right-hand side (`RhsProgram`, U4), and the band Jacobian assembled from
-//! a Jacobian document's fields.
+//! the canonical DOF order, the initial state a right-hand-side document
+//! builds, the sampled states, a document's right-hand side through
+//! EarthSciAST's reentrant Rust right-hand side (`RhsProgram`, U4), and the
+//! band Jacobian assembled from a Jacobian document's fields.
 
 use crate::model::ModelInfo;
 use earthsci_ast::provider::{CadenceProvider, NativeField, ProviderError};
@@ -53,15 +53,6 @@ impl Forcing {
     /// The buffers by parameter name.
     pub fn bufs(&self) -> &BTreeMap<String, Arc<[f64]>> {
         &self.bufs
-    }
-
-    /// These buffers with `extra`'s added where these have none.
-    pub fn with_defaults(&self, extra: &BTreeMap<String, Arc<[f64]>>) -> Forcing {
-        let mut bufs = self.bufs.clone();
-        for (k, v) in extra {
-            bufs.entry(k.clone()).or_insert_with(|| v.clone());
-        }
-        Forcing::new(bufs)
     }
 }
 
@@ -126,23 +117,9 @@ pub fn sampled_forcing(info: &ModelInfo) -> Result<Vec<Forcing>, String> {
         .collect())
 }
 
-/// The buffers the planner binds data-fed parameters to where nothing else
-/// gives them (§4, §5.5.1): an unused data-fed parameter's, filled with 1.
-pub fn unused_forcing(info: &ModelInfo) -> BTreeMap<String, Arc<[f64]>> {
-    info.data_fed
-        .keys()
-        .filter(|n| !info.used.contains(*n))
-        .map(|n| {
-            let len: usize = info.param_extents(n).iter().product();
-            (n.clone(), vec![1.0; len].into())
-        })
-        .collect()
-}
-
 /// A provider that delivers one fixed array, whatever the time: how the
-/// planner binds a data-fed parameter when it builds the flattened model
-/// (§4: a used one to its `default`, an unused one to 1), since it reads no
-/// data.
+/// planner binds a data-fed parameter a derived document reads to its
+/// `default` at construction (§6.3), since it reads no data.
 pub struct FixedProvider {
     array: ndarray::ArrayD<f64>,
 }
@@ -171,21 +148,22 @@ impl CadenceProvider for FixedProvider {
     }
 }
 
-/// The providers that bind the flattened model's data-fed parameters when
-/// the planner builds it (§4): a used one to its `default`, an unused one
-/// to 1, keyed by flattened name.
-pub fn binding_providers(
+/// The providers that bind a right-hand-side document's data-fed
+/// parameters at construction (§6.3): every used one, which every such
+/// document declares, to its `default`, which an `ic` equation that reads
+/// it then reads, so the document builds the planner's `u_0` (§4).
+/// EarthSciAST's Rust `initial_state` reads an `ic` equation's array
+/// parameter only from a provider, so one that the document declares as
+/// an ordinary parameter (its operator does not read it, §6.3) is bound
+/// the same way, to the same value.
+pub fn default_providers(
     info: &ModelInfo,
 ) -> Result<HashMap<String, Box<dyn CadenceProvider>>, String> {
-    let ones = unused_forcing(info);
     let mut out: HashMap<String, Box<dyn CadenceProvider>> = HashMap::new();
-    for name in info.data_fed.keys() {
-        let values = match ones.get(name) {
-            Some(v) => v.to_vec(),
-            None => info
-                .default_column_major(name)
-                .ok_or_else(|| format!("the used data-fed parameter {name} has no default"))?,
-        };
+    for name in &info.used {
+        let values = info
+            .default_column_major(name)
+            .ok_or_else(|| format!("the data-fed parameter {name} has no default"))?;
         out.insert(
             name.clone(),
             Box::new(FixedProvider::new(&info.param_extents(name), values)?),
@@ -359,20 +337,19 @@ pub fn samples(u0: &[f64], t0: f64, tf: f64) -> Vec<Sample> {
         .collect()
 }
 
-/// The planner's `u_0` and the three sampled states of §5.5.1, each with
-/// its sampled forcing values, over the interval `[t0, tf]`.
+/// The three sampled states of §5.5.1 around the planner's `u_0` (§4),
+/// each with its sampled forcing values, over the interval `[t0, tf]`.
 pub fn sampled_states(
     info: &ModelInfo,
-    dofs: &Dofs,
+    u0: &[f64],
     t0: f64,
     tf: f64,
-) -> Result<(Vec<f64>, Vec<Sample>), String> {
-    let u0 = initial_state(info, dofs, t0)?;
-    let mut out = samples(&u0, t0, tf);
+) -> Result<Vec<Sample>, String> {
+    let mut out = samples(u0, t0, tf);
     for (s, f) in out.iter_mut().zip(sampled_forcing(info)?) {
         s.forcing = f;
     }
-    Ok((u0, out))
+    Ok(out)
 }
 
 /// A forcing from values by element name of the canonical forcing order
@@ -402,24 +379,13 @@ pub fn forcing_from_elements(
     })
 }
 
-/// The initial state `u_0` in canonical order: EarthSciAST's
-/// `initial_state` of the model's Problem (defaults, initialization and `ic`
+/// The initial state of the problem `prob` in canonical order:
+/// EarthSciAST's `initial_state` (defaults, initialization and `ic`
 /// equations, field initial conditions), matched to the DOFs by
 /// `state_variable_names`.
-pub fn initial_state(info: &ModelInfo, dofs: &Dofs, t0: f64) -> Result<Vec<f64>, String> {
-    let prob = esm_problem(
-        ProblemInput::File(&info.file),
-        (t0, t0),
-        ProblemOptions {
-            base_path: info.path.parent().map(|p| p.to_path_buf()),
-            providers: binding_providers(info)?,
-            compiler: Some(Compiler::Native),
-            ..Default::default()
-        },
-    )
-    .map_err(|e| format!("EarthSciAST esm_problem: {e}"))?;
-    let u0 = earthsci_ast::initial_state(&prob)
-        .map_err(|e| format!("EarthSciAST initial state: {e}"))?;
+fn problem_initial_state(prob: &earthsci_ast::EsmProblem, dofs: &Dofs) -> Result<Vec<f64>, String> {
+    let u0 =
+        earthsci_ast::initial_state(prob).map_err(|e| format!("EarthSciAST initial state: {e}"))?;
     let names = prob.state_variable_names();
     if names.len() != u0.len() {
         return Err(format!(
@@ -481,18 +447,31 @@ impl Program {
         tspan: (f64, f64),
         dofs: &Dofs,
     ) -> Result<Program, String> {
-        Program::new_with(input, tspan, dofs, HashMap::new())
+        Ok(Program::build(input, tspan, dofs, HashMap::new(), false)?.0)
     }
 
-    /// [`Program::new`] with `providers` bound at construction (§4: how the
-    /// planner builds the flattened model, whose data-fed parameters it
-    /// binds to fixed values).
-    pub fn new_with<'a>(
+    /// [`Program::new`] of the right-hand-side document `doc`, with the
+    /// initial state it builds, in canonical order (§4: the planner's
+    /// `u_0` is a right-hand-side document's). Each data-fed parameter the
+    /// document reads is bound at construction to its `default` (§6.3).
+    pub fn with_initial_state(
+        info: &ModelInfo,
+        doc: &serde_json::Value,
+        tspan: (f64, f64),
+        dofs: &Dofs,
+    ) -> Result<(Program, Vec<f64>), String> {
+        let providers = default_providers(info)?;
+        let (prog, u0) = Program::build(doc, tspan, dofs, providers, true)?;
+        Ok((prog, u0.expect("asked for")))
+    }
+
+    fn build<'a>(
         input: impl Into<ProblemInput<'a>>,
         tspan: (f64, f64),
         dofs: &Dofs,
         providers: HashMap<String, Box<dyn CadenceProvider>>,
-    ) -> Result<Program, String> {
+        initial: bool,
+    ) -> Result<(Program, Option<Vec<f64>>), String> {
         let prob = esm_problem(
             input,
             tspan,
@@ -503,8 +482,13 @@ impl Program {
             },
         )
         .map_err(|e| format!("EarthSciAST esm_problem: {e}"))?;
+        let u0 = if initial {
+            Some(problem_initial_state(&prob, dofs)?)
+        } else {
+            None
+        };
         let prog = rhs_program(&prob).map_err(|e| format!("EarthSciAST rhs_program: {e}"))?;
-        Program::from_program(prog, dofs)
+        Ok((Program::from_program(prog, dofs)?, u0))
     }
 
     /// A program already built, for the DOF order `dofs`.

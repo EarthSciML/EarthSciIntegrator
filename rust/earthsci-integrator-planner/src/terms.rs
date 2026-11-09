@@ -74,7 +74,7 @@ fn push_terms(e: &Expr, out: &mut Vec<Expr>) {
 }
 
 /// A numeric literal equal to zero.
-fn is_literal_zero(e: &Expr) -> bool {
+pub fn is_literal_zero(e: &Expr) -> bool {
     match e {
         Expr::Integer(0) => true,
         Expr::Number(x) => *x == 0.0,

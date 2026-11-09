@@ -41,6 +41,7 @@ pub mod schedule;
 pub mod settings;
 pub mod strategy;
 pub mod structure;
+pub mod sumcheck;
 pub mod terms;
 pub mod time;
 pub mod validation;

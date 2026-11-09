@@ -161,10 +161,10 @@ function forcing_json(m::PlanModel)
     isempty(names) && return nothing
     return Dict{String, Any}(
         n => Dict{String, Any}(
-            "shape" => Any[m.forcing[n].shape...], "source" => m.forcing[n].source,
-            "file_variable" => m.forcing[n].file_variable, "cadence" => m.forcing[n].cadence,
-            "records_per_sample" => m.forcing[n].records_per_sample
-        ) for n in names
+                "shape" => Any[m.forcing[n].shape...], "source" => m.forcing[n].source,
+                "file_variable" => m.forcing[n].file_variable, "cadence" => m.forcing[n].cadence,
+                "records_per_sample" => m.forcing[n].records_per_sample
+            ) for n in names
     )
 end
 
@@ -229,7 +229,7 @@ function write_plan(d::PlanDraft, dir::AbstractString; bandvalues::Bool = false)
     if bandvalues
         mkpath(joinpath(dir, "validation"))
         for (o, v) in b.bandvalues
-            write(joinpath(dir, "validation", "$o.bandvalues.json"), EarthSciASTDiff.stable_json(v))
+            write(joinpath(dir, "validation", "$o.bandvalues.json"), EarthSciASTDiff.stable_json(bandvalues_json(b, d.ctx, v)))
         end
     end
     return dir
