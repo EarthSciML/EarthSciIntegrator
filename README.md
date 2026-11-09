@@ -1,16 +1,13 @@
 # EarthSciIntegrator
 
-A time integrator for the full 3-D [EarthSciML](https://github.com/EarthSciML) `.esm` models: the reseact
-chemical transport model, eqice (an ice-sheet model in the style of PISM) and EqWeFiC (WRF, WRF-Chem and
-fire). There is one written specification, implemented natively in **Julia** and in **Rust**. A shared
+A time integrator for large-scale [EarthSciML](https://github.com/EarthSciML) `.esm` models. There is one written specification, implemented natively in **Julia** and in **Rust**. A shared
 conformance suite checks each implementation against the other.
 
-**Documentation:** <https://earthsci.dev/integrator/>, which covers the getting-started guide, the Julia and
-Rust API reference, the specification, and the design.
+**Documentation:** <https://earthsci.dev/integrator/>.
 
 > **Status: under development (spec version 0.1.0).** Both implementations cover milestone M1: the core
 > methods, step-size control, operator-splitting combinators, the tape and discrete adjoints, all on
-> hand-written toy problems. Milestone M2, the planner, is in progress. Nothing here runs a production model
+> hand-written toy problems. Milestone M2, the planner, is in progress. Nothing here has run a production model
 > yet. See the [milestones](docs/architecture.md#14-milestones).
 
 ## What it does
@@ -23,7 +20,7 @@ A **run configuration** (a JSON document) describes how to integrate a model:
 
 A **planner** reads the run configuration together with an `.esm` model. It infers each operator's
 locality and Jacobian structure, and writes an inspectable, cacheable **plan**. The **runtime** runs the
-plan forward and records a tape, and then runs it backward to compute a discrete adjoint.
+plan forward and records a tape, and then optionally runs it backward to compute a discrete adjoint.
 
 Design goals:
 - **Methods:** explicit (ERK/SSP), Rosenbrock, SDIRK/ESDIRK, IMEX, and legacy fixed-step and
@@ -38,7 +35,7 @@ Design goals:
   over threads and MPI. Results are bitwise reproducible for a fixed decomposition.
 - **Mixed precision per leaf:** f16/bf16 through f64, with time, norms and reductions always in f64.
 
-In Julia, the library speaks the SciMLBase interfaces. It uses OrdinaryDiffEq's tableaus and controller
+In Julia, the library uses the SciMLBase interfaces. It uses OrdinaryDiffEq's tableaus and controller
 constants, Krylov.jl and NonlinearSolve.jl. The Rust implementation builds on faer.
 
 ## Quick start (Julia)
