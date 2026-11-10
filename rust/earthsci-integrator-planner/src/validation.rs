@@ -28,25 +28,40 @@ pub fn gershgorin(jb: &Sparse, rows: &[bool]) -> f64 {
 #[derive(Debug, Clone, Default)]
 pub struct BandModelReport {
     /// The largest `|J^B − J^I| / τ` over the pattern entries, where an
-    /// entry the central difference fails but one at a smaller step accepts
-    /// (§8.2, "Kinks") contributes that smaller step's ratio.
+    /// entry the central difference fails but a difference at a smaller
+    /// step accepts (§8.2, "Kinks") contributes that difference's ratio.
     pub worst_entry: f64,
     /// The largest off-pattern difference over its floor.
     pub worst_off_pattern: f64,
     /// The number of colours (right-hand-side pairs).
     pub colours: usize,
-    /// The number of entries the central difference failed and one at a
-    /// smaller step accepted.
+    /// The number of entries the central difference failed and a
+    /// difference at a smaller step accepted.
     pub accepted_at_smaller_step: usize,
+    /// Of those, how many each difference accepted, in the order they are
+    /// tried: central at the step over 10, one-sided at the step over 10,
+    /// central at the step over 100, one-sided at the step over 100.
+    pub accepted_by: [usize; 4],
+    /// The largest `|J^B − J^I| / τ` over the entries a smaller step
+    /// accepted (0 when there are none).
+    pub worst_accepted_at_smaller_step: f64,
 }
 
 impl BandModelReport {
     pub fn to_json(&self) -> Value {
+        let [c10, o10, c100, o100] = self.accepted_by;
         json!({
             "worst_entry_over_tolerance": self.worst_entry,
             "worst_off_pattern_over_floor": self.worst_off_pattern,
             "colours": self.colours,
             "entries_accepted_at_smaller_step": self.accepted_at_smaller_step,
+            "entries_accepted_by": {
+                "central_at_step_over_10": c10,
+                "one_sided_at_step_over_10": o10,
+                "central_at_step_over_100": c100,
+                "one_sided_at_step_over_100": o100,
+            },
+            "worst_accepted_at_smaller_step_over_tolerance": self.worst_accepted_at_smaller_step,
         })
     }
 }
@@ -113,8 +128,8 @@ pub fn band_model(
     band_model_with(&eval, &s.u, base, names, jb, pattern, rows)
 }
 
-/// The divisors of the step at which §8.2's kink fallback takes central
-/// differences again, in the order they are tried.
+/// The divisors of the step at which §8.2's kink fallback takes central,
+/// forward and backward differences, in the order they are tried.
 const SMALLER_STEPS: [f64; 2] = [10.0, 100.0];
 
 /// A right-hand side as a function of the state alone, in canonical order.
@@ -232,32 +247,49 @@ pub(crate) fn band_model_with(
         return Ok(report);
     }
     // The kink fallback (§8.2): an entry the central difference fails is
-    // accepted when its band value is within τ of the central difference
-    // at the step divided by 10, then by 100, τ taken again at that step
-    // (its rounding term grows as the step shrinks). Two evaluations per
-    // smaller step, for the colours that still have failing entries.
+    // accepted when its band value is within τ of the central, forward or
+    // backward difference at the step divided by 10, then by 100, τ taken
+    // again at that step (its rounding term grows as the step shrinks).
+    // Two evaluations per smaller step, for the colours that still have
+    // failing entries, plus f(u) once, shared by every one-sided
+    // difference, and only if some entry fails.
     let smaller: Vec<Vec<f64>> = SMALLER_STEPS.iter().map(|d| steps(*d)).collect();
+    let f0 = f(u)?;
     for (k, entries) in failing {
-        // What each entry's smaller steps gave, for the refusal message.
-        let mut tried: Vec<Vec<f64>> = vec![Vec::new(); entries.len()];
+        // What each entry's smaller steps gave (central, forward, backward
+        // per step), for the refusal message.
+        let mut tried: Vec<Vec<[f64; 3]>> = vec![Vec::new(); entries.len()];
         let mut open: Vec<usize> = (0..entries.len()).collect();
-        for st in &smaller {
+        for (j, st) in smaller.iter().enumerate() {
             if open.is_empty() {
                 break;
             }
             let (fp, fm) = pair(k, st)?;
             open.retain(|&i| {
                 let (r, c) = entries[i].0;
-                let central = (fp[r] - fm[r]) / (2.0 * st[c]);
-                tried[i].push(central);
-                let tau = 1e-6 * m[&r] + 1e3 * EPS * fp[r].abs().max(fm[r].abs()) / st[c];
-                let d = (jb.get(&(r, c)).copied().unwrap_or(0.0) - central).abs();
-                if d <= tau {
-                    report.worst_entry = report.worst_entry.max(d / tau);
-                    report.accepted_at_smaller_step += 1;
-                    false
-                } else {
-                    true
+                let h = st[c];
+                let vb = jb.get(&(r, c)).copied().unwrap_or(0.0);
+                let tau = |a: f64, b: f64| 1e-6 * m[&r] + 1e3 * EPS * a.abs().max(b.abs()) / h;
+                // (value, τ) of the central, forward and backward
+                // differences, tried in that order.
+                let diffs = [
+                    ((fp[r] - fm[r]) / (2.0 * h), tau(fp[r], fm[r])),
+                    ((fp[r] - f0[r]) / h, tau(fp[r], f0[r])),
+                    ((f0[r] - fm[r]) / h, tau(f0[r], fm[r])),
+                ];
+                tried[i].push(diffs.map(|(v, _)| v));
+                match diffs.iter().position(|(v, t)| (vb - v).abs() <= *t) {
+                    Some(a) => {
+                        let (v, t) = diffs[a];
+                        let ratio = (vb - v).abs() / t;
+                        report.worst_entry = report.worst_entry.max(ratio);
+                        report.worst_accepted_at_smaller_step =
+                            report.worst_accepted_at_smaller_step.max(ratio);
+                        report.accepted_at_smaller_step += 1;
+                        report.accepted_by[2 * j + usize::from(a > 0)] += 1;
+                        false
+                    }
+                    None => true,
                 }
             });
         }
@@ -265,13 +297,17 @@ pub(crate) fn band_model_with(
             let ((r, c), tau) = entries[i];
             let t = &tried[i];
             return Err(format!(
-                "J[{}, {}]: bands give {:e}, central differences {:e}, beyond the tolerance {tau:e}; central differences at the step over 10 ({:e}) and over 100 ({:e}) are beyond their tolerances too",
+                "J[{}, {}]: bands give {:e}, central differences {:e}, beyond the tolerance {tau:e}; the central, forward and backward differences at the step over 10 ({:e}, {:e}, {:e}) and over 100 ({:e}, {:e}, {:e}) are beyond their tolerances too",
                 names[r],
                 names[c],
                 jb.get(&(r, c)).copied().unwrap_or(0.0),
                 ji(r, c),
-                t[0],
-                t[1],
+                t[0][0],
+                t[0][1],
+                t[0][2],
+                t[1][0],
+                t[1][1],
+                t[1][2],
             ));
         }
     }
@@ -345,6 +381,66 @@ mod tests {
     }
 
     #[test]
+    fn kink_nearer_than_a_hundredth_of_a_step_is_accepted_one_sided() {
+        // A kink 0.003 of a step above the sample, the case found on
+        // reseact: every central difference straddles it, but the backward
+        // difference at a tenth of the step stays on the sample's side.
+        let kink = 1.0 + 0.003 * h1();
+        let f = |v: &[f64]| vec![-(v[0] - kink).abs(), 3.0 * v[1]];
+        let jb = sparse(&[((0, 0), 1.0), ((1, 1), 3.0)]);
+        let r = check(f, &[1.0, 2.0], &jb).expect("the backward difference matches");
+        assert_eq!(r.accepted_at_smaller_step, 1);
+        assert_eq!(r.accepted_by, [0, 1, 0, 0]);
+        assert!(r.worst_accepted_at_smaller_step <= 1.0);
+        // The same kink below the sample: the forward difference.
+        let kink = 1.0 - 0.003 * h1();
+        let f = |v: &[f64]| vec![(v[0] - kink).abs(), 3.0 * v[1]];
+        let r = check(f, &[1.0, 2.0], &jb).expect("the forward difference matches");
+        assert_eq!(r.accepted_by, [0, 1, 0, 0]);
+        // A kink 0.003 of a step above and a clamp 0.05 of a step below:
+        // at a tenth of the step every difference crosses one of them; at a
+        // hundredth the backward difference crosses neither.
+        let (lo, kink) = (1.0 - 0.05 * h1(), 1.0 + 0.003 * h1());
+        let f = |v: &[f64]| vec![-(v[0].max(lo) - kink).abs(), 3.0 * v[1]];
+        let r = check(f, &[1.0, 2.0], &jb).expect("the backward difference matches");
+        assert_eq!(r.accepted_by, [0, 0, 0, 1]);
+        // The other side's slope, or a slope 0.1% off, still fails.
+        let f = |v: &[f64]| vec![-(v[0] - kink).abs(), 3.0 * v[1]];
+        for wrong in [-1.0, 1.001, 0.999, 0.0] {
+            let jb = sparse(&[((0, 0), wrong), ((1, 1), 3.0)]);
+            let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
+            assert!(e.starts_with("J[x[1], x[1]]"), "{wrong}: {e}");
+            assert!(e.contains("forward and backward"), "{e}");
+        }
+    }
+
+    /// The fallback evaluates nothing beyond what it did with central
+    /// differences alone, but for f(u) once: two evaluations per colour,
+    /// then for a colour with a failing entry two per smaller step tried.
+    #[test]
+    fn evaluations_counted() {
+        use std::cell::Cell;
+        let count = |kink_at: f64| {
+            let n = Cell::new(0usize);
+            let kink = 1.0 + kink_at * h1();
+            let f = |v: &[f64]| {
+                n.set(n.get() + 1);
+                Ok(vec![-(v[0] - kink).abs(), 3.0 * v[1]])
+            };
+            let names = vec!["x[1]".to_string(), "x[2]".to_string()];
+            let jb = sparse(&[((0, 0), 1.0), ((1, 1), 3.0)]);
+            let u = [1.0, 2.0];
+            band_model_with(&f, &u, &u, &names, &jb, &jb, &[true, true]).unwrap();
+            n.get()
+        };
+        // One colour: the check's own pair.
+        assert_eq!(count(5e5), 2);
+        // A failing entry accepted at a tenth of the step: + f(u) + a pair.
+        assert_eq!(count(0.5), 5);
+        assert_eq!(count(0.003), 5);
+    }
+
+    #[test]
     fn wrong_band_value_still_fails() {
         // A smooth row with a band value off by 1e-3 relative.
         let f = |v: &[f64]| vec![2.0 * v[0] * v[0], 3.0 * v[1]];
@@ -352,16 +448,30 @@ mod tests {
         let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
         assert!(e.starts_with("J[x[1], x[1]]: bands give"), "{e}");
         assert!(e.contains("over 100"), "{e}");
-        // A smooth, curved row whose band value is the forward difference:
-        // off by half the step times the curvature (about 3e-6 relative),
-        // beyond τ's 1e-6. A one-sided difference would accept it; the
-        // central differences at smaller steps do not.
+        // A smooth, curved row whose band value is the forward or backward
+        // difference at the full step: off by half the step times the
+        // curvature (about 3e-6 relative), beyond τ's 1e-6. A one-sided
+        // difference at the full step would accept it; the differences at
+        // smaller steps, one-sided ones included, do not (at a tenth of the
+        // step their truncation error is about 3e-7 relative).
         let f = |v: &[f64]| vec![v[0] * v[0], 3.0 * v[1]];
         let forward = ((1.0 + h1()) * (1.0 + h1()) - 1.0) / h1();
+        let backward = (1.0 - (1.0 - h1()) * (1.0 - h1())) / h1();
         assert!((forward - 2.0) / 2.0 > 2e-6);
-        let jb = sparse(&[((0, 0), forward), ((1, 1), 3.0)]);
-        let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
-        assert!(e.starts_with("J[x[1], x[1]]"), "{e}");
+        assert!((2.0 - backward) / 2.0 > 2e-6);
+        for wrong in [forward, backward] {
+            let jb = sparse(&[((0, 0), wrong), ((1, 1), 3.0)]);
+            let e = check(f, &[1.0, 2.0], &jb).unwrap_err();
+            assert!(e.starts_with("J[x[1], x[1]]"), "{wrong}: {e}");
+        }
+        // The same on a row of a component near 1e-20, where the rounding
+        // term is negligible: 3e-6 relative off fails.
+        let f = |v: &[f64]| vec![1e20 * v[0] * v[0], 3.0 * v[1]];
+        for wrong in [2.0 * (1.0 + 3e-6), 2.0 * (1.0 - 3e-6)] {
+            let jb = sparse(&[((0, 0), wrong), ((1, 1), 3.0)]);
+            let e = check(f, &[1e-20, 2.0], &jb).unwrap_err();
+            assert!(e.starts_with("J[x[1], x[1]]"), "{wrong}: {e}");
+        }
         // A kinked row whose band value is no side's slope: below the kink
         // the slope is 1, above it -1 (0.5, the central difference across
         // the kink, passes the check itself).
