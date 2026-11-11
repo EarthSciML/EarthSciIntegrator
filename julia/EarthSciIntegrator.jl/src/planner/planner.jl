@@ -153,7 +153,7 @@ key; then it is computed from the model as `DiffBackend` computes it.
 """
 function op_depends_on_t(ctx, o)
     s = ctx.ops[o].structure
-    s === nothing || !haskey(s, "depends_on_t") ? depends_on_t(ctx.model, ctx.ops[o]) : s["depends_on_t"] === true
+    return s === nothing || !haskey(s, "depends_on_t") ? depends_on_t(ctx.model, ctx.ops[o]) : s["depends_on_t"] === true
 end
 
 function _resolved_alg(tree, id)
