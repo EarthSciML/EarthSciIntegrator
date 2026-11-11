@@ -35,12 +35,12 @@ All are `pointwise` (scalar states). The observed `Chem.ratio` defines no term.
 
 ```json
 {"id": "root", "sequence": [
-  {"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}},
-  {"alg": "ForwardEuler", "control": {"abstol": 0.000001, "dt_scope": "cell", "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "dt": "step", "id": "root.1", "leaf": ["deposition"]}
+  {"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}},
+  {"alg": "ForwardEuler", "control": {"abstol": 0.000001, "dt_scope": "global", "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "dt": "step", "id": "root.1", "leaf": ["deposition"]}
 ]}
 ```
 
-  `jacobian` and `linsolve` were omitted on a named implicit method, so they resolve by the pointwise row (§5.5.3); `dt_scope` resolves to `cell` for pointwise leaves whatever the method.
+  `jacobian` and `linsolve` were omitted on a named implicit method, so they resolve by the pointwise row (§5.5.3); `dt_scope` resolves to `global` whatever the method (at M2 for every class; D17's `cell` default for pointwise leaves waits for M3, D94).
 - `partition.shards` `{"root.0": 1, "root.1": 1}`.
 - [`by-label.expected-plan.json`](by-label.expected-plan.json) is this case's full `plan.json` written by hand in canonical form, except that the derived documents' `sha256` values are 64 zeros: the golden must equal it after those four values are replaced.
 
@@ -54,7 +54,7 @@ All are `pointwise` (scalar states). The observed `Chem.ratio` defines no term.
 
 ```json
 {"id": "root", "sequence": [
-  {"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
+  {"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
 ]}
 ```
 

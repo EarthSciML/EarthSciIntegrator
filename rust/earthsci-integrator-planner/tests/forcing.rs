@@ -394,6 +394,9 @@ const MODEL: &str = r#"{
  }
 }"#;
 
+// The chem leaf names TRBDF2: its two-record forcing is blended in time, so
+// chem depends on t, and "auto" would resolve to Rosenbrock23, which is
+// refused at M2 (unsupported_time_derivative, D94; see `time_dependent_rosenbrock`).
 const RUN: &str = r#"{
  "esm_integrator": "0.1.0",
  "model": "model.esm",
@@ -425,7 +428,7 @@ const RUN: &str = r#"{
   "sequence": [
    {
     "leaf": "chem",
-    "alg": "auto"
+    "alg": "TRBDF2"
    },
    {
     "leaf": "mix",
@@ -604,6 +607,32 @@ fn forcing_refusals() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// §5.5.3, D94: chem reads a two-record forcing blended in time, so it
+/// depends on t; a Rosenbrock method on its leaf, given or chosen for
+/// "auto" (the pointwise stiff row), is refused, at the leaf's alg or at the
+/// leaf.
+#[test]
+fn time_dependent_rosenbrock() {
+    let (m, r) = inputs();
+    let p = plan_of("chem-trbdf2", &m, &r).unwrap();
+    assert_eq!(
+        p.plan_json()["operators"]["chem"]["structure"]["depends_on_t"],
+        true
+    );
+    for (name, alg, at) in [
+        ("chem-auto", "auto", "/schedule/sequence/0"),
+        ("chem-rodas4", "Rodas4", "/schedule/sequence/0/alg"),
+    ] {
+        let mut run = r.clone();
+        run["schedule"]["sequence"][0]["alg"] = json!(alg);
+        assert_eq!(
+            refused(name, &m, &run),
+            ("unsupported_time_derivative".to_string(), at.to_string()),
+            "{name}"
+        );
+    }
 }
 
 /// `adjoint.wrt`'s prefixes (§7.6): a data-fed parameter matches only

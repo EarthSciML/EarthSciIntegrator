@@ -1,0 +1,22 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "A Rosenbrock leaf on photochemistry, whose photolysis rate depends on t: Rosenbrock23 needs its ft, which a plan's operators do not provide at M2 (spec/plan.md §5.5.3, D94).",
+  "model": "../../../toys/photostationary_cells.esm",
+  "operators": {
+    "photochemistry": {
+      "select": {
+        "components": "Photo"
+      }
+    }
+  },
+  "step": {
+    "dt": 600
+  },
+  "schedule": {
+    "leaf": "photochemistry",
+    "alg": "Rosenbrock23",
+    "control": {
+      "dt_scope": "global"
+    }
+  }
+}

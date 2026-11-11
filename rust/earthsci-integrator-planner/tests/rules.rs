@@ -293,7 +293,7 @@ fn fixed_dt_leaf_drops_adaptive_controls() {
     let s = p.resolve_schedule(None).unwrap();
     assert_eq!(
         s["control"],
-        json!({"abstol": 0.000001, "dt_scope": "cell", "maxiters": 7, "reltol": 0.001})
+        json!({"abstol": 0.000001, "dt_scope": "global", "maxiters": 7, "reltol": 0.001})
     );
 }
 
@@ -553,4 +553,85 @@ fn lift_onto_declared_unnamed_grid() {
             );
         }
     }
+}
+
+/// §0.1, §7.1, D94: `dt_scope` `cell` and `shard` wait for M3 and are refused
+/// at the leaf's `control/dt_scope`, in tree order with the other
+/// unsupported constructs; `global` and `"auto"` plan, and an omitted or
+/// `"auto"` `dt_scope` resolves to `global`, the pointwise leaf included.
+#[test]
+fn dt_scope_at_m2() {
+    for scope in ["cell", "shard"] {
+        assert_eq!(
+            refused(
+                &format!("dt-scope-{scope}"),
+                None,
+                rob(json!({}), json!({"control": {"dt_scope": scope}}))
+            ),
+            (
+                codes::UNSUPPORTED_DT_SCOPE,
+                "/schedule/control/dt_scope".into()
+            ),
+            "{scope}"
+        );
+    }
+    // In a sequence, the refusal points into the child, and a map node
+    // earlier in tree order is refused first.
+    let mut rc = rob(json!({}), json!({}));
+    rc["schedule"] = json!({"sequence": [
+        {"leaf": "kinetics", "alg": "Rodas4", "control": {"dt_scope": "cell"}}
+    ]});
+    assert_eq!(
+        refused("dt-scope-seq", None, rc.clone()),
+        (
+            codes::UNSUPPORTED_DT_SCOPE,
+            "/schedule/sequence/0/control/dt_scope".into()
+        )
+    );
+    rc["schedule"]["sequence"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, json!({"map": "m"}));
+    assert_eq!(
+        refused("dt-scope-after-map", None, rc).0,
+        codes::UNSUPPORTED_MAP_OPERATOR
+    );
+    for (case, control) in [
+        ("dt-scope-global", json!({"dt_scope": "global"})),
+        ("dt-scope-auto", json!({"dt_scope": "auto"})),
+        ("dt-scope-omitted", json!({})),
+    ] {
+        let p = run(case, None, rob(json!({}), json!({"control": control}))).unwrap();
+        assert_eq!(p.operators["kinetics"].locality.class.as_str(), "pointwise");
+        assert_eq!(
+            p.resolved_schedule["control"]["dt_scope"], "global",
+            "{case}"
+        );
+    }
+}
+
+/// spec/plan.md §0.2: `plan.report.json` names the upstream versions this
+/// build was compiled against, not the ones the spec names: earthsci-ast's
+/// own constant, and the earthsci-astdiff version of the workspace's
+/// Cargo.lock (read by build.rs).
+#[test]
+fn report_names_the_built_versions() {
+    let p = run("report-versions", None, rob(json!({}), json!({}))).unwrap();
+    let up = &p.report["upstream"];
+    assert_eq!(up["earthsci-ast"], earthsci_ast::LIBRARY_VERSION);
+    let lock =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../Cargo.lock"))
+            .unwrap();
+    let mut lines = lock.lines();
+    let mut astdiff = None;
+    while let Some(l) = lines.next() {
+        if l == "name = \"earthsci-astdiff\"" {
+            let v = lines.next().unwrap();
+            astdiff = v
+                .strip_prefix("version = \"")
+                .map(|v| v.trim_end_matches('"'));
+        }
+    }
+    assert_eq!(up["earthsci-astdiff"], astdiff.unwrap());
+    assert_eq!(p.report["version"], env!("CARGO_PKG_VERSION"));
 }

@@ -18,6 +18,8 @@ pub mod codes {
     pub const UNSUPPORTED_SOLVE_NODE: &str = "unsupported_solve_node";
     pub const UNSUPPORTED_SPLIT_EXPLICIT: &str = "unsupported_split_explicit";
     pub const UNSUPPORTED_CROSSING_UPDATE: &str = "unsupported_crossing_update";
+    pub const UNSUPPORTED_DT_SCOPE: &str = "unsupported_dt_scope";
+    pub const UNSUPPORTED_TIME_DERIVATIVE: &str = "unsupported_time_derivative";
     pub const AXES_UNRESOLVED: &str = "axes_unresolved";
     pub const NAME_UNRESOLVED: &str = "name_unresolved";
     pub const NAME_WRONG_KIND: &str = "name_wrong_kind";
@@ -80,6 +82,8 @@ pub mod codes {
         UNSUPPORTED_SOLVE_NODE,
         UNSUPPORTED_SPLIT_EXPLICIT,
         UNSUPPORTED_CROSSING_UPDATE,
+        UNSUPPORTED_DT_SCOPE,
+        UNSUPPORTED_TIME_DERIVATIVE,
         AXES_UNRESOLVED,
         NAME_UNRESOLVED,
         NAME_WRONG_KIND,

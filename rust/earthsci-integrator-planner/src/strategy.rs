@@ -229,13 +229,10 @@ pub fn resolve_leaf(given: &Value, facts: &LeafFacts, pointer: &str) -> Result<L
         .and_then(Value::as_str)
         .filter(|s| *s != "auto")
         .map(str::to_string);
-    let table_scope = || {
-        if facts.class == Class::Pointwise {
-            "cell".to_string()
-        } else {
-            "global".to_string()
-        }
-    };
+    // At M2 every class resolves to `global`: `cell` (D17's default for a
+    // pointwise leaf) and `shard` arrive at M3, and the run config's own
+    // `cell` or `shard` was refused with the schedule (§7.1, D94).
+    let table_scope = || "global".to_string();
     let unavailable = |m: String| refuse(codes::AUTO_STRATEGY_UNAVAILABLE, pointer, m);
 
     let mut imex_implicit = None;
@@ -417,7 +414,7 @@ mod tests {
             r.linsolve,
             Some(json!({"block_lu": {"pivot": true, "refine": 0}}))
         );
-        assert_eq!(r.dt_scope, "cell");
+        assert_eq!(r.dt_scope, "global");
         let mut f = facts(Class::Pointwise, true);
         f.reltol = 1e-6;
         f.block_vars = Some(Some(17));
@@ -438,7 +435,7 @@ mod tests {
         let r = resolve_leaf(&auto, &facts(Class::Pointwise, false), "/s").unwrap();
         assert_eq!(
             (r.alg.as_str(), r.dt_scope.as_str(), r.linsolve),
-            ("Tsit5", "cell", None)
+            ("Tsit5", "global", None)
         );
         let r = resolve_leaf(&auto, &facts(Class::Column, true), "/s").unwrap();
         assert_eq!(r.alg, "TRBDF2");
@@ -494,7 +491,8 @@ mod tests {
 
     #[test]
     fn given_methods() {
-        // Explicit: no jacobian, no linsolve, the class's dt_scope.
+        // Explicit: no jacobian, no linsolve, the class's dt_scope (global
+        // for every class at M2, D94); a given dt_scope is kept.
         let r = resolve_leaf(
             &json!({"alg": "ForwardEuler", "dt": "step"}),
             &facts(Class::Pointwise, false),
@@ -503,8 +501,15 @@ mod tests {
         .unwrap();
         assert_eq!(
             (r.jacobian, r.linsolve, r.dt_scope.as_str()),
-            (None, None, "cell")
+            (None, None, "global")
         );
+        let r = resolve_leaf(
+            &json!({"alg": "ForwardEuler", "dt": "step", "control": {"dt_scope": "auto"}}),
+            &facts(Class::Pointwise, false),
+            "/s",
+        )
+        .unwrap();
+        assert_eq!(r.dt_scope, "global");
         // Implicit with omitted jacobian and linsolve: the class's row.
         let r = resolve_leaf(
             &json!({"alg": "Rodas4"}),

@@ -404,6 +404,14 @@ function check_schedule(ctx, root::SNode)
         n.kind == "map" && refuse("unsupported_map_operator", nptr(n), "map nodes need U6 (M4b)")
         n.kind == "solve" && refuse("unsupported_solve_node", nptr(n), "solve nodes need U6 (M4b)")
         n.kind == "split_explicit" && refuse("unsupported_split_explicit", nptr(n), "split_explicit arrives at M7")
+        # §0.1, D94: both runtimes run dt_scope global only until M3.
+        if is_leaflike(n)
+            scope = get(get(n.spec, "control", Dict{String, Any}()), "dt_scope", "auto")
+            scope in ("cell", "shard") && refuse(
+                "unsupported_dt_scope", nptr(n, "control", "dt_scope"),
+                "leaf $(n.id): dt_scope \"$scope\" arrives at M3; at M2 the runtimes step every leaf with dt_scope \"global\" (give \"global\" or omit dt_scope)"
+            )
+        end
         # (coupled with algebraic operators cannot occur: §4 step 6 refused algebraic equations.)
         if n.kind == "subcycle" && haskey(n.spec, "limits")
             for (i, l) in enumerate(n.spec["limits"])
@@ -758,7 +766,10 @@ function resolve_leaf(ctx, n::SNode, stiff)
     c = Dict{String, Any}("reltol" => reltol)
     at_ = get(ctrl, "abstol", 1.0e-6)
     c["abstol"] = at_ isa AbstractDict ? Dict{String, Any}(String(k) => v for (k, v) in at_) : at_
-    c["dt_scope"] = given(ctrl, "dt_scope") ? ctrl["dt_scope"] : (cls === :pointwise ? "cell" : "global")
+    # At M2 every class resolves to `global`: `cell` (D17's default for a
+    # pointwise leaf) and `shard` arrive at M3, and the run config's own `cell`
+    # or `shard` was refused with the schedule (§7.1, D94).
+    c["dt_scope"] = given(ctrl, "dt_scope") ? ctrl["dt_scope"] : "global"
     if adaptive
         c["controller"] = given(ctrl, "controller") ? ctrl["controller"] : "PI"
         c["maxiters"] = get(ctrl, "maxiters", 1000000)

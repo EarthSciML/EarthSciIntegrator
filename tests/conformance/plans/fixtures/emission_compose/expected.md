@@ -32,4 +32,4 @@ One operator `chemistry` selected by component (`Chem`, `Emis`), advanced by `Ts
 
 **Validation (§8).** `[{"check": "rhs_sum", "passed": true}, {"check": "band_model", "operator": "chemistry", "passed": true}, {"check": "non_empty", "operator": "chemistry", "passed": true}]`.
 
-**Settings.** `time` `{"start": 0, "end": 3600}`; the root is the leaf `chemistry`, `Tsit5` with `dt_scope` `cell` and the default control; `step` `{"hit": []}`; `partition` `{"halo": {"cell": 0}, "ranks": [1, 1], "shards": {"root": 1}, "tiles": [1, 1]}`; `precision` all `f64`.
+**Settings.** `time` `{"start": 0, "end": 3600}`; the root is the leaf `chemistry`, `Tsit5` with `dt_scope` `global` and the default control; `step` `{"hit": []}`; `partition` `{"halo": {"cell": 0}, "ranks": [1, 1], "shards": {"root": 1}, "tiles": [1, 1]}`; `precision` all `f64`.

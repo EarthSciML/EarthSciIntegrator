@@ -143,7 +143,7 @@ end
         @test ops["chemistry"].reads == ["Chem.NO", "Chem.O3", "Chem.k", "Chem.ratio"]
         @test all(==((:stiff, "run_config")), values(d.stiffness))
         # The run config writes a one-child sequence, which §7.1 keeps (expected.md).
-        @test jcs(d.schedule) == jcs(JSON.parse("""{"id": "root", "sequence": [{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}]}"""))
+        @test jcs(d.schedule) == jcs(JSON.parse("""{"id": "root", "sequence": [{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}]}"""))
         @test d.partition == Dict("ranks" => [1, 1], "tiles" => [1, 1], "shards" => Dict("root.0" => 1))
         @test d.step == Dict("dt" => 60.0, "hit" => String[])
         @test d.ctx.time == (0.0, 600.0)
@@ -231,8 +231,8 @@ end
         bands = Dict((s, c, k) => [diag1(s, x; n = 4) for x in sp] for s in sp, c in 0:1, k in 0:1)
         blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => sp))
         for (case, opname, json) in [
-                ("auto", "default_pointwise", """{"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}"""),
-                ("named", "chemistry", """{"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}"""),
+                ("auto", "default_pointwise", """{"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}"""),
+                ("named", "chemistry", """{"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}"""),
             ]
             d = EarthSciIntegrator.plan(
                 joinpath(PFIX, "pointwise_chemistry", "$case.run.json");
@@ -692,6 +692,52 @@ end
         # Reserved component name at load, without bands.
         @test refusal(() -> EarthSciIntegrator.plan(joinpath(CONF, "plans", "refusals", "reserved-component-name", "run.json"))) ==
             ("reserved_component_name", "/model")
+        # §0.1, §7.1, D94: dt_scope cell and shard wait for M3, refused at the
+        # leaf's control/dt_scope in tree order with the other unsupported
+        # constructs; global and auto plan.
+        for scope in ("cell", "shard")
+            @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; control = Dict("dt_scope" => scope)))) ==
+                ("unsupported_dt_scope", "/schedule/control/dt_scope")
+        end
+        cellseq = Dict("sequence" => Any[leaf("kinetics"; control = Dict("dt_scope" => "cell"))])
+        @test try_plan(Dict("operators" => kin, "schedule" => cellseq)) == ("unsupported_dt_scope", "/schedule/sequence/0/control/dt_scope")
+        pushfirst!(cellseq["sequence"], Dict("map" => "m"))
+        @test try_plan(Dict("operators" => kin, "schedule" => cellseq))[1] == "unsupported_map_operator"
+        for scope in ("global", "auto")
+            @test try_plan(Dict("operators" => kin, "schedule" => leaf("kinetics"; control = Dict("dt_scope" => scope)))) === nothing
+        end
+    end
+
+    @testset "M2 settings the runtimes cannot run yet (D94)" begin
+        tmp = mktempdir()
+        sp = ["Photo.NO", "Photo.NO2", "Photo.O3"]
+        bands = Dict((s, 0, 0) => [diag1(s, c; n = 16) for c in sp] for s in sp)
+        blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => sp))
+        backend = HandBackend(bands = bands, structures = Dict{String, Any}("photochemistry" => blk))
+        base = JSON.parsefile(joinpath(PFIX, "toy_photostationary_cells", "kvaerno4.run.json"))
+        base["model"] = abspath(joinpath(CONF, "toys", "photostationary_cells.esm"))
+        function plan_with(alg; wrap = false)
+            cfg = deepcopy(base)
+            cfg["schedule"]["alg"] = alg
+            wrap && (cfg["schedule"] = Dict("sequence" => Any[cfg["schedule"]]))
+            path = joinpath(tmp, "run.json")
+            write(path, JSON.json(cfg))
+            return () -> EarthSciIntegrator.plan(path; backend)
+        end
+        # photochemistry's photolysis rate depends on t.
+        d = plan_with("Kvaerno4")()
+        @test EarthSciIntegrator.depends_on_t(d.ctx.model, d.ctx.ops["photochemistry"])
+        # Every Rosenbrock method is refused at the leaf's alg, a method that
+        # is not Rosenbrock plans.
+        for alg in ("Rosenbrock23", "Rodas4", "ROS2")
+            @test refusal(plan_with(alg)) == ("unsupported_time_derivative", "/schedule/alg")
+        end
+        @test refusal(plan_with("Rodas4"; wrap = true)) == ("unsupported_time_derivative", "/schedule/sequence/0/alg")
+        @test refusal(plan_with("TRBDF2")) === nothing
+        # "auto" on this stiff (solver.stiffness "high") pointwise leaf resolves to
+        # Rosenbrock23, and is refused at the leaf.
+        @test refusal(plan_with("auto")) == ("unsupported_time_derivative", "/schedule")
+        @test d.schedule["control"]["dt_scope"] == "global"
     end
 
     @testset "the auto schedule on a scalar model" begin
@@ -727,7 +773,7 @@ end
             )
         )
         @test d.stiffness["default_pointwise"] == (:stiff, "solver_hint")
-        @test d.schedule["alg"] == "Rosenbrock23" && d.schedule["id"] == "root" && d.schedule["control"]["dt_scope"] == "cell"
+        @test d.schedule["alg"] == "Rosenbrock23" && d.schedule["id"] == "root" && d.schedule["control"]["dt_scope"] == "global"
         @test d.step == Dict("hit" => String[])
         @test EarthSciIntegrator.reference_steps(d.ctx, EarthSciIntegrator.build_snode(Dict("leaf" => "default_pointwise"), "root", "/schedule", false)) ==
             Dict("root" => 40.0)

@@ -47,7 +47,7 @@ The model: reaction system `Chem` (NO2 + hν → NO + O3, rate `j`; NO + O3 → 
 - One locality class, so the root is the leaf itself (D72):
 
 ```json
-{"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
+{"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
 ```
 
   `Rosenbrock23` because the resolved `reltol` 1e-3 is ≥ 1e-3; `block_lu` because the block has 3 variables.
@@ -66,7 +66,7 @@ One named operator `chemistry` over components `Chem` and `Dep`; leaf with `alg:
 - The root leaf:
 
 ```json
-{"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
+{"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
 ```
 
   `Rodas4` because `reltol` 1e-6 is below 1e-3.

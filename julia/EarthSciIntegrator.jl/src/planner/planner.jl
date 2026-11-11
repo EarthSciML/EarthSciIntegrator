@@ -108,9 +108,38 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
         is_leaflike(n) && get(n.spec, "alg", "auto") == "auto" || continue
         check_rosenbrock_precision(n, _resolved_alg(schedule, n.id), precision[n.id], psources[n.id])
     end
+    check_time_derivative(ctx, root, schedule)
     # §6: derived documents, then §8 validation.
     derived = derived_and_validation(backend, ctx)
     return PlanDraft(ctx, stiff, schedule, step, partition, precision, derived)
+end
+
+"""
+    check_time_derivative(ctx, root, schedule)
+
+§5.5.3, D94: a leaf whose method, given or resolved, is a Rosenbrock method
+needs `ft` from every operator that depends on t, which a plan's operators do
+not provide until U17 (spec/operator-interface.md §8.3), so it is refused,
+`unsupported_time_derivative`. Leaves in tree order, operators in the leaf's
+order; refused at the leaf's `alg` when the run config gives it, else at the
+leaf.
+"""
+function check_time_derivative(ctx, root::SNode, schedule)
+    for n in allnodes(root)
+        is_leaflike(n) || continue
+        alg = _resolved_alg(schedule, n.id)
+        TABLEAUS[alg].family === :rosenbrock || continue
+        i = findfirst(o -> depends_on_t(ctx.model, ctx.ops[o]), leaf_ops(n))
+        i === nothing && continue
+        op = leaf_ops(n)[i]
+        given = get(n.spec, "alg", "auto") != "auto"
+        at, how = given ? (nptr(n, "alg"), "") : (nptr(n), ", which the planner chose for alg \"auto\",")
+        refuse(
+            "unsupported_time_derivative", at,
+            "leaf $(n.id): operator $op depends on t, so $alg$how needs its time derivative ft, which a plan's operators do not provide at M2 (U17); name a method that is not a Rosenbrock method, such as TRBDF2"
+        )
+    end
+    return
 end
 
 function _resolved_alg(tree, id)

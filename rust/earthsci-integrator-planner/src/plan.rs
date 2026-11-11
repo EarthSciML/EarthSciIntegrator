@@ -22,6 +22,7 @@ use crate::terms::{self, Term};
 use crate::time::{self, Interval};
 use crate::validation;
 use earthsci_ast::TermOrigin;
+use earthsci_integrator_solvers::tableau::Family;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -589,9 +590,12 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     planned.report = json!({
         "planner": "earthsci-integrator-planner (Rust)",
         "version": env!("CARGO_PKG_VERSION"),
+        // The versions this build was compiled against (spec/plan.md §0.2):
+        // earthsci-ast's own constant, and earthsci-astdiff's from the
+        // Cargo.lock the build resolved (build.rs; "unknown" without one).
         "upstream": {
-            "earthsci-ast": "0.10.0",
-            "earthsci-astdiff": "0.5.0",
+            "earthsci-ast": earthsci_ast::LIBRARY_VERSION,
+            "earthsci-astdiff": env!("ESI_EARTHSCI_ASTDIFF_VERSION"),
         },
         "validation": Value::Object(report),
     });
@@ -782,7 +786,50 @@ impl Planned {
             &self.schedule,
             &algs,
         )?;
+        self.check_time_derivative(&algs)?;
         schedule::write(&self.schedule, &self.model, &self.operators, &strategy)
+    }
+
+    /// §5.5.3, D94: a leaf whose method, given or resolved, is a Rosenbrock
+    /// method needs `ft` from every operator that depends on t, which a plan's
+    /// operators do not provide until U17 (spec/operator-interface.md §8.3).
+    /// Leaves in tree order, operators in the leaf's order; refused at the
+    /// leaf's `alg` when the run config gives it, else at the leaf.
+    fn check_time_derivative(&self, algs: &BTreeMap<String, String>) -> Result<()> {
+        for n in self.schedule.leaves() {
+            let alg = &algs[n.id()];
+            if !matches!(strategy::family(alg), Some(Family::Rosenbrock)) {
+                continue;
+            }
+            let Kind::Leaf { ops, .. } = &n.kind else {
+                continue;
+            };
+            let Some(op) = ops.iter().find(|o| self.structures[*o].depends_on_t) else {
+                continue;
+            };
+            let given = n
+                .value
+                .get("alg")
+                .and_then(Value::as_str)
+                .is_some_and(|a| a != "auto");
+            let (at, how) = if given {
+                (n.key_ptr("alg"), "")
+            } else {
+                (
+                    n.pointer.clone(),
+                    ", which the planner chose for alg \"auto\",",
+                )
+            };
+            return Err(refuse(
+                codes::UNSUPPORTED_TIME_DERIVATIVE,
+                at,
+                format!(
+                    "leaf {}: operator {op} depends on t, so {alg}{how} needs its time derivative ft, which a plan's operators do not provide at M2 (U17); name a method that is not a Rosenbrock method, such as TRBDF2",
+                    n.id()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// The canonical DOF order of the flattened model (§4).
