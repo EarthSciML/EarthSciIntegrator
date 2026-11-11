@@ -712,7 +712,9 @@ end
         tmp = mktempdir()
         sp = ["Photo.NO", "Photo.NO2", "Photo.O3"]
         bands = Dict((s, 0, 0) => [diag1(s, c; n = 16) for c in sp] for s in sp)
-        blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => sp))
+        # pass 4's structure as the DiffBackend writes it: the photolysis rate
+        # depends on t (backend.jl's depends_on_t, checked below).
+        blk = Dict{String, Any}("class" => "block_diagonal", "block" => Dict{String, Any}("vars" => sp), "depends_on_t" => true)
         backend = HandBackend(bands = bands, structures = Dict{String, Any}("photochemistry" => blk))
         base = JSON.parsefile(joinpath(PFIX, "toy_photostationary_cells", "kvaerno4.run.json"))
         base["model"] = abspath(joinpath(CONF, "toys", "photostationary_cells.esm"))
@@ -735,8 +737,15 @@ end
         @test refusal(plan_with("Rodas4"; wrap = true)) == ("unsupported_time_derivative", "/schedule/sequence/0/alg")
         @test refusal(plan_with("TRBDF2")) === nothing
         # "auto" on this stiff (solver.stiffness "high") pointwise leaf resolves to
-        # Rosenbrock23, and is refused at the leaf.
-        @test refusal(plan_with("auto")) == ("unsupported_time_derivative", "/schedule")
+        # TRBDF2, not a Rosenbrock method, with the row's linsolve; the check
+        # reads structure.depends_on_t, the value plan.json carries.
+        a = plan_with("auto")()
+        @test a.schedule["alg"] == "TRBDF2"
+        @test a.schedule["linsolve"] == Dict("block_lu" => Dict("pivot" => true, "refine" => 0))
+        blk["depends_on_t"] = false
+        @test plan_with("auto")().schedule["alg"] == "Rodas4"  # reltol 1e-6
+        @test refusal(plan_with("Rodas4")) === nothing
+        blk["depends_on_t"] = true
         @test d.schedule["control"]["dt_scope"] == "global"
     end
 

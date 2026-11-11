@@ -710,7 +710,10 @@ function resolve_leaf(ctx, n::SNode, stiff)
     if alg == "auto"
         if cls === :pointwise
             if isstiff
-                alg = reltol >= 1.0e-3 ? "Rosenbrock23" : "Rodas4"
+                # A Rosenbrock method needs `ft` from an operator that depends
+                # on t, which a plan's operators do not provide until U17 (D94).
+                alg = any(o -> op_depends_on_t(ctx, o), names) ? "TRBDF2" :
+                    reltol >= 1.0e-3 ? "Rosenbrock23" : "Rodas4"
                 jac === nothing && (jac = "symbolic")
                 # The row needs block_diagonal storage even when linsolve is given.
                 bsize = leaf_block_size(ctx, n, at)

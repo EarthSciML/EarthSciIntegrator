@@ -757,6 +757,7 @@ impl Planned {
             dt_given: n.dt_given(),
             uniform_shapes,
             block_vars,
+            depends_on_t: names.iter().any(|o| self.structures[o].depends_on_t),
         }
     }
 
@@ -794,7 +795,9 @@ impl Planned {
     /// method needs `ft` from every operator that depends on t, which a plan's
     /// operators do not provide until U17 (spec/operator-interface.md §8.3).
     /// Leaves in tree order, operators in the leaf's order; refused at the
-    /// leaf's `alg` when the run config gives it, else at the leaf.
+    /// leaf's `alg`. `"auto"` resolves such a leaf to TRBDF2
+    /// ([`strategy::resolve_leaf`]), so only a given method is refused; the
+    /// pointer at the leaf for a resolved one is a guard.
     fn check_time_derivative(&self, algs: &BTreeMap<String, String>) -> Result<()> {
         for n in self.schedule.leaves() {
             let alg = &algs[n.id()];

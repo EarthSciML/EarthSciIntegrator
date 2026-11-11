@@ -121,15 +121,16 @@ end
 needs `ft` from every operator that depends on t, which a plan's operators do
 not provide until U17 (spec/operator-interface.md §8.3), so it is refused,
 `unsupported_time_derivative`. Leaves in tree order, operators in the leaf's
-order; refused at the leaf's `alg` when the run config gives it, else at the
-leaf.
+order; refused at the leaf's `alg`. `"auto"` resolves such a leaf to TRBDF2
+(`resolve_leaf`), so only a given method is refused; the pointer at the leaf
+for a resolved one is a guard.
 """
 function check_time_derivative(ctx, root::SNode, schedule)
     for n in allnodes(root)
         is_leaflike(n) || continue
         alg = _resolved_alg(schedule, n.id)
         TABLEAUS[alg].family === :rosenbrock || continue
-        i = findfirst(o -> depends_on_t(ctx.model, ctx.ops[o]), leaf_ops(n))
+        i = findfirst(o -> op_depends_on_t(ctx, o), leaf_ops(n))
         i === nothing && continue
         op = leaf_ops(n)[i]
         given = get(n.spec, "alg", "auto") != "auto"
@@ -140,6 +141,19 @@ function check_time_derivative(ctx, root::SNode, schedule)
         )
     end
     return
+end
+
+"""
+    op_depends_on_t(ctx, o) -> Bool
+
+Operator `o`'s `structure.depends_on_t` as pass 4 wrote it (§5.4), the value
+`plan.json` carries, so the strategies and the check above decide from what
+the plan says. Only a test backend gives no structure, or one without the
+key; then it is computed from the model as `DiffBackend` computes it.
+"""
+function op_depends_on_t(ctx, o)
+    s = ctx.ops[o].structure
+    s === nothing || !haskey(s, "depends_on_t") ? depends_on_t(ctx.model, ctx.ops[o]) : s["depends_on_t"] === true
 end
 
 function _resolved_alg(tree, id)

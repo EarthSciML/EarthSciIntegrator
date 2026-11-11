@@ -4,6 +4,9 @@
 //! pointer.
 
 mod common;
+#[allow(dead_code)]
+#[path = "../build/lockfile.rs"]
+mod lockfile;
 
 use common::conformance;
 use earthsci_integrator_planner::astdiff::AstDiffBands;
@@ -612,26 +615,37 @@ fn dt_scope_at_m2() {
 
 /// spec/plan.md §0.2: `plan.report.json` names the upstream versions this
 /// build was compiled against, not the ones the spec names: earthsci-ast's
-/// own constant, and the earthsci-astdiff version of the workspace's
-/// Cargo.lock (read by build.rs).
+/// own constant, and the earthsci-astdiff version build.rs read from the
+/// lock files above this build's `OUT_DIR` and this crate, by the rules of
+/// `build/lockfile.rs` (tested in `tests/lockfile.rs`), here with the same
+/// code. In this repository's usual layout that is the workspace's lock.
 #[test]
 fn report_names_the_built_versions() {
     let p = run("report-versions", None, rob(json!({}), json!({}))).unwrap();
     let up = &p.report["upstream"];
     assert_eq!(up["earthsci-ast"], earthsci_ast::LIBRARY_VERSION);
-    let lock =
-        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../Cargo.lock"))
-            .unwrap();
-    let mut lines = lock.lines();
-    let mut astdiff = None;
-    while let Some(l) = lines.next() {
-        if l == "name = \"earthsci-astdiff\"" {
-            let v = lines.next().unwrap();
-            astdiff = v
-                .strip_prefix("version = \"")
-                .map(|v| v.trim_end_matches('"'));
-        }
+    let q = lockfile::Query {
+        me: env!("CARGO_PKG_NAME"),
+        my_version: env!("CARGO_PKG_VERSION"),
+        dep: "earthsci-astdiff",
+    };
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let r = lockfile::resolve(std::path::Path::new(env!("OUT_DIR")), &manifest, false, &q);
+    assert_eq!(
+        up["earthsci-astdiff"],
+        r.version.as_deref().unwrap_or("unknown")
+    );
+    if std::env::var_os("CARGO_TARGET_DIR").is_none() {
+        // The default target directory is inside the workspace.
+        let workspace_lock = manifest.join("../Cargo.lock").canonicalize().unwrap();
+        assert!(
+            r.read
+                .iter()
+                .any(|l| l.canonicalize().ok().as_ref() == Some(&workspace_lock)),
+            "{:?}",
+            r.read
+        );
+        assert_ne!(up["earthsci-astdiff"], "unknown");
     }
-    assert_eq!(up["earthsci-astdiff"], astdiff.unwrap());
     assert_eq!(p.report["version"], env!("CARGO_PKG_VERSION"));
 }
