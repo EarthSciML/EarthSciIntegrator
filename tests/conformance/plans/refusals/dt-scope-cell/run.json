@@ -1,0 +1,12 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "dt_scope cell, D17's default for a pointwise leaf, which neither runtime steps with until M3 (spec/plan.md §5.5.3, D94).",
+  "model": "../../../toys/robertson.esm",
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "Rodas4",
+    "control": {
+      "dt_scope": "cell"
+    }
+  }
+}

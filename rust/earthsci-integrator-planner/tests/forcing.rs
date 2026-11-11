@@ -606,6 +606,40 @@ fn forcing_refusals() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// §5.5.3, D94: chem reads a two-record forcing blended in time, so it
+/// depends on t. "auto" resolves its stiff pointwise leaf to TRBDF2, not a
+/// Rosenbrock method; a Rosenbrock method the run config names is refused at
+/// the leaf's alg.
+#[test]
+fn time_dependent_rosenbrock() {
+    let (m, r) = inputs();
+    let p = plan_of("chem-auto", &m, &r).unwrap();
+    assert_eq!(
+        p.plan_json()["operators"]["chem"]["structure"]["depends_on_t"],
+        true
+    );
+    let chem = &p.resolved_schedule["sequence"][0];
+    assert_eq!(
+        (&chem["alg"], &chem["linsolve"]),
+        (
+            &json!("TRBDF2"),
+            &json!({"block_lu": {"pivot": true, "refine": 0}})
+        )
+    );
+    for alg in ["Rosenbrock23", "Rodas4"] {
+        let mut run = r.clone();
+        run["schedule"]["sequence"][0]["alg"] = json!(alg);
+        assert_eq!(
+            refused(&format!("chem-{alg}"), &m, &run),
+            (
+                "unsupported_time_derivative".to_string(),
+                "/schedule/sequence/0/alg".to_string()
+            ),
+            "{alg}"
+        );
+    }
+}
+
 /// `adjoint.wrt`'s prefixes (§7.6): a data-fed parameter matches only
 /// `forcing:`, and only a used one.
 #[test]

@@ -352,12 +352,31 @@ fn check_step_limits(cx: &CheckContext) -> Result<()> {
     Ok(())
 }
 
-/// `map`, `solve` and `split_explicit` nodes, and observed limits of a
-/// `subcycle`, in tree order. (`coupled` with algebraic operators cannot
-/// occur: algebraic equations were refused at §4 step 6.)
+/// `map`, `solve` and `split_explicit` nodes, observed limits of a
+/// `subcycle`, and a leaf's `dt_scope` `cell` or `shard`, in tree order.
+/// (`coupled` with algebraic operators cannot occur: algebraic equations were
+/// refused at §4 step 6.)
 fn check_unsupported(root: &Node, cx: &CheckContext) -> Result<()> {
     for n in root.preorder() {
         match n.kind {
+            Kind::Leaf { .. } => {
+                // §0.1, D94: both runtimes run dt_scope global only until M3.
+                let scope = n
+                    .value
+                    .get("control")
+                    .and_then(|c| c.get("dt_scope"))
+                    .and_then(Value::as_str);
+                if let Some(scope @ ("cell" | "shard")) = scope {
+                    return Err(refuse(
+                        codes::UNSUPPORTED_DT_SCOPE,
+                        ptr(&n.key_ptr("control"), "dt_scope"),
+                        format!(
+                            "leaf {}: dt_scope \"{scope}\" arrives at M3; at M2 the runtimes step every leaf with dt_scope \"global\" (give \"global\" or omit dt_scope)",
+                            n.id()
+                        ),
+                    ));
+                }
+            }
             Kind::Map => {
                 return Err(refuse(
                     codes::UNSUPPORTED_MAP_OPERATOR,

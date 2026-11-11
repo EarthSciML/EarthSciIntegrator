@@ -47,6 +47,10 @@
     "code": "unsupported_event",
     "at": "/model"
   },
+  "dt-scope-cell": {
+    "code": "unsupported_dt_scope",
+    "at": "/schedule/control/dt_scope"
+  },
   "duplicate-node-id": {
     "code": "duplicate_node_id",
     "at": "/schedule/sequence/1/id"
@@ -98,6 +102,10 @@
   "reserved-component-name": {
     "code": "reserved_component_name",
     "at": "/model"
+  },
+  "rosenbrock-time-dependent": {
+    "code": "unsupported_time_derivative",
+    "at": "/schedule/alg"
   },
   "schedule-update": {
     "code": "unsupported_parameter_update",

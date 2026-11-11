@@ -16,7 +16,7 @@ The model: one scalar state `M.x` with `D(x) = -(k / x)`, `k` = 0.5. `x` has no 
 **Schedule.** One locality class, so the root is the leaf itself (D72):
 
 ```json
-{"alg": "Tsit5", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "leaf": ["default_pointwise"]}
+{"alg": "Tsit5", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "leaf": ["default_pointwise"]}
 ```
 
 **Other keys.** `step` `{"hit": []}` (adaptive root, D49); `time` `{"start": 0, "end": 1}`; `partition` `{"ranks": [1, 1], "shards": {"root": 1}, "tiles": [1, 1]}` (no index sets, no halo); `precision` `{"root": {…"f64"}}`; `validation` the three entries, all passed.
