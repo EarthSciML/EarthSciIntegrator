@@ -26,7 +26,7 @@ Every choice in this chapter that can change a byte of the output is stated exac
 | A `loader_fields` entry that names no parameter of the flattened model (D87) | refused | `unsupported_forcing` |
 | `map` operators and `map` nodes | refused | `unsupported_map_operator` |
 | Observed step limits in `step.limits` or `subcycle.limits` | refused | `unsupported_step_limit` |
-| `solve` nodes (when they are planned, M4b adds a refusal fixture for each case of spec/run-config.md §8 rule 18: a bounded unknown with `rel_change` convergence, `solve_bounds_invalid`, and a positive diagonal, `solve_bounds_sign`; D95) | refused | `unsupported_solve_node` |
+| `solve` nodes (when they are planned, M4b adds a refusal fixture for each case of spec/run-config.md §8 rule 18: a bounded unknown with `rel_change` convergence or with a bound on another of the node's unknowns, `solve_bounds_invalid`, and a positive diagonal, `solve_bounds_sign`; D95) | refused | `unsupported_solve_node` |
 | `coupled` with algebraic operators, `split_explicit`, `crossing` updates (spec/run-config.md §8 rule 16) | refused | `unsupported_coupled_dae`, `unsupported_split_explicit`, `unsupported_crossing_update` |
 | A state with a model bound (`lb`, `ub`, U18) other than `lb` 0 alone (`lb` 0 alone puts the state in its leaf's `domain.nonnegative`, spec/run-config.md §4.2; D95) | refused | `unsupported_state_bounds` |
 | `control.dt_scope` `cell` or `shard` (both runtimes step with `global` until M3; an omitted or `"auto"` `dt_scope` resolves to `global`, §5.5.3, D94) | refused | `unsupported_dt_scope` |
