@@ -26,10 +26,12 @@ Invocation order within a macro step is the execution order. Paths and order are
 | `subcycle` | the number of substeps and, under `limits`, each substep's size and the limit that set it. |
 | `every` | whether it fired, and Δₑ when it did (spec/run-config.md §4.9). |
 | `map` | the mask of discrete decisions the map recorded (operator-interface.md §7). |
-| `solve` | the converged unknowns and the `recover` actions taken (M4b). |
+| `solve` | the converged unknowns and the `recover` actions taken (M4b); with a bounded unknown, the active set (below). |
 | macro step | `t`, `Δ`, and the reason string for Δ (spec/run-config.md §5): under a fixed `step.dt`, `step.dt`, or `tstop` when the step was shortened to a tstop. Every record, a `subcycle`'s, an `every`'s and a macro step's included, follows the records of the invocations inside it. |
 
 Clip masks under `domain.on_violation: "clip"` are recorded with the leaf step that clipped. In the serialized form (§5) a leaf record carries `"clips": [[k, [i, ...]], ...]`: the 0-based index $k$ of the accepted step in the record's `steps`, and the ascending 0-based indices $i$, into the leaf's state vector, of the DOFs that step clipped. Steps that clipped nothing are omitted, and so is `clips` when no step clipped. Rejected steps leave no record beyond the rejected count (spec/adjoint.md §2.2).
+
+A `solve` with a bounded unknown records its active set as classified at convergence (spec/run-config.md §4.10, D95): per bounded unknown, the ascending 0-based element indices at its lower bound, at its upper bound, and the degenerate ones among those. In the serialized form (§5) the record carries `"active": {"<unknown>": {"lower": [i, ...], "upper": [i, ...], "degenerate": [i, ...]}}`, an empty list omitted and an unknown with all three empty omitted. The adjoint differentiates on this set, not on one it recomputes (spec/adjoint.md §4.6).
 
 Stage values are **not** on the tape. The adjoint recomputes them by replaying each leaf invocation from its starting state with the recorded `(t_n, h_n)` (architecture §10, step 2).
 

@@ -389,6 +389,22 @@ Three consequences of differentiating at the converged solution:
 - **Picard needs the unfrozen Jacobian.** A Picard iteration (D25) uses a frozen-observed Jacobian as its *iteration operator*. Its converged $z$ still solves the full residual $g(u, z, p) = 0$. So the adjoint's $g_z$ is the **unfrozen** Jacobian, including the dependence of the frozen observed on $z$ (PISM's $\nu H$ on the velocity). The planner MUST therefore emit both band models for a `solve` node with `picard.freeze`, the only place freezing is written (D51): the frozen one (`frozen_jacobian`) for the forward pass and the full one (`jacobian`) for the adjoint (spec/plan.md §1, architecture §3.4).
 - **`recover` actions are tape decisions.** An under-relaxation or a revert changes only the path, not the converged $z$, and has no effect on the adjoint. A `scale_param` action changes the residual itself, $g(u, z, s\cdot p_k)$ with the recorded scale $s$. The adjoint uses the scaled residual, and the chain rule multiplies $\bar p_k$ by $s$.
 
+**Bounded solves differentiate on the active set** (spec/run-config.md §4.10, D95). The converged $z$ of a `solve` with a bounded unknown (a model variable with `lb` or `ub`) does not zero every component of $g$, so the rule above holds on the free components only. The tape records the components at a bound, the active set $A$, and the degenerate ones among them (spec/tape.md §2); the rest are the inactive set $I$. Locally $z_A$ equals its bound $b_A(u, p)$, a number or a referenced variable, parameter or observed, and $z_I$ solves $g_I(u, z_I, z_A, p) = 0$:
+
+```math
+dz_A = db_A, \qquad g_{I,z_I}\, dz_I = -\big(g_{I,u}\,du + g_{I,z_A}\,dz_A + g_{I,p}\,dp + g_{I,F}\,dF\big).
+```
+
+In the reverse pass, with $\bar z = (\bar z_I, \bar z_A)$:
+
+```math
+g_{I,z_I}^\top \mu_I = \bar z_I, \qquad
+\bar b_A = \bar z_A - g_{I,z_A}^\top \mu_I, \qquad
+\bar u \mathrel{-}= g_{I,u}^\top \mu_I, \qquad \bar p \mathrel{-}= g_{I,p}^\top \mu_I, \qquad \bar F \mathrel{-}= g_{I,F}^\top \mu_I ,
+```
+
+and $\bar b_A$ goes to $\bar u$ and $\bar p$ through the VJP of a referenced bound; a number's is zero. So it is one transposed solve on the inactive block, plus the bound's VJP when a bound is a reference. With $A$ empty this is the unbounded rule. A degenerate component is in $A$, which gives the one-sided derivative that keeps it at the bound.
+
 ## 5. Combinators
 
 The adjoint of a composition is the composition of the adjoints in reverse order (decisions §1.1). Every combinator below states its forward map on $[t, t+\Delta]$ (architecture §4.3) and its reverse.
