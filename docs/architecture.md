@@ -607,7 +607,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U15 | EarthSciAST (Julia) | Execute recurrences in the native compiler and the StableHLO emitter | M7 |
 | U16 | EarthSciAST | `solver.time_span`, the run interval a document asks for (D60); released in v0.4.0 | M2 |
 | U17 | EarthSciASTDiff | Time-derivative bands (∂f/∂t) specified and golden-gated, for Rosenbrock's `f_t` on time-dependent operators; done on `main` (EarthSciASTDiff#13), released in 0.1.0 (commit 743d140) | M3 |
-| U18 | EarthSciAST | Variable bounds `lb` and `ub` (a number or a reference to another variable) on any variable, in the spec, the schema and every binding, validated and carried through flatten (D95) | M4b |
+| U18 | EarthSciAST | Variable bounds `lb` and `ub` (a number or a reference to another variable) on any variable, in the spec, the schema and every binding, validated and carried through flatten; esm 2.1.0, EarthSciAST#706 (D95) | M4b |
 
 **Prerequisites the drafts uncovered:**
 - **esm 1.3.0.** U01 and U14 ship in esm 1.3.0. reseact (esm 1.0.0), eqice and EqWeFiC (1.0.0/1.1.0) must move to 1.3.0 before they can use `solver.external` or an f32 choice.
