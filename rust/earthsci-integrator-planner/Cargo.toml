@@ -18,7 +18,7 @@ earthsci-astdiff = "0.5"
 earthsci-integrator-solvers.workspace = true
 indexmap = "2"
 ndarray = "0.17"
-jsonschema = { version = "0.60", default-features = false }
+jsonschema = { version = "0.61", default-features = false }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.11"
 
