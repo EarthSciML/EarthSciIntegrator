@@ -1,6 +1,6 @@
 {
   "esm_integrator": "0.1.0",
-  "description": "MOSAIC's phase state of one size bin as EqWeFiC writes it (components/aerosol/mosaic: aerosol_phase_state.esm and mesa_salt_equilibrium.esm, which state the residuals and leave the iterations to the integrator; D95). Two nested solves before the aerosol's gas-particle transfer: the Kelvin equilibrium of the bin's water activity, a scalar root (WRF-Chem iterates it by fixed point to 1e-2), and MESA's solid-liquid equilibrium, fifteen solid salt amounts that cannot be negative, whose rate S - 1 makes it a complementarity problem (WRF-Chem integrates it by explicit pseudo-time steps to a 1% driving force, at most 80). The operator and variable names are illustrative until the MOSAIC assembly is written.",
+  "description": "MOSAIC's phase state of one size bin as EqWeFiC writes it (components/aerosol/mosaic: aerosol_phase_state.esm and mesa_salt_equilibrium.esm, which state the residuals and leave the iterations to the integrator; D95). Two nested solves before the aerosol's gas-particle transfer: the Kelvin equilibrium of the bin's water activity, a scalar root (WRF-Chem iterates it by fixed point to 1e-2), and MESA's solid-liquid equilibrium, fifteen solid salt amounts that cannot be negative or exceed what each salt's ions allow (the bounds are the model's: lb 0 and ub a variable on elec_s, so the run config names only the method), whose rate S - 1 makes it a complementarity problem (WRF-Chem integrates it by explicit pseudo-time steps to a 1% driving force, at most 80). The operator and variable names are illustrative until the MOSAIC assembly is written.",
   "model": "eqatmchem_mosaic.esm",
   "operators": {
     "kelvin": {"select": {"variables": "mosaic.phase.ah2o_a"}},
@@ -13,7 +13,6 @@
      "warm_start": "previous"},
     {"solve": "mesa", "unknowns": ["mosaic.mesa.elec_s"],
      "method": {"ptc": {"dt0": 1e-3, "growth": 2}, "converged": {"residual": 1e-10}, "maxiter": 500},
-     "bounds": {"mosaic.mesa.elec_s": {"lower": 0}},
      "warm_start": "previous"},
     {"leaf": "transfer", "alg": "Rodas4"}
   ]},

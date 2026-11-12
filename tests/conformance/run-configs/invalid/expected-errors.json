@@ -73,18 +73,6 @@
       "$.schedule.method.converged"
     ]
   },
-  "solve-bounds-empty.json": {
-    "keyword": "minProperties",
-    "at": [
-      "$.schedule.bounds"
-    ]
-  },
-  "solve-bounds-unknown-key.json": {
-    "keyword": "additionalProperties",
-    "at": [
-      "$.schedule.bounds.u"
-    ]
-  },
   "solve-two-methods.json": {
     "keyword": "oneOf",
     "at": [

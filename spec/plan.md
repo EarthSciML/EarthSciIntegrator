@@ -26,8 +26,9 @@ Every choice in this chapter that can change a byte of the output is stated exac
 | A `loader_fields` entry that names no parameter of the flattened model (D87) | refused | `unsupported_forcing` |
 | `map` operators and `map` nodes | refused | `unsupported_map_operator` |
 | Observed step limits in `step.limits` or `subcycle.limits` | refused | `unsupported_step_limit` |
-| `solve` nodes | refused | `unsupported_solve_node` |
+| `solve` nodes (when they are planned, M4b adds a refusal fixture for each case of spec/run-config.md §8 rule 18: a bounded unknown with `rel_change` convergence, `solve_bounds_invalid`, and a positive diagonal, `solve_bounds_sign`; D95) | refused | `unsupported_solve_node` |
 | `coupled` with algebraic operators, `split_explicit`, `crossing` updates (spec/run-config.md §8 rule 16) | refused | `unsupported_coupled_dae`, `unsupported_split_explicit`, `unsupported_crossing_update` |
+| A state with a model bound (`lb`, `ub`, U18) other than `lb` 0 alone (`lb` 0 alone puts the state in its leaf's `domain.nonnegative`, spec/run-config.md §4.2; D95) | refused | `unsupported_state_bounds` |
 | `control.dt_scope` `cell` or `shard` (both runtimes step with `global` until M3; an omitted or `"auto"` `dt_scope` resolves to `global`, §5.5.3, D94) | refused | `unsupported_dt_scope` |
 | A Rosenbrock leaf, its `alg` given by the run config, on an operator that depends on $t$ (`"auto"` never resolves to one there, §5.5.3) (it needs `ft`, which a plan's operators do not provide until U17, spec/operator-interface.md §8.3; D94) | refused | `unsupported_time_derivative` |
 | Derived kinds other than `rhs` and `jacobian` (`frozen_jacobian`, `vjp`, `second_order`, `param_jacobian`, `forcing_jacobian` need U7–U9, M4; `residual`, `map`, `limit`, `condition` need U6, M4b) | not emitted | — |
@@ -453,7 +454,7 @@ A leaf or `coupled` node is written with exactly these keys:
 | `control` | always | object below |
 | `jacobian` | methods that form $J$ (Rosenbrock, SDIRK, `IMEXEuler`, `Theta`) | given, or `symbolic` |
 | `linsolve` | methods that form $J$ | object form with every option this spec defaults: `{"block_lu": {"pivot": P, "refine": R}}` (defaults `true`, 0), `{"sparse_block_lu": {"refine": R}}` (0), `{"dense_lu": {}}`, `{"banded": {}}`, `{"block_tridiagonal": {}}`, `{"matrix_free": {}}`; Krylov options as given |
-| `domain` | always | `{"on_violation": V, "check_stages": B}` (defaults `reject`, `false`) plus `nonnegative` when given |
+| `domain` | always | `{"on_violation": V, "check_stages": B}` (defaults `reject`, `false`) plus `nonnegative` when given or when a state the leaf advances has the model bound `lb` 0 alone (the union, spec/run-config.md §4.2, D95) |
 | `imex`, `implicit_solve` | `IMEXEuler` | `imex` as lists of operator names in leaf order, a locality name expanded to the leaf's operators of that class; `implicit_solve` given or `converged` |
 | `theta` | `Theta` | as given |
 | `frozen`, `bind_dt` | when given | as given, durations in seconds |

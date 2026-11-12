@@ -331,7 +331,7 @@ W is kept structured and never assembled dense:
 - Warm start from the previous solution.
 - `recover` ladder: under-relaxation, scaling a regularization parameter, reverting to the warm start.
 - The converged z is stored on the tape for the adjoint.
-- **Bounds (D95):** a box on the unknowns makes the solve a mixed complementarity problem: projected PTC, semismooth Newton on `z − mid(l, z + g, u)`, or projected Picard. The adjoint differentiates on the active set the tape records (spec/adjoint.md §4.6). First user: MOSAIC's MESA solid–liquid equilibrium in EqWeFiC (solid salts ≥ 0).
+- **Bounds (D95):** an unknown whose model variable carries `lb` or `ub` (numbers, or references to variables that do not depend on it; U18) makes the solve a mixed complementarity problem: projected PTC, semismooth Newton on `z − mid(l, z + g, u)`, or projected Picard, converging on that reformulated residual. The residual's sign is fixed (rhs − lhs, the pseudo-time rate of its unknown) and the planner checks it on the diagonal. The adjoint differentiates on the active set the tape records (spec/adjoint.md §4.6, spec/tape.md §2). First user: MOSAIC's MESA solid–liquid equilibrium in EqWeFiC (solid salts ≥ 0).
 - **Adjoint (IFT):** one transposed solve, `g_zᵀ μ = λ_z`, per step. Integrator code in both languages; in Julia `SciMLSensitivity.SteadyStateAdjoint` is an acceptable implementation of the same thing (D32).
 
 ### 6.4 Index-1 DAE (D3b; specified in v1, implemented after M6 unless M4b needs it, D35)
@@ -607,6 +607,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U15 | EarthSciAST (Julia) | Execute recurrences in the native compiler and the StableHLO emitter | M7 |
 | U16 | EarthSciAST | `solver.time_span`, the run interval a document asks for (D60); released in v0.4.0 | M2 |
 | U17 | EarthSciASTDiff | Time-derivative bands (∂f/∂t) specified and golden-gated, for Rosenbrock's `f_t` on time-dependent operators; done on `main` (EarthSciASTDiff#13), released in 0.1.0 (commit 743d140) | M3 |
+| U18 | EarthSciAST | Variable bounds `lb` and `ub` (a number or a reference to another variable) on any variable, in the spec, the schema and every binding, validated and carried through flatten (D95) | M4b |
 
 **Prerequisites the drafts uncovered:**
 - **esm 1.3.0.** U01 and U14 ship in esm 1.3.0. reseact (esm 1.0.0), eqice and EqWeFiC (1.0.0/1.1.0) must move to 1.3.0 before they can use `solver.external` or an f32 choice.
