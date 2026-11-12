@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://earthsciml.org/schemas/esm-integrator/0.1.0/result.schema.json",
+  "title": "EarthSciIntegrator conformance result",
+  "description": "One case's result (spec/toy-problems.md §3).",
+  "type": "object",
+  "required": ["case", "producer", "t", "u", "stats"],
+  "additionalProperties": false,
+  "properties": {
+    "case": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "producer": {"enum": ["julia", "rust", "reference"]},
+    "t": {"type": "array", "items": {"type": "number"}, "minItems": 1},
+    "u": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 1}, "minItems": 1},
+    "stats": {
+      "type": "object",
+      "required": ["accepted", "rejected"],
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {"type": "integer", "minimum": 0},
+        "rejected": {"type": "integer", "minimum": 0},
+        "rhs_calls": {"type": "integer", "minimum": 0}
+      }
+    },
+    "functional": {"type": "number"},
+    "gradient": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "u0": {"type": "array", "items": {"type": "number"}},
+        "p": {"type": "array", "items": {"type": "number"}}
+      }
+    }
+  },
+  "dependentRequired": {"functional": ["gradient"], "gradient": ["functional"]}
+}

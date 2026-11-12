@@ -1,0 +1,48 @@
+{
+  "A": [
+    [1.0, 0.0],
+    [-1.0, 1.0]
+  ],
+  "b": [0.5, 0.5],
+  "btilde": [0.5, -0.5],
+  "c": [1.0, 0.0],
+  "controller": {
+    "beta1": 0.35,
+    "beta2": 0.2,
+    "failfactor": 2,
+    "gamma": 0.9,
+    "pid_accept_safety": 0.81,
+    "pid_beta3": 0,
+    "qmax": 10,
+    "qmax_first_step": 10000,
+    "qmin": 0.2,
+    "qoldinit": 0.0001,
+    "qsteady_max": 1.2,
+    "qsteady_min": 1,
+    "source": {
+      "file": "src/alg_utils.jl",
+      "line": 776,
+      "note": "beta1_default, beta2_default, gamma_default, qmin_default, qmax_default, qsteady_*_default, qmax_first_step_default and failfactor_default for this algorithm; qoldinit and the PID constants from src/integrators/controllers.jl (PIController, PIDController).",
+      "package": "OrdinaryDiffEqCore",
+      "version": "4.19.0"
+    }
+  },
+  "embedded_order": 1,
+  "error_estimate": "embedded_smoothed",
+  "explicit_first_stage": false,
+  "family": "sdirk",
+  "first_same_as_last": false,
+  "form": "sdirk",
+  "name": "SDIRK2",
+  "order": 2,
+  "ordinarydiffeq_algorithm": "SDIRK2",
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "src/imex_tableaus.jl",
+    "line": 2511,
+    "package": "OrdinaryDiffEqSDIRK",
+    "version": "2.9.8"
+  },
+  "stages": 2,
+  "stiffly_accurate": false
+}
