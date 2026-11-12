@@ -331,6 +331,7 @@ W is kept structured and never assembled dense:
 - Warm start from the previous solution.
 - `recover` ladder: under-relaxation, scaling a regularization parameter, reverting to the warm start.
 - The converged z is stored on the tape for the adjoint.
+- **Bounds (D95):** a box on the unknowns makes the solve a mixed complementarity problem: projected PTC, semismooth Newton on `z − mid(l, z + g, u)`, or projected Picard. The adjoint differentiates on the active set the tape records (spec/adjoint.md §4.6). First user: MOSAIC's MESA solid–liquid equilibrium in EqWeFiC (solid salts ≥ 0).
 - **Adjoint (IFT):** one transposed solve, `g_zᵀ μ = λ_z`, per step. Integrator code in both languages; in Julia `SciMLSensitivity.SteadyStateAdjoint` is an acceptable implementation of the same thing (D32).
 
 ### 6.4 Index-1 DAE (D3b; specified in v1, implemented after M6 unless M4b needs it, D35)

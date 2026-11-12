@@ -381,7 +381,22 @@
         "solve": {"$ref": "#/$defs/operatorName"},
         "unknowns": {"type": "array", "items": {"$ref": "#/$defs/qualifiedName"}, "minItems": 1, "uniqueItems": true},
         "method": {"$ref": "#/$defs/nonlinearMethod"},
-        "warm_start": {"enum": ["previous", "initial"]}
+        "warm_start": {"enum": ["previous", "initial"]},
+        "bounds": {
+          "description": "A box per unknown, making the solve a mixed complementarity problem (spec/run-config.md §4.10, D95). Each key must be one of the node's unknowns (spec/run-config.md §8 rule 18).",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"$ref": "#/$defs/qualifiedName"},
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "lower": {"type": "number"},
+              "upper": {"type": "number"}
+            }
+          }
+        }
       }
     },
     "nonlinearMethod": {
