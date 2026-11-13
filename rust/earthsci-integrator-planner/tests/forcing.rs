@@ -35,7 +35,8 @@ const MODEL: &str = r#"{
   },
   "rec": {
    "kind": "interval",
-   "size": 2
+   "size": 2,
+   "records": true
   }
  },
  "data_sources": {
@@ -88,8 +89,7 @@ const MODEL: &str = r#"{
       "kind": "data",
       "source": "Rate",
       "from": {
-       "file_variable": "K",
-       "records_per_sample": 2
+       "file_variable": "K"
       }
      }
     },

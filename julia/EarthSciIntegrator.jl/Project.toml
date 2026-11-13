@@ -20,8 +20,8 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 EarthSciIntegratorSciMLBaseExt = "SciMLBase"
 
 [compat]
-EarthSciAST = "0.10"
-EarthSciASTDiff = "0.5"
+EarthSciAST = "0.11"
+EarthSciASTDiff = "0.6"
 EarthSciIO = "0.3"
 ForwardDiff = "0.10, 1"
 JSON = "0.21, 1"

@@ -15,7 +15,7 @@ Data-fed parameters (the `loader_fields` entries):
 
 | Parameter | Declared | Source, file variable | Cadence | Records | Used by |
 |---|---|---|---|---|---|
-| `Met.T` | `Met` declares it with no shape and `default` 280; a `param_to_var` coupling maps it onto `Col.T[rec, x, lev]` (`default` 300, ignored), so it takes that shape (§10 item 16) | `MetFields`, `T` | discrete | 2 (`update.from.records_per_sample`) | the column term |
+| `Met.T` | `Met` declares it with no shape and `default` 280; a `param_to_var` coupling maps it onto `Col.T[rec, x, lev]` (`default` 300, ignored), so it takes that shape (§10 item 16) | `MetFields`, `T` | discrete | 2 (its first axis `rec` is a record axis, `"records": true`) | the column term |
 | `Col.g` | scalar, `default` 2.0 | `Surface`, `G` | const | 1 | the pointwise term |
 | `Col.c0` | `[x, lev]`, `default` 1.5 | `Surface`, `C0` | const | 1 | the `ic` equation only |
 | `Met.QV` | `[x, lev]`, no `default` | `MetFields`, `QV` | discrete | 1 | nothing: unused, not refused, and absent from the plan, the derived documents and the band-value files |
