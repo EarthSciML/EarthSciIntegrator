@@ -1,5 +1,5 @@
 {
-  "esm": "1.3.0",
+  "esm": "2.0.0",
   "metadata": {
     "name": "emission_compose",
     "description": "M2 planner fixture: three cases where the planners' derived documents of reseact differed (spec/plan.md §10 items 23-25): an operator_compose whose operator, declared first, authors a scoped D(Chem.B); an inline const table with integral floats; an observed with no shape defined by an ifelse over an array parameter."
@@ -32,6 +32,14 @@
       ]
     },
     "Chem": {
+      "expression_template_imports": [
+        {
+          "ref": "esm:std/interp.esm",
+          "only": [
+            "linear"
+          ]
+        }
+      ],
       "variables": {
         "A": {
           "type": "unknown",
@@ -115,10 +123,11 @@
                     "op": "/",
                     "args": [
                       {
-                        "op": "fn",
-                        "name": "interp.linear",
-                        "args": [
-                          {
+                        "op": "apply_expression_template",
+                        "args": [],
+                        "name": "linear",
+                        "bindings": {
+                          "table": {
                             "op": "const",
                             "args": [],
                             "value": [
@@ -127,7 +136,7 @@
                               400.0
                             ]
                           },
-                          {
+                          "axis": {
                             "op": "const",
                             "args": [],
                             "value": [
@@ -136,8 +145,9 @@
                               3.0
                             ]
                           },
-                          "zsel"
-                        ]
+                          "x": "zsel",
+                          "n": 3
+                        }
                       },
                       100
                     ]

@@ -155,7 +155,7 @@ M2's runtimes also fetch data and run leaves that read it (spec/operator-interfa
 **`data_decay`** (`tests/conformance/toys/data_decay.esm`). Model `Decay`, `domain.temporal.reference_time` `2016-01-01T00:00:00Z`, index sets `x` (3) and `rec` (2):
 
 - state `u[x]`, $u(t_0) = 1$; one operator `decay` = `{"components": "Decay"}`, pointwise;
-- `Decay.F_k[rec, x]`, a data-fed parameter (`default` 1.0e-4) from source `Rate`: `kind` `grid`, `url_template` `data/data_decay/rate_{date:%Y%m%d}.nc`, `temporal` `{"start": "2016-01-01T00:00:00Z", "frequency": "PT1H", "file_period": "P1D", "records_per_file": 24, "time_variable": "time"}`, `metadata.esio_format` `"netcdf"`, `file_variable` `K`, and `update.from.records_per_sample` 2 (spec/plan.md §4.1);
+- `Decay.F_k[rec, x]`, a data-fed parameter (`default` 1.0e-4) from source `Rate`: `kind` `grid`, `url_template` `data/data_decay/rate_{date:%Y%m%d}.nc`, `temporal` `{"start": "2016-01-01T00:00:00Z", "frequency": "PT1H", "file_period": "P1D", "records_per_file": 24, "time_variable": "time"}`, `metadata.esio_format` `"netcdf"`, `file_variable` `K`, and its `rec` axis a record axis (`"records": true`, spec/plan.md §4.1);
 - `Decay.s[x]`, a data-fed parameter (`default` 1.0) from source `Scale`, a `static` source with no `temporal` (`const`), file `data/data_decay/scale.nc`, `file_variable` `S`;
 - the observed weight `Decay.w` $= \mathrm{frac}(t/3600)$, and $u_i' = -s_i\,\big((1 - w)\,F_k[1, i] + w\,F_k[2, i]\big)\,u_i$.
 

@@ -1,11 +1,19 @@
 {
-  "esm": "1.3.0",
+  "esm": "2.0.0",
   "metadata": {
     "name": "interp_slope",
     "description": "M2 planner fixture: numbers the Jacobian document gets from EarthSciASTDiff rather than from the model (spec/plan.md §2.2, §9): the segment slopes and knots of the derivative of interp.linear of a state, all integral, and an authored const table the band coefficient keeps."
   },
   "models": {
     "Chem": {
+      "expression_template_imports": [
+        {
+          "ref": "esm:std/interp.esm",
+          "only": [
+            "linear"
+          ]
+        }
+      ],
       "variables": {
         "z": {
           "type": "unknown",
@@ -40,10 +48,11 @@
                     "op": "+",
                     "args": [
                       {
-                        "op": "fn",
-                        "name": "interp.linear",
-                        "args": [
-                          {
+                        "op": "apply_expression_template",
+                        "args": [],
+                        "name": "linear",
+                        "bindings": {
+                          "table": {
                             "op": "const",
                             "args": [],
                             "value": [
@@ -52,7 +61,7 @@
                               700.0
                             ]
                           },
-                          {
+                          "axis": {
                             "op": "const",
                             "args": [],
                             "value": [
@@ -61,18 +70,20 @@
                               2.0
                             ]
                           },
-                          "z"
-                        ]
+                          "x": "z",
+                          "n": 3
+                        }
                       },
                       {
                         "op": "*",
                         "args": [
                           "z",
                           {
-                            "op": "fn",
-                            "name": "interp.linear",
-                            "args": [
-                              {
+                            "op": "apply_expression_template",
+                            "args": [],
+                            "name": "linear",
+                            "bindings": {
+                              "table": {
                                 "op": "const",
                                 "args": [],
                                 "value": [
@@ -80,7 +91,7 @@
                                   4.0
                                 ]
                               },
-                              {
+                              "axis": {
                                 "op": "const",
                                 "args": [],
                                 "value": [
@@ -88,8 +99,9 @@
                                   2.0
                                 ]
                               },
-                              "zsel"
-                            ]
+                              "x": "zsel",
+                              "n": 2
+                            }
                           }
                         ]
                       }

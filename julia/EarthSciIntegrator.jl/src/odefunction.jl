@@ -1,14 +1,8 @@
-"""
-The leaf's sum of operators as a `SciMLBase.ODEFunction` (operator-interface.md
-§5, D33), so OrdinaryDiffEq can integrate the same problem as an oracle.
-"""
-module EarthSciIntegratorSciMLBaseExt
+# The leaf's sum of operators as a `SciMLBase.ODEFunction` (operator-interface.md
+# §5, D33), so OrdinaryDiffEq can integrate the same problem as an oracle.
+# (A SciMLBase package extension until SciMLBase became a dependency.)
 
-using EarthSciIntegrator
-using EarthSciIntegrator: OperatorSum, DenseJacobian, eval_rhs!, jac!, ft!, vjp_u!, jvp_u!, depends_on_t
-import SciMLBase
-
-function EarthSciIntegrator.odefunction(ops::OperatorSum; inplace::Bool = true)
+function odefunction(ops::OperatorSum; inplace::Bool = true)
     jac = (J, u, p, t) -> (fill!(J, zero(eltype(J))); jac!(ops, DenseJacobian(J), u, p, t); J)
     tgrad = (dT, u, p, t) -> (fill!(dT, zero(eltype(dT))); ft!(ops, dT, u, p, t); dT)
     vjp = (out, w, u, p, t) -> (fill!(out, zero(eltype(out))); vjp_u!(ops, out, u, p, t, w); out)
@@ -37,6 +31,4 @@ function EarthSciIntegrator.odefunction(ops::OperatorSum; inplace::Bool = true)
     end
 end
 
-EarthSciIntegrator.odefunction(leaf::EarthSciIntegrator.LeafNode; kw...) = EarthSciIntegrator.odefunction(leaf.ops; kw...)
-
-end
+odefunction(leaf::LeafNode; kw...) = odefunction(leaf.ops; kw...)

@@ -1,6 +1,6 @@
 # emission_compose: expected plan contents
 
-The model: a model `Emis`, declared first, whose one equation `D(Chem.B) = Emis.e` writes another component's state by its scoped name, and a model `Chem` with scalar states `A`, `B`, `C` (`D(A) = interp.linear(const [100.0, 200.0, 400.0], const [1.0, 2.0, 3.0], zsel) / 100 * k - k * A`, `D(B) = k * A - k * B`, `D(C) = k * B`), an array state `q` over index set `cell` (3 cells) decaying at `k * (1 + wet[i])`, and an observed `wet = ifelse(w > 1.0, 1, 0)` declared without a `shape`, `w` a parameter of shape `["cell"]`. One coupling, `operator_compose` with `"systems": ["Emis", "Chem"]`. `solver.time_span` is 0–3600 s. Each part reproduces one of the three places where the two planners' derived documents of reseact differed (spec/plan.md §10 items 23–25). What a golden must show, by spec/plan.md section; anything not listed is fixed by the spec's general rules.
+The model: a model `Emis`, declared first, whose one equation `D(Chem.B) = Emis.e` writes another component's state by its scoped name, and a model `Chem` with scalar states `A`, `B`, `C` (`D(A) = linear(table = const [100.0, 200.0, 400.0], axis = const [1.0, 2.0, 3.0], x = zsel, n = 3) / 100 * k - k * A`, `linear` the `esm:std/interp.esm` template that replaced `fn` `interp.linear` at esm 2.0.0, `D(B) = k * A - k * B`, `D(C) = k * B`), an array state `q` over index set `cell` (3 cells) decaying at `k * (1 + wet[i])`, and an observed `wet = ifelse(w > 1.0, 1, 0)` declared without a `shape`, `w` a parameter of shape `["cell"]`. One coupling, `operator_compose` with `"systems": ["Emis", "Chem"]`. `solver.time_span` is 0–3600 s. Each part reproduces one of the three places where the two planners' derived documents of reseact differed (spec/plan.md §10 items 23–25). What a golden must show, by spec/plan.md section; anything not listed is fixed by the spec's general rules.
 
 ## named
 
@@ -14,7 +14,7 @@ One operator `chemistry` selected by component (`Chem`, `Emis`), advanced by `Ts
 
 | variable | c | s | provenance | the summand |
 |---|---|---|---|---|
-| Chem.A | 0 | 0 | Chem | `interp.linear(…) / 100 * Chem.k` |
+| Chem.A | 0 | 0 | Chem | `linear(…) / 100 * Chem.k`, the template expanded into core operators |
 | Chem.A | 0 | 1 | Chem | `-(Chem.k * Chem.A)` |
 | Chem.C | 0 | 0 | Chem | `Chem.k * Chem.B` |
 | Chem.q | 0 | 0 | Chem | the `makearray` decay of `q` |
