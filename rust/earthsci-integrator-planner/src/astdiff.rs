@@ -103,9 +103,20 @@ fn entry(
         col: v.to_string(),
         rows: rows.to_vec(),
         row_idx: row_idx(ridx),
-        col_idx: cidx.to_vec(),
+        col_idx: cidx.iter().map(without_provenance).collect(),
         contracted: contracted.to_vec(),
     }
+}
+
+/// `e` without EarthSciAST's load provenance (`template_origin`, which
+/// EarthSciAST 0.11 sets on the root of each expanded template and never
+/// serializes), so that a band read from a document whose terms are written
+/// as templates (the probe document, §5.2.2) equals the same band read from
+/// the terms written out: a band is what `serialize_band` writes.
+fn without_provenance(e: &Expr) -> Expr {
+    serde_json::to_value(e)
+        .and_then(serde_json::from_value)
+        .unwrap_or_else(|_| e.clone())
 }
 
 /// A band entry as the locality rules read it (§5.2.3).

@@ -149,9 +149,7 @@ impl std::fmt::Display for Refusal {
 pub enum PlanError {
     /// A refusal of the spec (spec/planner-errors.json).
     Refused(Refusal),
-    /// A step the planner cannot take: a model that keeps a `table_lookup`
-    /// (no public Rust lowering, spec/plan.md §10 item 7), a band source
-    /// that gives no bands, or a leaf resolved without the structure facts
+    /// A step the planner cannot take: a band source that gives no bands, or a leaf resolved without the structure facts
     /// it needs. Never a refusal: it names what is missing.
     NotYetImplemented(String),
     /// A file could not be read or written.

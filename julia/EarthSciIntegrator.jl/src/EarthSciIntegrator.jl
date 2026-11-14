@@ -40,6 +40,13 @@ import ForwardDiff
 # EarthSciIO extension) are what a plan that reads data runs on
 # (spec/operator-interface.md §8.4.2).
 import EarthSciIO
+# DiffEqCallbacks and SciMLBase are loaded so that EarthSciAST's data-refresh
+# extension (EarthSciASTDataRefreshExt) is active in every session: building a
+# model with its data providers, as the runtime does for an initial state that
+# reads data (spec/operator-interface.md §8.4.5), needs it. SciMLBase also gives
+# `odefunction` its method (src/odefunction.jl).
+import DiffEqCallbacks
+import SciMLBase
 using EarthSciAST: ASTExpr, NumExpr, IntExpr, VarExpr, OpExpr, Equation, TermOrigin, Contribution
 
 """Version of the integrator spec (the run config's `esm_integrator` key) this package implements."""
@@ -128,9 +135,11 @@ include("plan_runtime.jl")
 
 The sum of a leaf's operators as a `SciMLBase.ODEFunction` with `jac`, `tgrad`,
 `vjp` and `jvp` filled from the operator calls (operator-interface.md §5,
-D33). Needs `SciMLBase` loaded (package extension).
+D33).
 """
 function odefunction end
+
+include("odefunction.jl")
 
 export SPEC_VERSION, UnsupportedError, ConfigError, ReplayMismatchError
 export rhs!, jvp_u!, vjp_u!, vjp_p!, jac!, ft!, hess_u!, hess_p!, ft_vjp_u!, ft_vjp_p!

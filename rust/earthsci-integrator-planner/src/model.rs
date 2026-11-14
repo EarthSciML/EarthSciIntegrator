@@ -398,18 +398,10 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
     check_external(rc, &file, &path)?;
 
     // Step 5. EarthSciAST's Rust `load_path` has already expanded expression
-    // templates and lowered `enum` nodes; `table_lookup` lowering is not
-    // public in Rust, so a model that still holds one cannot be planned here.
+    // templates and lowered `enum` nodes; esm 2.0.0 has no `table_lookup`
+    // (EarthSciAST 0.11 refuses it at load as a removed op).
     let flat = earthsci_ast::flatten(&file)
         .map_err(|e| refuse(codes::MODEL_FLATTEN_FAILED, "/model", e.to_string()))?;
-    if serde_json::to_string(&flat.equations)
-        .unwrap_or_default()
-        .contains("\"table_lookup\"")
-    {
-        return Err(PlanError::NotYetImplemented(
-            "lowering table_lookup inside each contribution (spec/plan.md §4 step 5) has no public Rust entry point in EarthSciAST 0.10".into(),
-        ));
-    }
 
     // Step 6.
     let scope = |code, m: String| Err(refuse(code, "/model", m));

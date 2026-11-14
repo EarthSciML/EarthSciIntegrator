@@ -9,10 +9,9 @@ summary = "implement the one EarthSciIntegrator spec (`spec/`) natively, checked
 path = "julia/EarthSciIntegrator.jl"
 package = "EarthSciIntegrator"
 env = "docs/api/examples/julia"
-# `odefunction`'s method lives in a package extension (SciMLBase). The planner's
-# EarthSciAST extension is not loaded: its docstring-bearing generic `plan` is in
-# the main module.
-load = ["SciMLBase"]
+# The planner's EarthSciAST extension is not loaded: its docstring-bearing
+# generic `plan` is in the main module.
+load = []
 
 [bindings.rust]
 # Three crates of the rust/ workspace. A manifest spelling that starts with a
