@@ -94,6 +94,22 @@ crossed(run, epochs) = [B for r in run.tape.records if r isa EarthSciIntegrator.
         end
     end
 
+    # The same initial state in a fresh session that loads EarthSciIntegrator
+    # alone, not the test environment's solver packages: building the model
+    # with its providers needs EarthSciAST's data-refresh extension
+    # (DiffEqCallbacks + SciMLBase), which EarthSciIntegrator itself must load.
+    @testset "an initial condition that reads data, in a session with EarthSciIntegrator alone" begin
+        dir = joinpath(M2_PLANS, "data.decay_ic")
+        code = """
+        using EarthSciIntegrator
+        run, _ = EarthSciIntegrator.build_plan_run($(repr(dir)); tspan = $(repr(tspan)))
+        print(join(run.u0, ","))
+        """
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $code`
+        out = read(pipeline(cmd; stderr), String)
+        @test parse.(Float64, split(out, ",")) == [1.0, 1.25, 1.5]
+    end
+
     # spec/plan.md §6.2 item 4: the Jacobian document of an operator that
     # reads data, whose state has no `default` and an `ic` equation that reads
     # data, gets the `default` 1.0; planner and runtime both build it.
