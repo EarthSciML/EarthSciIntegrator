@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "earthsci-integrator"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "earthsci-ast",
  "earthsci-astdiff",
@@ -824,11 +824,11 @@ dependencies = [
 
 [[package]]
 name = "earthsci-integrator-mpi"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "earthsci-integrator-planner"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "earthsci-ast",
  "earthsci-astdiff",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "earthsci-integrator-solvers"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
