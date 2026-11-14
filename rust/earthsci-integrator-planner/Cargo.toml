@@ -13,7 +13,9 @@ repository.workspace = true
 # `initial_state` (spec/plan.md §4), which earthsci-ast 0.12 builds only with
 # its `solve` feature, so `solve` stays on; the command-line tool (`cli`) is
 # left out.
-earthsci-ast = { version = "0.12", default-features = false, features = ["solve"] }
+# 0.12.1: the native compiler drives overlap join gates over ring stacks
+# (EarthSciAST#721), which reseact's NEI-to-model regrid needs.
+earthsci-ast = { version = "0.12.1", default-features = false, features = ["solve"] }
 earthsci-astdiff = "0.6.1"
 earthsci-integrator-solvers.workspace = true
 indexmap = "2"
