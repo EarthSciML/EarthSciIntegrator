@@ -934,12 +934,11 @@ const PLAN_FILES = String[]
             push!(v["equations"], Dict{String, Any}("lhs" => lhs, "rhs" => EarthSciAST.serialize_expression(rhs)))
             return doc
         end
-        # EarthSciAST's flatten (0.11.0 through 0.12.1) walks every template
-        # expansion as a tree in its elementwise-lift pass
-        # (`_refuse_anonymous_arrays`), so flattening this chain visits about
-        # 2^41 nodes and does not finish; the load, which expands it with
-        # sharing, is what is checked here.
-        @test EarthSciAST.load_document(with_chain(templates, only(rewritten))) !== nothing
+        # Flattened, not only loaded: EarthSciAST 0.11.0 through 0.13.0 walked
+        # every template expansion as a tree in flatten's elementwise-lift
+        # pass, about 2^41 visits for this chain, which never finished; since
+        # 0.14.0 each shared expansion is visited once (EarthSciAST#737).
+        @test EarthSciAST.flatten(EarthSciAST.load_document(with_chain(templates, only(rewritten)))) !== nothing
         ref(nm) = EarthSciAST.OpExpr("apply_expression_template", EarthSciAST.ASTExpr[]; name = nm, bindings = Dict{String, EarthSciAST.ASTExpr}())
         longer = vcat(templates, ["one_more" => EarthSciAST.OpExpr("+", EarthSciAST.ASTExpr[ref("shared_1"), x])])
         err = try
