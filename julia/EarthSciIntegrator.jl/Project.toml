@@ -1,6 +1,6 @@
 name = "EarthSciIntegrator"
 uuid = "32373ebd-92e7-4f26-b916-9b5db62dd90f"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["EarthSciML"]
 
 [deps]
