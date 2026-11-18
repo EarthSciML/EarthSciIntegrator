@@ -122,11 +122,12 @@ end
     BuiltDocument
 
 A document built with EarthSciAST as spec/operator-interface.md §8.1 has
-runtimes build it: `rhs_program(esm_problem(file, tspan))` with the native
-compiler, with one workspace, its default forcing set and its parameter
-vector at the defaults. The problem's own `f!` (also native) is kept for
-ForwardDiff's dual numbers, which the program's Float64 workspace does not
-take (§8.2). `aux` is the program's `aux` buffer at zero, of the length
+runtimes build it: `rhs_program(esm_problem(flat, tspan))` with the native
+compiler, the problem built as its program (`program_build`), with one
+workspace, its default forcing set and its parameter vector at the defaults.
+The problem's own `f!` (the program's evaluator over the problem's layout,
+generic in its element type) is kept for ForwardDiff's dual numbers, which
+the program's Float64 workspace does not take (§8.2). `aux` is the program's `aux` buffer at zero, of the length
 its layout gives (a whole-model program has none). Also: its initial state (its `u0`, in its own slot order), the
 number of its state slots, `perm` mapping each canonical DOF to its slot,
 and the slots of every band field `J_k` (column-major over the field's
@@ -238,15 +239,20 @@ function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
     fed = fed_parameters(flat)
     arrays = Dict{String, Array{Float64}}(n => default_array(flat, n) for n in fed)
     u0prob = ic_u0 = nothing
+    # The problem whose program is kept is built as that program
+    # (EarthSciAST's `program_build`), so `rhs_program` returns it rather than
+    # lowering the document a second time.
     prob = if isempty(fed)
-        EarthSciAST.esm_problem(file, time; compiler = :native)
+        EarthSciAST.esm_problem(flat, time; compiler = :native, program_build = true)
     else
         src = flat
         if ic_reads(flat, Set(fed))
             u0prob = EarthSciAST.esm_problem(flat, time; compiler = :native)
             src, ic_u0 = without_ic(flat, u0prob)
         end
-        EarthSciAST.esm_problem(src, time; compiler = :native, u0 = ic_u0, param_arrays = Dict{String, Any}(arrays))
+        EarthSciAST.esm_problem(
+            src, time; compiler = :native, u0 = ic_u0, param_arrays = Dict{String, Any}(arrays), program_build = true
+        )
     end
     prog = EarthSciAST.rhs_program(prob)
     EarthSciAST.n_states(prog) == length(prob.u0) ||
