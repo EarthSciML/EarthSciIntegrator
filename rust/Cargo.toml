@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
@@ -18,5 +18,5 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 # `version` beside every `path`; keep it equal to `[workspace.package] version`
 # above and bump both together in a release commit.
 [workspace.dependencies]
-earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.1.0" }
-earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.1.0" }
+earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.2.0" }
+earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.2.0" }
