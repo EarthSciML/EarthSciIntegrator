@@ -1,0 +1,54 @@
+{
+  "c32": 7.414213562373095,
+  "controller": {
+    "beta1": 0.35,
+    "beta2": 0.2,
+    "failfactor": 2,
+    "gamma": 0.9,
+    "pid_accept_safety": 0.81,
+    "pid_beta3": 0,
+    "qmax": 10,
+    "qmax_first_step": 10000,
+    "qmin": 0.2,
+    "qoldinit": 0.0001,
+    "qsteady_max": 1.2,
+    "qsteady_min": 1,
+    "source": {
+      "file": "src/alg_utils.jl",
+      "line": 776,
+      "note": "beta1_default, beta2_default, gamma_default, qmin_default, qmax_default, qsteady_*_default, qmax_first_step_default and failfactor_default for this algorithm; qoldinit and the PID constants from src/integrators/controllers.jl (PIController, PIDController).",
+      "package": "OrdinaryDiffEqCore",
+      "version": "4.19.0"
+    }
+  },
+  "d": 0.2928932188134525,
+  "embedded_order": 3,
+  "error_estimate": "rosenbrock23",
+  "family": "rosenbrock",
+  "first_same_as_last": true,
+  "form": "rosenbrock23",
+  "name": "Rosenbrock23",
+  "notes": [
+    "OrdinaryDiffEq marks Rosenbrock23 a W-method but defaults it to max_jac_age = 1, so it forms J every step, as this spec requires."
+  ],
+  "order": 2,
+  "ordinarydiffeq_algorithm": "Rosenbrock23",
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": [
+    {
+      "file": "src/rosenbrock_tableaus.jl",
+      "line": 6,
+      "package": "OrdinaryDiffEqRosenbrock",
+      "version": "2.7.5"
+    },
+    {
+      "file": "src/rosenbrock_perform_step.jl",
+      "line": 249,
+      "note": "The ode23s step and its third-stage error estimate.",
+      "package": "OrdinaryDiffEqRosenbrock",
+      "version": "2.7.5"
+    }
+  ],
+  "stages": 2,
+  "stiffly_accurate": false
+}

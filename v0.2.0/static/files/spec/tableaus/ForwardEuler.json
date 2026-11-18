@@ -1,0 +1,26 @@
+{
+  "A": [
+    [0.0]
+  ],
+  "b": [1.0],
+  "c": [0.0],
+  "controller": null,
+  "embedded_order": null,
+  "error_estimate": "none",
+  "family": "explicit_rk",
+  "first_same_as_last": true,
+  "form": "butcher",
+  "name": "ForwardEuler",
+  "order": 1,
+  "ordinarydiffeq_algorithm": "Euler",
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "src/fixed_timestep_perform_step.jl",
+    "line": 13,
+    "note": "OrdinaryDiffEq's Euler.",
+    "package": "OrdinaryDiffEqLowOrderRK",
+    "version": "2.2.6"
+  },
+  "stages": 1,
+  "stiffly_accurate": false
+}
