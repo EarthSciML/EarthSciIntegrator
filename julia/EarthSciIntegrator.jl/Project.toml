@@ -17,8 +17,8 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 
 [compat]
 DiffEqCallbacks = "4"
-EarthSciAST = "0.12"
-EarthSciASTDiff = "0.6.1"
+EarthSciAST = "0.14"
+EarthSciASTDiff = "0.6.2"
 EarthSciIO = "0.4"
 ForwardDiff = "0.10, 1"
 JSON = "0.21, 1"
