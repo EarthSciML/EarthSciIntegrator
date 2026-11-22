@@ -267,6 +267,8 @@ const LARGE_TERM_NODES = 10_000
 The number of operator nodes of `e`, every occurrence counted, in every
 Expression-valued child, or `limit + 1` when it exceeds `limit`. A node
 reached through several parents is counted once per path but walked once.
+An operator reference counts as one node plus its `bindings`; its
+definition's body is not counted (spec/plan.md §5.2.2).
 """
 function operator_nodes(e, limit::Int)
     memo = IdDict{EarthSciAST.OpExpr, Int}()

@@ -119,10 +119,19 @@ _floats!(out, y::AbstractVector) = (foreach(z -> _floats!(out, z), y); out)
 _floats!(out, y::AbstractFloat) = (isinteger(y) && push!(out, y); out)
 _floats!(out, y) = out
 
-"""Every fixture case, `(fixture, case)`, in code-point order."""
+"""
+The fixture cases whose terms hold operator references. Planning them needs
+EarthSciASTDiff to differentiate through a reference without expanding it
+(spec/plan.md §10 item 27): EarthSciASTDiff 0.6.2 expands every reference
+first, so they are not planned until it does, and their goldens are the ones
+written before the planner kept references.
+"""
+const AWAITING_ASTDIFF_REFERENCES = [("emission_compose", "named"), ("interp_slope", "named")]
+
+"""Every fixture case, `(fixture, case)`, in code-point order, but those [`AWAITING_ASTDIFF_REFERENCES`](@ref)."""
 fixture_cases() = [
     (f, c[1:(end - length(".run.json"))]) for f in sort!(readdir(PFIX)) for c in sort!(readdir(joinpath(PFIX, f)))
-        if endswith(c, ".run.json")
+        if endswith(c, ".run.json") && !((f, c[1:(end - length(".run.json"))]) in AWAITING_ASTDIFF_REFERENCES)
 ]
 
 # What each case's expected.md says of its operators: (locality, stiffness,
@@ -264,6 +273,10 @@ const PLAN_FILES = String[]
         J = Dict((1, 2) => -2.0, (1, 1) => 1.5, (2, 1) => 0.5, (4, 2) => 3.0)
         @test EarthSciIntegrator.gershgorin(J, [1, 2, 3]) == 3.5
         @test EarthSciIntegrator.gershgorin(J, [3]) == 0.0
+    end
+
+    @testset "fixture $fixture/$case awaits EarthSciASTDiff reference support (spec/plan.md §10 item 27)" for (fixture, case) in AWAITING_ASTDIFF_REFERENCES
+        @test_broken false
     end
 
     @testset "fixture $fixture/$case" for (fixture, case) in fixture_cases()
@@ -815,19 +828,6 @@ const PLAN_FILES = String[]
         # `serialize_band`'s dictionary.
         @test [map(fields, EarthSciIntegrator.term_bands(b, ctx, t)) for t in terms] ==
             [map(d -> fields(EarthSciIntegrator.BandEntry(d)), EarthSciIntegrator.term_band_dicts(b, ctx, t)) for t in terms]
-        # The probe document's bands are the same, in order, with none of its
-        # shared subexpressions written as templates and with more of them,
-        # down to every repeated one (§5.2.2).
-        doc_bands(min_nodes) = map(
-            EarthSciIntegrator.band_json,
-            EarthSciIntegrator.document_bands(
-                EarthSciAST.flatten(EarthSciAST.load_document(EarthSciIntegrator.probe_document(m, terms; min_nodes))), "the probe document"
-            )
-        )
-        plain = doc_bands(typemax(Int))
-        for min_nodes in (1, 2, EarthSciIntegrator.PROBE_TEMPLATE_MIN_NODES)
-            @test doc_bands(min_nodes) == plain
-        end
         # So do smaller batches (§5.2.2): with a lower bound, each batch is a
         # consecutive run within the bound in all, or a single term, and it
         # ends only where the next term would take it over the bound.
@@ -853,101 +853,60 @@ const PLAN_FILES = String[]
         @test ics == Set(EarthSciIntegrator.probe_state(k) for (k, t) in enumerate(terms) if any(p -> first(p) == t.variable, m.flat.field_ics))
     end
 
-    @testset "shared subexpressions are templates that expand to the terms (§5.2.2)" begin
-        templated = 0
-        for (fixture, case) in fixture_cases()
-            ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json")), DiffBackend())
-            exprs = EarthSciAST.ASTExpr[t.expr for t in EarthSciIntegrator.build_terms(ctx.model)]
-            templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
-            templated += !isempty(templates)
-            reg = Dict{String, EarthSciAST.ASTExpr}(templates)
-            @test length(reg) == length(templates)
-            key(e) = jcs(EarthSciAST.serialize_expression(e))
-            @test key.(EarthSciAST.ASTExpr[EarthSciASTDiff.expand_templates(e, reg) for e in rewritten]) == key.(exprs)
-        end
-        @test templated > 0
-    end
-
-    @testset "a subexpression inside a template is a template only when it is shared outside it (§5.2.2)" begin
-        E(x) = EarthSciAST.expression_from_json(x)
-        key(e) = jcs(EarthSciAST.serialize_expression(e))
-        isref(e) = e isa EarthSciAST.OpExpr && e.op == "apply_expression_template"
-        inner = Dict("op" => "*", "args" => ["a", Dict("op" => "+", "args" => ["b", "c"])])
-        outer = Dict("op" => "-", "args" => [inner, "d"])
-        # `outer` occurs twice (two distinct but equal nodes); `inner` and its
-        # parts only inside it, so only `outer` is a template.
-        exprs = EarthSciAST.ASTExpr[E(outer), E(Dict("op" => "exp", "args" => [outer]))]
-        templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
-        @test first.(templates) == ["shared_1"]
-        @test key(last(only(templates))) == key(E(outer))
-        @test isref(rewritten[1]) && isref(only(rewritten[2].args))
-        # When `inner` also occurs on its own, it is a template too, and
-        # `outer`'s body references it.
-        exprs = vcat(exprs, E(Dict("op" => "sin", "args" => [inner])))
-        templates, rewritten = EarthSciIntegrator.shared_templates(exprs; min_nodes = 1)
-        reg = Dict{String, EarthSciAST.ASTExpr}(templates)
-        @test length(templates) == 2
-        @test isref(reg["shared_1"].args[1])
-        @test key.(EarthSciAST.ASTExpr[EarthSciASTDiff.expand_templates(e, reg) for e in rewritten]) == key.(exprs)
-        # Below `min_nodes` operator nodes, nothing is a template.
-        @test isempty(first(EarthSciIntegrator.shared_templates(exprs; min_nodes = 4)))
-    end
-
-    @testset "the chain of templates stops at EarthSciAST's limit, outermost first (§5.2.2)" begin
-        # 40 nested levels, each the sum of two copies of the one below: every
-        # level below the top occurs twice in what is written.
-        x = EarthSciAST.VarExpr("JacobianEval.chain")
-        e = x
-        for _ in 1:40
-            e = EarthSciAST.OpExpr("+", EarthSciAST.ASTExpr[e, e])
-        end
-        templates, rewritten = EarthSciIntegrator.shared_templates(EarthSciAST.ASTExpr[e]; min_nodes = 1)
-        reg = Dict{String, EarthSciAST.ASTExpr}(templates)
-        isref(y) = y isa EarthSciAST.OpExpr && y.op == "apply_expression_template"
-        function refs(y, out = String[])
-            y isa EarthSciAST.OpExpr || return out
-            isref(y) ? push!(out, y.name) : EarthSciAST.map_children(c -> (refs(c, out); c), y)
-            return out
-        end
-        depth = Dict{String, Int}()
-        chain(nm) = get!(() -> 1 + maximum(chain.(refs(reg[nm])); init = 0), depth, nm)
-        @test length(templates) == EarthSciIntegrator.MAX_TEMPLATE_CHAIN == 32
-        @test maximum(chain(nm) for (nm, _) in templates) == 32
-        # The outermost levels are the templates: the top's two arguments are
-        # references, and the innermost levels are written in place.
-        @test all(isref, only(rewritten).args)
-        @test isempty(refs(reg["shared_32"]))
-        # (Not compared with `e` by serializing: as a tree it has 2^41 nodes.)
-        # EarthSciAST loads a probe document holding them, and refuses one
-        # more template on the chain.
-        ctx = EarthSciIntegrator.plan_context(EarthSciIntegrator.read_inputs(joinpath(PFIX, first(fixture_cases())[1], "$(first(fixture_cases())[2]).run.json")), DiffBackend())
-        terms = EarthSciIntegrator.build_terms(ctx.model)
-        function with_chain(templates, rhs)
-            doc = EarthSciIntegrator.probe_document(ctx.model, terms)
-            v = doc["models"]["JacobianEval"]
-            v["variables"]["chain"] = Dict{String, Any}("type" => v["variables"]["term_1"]["type"], "default" => 0.0)
-            ts = get!(v, "expression_templates", Dict{String, Any}())
-            for (nm, body) in templates
-                ts[nm] = Dict{String, Any}("params" => Any[], "body" => EarthSciAST.serialize_expression(body))
+    @testset "derived documents keep operator references and carry their definitions (§4 step 5, §6.1.5)" begin
+        # No EarthSciASTDiff here: these documents are only written, loaded
+        # and flattened, so nothing expands a reference.
+        nrefs(x) = x isa AbstractDict ? (get(x, "op", nothing) == "apply_operator") + sum(nrefs, values(x); init = 0) :
+            x isa AbstractVector ? sum(nrefs, x; init = 0) : 0
+        for (fixture, case) in (("interp_slope", "named"), ("emission_compose", "named"))
+            inp = EarthSciIntegrator.read_inputs(joinpath(PFIX, fixture, "$case.run.json"))
+            m = EarthSciIntegrator.plan_model(inp)
+            @test collect(keys(m.flat.template_registry)) == ["linear"]
+            terms = EarthSciIntegrator.build_terms(m)
+            want = sum(t -> nrefs(EarthSciAST.serialize_expression(t.expr)), terms)
+            @test want > 0
+            for doc in (EarthSciIntegrator.rhs_document(m, "all", terms), EarthSciIntegrator.probe_document(m, terms))
+                # Every reference is written as a reference, in the component
+                # that holds it, which carries the one definition it reaches.
+                @test nrefs(doc["models"]) == want
+                @test [k for (k, c) in doc["models"] if haskey(c, "operators")] == ["Chem"] ||
+                    [k for (k, c) in doc["models"] if haskey(c, "operators")] == ["JacobianEval"]
+                for (_, c) in doc["models"]
+                    haskey(c, "operators") || continue
+                    @test collect(keys(c["operators"])) == ["linear"]
+                    @test c["operators"]["linear"] == m.flat.template_registry["linear"]
+                end
+                # The document loads and flattens with its references kept,
+                # against the same registry.
+                f = EarthSciAST.flatten(EarthSciAST.load_document(EarthSciIntegrator.wire_form(doc)))
+                @test collect(keys(f.template_registry)) == ["linear"]
+                @test sum(eq -> nrefs(EarthSciAST.serialize_expression(eq.rhs)), f.equations) == want
             end
-            lhs = Dict{String, Any}("op" => "D", "args" => Any["JacobianEval.chain"], "wrt" => "t")
-            push!(v["equations"], Dict{String, Any}("lhs" => lhs, "rhs" => EarthSciAST.serialize_expression(rhs)))
-            return doc
         end
-        # Flattened, not only loaded: EarthSciAST 0.11.0 through 0.13.0 walked
-        # every template expansion as a tree in flatten's elementwise-lift
-        # pass, about 2^41 visits for this chain, which never finished; since
-        # 0.14.0 each shared expansion is visited once (EarthSciAST#737).
-        @test EarthSciAST.flatten(EarthSciAST.load_document(with_chain(templates, only(rewritten)))) !== nothing
-        ref(nm) = EarthSciAST.OpExpr("apply_expression_template", EarthSciAST.ASTExpr[]; name = nm, bindings = Dict{String, EarthSciAST.ASTExpr}())
-        longer = vcat(templates, ["one_more" => EarthSciAST.OpExpr("+", EarthSciAST.ASTExpr[ref("shared_1"), x])])
-        err = try
-            EarthSciAST.load_document(with_chain(longer, ref("one_more")))
-            nothing
-        catch ex
-            ex
-        end
-        @test err !== nothing && occursin("MAX_TEMPLATE_EXPANSION_DEPTH", sprint(showerror, err))
+    end
+
+    @testset "the operator layer: definitions reached through bodies, a match rule materialized (§6.1.5)" begin
+        ref(n; b = Dict{String, Any}()) = Dict{String, Any}("op" => "apply_operator", "args" => Any[], "name" => n, "bindings" => b)
+        reg = Dict{String, Any}(
+            "a" => Dict{String, Any}("params" => Any["x"], "body" => Dict{String, Any}("op" => "+", "args" => Any["x", ref("b")])),
+            "b" => Dict{String, Any}("params" => Any[], "body" => Dict{String, Any}("op" => "*", "args" => Any[2, ref("c")])),
+            "c" => Dict{String, Any}("params" => Any[], "body" => 1.0, "match" => Dict{String, Any}("op" => "foo", "args" => Any[]), "priority" => 2),
+            "unused" => Dict{String, Any}("params" => Any[], "body" => 0.0),
+        )
+        r = EarthSciIntegrator.OperatorRefs(reg)
+        models = Dict{String, Any}(
+            "M" => Dict{String, Any}("variables" => Dict{String, Any}(), "equations" => Any[Dict{String, Any}("lhs" => "y", "rhs" => ref("a"; b = Dict{String, Any}("x" => "M.y")))]),
+            "N" => Dict{String, Any}("variables" => Dict{String, Any}(), "equations" => Any[]),
+        )
+        EarthSciIntegrator.attach_operators!(models, r)
+        @test !haskey(models["N"], "operators")
+        ops = models["M"]["operators"]
+        @test sort(collect(keys(ops))) == ["a", "b", "c"]
+        @test ops["a"] === reg["a"]
+        @test ops["c"] == Dict{String, Any}("params" => Any[], "body" => 1.0, "reference_only" => true)
+        # Each definition's body was read once.
+        @test sort(collect(keys(r.callees))) == ["a", "b", "c"]
+        @test_throws ErrorException EarthSciIntegrator.callees(r, "missing")
     end
 
     @testset "band_model_failed names the term whose derivative fails" begin

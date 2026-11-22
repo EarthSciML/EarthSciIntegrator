@@ -24,3 +24,8 @@ EarthSciAST = "0.14"
 EarthSciASTDiff = "0.6.2"
 OrdinaryDiffEqSDIRK = "2"
 SciMLBase = "3"
+
+# Planner stage C: EarthSciAST main after 0.14.0 (see ../Project.toml).
+[sources]
+EarthSciAST = {url = "https://github.com/EarthSciML/EarthSciAST.git", subdir = "pkg/EarthSciAST.jl", rev = "48edb585cf880c35636b325cdee91cc49b4400a3"}
+EarthSciIntegrator = {path = ".."}

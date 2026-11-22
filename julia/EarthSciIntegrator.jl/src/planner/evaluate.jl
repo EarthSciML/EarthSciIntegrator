@@ -148,6 +148,9 @@ struct BuiltDocument
     # (spec/plan.md §6.3), by flattened name; empty without data-fed
     # parameters. ForwardDiff's evaluations write the forcing into them.
     arrays::Dict{String, Array{Float64}}
+    # The problem those arrays belong to, which is told when they are
+    # rewritten (EarthSciAST's `notify_forcing_refresh!(prob, name)`).
+    prob::Any
 end
 
 """
@@ -263,7 +266,7 @@ function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
     end
     return BuiltDocument(
         prog, EarthSciAST.rhs_workspace(prog), EarthSciAST.default_forcing_set(prog), EarthSciAST.parameter_vector(prog),
-        zeros(EarthSciAST.tile_layout(prog).n_aux), prob.f!, prob.p, u0, length(prob.u0), perm, fslots, arrays
+        zeros(EarthSciAST.tile_layout(prog).n_aux), prob.f!, prob.p, u0, length(prob.u0), perm, fslots, arrays, prob
     )
 end
 
@@ -294,7 +297,7 @@ function eval_slots(B::BuiltDocument, u::AbstractVector{T}, t, F = nothing) wher
         if F !== nothing
             for (n, a) in B.arrays
                 vec(a) .= F[n]
-                EarthSciAST._bump_buffer_epochs!(a)
+                EarthSciAST.notify_forcing_refresh!(B.prob, n)
             end
         end
         B.f!(du, U, B.p, t)
