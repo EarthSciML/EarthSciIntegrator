@@ -126,7 +126,7 @@ EarthSciASTDiff to differentiate through a reference without expanding it
 first, so they are not planned until it does, and their goldens are the ones
 written before the planner kept references.
 """
-const AWAITING_ASTDIFF_REFERENCES = [("emission_compose", "named"), ("interp_slope", "named")]
+const AWAITING_ASTDIFF_REFERENCES = Tuple{String, String}[]
 
 """Every fixture case, `(fixture, case)`, in code-point order, but those [`AWAITING_ASTDIFF_REFERENCES`](@ref)."""
 fixture_cases() = [
