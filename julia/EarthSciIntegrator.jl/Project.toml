@@ -32,4 +32,4 @@ julia = "1.10"
 # `operators` / `apply_operator`). Replace with the release that carries them.
 [sources]
 EarthSciAST = {url = "https://github.com/EarthSciML/EarthSciAST.git", subdir = "pkg/EarthSciAST.jl", rev = "48edb585cf880c35636b325cdee91cc49b4400a3"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "74249c2023c2d1003471b900df6f6209907b9794"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "9021c78bb3962da194219a03e72e7d2391ca5da0"}

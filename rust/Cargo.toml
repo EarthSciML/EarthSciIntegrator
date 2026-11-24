@@ -23,9 +23,12 @@ earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = 
 
 # Unreleased dependencies, pinned by git revision until they are released:
 # the Rust EarthSciAST that keeps operator references at load and flatten
-# (EarthSciML/EarthSciAST#772) and the EarthSciASTDiff that differentiates
-# them without expanding them (EarthSciML/EarthSciASTDiff#77). Drop both
-# when the releases are out (spec/plan.md §10 items 26-28).
+# (EarthSciML/EarthSciAST#772, merged into main e0f04e334) with its merged
+# registry's bodies in canonical number form (fork branch
+# rust-canonical-registry-numbers, to be pinned to upstream main once it
+# merges), and the EarthSciASTDiff that differentiates references without
+# expanding them (EarthSciML/EarthSciASTDiff#77). Drop both when the
+# releases are out (spec/plan.md §0.2).
 [patch.crates-io]
-earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "ff2da2d3256176a314a7f18004bfab32c78bfa68" }
-earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "74249c2023c2d1003471b900df6f6209907b9794" }
+earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "3a61fe45496c4d567a9e530d3f853087950c9aac" }
+earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "9021c78bb3962da194219a03e72e7d2391ca5da0" }

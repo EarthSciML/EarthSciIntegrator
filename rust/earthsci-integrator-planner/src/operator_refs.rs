@@ -153,10 +153,7 @@ impl OperatorRefs {
     /// registry's entry as `flatten` holds it, materialized as esm-spec
     /// §9.6.4 rule 5 writes a referenced `match` rule (without `match`,
     /// `where` and `priority`, with `"reference_only": true`) should the
-    /// registry hold one. Its `body` is written as every expression of a
-    /// derived document is, EarthSciAST's serialized expression (§2.2: an
-    /// integral number as an integer): the Rust registry holds a body as the
-    /// source spelled it (`0.0`), Julia's as it serializes it (`0`).
+    /// registry hold one.
     pub fn materialized_entry(&self, name: &str) -> Value {
         let e = &self.registry[name];
         let Value::Object(m) = e else {
@@ -170,11 +167,6 @@ impl OperatorRefs {
             .collect();
         if rule {
             out.insert("reference_only".into(), Value::Bool(true));
-        }
-        if let Some(body) = out.get_mut("body") {
-            if let Ok(x) = serde_json::from_value::<earthsci_ast::Expr>(body.clone()) {
-                *body = serde_json::to_value(&x).unwrap_or_else(|_| body.clone());
-            }
         }
         Value::Object(out)
     }
@@ -255,19 +247,9 @@ mod tests {
         let ops = models["M"]["operators"].as_object().unwrap();
         assert_eq!(ops.keys().collect::<Vec<_>>(), ["a", "b", "c"]);
         assert_eq!(ops["a"], reg["a"]);
-        // A body is written in the serialized expression form (§2.2).
-        let mut r2 = reg.clone();
-        r2.insert(
-            "z".into(),
-            json!({"params": [], "body": {"op": "+", "args": [0.0, 2.5]}}),
-        );
-        assert_eq!(
-            OperatorRefs::new(&r2).materialized_entry("z")["body"],
-            json!({"op": "+", "args": [0, 2.5]})
-        );
         assert_eq!(
             ops["c"],
-            json!({"params": [], "body": 1, "reference_only": true})
+            json!({"params": [], "body": 1.0, "reference_only": true})
         );
         assert_eq!(r.read_definitions(), ["a", "b", "c"]);
         assert!(r.callees("missing").is_err());
