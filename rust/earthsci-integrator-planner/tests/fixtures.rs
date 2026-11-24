@@ -41,27 +41,6 @@ const CASES: &[(&str, &str)] = &[
     ("reseact_mini", "shard"),
 ];
 
-/// Cases whose goldens the Julia planner has not yet rewritten for M3
-/// (spec/plan.md §9 "M3": the restored `cell` default of `dt_scope`, the
-/// new fixture `reseact_mini`). Goldens are written by Julia; until they
-/// are, these cases plan and are checked against everything but their
-/// golden. Empty this list when the Julia M3 goldens land.
-/// Each listed existing case differs from its golden only in the
-/// resolved `dt_scope` of its pointwise leaves (`global` → `cell`).
-const AWAITING_JULIA_GOLDENS: &[(&str, &str)] = &[
-    ("cross_component_term", "by-label"),
-    ("cross_component_term", "by-owner"),
-    ("forced_column", "named"),
-    ("interp_slope", "named"),
-    ("inverse_decay", "auto"),
-    ("pointwise_chemistry", "auto"),
-    ("pointwise_chemistry", "named"),
-    ("reseact_shaped", "auto"),
-    ("unnamed_lift", "auto"),
-    ("reseact_mini", "cell"),
-    ("reseact_mini", "shard"),
-];
-
 /// The left-hand-side `op` of every equation of a model and its subsystems.
 fn lhs_ops(model: &Value, out: &mut Vec<String>) {
     for eq in model["equations"].as_array().into_iter().flatten() {
@@ -342,10 +321,6 @@ fn every_case() {
                 let reach = (-offs.clone().min().unwrap(), offs.max().unwrap());
                 assert_eq!(Some(&reach), radius.get(h), "{fixture}/{case} {op} {h}");
             }
-        }
-        if AWAITING_JULIA_GOLDENS.contains(&(*fixture, *case)) {
-            eprintln!("{fixture}/{case}: golden awaits the Julia planner (M3)");
-            continue;
         }
         check_golden(fixture, case, &p, &bytes);
     }

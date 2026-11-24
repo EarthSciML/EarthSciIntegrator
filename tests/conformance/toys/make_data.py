@@ -209,11 +209,14 @@ def _cell_faq(expr):
 
 def reseact_mini_doc():
     n, m = RM_NLON, RM_NLAT
-    X = {s: f"Mini.{s}" for s in ("NO2", "NO", "O3")}
+    # The model's own variables by their local names, the form every binding
+    # validates (EarthSciAST.jl 0.14 does not count `D(Mini.NO2)` inside model
+    # `Mini` as an equation for `NO2`).
+    X = {s: s for s in ("NO2", "NO", "O3")}
     # Photolysis: half-wave with a phase per longitude, attenuated with level.
     jrate = _op(
         "*",
-        "Mini.j0",
+        "j0",
         _op(
             "max",
             0,
@@ -221,7 +224,7 @@ def reseact_mini_doc():
                 "sin",
                 _op(
                     "+",
-                    _op("*", "Mini.omega", "t"),
+                    _op("*", "omega", "t"),
                     _op("*", math.pi / 3, _op("-", "i", 1)),
                 ),
             ),
@@ -231,10 +234,10 @@ def reseact_mini_doc():
     # Thermal rate from the two-record temperature blend.
     tblend = _op(
         "+",
-        _ix("Mini.TS", 1, "i", "j"),
-        _op("*", "Mini.w", _op("-", _ix("Mini.TS", 2, "i", "j"), _ix("Mini.TS", 1, "i", "j"))),
+        _ix("TS", 1, "i", "j"),
+        _op("*", "w", _op("-", _ix("TS", 2, "i", "j"), _ix("TS", 1, "i", "j"))),
     )
-    krate = _op("*", "Mini.k0", _op("+", 1, _op("*", 0.01, _op("-", tblend, 290))))
+    krate = _op("*", "k0", _op("+", 1, _op("*", 0.01, _op("-", tblend, 290))))
     r = _op(
         "-",
         _op("*", jrate, _ix(X["NO2"], "i", "j", "k")),
@@ -243,13 +246,13 @@ def reseact_mini_doc():
     chem = {
         "NO2": _cell_faq(_op("-", r)),
         "NO": _cell_faq(
-            _op("+", r, _op("*", "Mini.e0", _op("max", 0, _op("-", 2, "k"))))
+            _op("+", r, _op("*", "e0", _op("max", 0, _op("-", 2, "k"))))
         ),
-        "O3": _cell_faq(_op("-", r, _op("*", "Mini.vd", _ix(X["O3"], "i", "j", "k")))),
+        "O3": _cell_faq(_op("-", r, _op("*", "vd", _ix(X["O3"], "i", "j", "k")))),
     }
 
     def advection(x):
-        c = _op("/", "Mini.u", "Mini.dx")
+        c = _op("/", "u", "dx")
         interior = _op(
             "faq",
             output_idx=["i", "j", "k"],
@@ -279,7 +282,7 @@ def reseact_mini_doc():
             _op("faq", output_idx=[], ranges={"kk": [1, RM_NLEV]}, expr=_ix(x, "i", "j", "kk")),
             RM_NLEV,
         )
-        return _cell_faq(_op("*", "Mini.kmix", _op("-", mean, _ix(x, "i", "j", "k"))))
+        return _cell_faq(_op("*", "kmix", _op("-", mean, _ix(x, "i", "j", "k"))))
 
     variables = {
         "NO2": {"type": "unknown", "shape": ["lon", "lat", "lev"], "default": 10.0},
@@ -307,8 +310,8 @@ def reseact_mini_doc():
             "lhs": "w",
             "rhs": _op(
                 "-",
-                _op("/", "t", "Mini.dtrec"),
-                _op("floor", _op("/", "t", "Mini.dtrec")),
+                _op("/", "t", "dtrec"),
+                _op("floor", _op("/", "t", "dtrec")),
             ),
         }
     ]
