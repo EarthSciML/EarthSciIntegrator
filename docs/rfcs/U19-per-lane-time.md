@@ -3,7 +3,7 @@ title: "A time per lane in lane programs"
 description: "EarthSciAST's lane programs (U3) evaluate a pointwise or column operator over a run-time list of cells, one call for a batch of lanes, but take one time t per call. Under dt_scope cell each cell has its own step-size controller, so after its first step every cell of a batch is at a different time, and a batch collapses to one call per cell. This RFC asks for lane programs that take one time per lane, with each lane's value equal, bit for bit, to the whole-domain program's at its cell and its time."
 ---
 
-Status: draft (proposed by EarthSciIntegrator, 2026-11-24).
+Status: draft (proposed by EarthSciIntegrator, 2026-11-24); implemented in draft EarthSciAST#781 (stacked on #780): Rust evaluates a batch at mixed times in one pass; Julia offers the call and serves it by groups of equal time, since its 0-d observeds are one value per call.
 Target: EarthSciAST (API_SPEC §5.8 "Lanes", CONFORMANCE_SPEC §5.50); Rust (`RhsProgram::lanes`, `LaneProgram`) and Julia (`lanes`, `LaneProgram`); Python if it gains lane programs.
 Needed by: EarthSciIntegrator milestone M3: the solve-time budget of the M3 gate (D96) with `dt_scope: cell` (D97, D98).
 Integrator refs: spec/partitioning.md §3.2, §3.3; architecture.md §7.6; decisions D17, D96, D97, D98

@@ -23,7 +23,7 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 | U15 | EarthSciAST.jl | [Recurrence execution](U15-julia-recurrence-execution.md), native and StableHLO | [EarthSciAST#546](https://github.com/EarthSciML/EarthSciAST/issues/546) | M7 |
 | U16 | EarthSciAST spec | [`solver.time_span`](U16-solver-time-span.md): the run interval a document asks for (D60) | [EarthSciAST#550](https://github.com/EarthSciML/EarthSciAST/issues/550) | M2 |
 | U17 | EarthSciASTDiff | [Time-derivative bands](U17-time-derivative-bands.md): ∂f/∂t as a specified, golden-gated band model, for Rosenbrock's `f_t` | [EarthSciASTDiff#11](https://github.com/EarthSciML/EarthSciASTDiff/issues/11) | M3 (restores M2's time-dependent Rosenbrock cases) |
-| U19 | EarthSciAST runtimes | [A time per lane](U19-per-lane-time.md): lane programs that take one time per lane, for `dt_scope: cell` | (not yet filed) | M3 (performance of the gate, D96) |
+| U19 | EarthSciAST runtimes | [A time per lane](U19-per-lane-time.md): lane programs that take one time per lane, for `dt_scope: cell` | draft EarthSciAST#781 | M3 (performance of the gate, D96) |
 
 **Upstream progress** (2026-10-26; U7, U8 and U9 updated 2026-11-01 for EarthSciASTDiff 0.2.0; the M2 pins updated 2026-11-04 for EarthSciAST 0.9.0 and EarthSciASTDiff 0.4.0, 2026-11-08 for EarthSciAST 0.10.0 and EarthSciASTDiff 0.5.0, 2026-11-13 for EarthSciAST 0.12.0 and EarthSciASTDiff 0.6.1, 2026-11-14 for EarthSciAST 0.12.1, and 2026-11-16 for EarthSciAST 0.14.0 and EarthSciASTDiff 0.6.2):
 

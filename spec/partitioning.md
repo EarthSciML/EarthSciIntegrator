@@ -81,7 +81,7 @@ Under `shard` and `global` every lane of a shard moves together (one $h$, one $t
 
 ### 3.3 The time of a lane (D98)
 
-A lane is evaluated at its own time. EarthSciAST's lane programs (Rust `RhsProgram::lanes`, Julia `lanes`; U3, EarthSciAST 0.5.0) take one scalar $t$ per call. Until they take a time per lane (U19), a runtime evaluates in one call only the lanes whose stage times are equal bit for bit, and the other lanes of the batch as padding of that call; it calls once per distinct time. That is always correct, since a lane's value depends only on its own inputs (rule 4). With U19 a batch is one call whatever its times. Which lanes share a call never changes a value.
+A lane is evaluated at its own time. EarthSciAST's lane programs (Rust `RhsProgram::lanes`, Julia `lanes`; U3, EarthSciAST 0.5.0) take one scalar $t$ per call. Until they take a time per lane (U19), a runtime evaluates in one call only the lanes whose stage times are equal bit for bit, and the other lanes of the batch as padding of that call; it calls once per distinct time. That is always correct, since a lane's value depends only on its own inputs (rule 4). With U19 (EarthSciAST#781: Rust `LaneProgram::eval_times_into`, Julia `rhs!` with a vector of times) a batch is one call whatever its times; EarthSciAST.jl serves such a call by groups of equal time for now. Which lanes share a call never changes a value.
 
 The same holds for forcing: a lane's call takes the forcing set its own step selects (spec/operator-interface.md §8.4.1, §7 below), so lanes of one batch taking different sets are evaluated in separate calls until a lane program takes a set per lane.
 
