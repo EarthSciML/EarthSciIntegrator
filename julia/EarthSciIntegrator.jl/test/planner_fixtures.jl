@@ -315,7 +315,10 @@ const PLAN_FILES = String[]
             end
         end
         # Derived documents (§6, §7.7): one rhs and one jacobian per operator, hashed as written.
-        @test sort!(collect(keys(p["derived"]))) == sort!(["derived/$o.$k.esm" for o in ops for k in ("rhs", "jacobian")])
+        # A time-derivative document (§6.4, D102) for each operator with structure.time_bands.
+        timed = [o for o in ops if haskey(p["operators"][o]["structure"], "time_bands")]
+        @test sort!(collect(keys(p["derived"]))) ==
+            sort!(vcat(["derived/$o.$k.esm" for o in ops for k in ("rhs", "jacobian")], ["derived/$o.time_derivative.esm" for o in timed]))
         for (path, x) in p["derived"]
             bytes = read(joinpath(dir, path))
             @test x["sha256"] == bytes2hex(EarthSciIntegrator.sha256(bytes))
@@ -329,7 +332,8 @@ const PLAN_FILES = String[]
                 # EarthSciASTDiff's evaluation document, as it writes it (§6.2).
                 @test doc["esm"] == "1.1.0" && doc["metadata"] == Dict("name" => "JacobianEval")
                 @test !occursin("\"op\":\"ic\"", String(copy(bytes)))
-                nb = length(p["operators"][x["operator"]]["structure"]["bands"])
+                st = p["operators"][x["operator"]]["structure"]
+                nb = length(x["kind"] == "time_derivative" ? st["time_bands"] : st["bands"])
                 # The band fields, plus the observeds subtree sharing hoists
                 # (`Jcse<n>`, esm-jacobian-spec §8.1; D90).
                 jvars = collect(keys(doc["models"]["JacobianEval"]["variables"]))
@@ -362,7 +366,10 @@ const PLAN_FILES = String[]
         # §8: the validation entries, and the band-value files (§8.2).
         @test p["validation"] == vcat(
             Any[Dict("check" => "rhs_sum", "passed" => true)],
-            Any[Dict("check" => c, "operator" => o, "passed" => true) for o in ops for c in ("band_model", "non_empty")]
+            Any[
+                Dict("check" => c, "operator" => o, "passed" => true) for o in ops
+                    for c in (o in timed ? ("band_model", "non_empty", "time_band_model") : ("band_model", "non_empty"))
+            ]
         )
         for o in ops
             bv = JSON.parsefile(joinpath(dir, "validation", "$o.bandvalues.json"))

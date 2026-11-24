@@ -390,7 +390,7 @@ end
 
 spec/plan.md §7.1: the schedule's unsupported constructs in tree order, then
 observed `step.limits` entries in written order, then spec/run-config.md §8
-rules 2, 3, 5–9, 12, 13 and 15 in rule order.
+rules 2, 3, 5–9, 12, 13, 15 and 19 in rule order.
 """
 function check_schedule(ctx, root::SNode)
     m, ops, config = ctx.model, ctx.ops, ctx.config
@@ -404,12 +404,13 @@ function check_schedule(ctx, root::SNode)
         n.kind == "map" && refuse("unsupported_map_operator", nptr(n), "map nodes need U6 (M4b)")
         n.kind == "solve" && refuse("unsupported_solve_node", nptr(n), "solve nodes need U6 (M4b)")
         n.kind == "split_explicit" && refuse("unsupported_split_explicit", nptr(n), "split_explicit arrives at M7")
-        # §0.1, D94: both runtimes run dt_scope global only until M3.
-        if is_leaflike(n)
-            scope = get(get(n.spec, "control", Dict{String, Any}()), "dt_scope", "auto")
-            scope in ("cell", "shard") && refuse(
+        # §0.1, D97: column lane pools are specified but not yet implemented
+        # (spec/partitioning.md §2.5).
+        if n.kind == "leaf"
+            scope = local_scope(n)
+            scope !== nothing && leaf_class(ctx, n) === :column && refuse(
                 "unsupported_dt_scope", nptr(n, "control", "dt_scope"),
-                "leaf $(n.id): dt_scope \"$scope\" arrives at M3; at M2 the runtimes step every leaf with dt_scope \"global\" (give \"global\" or omit dt_scope)"
+                "leaf $(n.id): dt_scope \"$scope\" on a column leaf needs column lane pools, which are not yet implemented (spec/partitioning.md §2.5)"
             )
         end
         # (coupled with algebraic operators cannot occur: §4 step 6 refused algebraic equations.)
@@ -523,6 +524,87 @@ function check_schedule(ctx, root::SNode)
             k == "leaf" && refuse(
                 "bind_dt_leaf_without_dt0", at,
                 "parameter $p is bound to the leaf step on an adaptive leaf without control.dt0 (spec/methods.md §9)"
+            )
+        end
+    end
+    check_rule_19(ctx, nodes)
+    return nothing
+end
+
+"""A leaf's or coupled node's `control.dt_scope` when it is `cell` or `shard`, else `nothing`."""
+function local_scope(n::SNode)
+    s = get(get(n.spec, "control", Dict{String, Any}()), "dt_scope", nothing)
+    return s in ("cell", "shard") ? String(s) : nothing
+end
+
+"""
+The class of a leaf or coupled node (§5.5.3): the coarsest locality of its
+operators. An operator the run config does not define (rule 3 refuses it)
+is left out; `:pointwise` when none is defined.
+"""
+function leaf_class(ctx, n::SNode)
+    cls = :pointwise
+    for o in leaf_ops(n)
+        haskey(ctx.ops, o) && (cls = coarser(cls, need_locality(ctx.ops[o])))
+    end
+    return cls
+end
+
+"""
+Whether a leaf's Jacobian storage is `block_diagonal`
+(spec/operator-interface.md §8.3): a pointwise `leaf` (not `coupled`) whose
+operators all have `structure.block` and whose states are all of one shape.
+"""
+function block_storage(ctx, n::SNode)
+    n.kind == "leaf" || return false
+    leaf_class(ctx, n) === :pointwise || return false
+    names = leaf_ops(n)
+    for o in names
+        op = get(ctx.ops, o, nothing)
+        op === nothing && return false
+        s = op.structure
+        # Only a test backend gives no structure; such an operator has no
+        # block, as one without `structure.block`.
+        (s === nothing || !haskey(s, "block")) && return false
+    end
+    written = sort!(unique!(reduce(vcat, (ctx.ops[o].writes for o in names); init = String[])))
+    return length(unique([get(ctx.model.shapes, s, String[]) for s in written])) <= 1
+end
+
+"""The `dt_scope` an omitted or `"auto"` one resolves to (§5.5.3, D97): `cell` for a leaf with `block_diagonal` storage, `global` otherwise."""
+default_dt_scope(ctx, n::SNode) = block_storage(ctx, n) ? "cell" : "global"
+
+"""
+    check_rule_19(ctx, nodes)
+
+spec/run-config.md §8 rule 19 (spec/partitioning.md §2.1, §6.2; D97, D104),
+nodes in tree order, each checked for `dt_scope_not_local`, then
+`dt_scope_bind_dt`, then `reshard_without_shard_scope`.
+"""
+function check_rule_19(ctx, nodes)
+    for n in nodes
+        is_leaflike(n) || continue
+        scope = local_scope(n)
+        at = nptr(n, "control", "dt_scope")
+        if scope !== nothing
+            cls = leaf_class(ctx, n)
+            why = n.kind == "coupled" ? "a coupled node is not sharded" :
+                cls in (:stencil, :global) ? "its cells read each other within a step" :
+                cls === :pointwise && !block_storage(ctx, n) ? "its Jacobian storage is not block_diagonal, so it has no cells" :
+                nothing
+            why === nothing || refuse("dt_scope_not_local", at, "node $(n.id): dt_scope \"$scope\": $why")
+            any(b -> b[2] == "leaf", leaf_bindings(n, ctx.ops)) && refuse(
+                "dt_scope_bind_dt", at,
+                "leaf $(n.id): dt_scope \"$scope\" with a bind_dt \"leaf\" parameter, which cannot hold several step sizes at once"
+            )
+        end
+        r = get(get(n.spec, "partition", Dict{String, Any}()), "reshard", "none")
+        if r != "none"
+            given = get(get(n.spec, "control", Dict{String, Any}()), "dt_scope", "auto")
+            resolved = given == "auto" ? default_dt_scope(ctx, n) : String(given)
+            resolved == "shard" || refuse(
+                "reshard_without_shard_scope", nptr(n, "partition", "reshard"),
+                "leaf $(n.id): partition.reshard needs dt_scope \"shard\", not \"$resolved\""
             )
         end
     end
@@ -710,10 +792,9 @@ function resolve_leaf(ctx, n::SNode, stiff)
     if alg == "auto"
         if cls === :pointwise
             if isstiff
-                # A Rosenbrock method needs `ft` from an operator that depends
-                # on t, which a plan's operators do not provide until U17 (D94).
-                alg = any(o -> op_depends_on_t(ctx, o), names) ? "TRBDF2" :
-                    reltol >= 1.0e-3 ? "Rosenbrock23" : "Rodas4"
+                # A Rosenbrock method takes `ft` from the operators'
+                # time-derivative documents (§6.4, D102).
+                alg = reltol >= 1.0e-3 ? "Rosenbrock23" : "Rodas4"
                 jac === nothing && (jac = "symbolic")
                 # The row needs block_diagonal storage even when linsolve is given.
                 bsize = leaf_block_size(ctx, n, at)
@@ -769,10 +850,9 @@ function resolve_leaf(ctx, n::SNode, stiff)
     c = Dict{String, Any}("reltol" => reltol)
     at_ = get(ctrl, "abstol", 1.0e-6)
     c["abstol"] = at_ isa AbstractDict ? Dict{String, Any}(String(k) => v for (k, v) in at_) : at_
-    # At M2 every class resolves to `global`: `cell` (D17's default for a
-    # pointwise leaf) and `shard` arrive at M3, and the run config's own `cell`
-    # or `shard` was refused with the schedule (§7.1, D94).
-    c["dt_scope"] = given(ctrl, "dt_scope") ? ctrl["dt_scope"] : "global"
+    # `cell` for a pointwise leaf with block_diagonal storage (D17, D97),
+    # `global` for every other leaf; a given scope is kept.
+    c["dt_scope"] = given(ctrl, "dt_scope") ? ctrl["dt_scope"] : default_dt_scope(ctx, n)
     if adaptive
         c["controller"] = given(ctrl, "controller") ? ctrl["controller"] : "PI"
         c["maxiters"] = get(ctrl, "maxiters", 1000000)
