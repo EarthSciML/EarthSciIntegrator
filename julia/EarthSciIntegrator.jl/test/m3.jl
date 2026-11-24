@@ -161,6 +161,19 @@ end
         end
     end
 
+    # §3.2, U19: under `cell` a lane pool serves cells at different times in
+    # one lane-program call (the run's values are the invariance checks').
+    @testset "a lane pool serves cells at different times in one call" begin
+        id = "m3.reseact_mini.cell"
+        if isempty(pat) || occursin(Regex(pat), id)
+            EarthSciIntegrator.MIXED_TIME_LANES[] = 0
+            run, _ = m3_run(only_case(cases, id), Dict{String, Any}("lanes" => 8, "threads" => 2))
+            @test run.retcode == "Success"
+            @test EarthSciIntegrator.MIXED_TIME_LANES[] > 1
+            @info "$id: at most $(EarthSciIntegrator.MIXED_TIME_LANES[]) distinct times in one lane-program call"
+        end
+    end
+
     # §9.3: for every cell, the lane-program values of rhs, jac and ft at
     # capacities 1, 3 and 8, with the cell in every lane position and with
     # padding, equal the whole-domain values bit for bit.

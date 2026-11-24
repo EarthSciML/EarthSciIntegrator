@@ -34,5 +34,5 @@ julia = "1.10"
 # (EarthSciAST#781): pinned at the head of #781 on the fork. Replace with the
 # release that carries them.
 [sources]
-EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "250fcecf6b27026a9b7c012be0dbcd61bffb797c"}
+EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "21189c881b567d5833bd6309927c508dffaaa4ed"}
 EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "9021c78bb3962da194219a03e72e7d2391ca5da0"}

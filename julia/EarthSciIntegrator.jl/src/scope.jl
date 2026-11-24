@@ -17,13 +17,15 @@
 # re-sharding (§6.2) changes them at macro-step boundaries from each cell's
 # share of its shard's squared error ratios.
 #
-# Lane pools. A unit's cells are evaluated together through the operators'
-# lane programs (EarthSciAST's `lanes`, U3), `capacity` lanes per call; a
-# remainder is padded by the program (§3.1 rule 2). Cells of different units
-# are never batched together: lane programs take one time per call (D98), and
-# cells of different units are at different times after their first step.
-# When lane programs take a time per lane (U19), one pool may batch the cells
-# of many units without changing a value.
+# Lane pools (§3.2). Under `cell` each executor runs a pool of `capacity`
+# lanes, one task per lane, each integrating the cells it takes from the shared
+# queue; every evaluation a lane needs is posted to the pool's [`Batcher`] and,
+# once every active lane has posted one, they are served together: one
+# lane-program call per document, forcing set and parameter vector, each lane at
+# its own time (U19, EarthSciAST's `rhs!` with a vector of times). A lane's
+# value depends only on its own inputs (§3.1 rule 4), so how the lanes are
+# grouped changes no value. Under `shard` a unit's cells step together and are
+# evaluated `capacity` at a time; a remainder is padded by the program (rule 2).
 
 # ---------------------------------------------------------------------------
 # Lane programs (spec/partitioning.md §3)
@@ -330,6 +332,166 @@ function lane_jac!(lo::LaneOps, out, cells, x, bg, p, t)
 end
 
 # ---------------------------------------------------------------------------
+# The lane pool's rendezvous (spec/partitioning.md §3.2; U19)
+
+"""One cell's evaluation of one document, posted by the lane integrating the cell."""
+struct LaneRequest
+    lo::LaneOps
+    doc::LaneDoc
+    cell::Int
+    u::Vector{Float64}        # the lane's `u` column, block by block
+    P::Vector{Float64}
+    t::Float64
+    fs::EarthSciAST.ForcingSet
+end
+
+"""
+The largest number of distinct times one lane-program call of a pool has
+served in this process: how the tests see that cells at different times share
+a call (U19).
+"""
+const MIXED_TIME_LANES = Threads.Atomic{Int}(0)
+
+"""
+    Batcher(lanes)
+
+The rendezvous of one lane pool (spec/partitioning.md §3.2): each lane task
+integrates its own cell, and posts every evaluation it needs here; when every
+active lane has posted one, the evaluations are served together, one
+lane-program call per document, forcing set and parameter vector (in chunks
+of the capacity), each lane at its own time. A lane that has no more cells
+leaves the pool.
+"""
+mutable struct Batcher
+    cond::Threads.Condition
+    active::Int
+    pending::Vector{Tuple{Int, LaneRequest}}
+    done::Vector{Any}
+end
+Batcher(lanes::Int) = Batcher(Threads.Condition(), lanes, Tuple{Int, LaneRequest}[], Any[nothing for _ in 1:lanes])
+
+function submit!(b::Batcher, lane::Int, r::LaneRequest)
+    lock(b.cond) do
+        push!(b.pending, (lane, r))
+        while true
+            res = b.done[lane]
+            if res !== nothing
+                b.done[lane] = nothing
+                res isa Exception && throw(res)
+                return res::Vector{Float64}
+            end
+            if !isempty(b.pending) && length(b.pending) == b.active
+                serve!(b)
+                notify(b.cond)
+                continue
+            end
+            wait(b.cond)
+        end
+    end
+end
+
+"""The lane has no more cells: the pool waits for one lane fewer."""
+function leave!(b::Batcher)
+    lock(b.cond) do
+        b.active -= 1
+        b.active > 0 && length(b.pending) == b.active && serve!(b)
+        notify(b.cond)
+    end
+    return nothing
+end
+
+function serve!(b::Batcher)
+    pending = sort!(b.pending; by = first)
+    b.pending = Tuple{Int, LaneRequest}[]
+    groups = Vector{Vector{Int}}()
+    for (k, (_, r)) in enumerate(pending)
+        g = findfirst(g -> (q = pending[g[1]][2]; q.doc === r.doc && q.fs === r.fs && bitwise_same(q.P, r.P)), groups)
+        g === nothing ? push!(groups, [k]) : push!(groups[g], k)
+    end
+    for g in groups
+        reqs = [pending[k][2] for k in g]
+        Threads.atomic_max!(MIXED_TIME_LANES, length(unique(reinterpret(UInt64, r.t) for r in reqs)))
+        res = try
+            eval_requests(reqs)
+        catch e
+            e isa InterruptException && rethrow()
+            e
+        end
+        for (j, k) in enumerate(g)
+            b.done[pending[k][1]] = res isa Exception ? res : res[j]
+        end
+    end
+    return nothing
+end
+
+"""Evaluate one group of requests (one document, forcing set and parameters), `L` lanes per call, each at its own time; each request's output column."""
+function eval_requests(reqs::Vector{LaneRequest})
+    d, lo = reqs[1].doc, reqs[1].lo
+    w = _acquire(d)
+    try
+        L = d.L
+        out = Vector{Vector{Float64}}()
+        ts = zeros(L)
+        for c0 in 1:L:length(reqs)
+            chunk = reqs[c0:min(c0 + L - 1, end)]
+            nb = length(chunk)
+            fill!(w.u, 0.0)
+            for (l, r) in enumerate(chunk)
+                for e in 1:d.nu
+                    w.u[(e - 1) * L + l] = r.u[e]
+                end
+                for row in axes(lo.coords, 1)
+                    w.cells[row, l] = lo.coords[row, r.cell]
+                end
+                ts[l] = r.t
+            end
+            EarthSciAST.rhs!(w.du, d.lp, w.ws, w.u, w.aux, chunk[1].P, view(ts, 1:nb), chunk[1].fs, w.cells, nb)
+            for l in 1:nb
+                push!(out, Float64[w.du[(e - 1) * L + l] for e in 1:d.nu])
+            end
+        end
+        return out
+    finally
+        _release(d, w)
+    end
+end
+
+"""The request of cell `cell` (state `x`, one cell, species in leaf order) of document `d`, model state `bg`, parameters `p`, at `t`."""
+function lane_request(lo::LaneOps, d::LaneDoc, cell, x, bg, p, t)
+    u = zeros(d.nu)
+    for (off, i, start) in d.fill
+        u[off + 1] = i > 0 ? Float64(x[i]) : bg[start + cell - 1]
+    end
+    P = Float64[p[j] for j in d.pidx]
+    return LaneRequest(lo, d, cell, u, P, Float64(t), lane_forcing(d, lo.op.forcing, t))
+end
+
+function pooled_rhs!(lo::LaneOps, b::Batcher, lane, out, cell, x, bg, p, t)
+    du = submit!(b, lane, lane_request(lo, lo.rhs, cell, x, bg, p, t))
+    for (off, i) in lo.rhs_out
+        out[i] += du[off + 1]
+    end
+    return out
+end
+
+function pooled_ft!(lo::LaneOps, b::Batcher, lane, out, cell, x, bg, p, t)
+    lo.time === nothing && return out
+    du = submit!(b, lane, lane_request(lo, lo.time, cell, x, bg, p, t))
+    for (off, i) in lo.time_out
+        out[i] += du[off + 1]
+    end
+    return out
+end
+
+function pooled_jac!(lo::LaneOps, b::Batcher, lane, out, cell, x, bg, p, t)
+    du = submit!(b, lane, lane_request(lo, lo.jac, cell, x, bg, p, t))
+    for (off, i, j) in lo.jac_out[cell]
+        addentry!(out, i, j, du[off + 1])
+    end
+    return out
+end
+
+# ---------------------------------------------------------------------------
 # Units
 
 """
@@ -337,12 +499,16 @@ end
 
 The unit a unit leaf's operators currently evaluate: its cells (canonical,
 1-based, ascending), the leaf's state at the invocation's start `xbg` and the
-model state at its start `bg` (the leaf's constants).
+model state at its start `bg` (the leaf's constants), and under `cell` in a
+lane pool the pool's [`Batcher`](@ref) and the lane.
 """
 mutable struct UnitTarget
     cells::Vector{Int}
     xbg::Vector{Float64}
     bg::Vector{Float64}
+    # The lane pool this unit's cell is evaluated in, and its lane (§3.2);
+    # `nothing` outside a pool.
+    batch::Union{Nothing, Tuple{Batcher, Int}}
 end
 
 """
@@ -400,17 +566,23 @@ function _whole!(g, o::UnitOperator, out, x)
 end
 
 function rhs!(o::UnitOperator, out, x, p, t)
+    tg = o.target
+    o.lanes === nothing || tg.batch === nothing || return pooled_rhs!(o.lanes, tg.batch..., out, tg.cells[1], x, tg.bg, p, t)
     o.lanes === nothing || return lane_rhs!(o.lanes, out, o.target.cells, x, o.target.bg, p, t)
     return _whole!((fo, y) -> rhs!(o.base, fo, y, p, t), o, out, x)
 end
 
 function ft!(o::UnitOperator, out, x, p, t)
     depends_on_t(o) || return out
+    tg = o.target
+    o.lanes === nothing || tg.batch === nothing || return pooled_ft!(o.lanes, tg.batch..., out, tg.cells[1], x, tg.bg, p, t)
     o.lanes === nothing || return lane_ft!(o.lanes, out, o.target.cells, x, o.target.bg, p, t)
     return _whole!((fo, y) -> ft!(o.base, fo, y, p, t), o, out, x)
 end
 
 function jac!(o::UnitOperator, out, x, p, t)
+    tg = o.target
+    o.lanes === nothing || tg.batch === nothing || return pooled_jac!(o.lanes, tg.batch..., out, tg.cells[1], x, tg.bg, p, t)
     o.lanes === nothing || return lane_jac!(o.lanes, out, o.target.cells, x, o.target.bg, p, t)
     y = _leaf_vector(o, x)
     S = BlockJacobian{Float64}(o.ncells, o.n)
@@ -521,7 +693,7 @@ cell's squared ratios into (§6.2).
 """
 function unit_leaf(leaf::LeafNode, s::ScopeState, m::Int, lanes)
     n, nc = s.n, s.ncells
-    target = UnitTarget(Int[], Float64[], Float64[])
+    target = UnitTarget(Int[], Float64[], Float64[], nothing)
     ops = AbstractOperator[
         UnitOperator(op, lanes === nothing ? nothing : lanes[k], target, n, m, nc) for (k, op) in enumerate(leaf.ops.ops)
     ]
@@ -624,8 +796,25 @@ function scoped_forward(
     make_resident!(leaf, ta, tb)
     results = Vector{Any}(undef, length(units))
     next = Threads.Atomic{Int}(1)
-    function work()
+    nt = clamp(s.threads, 1, max(length(units), 1))
+    # Under `cell` with lane programs, each executor runs a lane pool of
+    # `capacity` lanes (§3.2): one task per lane, each integrating the cells it
+    # takes, their evaluations served together at their own times (U19).
+    pooled = s.kind === :cell && s.capacity > 1 && lanes !== nothing
+    per = pooled ? s.capacity : 1
+    batchers = [pooled ? Batcher(per) : nothing for _ in 1:nt]
+    function work(k)
         held = Dict{Int, Any}()
+        b = batchers[div(k - 1, per) + 1]
+        batch = b === nothing ? nothing : (b, (k - 1) % per + 1)
+        try
+            _work(held, batch)
+        finally
+            b === nothing || leave!(b)
+        end
+        return nothing
+    end
+    function _work(held, batch)
         while true
             i = Threads.atomic_add!(next, 1)
             i > length(units) && break
@@ -635,6 +824,7 @@ function scoped_forward(
             target.cells = cells
             target.xbg = x
             target.bg = bg
+            target.batch = batch
             xu = Float64[x[(sp - 1) * nc + c] for sp in 1:n for c in cells]
             cs = copy(s.units[i])
             ul.tol !== nothing && ul.tol.cellacc !== nothing && fill!(ul.tol.cellacc, 0.0)
@@ -644,11 +834,11 @@ function scoped_forward(
         end
         return nothing
     end
-    nt = clamp(s.threads, 1, max(length(units), 1))
-    if nt == 1
-        work()
+    total = nt * per
+    if total == 1
+        work(1)
     else
-        tasks = [Threads.@spawn work() for _ in 1:nt]
+        tasks = [Threads.@spawn work(k) for k in 1:total]
         foreach(wait, tasks)
     end
     # Merge, units in order.
