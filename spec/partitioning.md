@@ -225,7 +225,7 @@ spec/tape.md §2 records, per leaf invocation:
 - under `shard`: per shard in shard order, its cells (when the composition changed since the shard's last record, or on its first), its accepted steps and its counts;
 - under `cell`: per cell, in canonical cell order, its accepted and rejected counts and return code, not its steps (architecture §7.6). A replay re-runs the invocation with the controllers on, from the checkpointed controller states, and checks the counts: under D10 it reproduces every step bitwise.
 
-In the serialized form (spec/tape.md §5) a `cell` leaf's record carries `"cells": {"accepted": [...], "rejected": [...]}` (arrays in canonical cell order) and no `steps`, and a `shard` leaf's carries `"shards": [{"cells": [...], "steps": [...], "accepted": a, "rejected": r}]` (`cells` only when §11 says so). A checkpoint holds each cell's (or shard's) controller state of spec/methods.md §8.6, and, under `shard`, the current composition.
+In the serialized form (spec/tape.md §5) a `cell` leaf's record carries `"cells": {"accepted": [...], "rejected": [...]}` (arrays in canonical cell order) and an empty `"steps": []`, and a `shard` leaf's carries `"shards": [{"cells": [...], "steps": [...], "accepted": a, "rejected": r}]` (`cells` only when §11 says so). A checkpoint holds each cell's (or shard's) controller state of spec/methods.md §8.6, and, under `shard`, the current composition.
 
 ## 12. Open questions
 
