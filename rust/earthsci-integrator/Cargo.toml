@@ -3,7 +3,7 @@ name = "earthsci-integrator"
 description = "EarthSciIntegrator core: operator interface, toy problems, schedule interpreter, tape and adjoint."
 version.workspace = true
 edition.workspace = true
-# earthsci-ast 0.14 needs Rust 1.89.
+# earthsci-ast 0.15 needs Rust 1.89.
 rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
@@ -18,7 +18,7 @@ repository.workspace = true
 # reads a calendar-template scalar (EarthSciAST#739), which reseact's NEI
 # emissions need; esm 2.3.0 (the pointwise lift on every route, deprecated
 # `neg`/`pow`, canonical unit spelling).
-earthsci-ast = { version = "0.14.0", default-features = false, features = ["solve", "esio"] }
+earthsci-ast = { version = "0.15.0", default-features = false, features = ["solve", "esio"] }
 # Reading the plan's band positions (esm-jacobian-spec §4).
 earthsci-astdiff = "0.6.2"
 # The planner's canonical order, derived-document evaluation and band

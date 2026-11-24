@@ -3,7 +3,7 @@ name = "earthsci-integrator-planner"
 description = "EarthSciIntegrator planner: operators, locality, structure, plan emission (spec/plan.md)."
 version.workspace = true
 edition.workspace = true
-# earthsci-ast 0.14 needs Rust 1.89.
+# earthsci-ast 0.15 needs Rust 1.89.
 rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
@@ -19,7 +19,9 @@ repository.workspace = true
 # reads a calendar-template scalar (EarthSciAST#739), which reseact's NEI
 # emissions need; esm 2.3.0 (the pointwise lift on every route, deprecated
 # `neg`/`pow`, canonical unit spelling).
-earthsci-ast = { version = "0.14.0", default-features = false, features = ["solve"] }
+# 0.15.0: load, flatten and the native build keep operator references, and
+# the merged registry carries their definitions (planner stage C, §4 step 5).
+earthsci-ast = { version = "0.15.0", default-features = false, features = ["solve"] }
 earthsci-astdiff = "0.6.2"
 earthsci-integrator-solvers.workspace = true
 indexmap = "2"
