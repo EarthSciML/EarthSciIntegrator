@@ -1,0 +1,74 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "The prototype's methods with the chemistry's dt_scope left to its default (cell, D97): a Rosenbrock leaf on a time-dependent operator, so a time-derivative document (spec/plan.md \u00a76.4), and the leaf's shards and lane capacity.",
+  "model": "../../../toys/reseact_mini.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "operators": {
+    "transport": {
+      "select": {
+        "locality": [
+          "stencil",
+          "column"
+        ]
+      }
+    },
+    "chemistry": {
+      "select": {
+        "locality": "pointwise"
+      }
+    }
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "transport",
+        "alg": "SSPRK43",
+        "control": {
+          "reltol": 0.0001,
+          "abstol": 1e-06,
+          "dt0": 15
+        }
+      },
+      {
+        "id": "chem",
+        "leaf": "chemistry",
+        "alg": "Rosenbrock23",
+        "jacobian": "symbolic",
+        "control": {
+          "reltol": 0.0001,
+          "abstol": 1e-09,
+          "dt0": 0.5
+        },
+        "domain": {
+          "nonnegative": "all",
+          "on_violation": "reject"
+        },
+        "linsolve": {
+          "block_lu": {
+            "pivot": false
+          }
+        },
+        "partition": {
+          "shards": 4,
+          "lanes": 8
+        }
+      }
+    ]
+  },
+  "step": {
+    "dt": 300,
+    "hit": [
+      "forcing_refresh",
+      "output"
+    ]
+  },
+  "output": {
+    "saveat": 1800
+  }
+}

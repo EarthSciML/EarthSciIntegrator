@@ -1,0 +1,72 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Per-shard dt with re-sharding every two macro steps (spec/partitioning.md \u00a72.4, \u00a76.2), on TRBDF2, which needs no time-derivative document.",
+  "model": "../../../toys/reseact_mini.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "operators": {
+    "transport": {
+      "select": {
+        "locality": [
+          "stencil",
+          "column"
+        ]
+      }
+    },
+    "chemistry": {
+      "select": {
+        "locality": "pointwise"
+      }
+    }
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "transport",
+        "alg": "SSPRK43",
+        "control": {
+          "reltol": 0.0001,
+          "abstol": 1e-06,
+          "dt0": 15
+        }
+      },
+      {
+        "id": "chem",
+        "leaf": "chemistry",
+        "alg": "TRBDF2",
+        "jacobian": "symbolic",
+        "control": {
+          "reltol": 0.0001,
+          "abstol": 1e-09,
+          "dt0": 0.5,
+          "dt_scope": "shard"
+        },
+        "domain": {
+          "nonnegative": "all",
+          "on_violation": "reject"
+        },
+        "partition": {
+          "shards": 3,
+          "reshard": {
+            "every": 2
+          }
+        }
+      }
+    ]
+  },
+  "step": {
+    "dt": 300,
+    "hit": [
+      "forcing_refresh",
+      "output"
+    ]
+  },
+  "output": {
+    "saveat": 1800
+  }
+}

@@ -1,6 +1,6 @@
 # The tape and checkpoints
 
-**Status:** M1 draft, 2026-10-23. Normative for both implementations. M1 covers single-rank, single-shard runs (`dt_scope: global`); shard compositions, per-cell step counts and forcing epochs are added at M3, and the checkpoint schedule's execution at M4 (D34).
+**Status:** M1 draft, 2026-10-23. Normative for both implementations. M1 covers single-rank, single-shard runs (`dt_scope: global`); shard compositions and per-cell step counts are added at M3 (spec/partitioning.md §11), forcing epochs with the adjoint at M4, and the checkpoint schedule's execution at M4 (D34).
 
 The tape is the record of a forward run that the adjoint replays (architecture §10). Every tape entry is a constant of the frozen-tape map the adjoint differentiates (spec/adjoint.md §2.2). This chapter defines what the tape holds, how it is keyed, what a checkpoint holds, and a serialized form for tests.
 
@@ -22,7 +22,7 @@ Invocation order within a macro step is the execution order. Paths and order are
 
 | Node | Recorded per invocation |
 |---|---|
-| `leaf`, `coupled` | `t`, `Δ`; the accepted steps as a list of `(t_n, h_n)`; counts of accepted and rejected steps; the return code. For SDIRK and IMEX leaves, nothing about Newton iterations: the adjoint differentiates the converged stages (spec/adjoint.md §4.3). |
+| `leaf`, `coupled` | `t`, `Δ`; the accepted steps as a list of `(t_n, h_n)`; counts of accepted and rejected steps; the return code. Under `dt_scope: cell` per-cell counts and codes instead of steps, and under `shard` per-shard steps and compositions (spec/partitioning.md §11). For SDIRK and IMEX leaves, nothing about Newton iterations: the adjoint differentiates the converged stages (spec/adjoint.md §4.3). |
 | `subcycle` | the number of substeps and, under `limits`, each substep's size and the limit that set it. |
 | `every` | whether it fired, and Δₑ when it did (spec/run-config.md §4.9). |
 | `map` | the mask of discrete decisions the map recorded (operator-interface.md §7). |
