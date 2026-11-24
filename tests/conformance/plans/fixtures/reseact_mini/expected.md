@@ -4,9 +4,9 @@ The model is the M3 toy `reseact_mini` (spec/toy-problems.md §5.1; `../../../to
 
 ## Common to both cases
 
-**Terms (§5.1).** Three per species, nine in all, provenance `Mini` (the model's own equation): for species X in canonical order (`Mini.NO`, `Mini.NO2`, `Mini.O3`), summand 0 the chemistry `faq` (pointwise), summand 1 the advection `makearray` (stencil, radius `lon` [1, 0], `lat` [0, 0]: the seam row reads cell 6, a periodic wrap, §5.2.3), summand 2 the column mean (column).
+**Terms (§5.1).** Three per species, nine in all, provenance `Mini` (the model's own equation): for species X in canonical order (`Mini.NO`, `Mini.NO2`, `Mini.O3`), summand 0 the chemistry `faq` (pointwise), summand 1 the advection `makearray` (stencil, radius `lon` [1, 0], `lat` [0, 0]: the seam row reads cell 6, a periodic wrap, §5.2.3), summand 2 the column mean (column). The Rust planner of M2 plans the model with these localities (checked on a `TRBDF2`, `dt_scope: global` variant).
 
-**Operators.** `chemistry`: pointwise, `writes` the three species, `forcing` `["Mini.TS"]`, `structure.class` `block_diagonal` with a 3-variable `block`, `depends_on_t` true (photolysis reads $t$, and the blend weight `w` reads $t$), `linear_in_u` false. `transport`: class `column` (the coarsest of stencil and column is stencil for the leaf's class; the operator's own locality is the coarsest of its terms, `stencil`, with `structure.column` from the mixing terms and `structure.stencil.footprint` `[[-1, 0], [0, 0]]` plus the seam's wrapped offset reduced as §5.2.3 reduces it), `depends_on_t` false, no `forcing`.
+**Operators.** `chemistry`: pointwise, `writes` the three species, `forcing` `["Mini.TS"]`, `structure.class` `block_diagonal` with a 3-variable `block`, `depends_on_t` true (photolysis reads $t$, and the blend weight `w` reads $t$), `linear_in_u` false. `transport`: locality `stencil` (the coarsest of its terms' localities, stencil and column) with radius `{"lat": [0, 0], "lon": [1, 0]}` (the seam reads cell 6 from cell 1, a periodic wrap of reach 1), `structure.class` `general`, `structure.stencil.footprint` `[[-1, 0], [0, 0]]`, 18 bands, `depends_on_t` false, `linear_in_u` true, no `forcing`. `chemistry`: 9 bands.
 
 **Forcing.** `forcing` lists `Mini.TS`: shape `["rec", "lon", "lat"]`, source `Met`, file variable `TS`, cadence `discrete`, `records_per_sample` 2.
 
