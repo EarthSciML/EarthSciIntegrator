@@ -71,6 +71,12 @@ pub fn bands(sv: &SysView) -> Result<Vec<JacEntry>, BandError> {
     earthsci_astdiff::jacobian_bands_view(sv, Wrt::States, None)
 }
 
+/// The time-derivative band list of the view `sv` (`wrt = time`,
+/// esm-jacobian-spec §4.2), in EarthSciASTDiff's order (spec/plan.md §6.4).
+pub fn time_bands(sv: &SysView) -> Result<Vec<JacEntry>, BandError> {
+    earthsci_astdiff::jacobian_bands_view(sv, Wrt::Time, None)
+}
+
 /// The state Jacobian's structure-only entries of the view `sv`
 /// (`jacobian_structure_view`, `wrt = states`; esm-jacobian-spec §2.1):
 /// the pattern pass 2 reads (§5.2.2), without coefficients.

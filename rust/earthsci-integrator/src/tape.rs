@@ -44,6 +44,13 @@ pub enum TapeRecord {
         /// nothing are omitted, and the key when nothing clipped.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         clips: Vec<(usize, Vec<usize>)>,
+        /// Under `dt_scope: cell`, each cell's counts and return code, in
+        /// canonical cell order, in place of `steps`; under `shard`, each
+        /// shard's (spec/partitioning.md §11).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cells: Option<UnitCounts>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shards: Option<Vec<ShardRecord>>,
     },
     Subcycle {
         path: String,
@@ -101,6 +108,8 @@ impl TapeRecord {
                     rejected,
                     retcode,
                     clips,
+                    cells,
+                    shards,
                 },
                 R::Leaf {
                     path: path2,
@@ -111,6 +120,8 @@ impl TapeRecord {
                     rejected: rejected2,
                     retcode: retcode2,
                     clips: clips2,
+                    cells: cells2,
+                    shards: shards2,
                 },
             ) => {
                 path == path2
@@ -125,6 +136,36 @@ impl TapeRecord {
                     && rejected == rejected2
                     && retcode == retcode2
                     && clips == clips2
+                    && cells == cells2
+                    && shards.as_ref().map(|v| {
+                        v.iter()
+                            .map(|r| {
+                                (
+                                    &r.cells,
+                                    r.steps
+                                        .iter()
+                                        .map(|s| [s[0].to_bits(), s[1].to_bits()])
+                                        .collect::<Vec<_>>(),
+                                    r.accepted,
+                                    r.rejected,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    }) == shards2.as_ref().map(|v| {
+                        v.iter()
+                            .map(|r| {
+                                (
+                                    &r.cells,
+                                    r.steps
+                                        .iter()
+                                        .map(|s| [s[0].to_bits(), s[1].to_bits()])
+                                        .collect::<Vec<_>>(),
+                                    r.accepted,
+                                    r.rejected,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
             }
             (
                 R::Subcycle { path, t, dt, n },
@@ -306,6 +347,26 @@ impl Tape {
     }
 }
 
+/// Per-cell counts of a `dt_scope: cell` leaf invocation
+/// (spec/partitioning.md §11), in canonical cell order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitCounts {
+    pub accepted: Vec<u64>,
+    pub rejected: Vec<u64>,
+}
+
+/// One shard of a `dt_scope: shard` leaf invocation (spec/partitioning.md
+/// §11): its cells when the composition changed, its steps and counts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShardRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cells: Option<Vec<usize>>,
+    #[serde(with = "num_pairs")]
+    pub steps: Vec<[f64; 2]>,
+    pub accepted: u64,
+    pub rejected: u64,
+}
+
 /// A leaf's persistent state (spec/methods.md §8.6), part of checkpoints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LeafPersist {
@@ -313,6 +374,14 @@ pub struct LeafPersist {
     pub proposal: Option<f64>,
     /// The controller's history, for adaptive leaves.
     pub ctrl: Option<ControllerState>,
+    /// Under `dt_scope: cell`, each cell's own persistent state, by
+    /// canonical cell; under `shard`, each shard's, in the order of the
+    /// leaf's current composition, which `shards` holds (cells ascending).
+    /// Empty under `global` and before a scoped leaf's first invocation
+    /// (spec/partitioning.md §2.3, §2.4, §11).
+    pub units: Vec<LeafPersist>,
+    /// Under `dt_scope: shard`, the current composition.
+    pub shards: Vec<Vec<usize>>,
 }
 
 impl LeafPersist {
@@ -321,6 +390,8 @@ impl LeafPersist {
         LeafPersist {
             proposal: None,
             ctrl,
+            units: Vec::new(),
+            shards: Vec::new(),
         }
     }
 
@@ -331,7 +402,15 @@ impl LeafPersist {
         let cs = |c: &Option<ControllerState>| {
             c.map(|c| (b(c.eold), b(c.pid_eps[0]), b(c.pid_eps[1]), c.accepted_any))
         };
-        ob(self.proposal) == ob(o.proposal) && cs(&self.ctrl) == cs(&o.ctrl)
+        ob(self.proposal) == ob(o.proposal)
+            && cs(&self.ctrl) == cs(&o.ctrl)
+            && self.units.len() == o.units.len()
+            && self
+                .units
+                .iter()
+                .zip(&o.units)
+                .all(|(a, b)| a.bitwise_eq(b))
+            && self.shards == o.shards
     }
 }
 
@@ -383,6 +462,8 @@ mod tests {
                     rejected: 1,
                     retcode: Retcode::Success,
                     clips: vec![(1, vec![0, 3])],
+                    cells: None,
+                    shards: None,
                 },
                 TapeRecord::Map {
                     path: "0/root.1".into(),
@@ -417,6 +498,8 @@ mod tests {
             rejected: 0,
             retcode: Retcode::Success,
             clips: vec![],
+            cells: None,
+            shards: None,
         };
         assert!(!serde_json::to_string(&no_clip).unwrap().contains("clips"));
         let back = Tape::from_jsonl(&s).unwrap();
@@ -441,6 +524,8 @@ mod tests {
                     rejected: 0,
                     retcode: Retcode::DtNaN,
                     clips: vec![],
+                    cells: None,
+                    shards: None,
                 },
                 TapeRecord::Macro {
                     path: "0".into(),

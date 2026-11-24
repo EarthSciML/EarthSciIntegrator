@@ -216,6 +216,33 @@ pub struct LeafSpec<T: Scalar> {
     /// The model-state buffers of [`Bound`], kept across invocations, one
     /// per invocation in flight.
     pub bound_work: Mutex<Vec<BoundWork<T>>>,
+    /// `dt_scope` `cell` or `shard` (spec/partitioning.md §2.3, §2.4): the
+    /// leaf integrates units, each with its own controller; `None` for
+    /// `global`.
+    pub scope: Option<Arc<crate::scope::ScopePlan<T>>>,
+    /// Set on a unit leaf of a scoped leaf ([`crate::scope`]).
+    pub unit: Option<UnitState<T>>,
+}
+
+/// A unit leaf's link to its operators and its re-sharding signal
+/// (spec/partitioning.md §6.2).
+pub struct UnitState<T> {
+    /// Points the unit leaf's operators at a unit.
+    pub target: Box<dyn crate::scope::UnitTarget<T>>,
+    /// Under `shard`: `R_c` of each of the unit's cells, summed over the
+    /// invocation's step attempts.
+    pub cells: Mutex<Vec<f64>>,
+    /// Under `shard`: each cell's squared ratios at the last norm.
+    pub last: Mutex<Vec<f64>>,
+    /// The unit's cells.
+    pub ncells: usize,
+}
+
+/// A scoped leaf invocation's per-unit records (spec/partitioning.md §11).
+#[derive(Debug, Clone)]
+pub enum UnitOutcome {
+    Cells(crate::tape::UnitCounts),
+    Shards(Vec<crate::tape::ShardRecord>),
 }
 
 /// A leaf's step workspace: the method's, and the stored
@@ -373,6 +400,9 @@ pub struct LeafCall<'a> {
     /// Converge implicit stages to roundoff: the frozen-tape replay of the
     /// finite-difference check (spec/adjoint.md §7.2).
     pub tight_newton: bool,
+    /// The index of the macro step the invocation is in (re-sharding,
+    /// spec/partitioning.md §6.2).
+    pub macro_step: usize,
 }
 
 /// What one invocation did.
@@ -394,6 +424,8 @@ pub struct LeafOutcome<T> {
     /// when stages are recorded and the leaf advances part of the state
     /// (operator-interface.md §1).
     pub background: Option<Vec<T>>,
+    /// Per-unit records of a scoped leaf.
+    pub units: Option<UnitOutcome>,
 }
 
 impl<T: Scalar> LeafSpec<T> {
@@ -489,6 +521,35 @@ impl<T: Scalar> LeafSpec<T> {
             for &j in &self.integrand_const {
                 lam[j] += w * span;
             }
+        }
+    }
+
+    /// A `shard` unit leaf keeps each cell's squared ratios of the latest
+    /// norm (spec/partitioning.md §6.2), apart from the norm's own sum.
+    fn note_ratios(&self, e: &[f64], un: &[T], unew: &[T]) {
+        let Some(st) = &self.unit else { return };
+        let Ok(mut last) = st.last.lock() else { return };
+        if last.is_empty() {
+            return;
+        }
+        let m = st.ncells;
+        last.iter_mut().for_each(|v| *v = 0.0);
+        for (j, ((&ej, u0), u1)) in e.iter().zip(un).zip(unew).enumerate() {
+            let mx = u0.to_f64().abs().max(u1.to_f64().abs());
+            let r = ej / (self.tol.abstol[j] + self.tol.reltol * mx);
+            last[j % m] += r * r;
+        }
+    }
+
+    /// Adds the latest norm's ratios to the cells' signal: once per step
+    /// attempt whose error was estimated, the last norm being its error's.
+    fn add_ratios(&self) {
+        let Some(st) = &self.unit else { return };
+        let (Ok(last), Ok(mut acc)) = (st.last.lock(), st.cells.lock()) else {
+            return;
+        };
+        for (a, l) in acc.iter_mut().zip(last.iter()) {
+            *a += l;
         }
     }
 
@@ -808,6 +869,9 @@ impl<T: Scalar> LeafSpec<T> {
         persist: &mut LeafPersist,
         call: &LeafCall<'_>,
     ) -> Result<LeafOutcome<T>, Error> {
+        if let Some(plan) = &self.scope {
+            return crate::scope::invoke(self, plan, u, persist, call);
+        }
         if !self.is_partial() {
             let bg: &[T] = &[];
             let mut w = self.take_work(u.len())?;
@@ -889,6 +953,7 @@ impl<T: Scalar> LeafSpec<T> {
             stage_data: Vec::new(),
             stop_states: Vec::new(),
             background: None,
+            units: None,
         };
         let (t0, t1) = (call.t0, call.t1);
         // The stops of this invocation: interior output times, then the end.
@@ -944,7 +1009,10 @@ impl<T: Scalar> LeafSpec<T> {
             let reuse = cache.filter(|&(_, hb)| !leaf_bound || hb == h);
             let mut f = |o: &mut [T], uu: &[T], tt: f64| b.rhs(o, uu, pb, tt);
             let tol = &self.tol;
-            let mut norm = |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol);
+            let mut norm = |e: &[f64], un: &[T], unew: &[T]| {
+                self.note_ratios(e, un, unew);
+                error_norm(e, un, unew, tol)
+            };
             let norm: Option<&mut NormFn<'_, T>> = if want_err { Some(&mut norm) } else { None };
             match (&self.method, w) {
                 (LeafMethod::Erk(m), MethodWork::Erk(w)) => {
@@ -988,7 +1056,10 @@ impl<T: Scalar> LeafSpec<T> {
                     let mut jp = |part: Part, o: &mut MatrixStorage<T>, uu: &[T], tt: f64| {
                         b.jac_part(part, o, uu, pb, tt)
                     };
-                    let mut nrm = |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol);
+                    let mut nrm = |e: &[f64], un: &[T], unew: &[T]| {
+                        self.note_ratios(e, un, unew);
+                        error_norm(e, un, unew, tol)
+                    };
                     let o = m.step(
                         w,
                         &mut fp,
@@ -1185,6 +1256,9 @@ impl<T: Scalar> LeafSpec<T> {
                 singular,
                 newton_fail,
             } = take(w, &mut pbuf, fsal, cache, u, t, h, adaptive);
+            if e.is_some() {
+                self.add_ratios();
+            }
             let violation = !singular
                 && !newton_fail
                 && ((self.violates(w.unew()) && !self.domain.as_ref().is_some_and(|d| d.clip))

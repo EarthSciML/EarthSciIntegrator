@@ -51,6 +51,25 @@ fn build_program(
     Ok((prob, prog))
 }
 
+/// [`build_program`] of a document given as JSON. A derived document
+/// references no file (its data sources are stubs, spec/plan.md §6.3).
+pub(crate) fn build_program_value(
+    doc: &Value,
+    tspan: (f64, f64),
+) -> Result<(earthsci_ast::EsmProblem, RhsProgram), String> {
+    let prob = esm_problem(
+        ProblemInput::from(doc),
+        tspan,
+        ProblemOptions {
+            compiler: Some(Compiler::Native),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| format!("EarthSciAST esm_problem: {e}"))?;
+    let prog = rhs_program(&prob).map_err(|e| format!("EarthSciAST rhs_program: {e}"))?;
+    Ok((prob, prog))
+}
+
 /// The canonical order of a program's states, leaving out the names `skip`
 /// accepts.
 fn program_dofs(prog: &RhsProgram, skip: impl Fn(&str) -> bool) -> Dofs {
@@ -64,7 +83,7 @@ fn program_dofs(prog: &RhsProgram, skip: impl Fn(&str) -> bool) -> Dofs {
 
 /// Where a document's parameter takes its value from.
 #[derive(Debug, Clone, Copy)]
-enum ParamSource {
+pub(crate) enum ParamSource {
     /// The problem's `p`, at this index.
     P(usize),
     /// A fixed value: a used data-fed parameter the document declares as an
@@ -75,11 +94,14 @@ enum ParamSource {
 
 /// A derived document's right-hand side (§8.1) and, for each of its
 /// parameters, where its value comes from.
-struct Document {
-    prog: Program,
-    p_index: Vec<ParamSource>,
+pub(crate) struct Document {
+    pub(crate) prog: Arc<Program>,
+    pub(crate) p_index: Vec<ParamSource>,
     /// The forcing epochs of the run (§8.4).
-    timeline: Arc<ForcingTimeline>,
+    pub(crate) timeline: Arc<ForcingTimeline>,
+    /// The document's file and the run interval it was built for, for the
+    /// lane programs of spec/partitioning.md §3 ([`crate::lanes`]).
+    pub(crate) source: Option<(std::path::PathBuf, (f64, f64))>,
 }
 
 impl Document {
@@ -117,9 +139,10 @@ impl Document {
             ));
         }
         Ok(Document {
-            prog,
+            prog: Arc::new(prog),
             p_index,
             timeline,
+            source: None,
         })
     }
 
@@ -160,7 +183,7 @@ impl Document {
 
 /// An operator built from a plan (§8).
 pub struct PlannedOperator {
-    name: String,
+    pub(crate) name: String,
     /// Its structure over the model state (§2): `block_diagonal` when it is
     /// pointwise with `structure.block` and every model state shares one
     /// shape. Its `jac` fills storage of this structure; its `jac_over`
@@ -171,20 +194,24 @@ pub struct PlannedOperator {
     blockable: bool,
     /// Every model state's first canonical DOF and extents, in canonical
     /// order (§8.2).
-    states: Vec<(usize, Vec<usize>)>,
+    pub(crate) states: Vec<(usize, Vec<usize>)>,
     depends_on_t: bool,
     linear_in_u: bool,
     /// Canonical DOFs written, ascending.
-    writes: Vec<usize>,
+    pub(crate) writes: Vec<usize>,
     /// Program-layout offset of each written DOF in the right-hand-side
     /// document, beside its canonical DOF.
     rhs_writes: Vec<(usize, usize)>,
-    rhs: Document,
-    jacobian: Document,
+    pub(crate) rhs: Document,
+    pub(crate) jacobian: Document,
+    /// The time-derivative document (spec/plan.md §6.4) with, per band
+    /// field, `(program offset, row variable's first canonical DOF,
+    /// cells)`; `None` when the plan has none for this operator.
+    pub(crate) time: Option<(Document, Vec<(usize, usize, usize)>)>,
     /// Every band point that lands on a DOF (§8.3):
     /// (program-layout offset of its `J_k` element, row DOF, column DOF).
     /// Ghost reads (a column outside its variable's extent) are left out.
-    points: Vec<(usize, usize, usize)>,
+    pub(crate) points: Vec<(usize, usize, usize)>,
     /// `jvp_u`/`vjp_u` accumulators, one per thread that is evaluating.
     acc: Mutex<Vec<Vec<f64>>>,
     /// The first evaluation fault (see [`Operator::fault`]).
@@ -330,12 +357,20 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
         self.rhs.timeline.refresh_times().to_vec()
     }
     fn provides(&self, call: Call) -> bool {
-        // ft, vjp_p and the second-order calls wait for U17, U7 and U8
-        // (operator-interface.md §8.3).
-        matches!(call, Call::Rhs | Call::JvpU | Call::VjpU | Call::Jac)
+        // ft from the time-derivative document (or zero for an operator
+        // that does not depend on t, §8.3, D102); vjp_p and the
+        // second-order calls wait for U7 and U8.
+        match call {
+            Call::Rhs | Call::JvpU | Call::VjpU | Call::Jac => true,
+            Call::Ft => !self.depends_on_t || self.time.is_some(),
+            _ => false,
+        }
     }
     fn fault(&self) -> Option<String> {
         self.fault.lock().expect("fault").clone()
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn rhs(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
@@ -393,6 +428,26 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
             self.record("Jacobian", e);
             for &(_, a, b) in at.iter() {
                 out.add(a, b, T::from_f64(f64::NAN));
+            }
+        }
+    }
+    fn ft(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
+        let Some((doc, places)) = &self.time else {
+            return;
+        };
+        let done = doc.eval(u, p, t, |du| {
+            for &(base, start, len) in places {
+                for f in 0..len {
+                    out[start + f] += T::from_f64(du[base + f]);
+                }
+            }
+        });
+        if let Err(e) = done {
+            self.record("time-derivative", e);
+            for &(_, start, len) in places {
+                for f in 0..len {
+                    out[start + f] = T::from_f64(f64::NAN);
+                }
             }
         }
     }
@@ -556,6 +611,8 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
         jac_path: String,
         rhs_prog: RhsProgram,
         jac_prog: RhsProgram,
+        time_path: Option<String>,
+        time_prog: Option<RhsProgram>,
     }
     let mut built = Vec::new();
     let mut slots: BTreeMap<String, earthsci_ast::ForcingSlot> = BTreeMap::new();
@@ -578,6 +635,17 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
                 .ok_or_else(|| cfg(format!("operator {name}: the plan has no {kind} document")))
         };
         let (rhs_path, jac_path) = (path_of("rhs")?, path_of("jacobian")?);
+        let time_path = docs
+            .get(&(name.clone(), "time_derivative".to_string()))
+            .cloned();
+        let time_prog = match &time_path {
+            Some(tp) => Some(
+                build_program(&dir.join(tp), tspan)
+                    .map_err(|e| refuse(name, tp, e))?
+                    .1,
+            ),
+            None => None,
+        };
         let (rhs_prob, rhs_prog) =
             build_program(&dir.join(&rhs_path), tspan).map_err(|e| refuse(name, &rhs_path, e))?;
         let (_, jac_prog) =
@@ -596,7 +664,11 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
         // shape.
         let sizes =
             index_set_sizes(&dir.join(&rhs_path)).map_err(|e| refuse(name, &rhs_path, e))?;
-        for (prog, path) in [(&rhs_prog, &rhs_path), (&jac_prog, &jac_path)] {
+        let mut progs = vec![(&rhs_prog, &rhs_path), (&jac_prog, &jac_path)];
+        if let (Some(tp), Some(path)) = (&time_prog, &time_path) {
+            progs.push((tp, path));
+        }
+        for (prog, path) in progs {
             for slot in prog.forcing_slots() {
                 let Some(f) = forcing.get(&slot.name) else {
                     return Err(refuse(
@@ -668,6 +740,8 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
             jac_path,
             rhs_prog,
             jac_prog,
+            time_path,
+            time_prog,
         });
     }
     let mut m = model.expect("at least one operator");
@@ -717,8 +791,9 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
     for b in built {
         let (name, rhs_path, jac_path) = (&b.name, &b.rhs_path, &b.jac_path);
         let entry = &plan["operators"][name];
-        let rhs = Document::new(b.rhs_prog, &m.dofs, &m.params, &forcing, timeline.clone())
+        let mut rhs = Document::new(b.rhs_prog, &m.dofs, &m.params, &forcing, timeline.clone())
             .map_err(|e| refuse(name, rhs_path, e))?;
+        rhs.source = Some((dir.join(rhs_path), tspan));
         let jacobian = Document::new(b.jac_prog, &m.dofs, &m.params, &forcing, timeline.clone())
             .map_err(|e| refuse(name, jac_path, e))?;
         // A document that cannot be evaluated at the initial state is
@@ -728,8 +803,18 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
             doc.eval(&m.u0, &m.p, tspan.0, |_| ())
                 .map_err(|e| refuse(name, path, format!("at the initial state: {e}")))?;
         }
+        let time_doc = match (b.time_prog, &b.time_path) {
+            (Some(tp), Some(path)) => {
+                let d = Document::new(tp, &m.dofs, &m.params, &forcing, timeline.clone())
+                    .map_err(|e| refuse(name, path, e))?;
+                d.eval(&m.u0, &m.p, tspan.0, |_| ())
+                    .map_err(|e| refuse(name, path, format!("at the initial state: {e}")))?;
+                Some(d)
+            }
+            _ => None,
+        };
         operators.push(Arc::new(build_operator(
-            name, entry, &m.dofs, m.ncells, rhs, jacobian,
+            name, entry, &m.dofs, m.ncells, rhs, jacobian, time_doc,
         )?));
     }
 
@@ -766,12 +851,15 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
     };
 
     // The run config of the resolved schedule and step (spec/plan.md §7.1,
-    // §7.3). The plan's partition is one shard per leaf at M2 and its
-    // precision f64 throughout; neither is read.
+    // §7.3), each leaf given its partition from the plan's (§7.4,
+    // spec/partitioning.md §10.2). The plan's precision is f64 throughout
+    // and not read.
+    let mut schedule = plan["schedule"].clone();
+    leaf_partitions(&mut schedule, &plan["partition"]);
     let mut rc = json!({
         "esm_integrator": crate::SPEC_VERSION,
         "model": problem.name,
-        "schedule": plan["schedule"],
+        "schedule": schedule,
     });
     if !plan["step"].is_null() {
         rc["step"] = plan["step"].clone();
@@ -784,6 +872,33 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
         state_dofs,
         timeline,
     })
+}
+
+/// Gives every leaf of the resolved schedule `node` its partition from the
+/// plan's `partition` (its `shards`, `lanes` and `reshard` by node id).
+fn leaf_partitions(node: &mut Value, partition: &Value) {
+    match node {
+        Value::Object(o) => {
+            if o.contains_key("leaf") {
+                if let Some(id) = o.get("id").and_then(Value::as_str).map(str::to_string) {
+                    let mut part = serde_json::Map::new();
+                    for k in ["shards", "lanes", "reshard"] {
+                        if let Some(v) = partition.get(k).and_then(|m| m.get(&id)) {
+                            part.insert(k.to_string(), v.clone());
+                        }
+                    }
+                    if !part.is_empty() {
+                        o.insert("partition".into(), Value::Object(part));
+                    }
+                }
+            }
+            for v in o.values_mut() {
+                leaf_partitions(v, partition);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|v| leaf_partitions(v, partition)),
+        _ => {}
+    }
 }
 
 /// EarthSciAST's initial state of a right-hand-side document (defaults and
@@ -856,6 +971,7 @@ fn build_operator(
     ncells: Option<usize>,
     rhs: Document,
     jacobian: Document,
+    time_doc: Option<Document>,
 ) -> Result<PlannedOperator, Error> {
     let bad = |m: String| Error::Config(format!("operator {name}: {m}"));
     let st = &entry["structure"];
@@ -906,6 +1022,44 @@ fn build_operator(
         points.extend(scatter.into_iter().map(|(off, r, c)| (base + off, r, c)));
     }
 
+    // The time-derivative document's fields (spec/plan.md §6.4): field
+    // `J_k`'s cell `f` adds into its row variable's cell `f`.
+    let time = match time_doc {
+        None => None,
+        Some(doc) => {
+            let mut places = Vec::new();
+            for (k, b) in st["time_bands"]
+                .as_array()
+                .ok_or_else(
+                    || bad("a time-derivative document but no structure.time_bands".into()),
+                )?
+                .iter()
+                .enumerate()
+            {
+                let field = band_field(k + 1);
+                let (base, len) = doc
+                    .prog
+                    .block_range(&field)
+                    .ok_or_else(|| bad(format!("its time-derivative document has no {field}")))?;
+                let row = b["row"]
+                    .as_str()
+                    .ok_or_else(|| bad(format!("time band {} has no row", k + 1)))?;
+                let r = dofs
+                    .dofs_of(row)
+                    .ok_or_else(|| bad(format!("time band {}: {row} is not a state", k + 1)))?;
+                if r.len() != len {
+                    return Err(bad(format!(
+                        "time band {}: {field} has {len} cells, {row} {}",
+                        k + 1,
+                        r.len()
+                    )));
+                }
+                places.push((base, r.start, len));
+            }
+            Some((doc, places))
+        }
+    };
+
     // The structure over the model state: block_diagonal when the operator
     // is pointwise with structure.block and the model's states are all
     // arrays of one shape (ncells the cells of that shape) or all scalars
@@ -939,6 +1093,7 @@ fn build_operator(
         rhs,
         jacobian,
         points,
+        time,
         acc: Mutex::new(Vec::new()),
         fault: Mutex::new(None),
     })

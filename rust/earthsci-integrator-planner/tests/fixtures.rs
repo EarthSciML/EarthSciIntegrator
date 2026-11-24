@@ -37,7 +37,16 @@ const CASES: &[(&str, &str)] = &[
     ("unnamed_lift", "auto"),
     ("toy_photostationary_cells", "kvaerno4"),
     ("toy_robertson", "rodas4"),
+    ("reseact_mini", "cell"),
+    ("reseact_mini", "shard"),
 ];
+
+/// Cases whose goldens the Julia planner has not yet rewritten for M3
+/// (spec/plan.md §9 "M3": the restored `cell` default of `dt_scope`, the
+/// new fixture `reseact_mini`). Goldens are written by Julia; until they
+/// are, these cases plan and are checked against everything but their
+/// golden. Empty this list when the Julia M3 goldens land.
+const AWAITING_JULIA_GOLDENS: &[(&str, &str)] = &[];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.
 fn lhs_ops(model: &Value, out: &mut Vec<String>) {
@@ -320,6 +329,10 @@ fn every_case() {
                 assert_eq!(Some(&reach), radius.get(h), "{fixture}/{case} {op} {h}");
             }
         }
+        if AWAITING_JULIA_GOLDENS.contains(&(*fixture, *case)) {
+            eprintln!("{fixture}/{case}: golden awaits the Julia planner (M3)");
+            continue;
+        }
         check_golden(fixture, case, &p, &bytes);
     }
 }
@@ -355,7 +368,7 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
     files.sort();
     let mut ours: Vec<String> = Vec::new();
     for (op, d) in &p.documents {
-        for (kind, bytes) in [("jacobian", &d.jacobian), ("rhs", &d.rhs)] {
+        for (kind, bytes) in d.kinds() {
             let name = format!("{op}.{kind}.esm");
             let want = std::fs::read(golden.join("derived").join(&name))
                 .unwrap_or_else(|e| panic!("{fixture}/{case}: golden derived/{name}: {e}"));

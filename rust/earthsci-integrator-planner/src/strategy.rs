@@ -211,6 +211,24 @@ fn table_linsolve(facts: &LeafFacts, pointer: &str) -> Result<Value> {
     }
 }
 
+/// Whether a leaf's Jacobian storage is `block_diagonal`
+/// (spec/operator-interface.md §8.3): every operator pointwise with
+/// `structure.block`, the leaf's states all of one shape.
+pub fn block_storage(facts: &LeafFacts) -> bool {
+    facts.class == Class::Pointwise
+        && facts.uniform_shapes
+        && matches!(facts.block_vars, Some(Some(_)))
+}
+
+/// The `dt_scope` an omitted or `"auto"` one resolves to (§5.5.3, D97).
+pub fn default_dt_scope(facts: &LeafFacts) -> &'static str {
+    if block_storage(facts) {
+        "cell"
+    } else {
+        "global"
+    }
+}
+
 /// §5.5.3: resolve a leaf's `alg`, `jacobian`, `linsolve` and `dt_scope`.
 /// `given` is the leaf node as written; `pointer` is where a refusal points.
 pub fn resolve_leaf(given: &Value, facts: &LeafFacts, pointer: &str) -> Result<LeafStrategy> {
@@ -249,12 +267,9 @@ pub fn resolve_leaf(given: &Value, facts: &LeafFacts, pointer: &str) -> Result<L
             match (facts.class, stiff) {
                 (Class::Pointwise, true) => {
                     row_linsolve = Some(table_linsolve(facts, pointer)?);
-                    // A Rosenbrock method needs `ft` from an operator that
-                    // depends on t, which a plan's operators do not provide
-                    // until U17 (D94).
-                    if facts.depends_on_t {
-                        "TRBDF2".into()
-                    } else if facts.reltol >= 1e-3 {
+                    // A Rosenbrock method takes `ft` from the operators'
+                    // time-derivative documents (§6.4, D102).
+                    if facts.reltol >= 1e-3 {
                         "Rosenbrock23".into()
                     } else {
                         "Rodas4".into()
@@ -299,10 +314,9 @@ pub fn resolve_leaf(given: &Value, facts: &LeafFacts, pointer: &str) -> Result<L
         alg,
         jacobian,
         linsolve,
-        // At M2 every class resolves to `global`: `cell` (D17's default for
-        // a pointwise leaf) and `shard` arrive at M3, and the run config's
-        // own `cell` or `shard` was refused with the schedule (§7.1, D94).
-        dt_scope: given_scope.unwrap_or_else(|| "global".into()),
+        // `cell` for a pointwise leaf with block_diagonal storage (D17,
+        // D97), `global` for every other leaf; a given scope is kept.
+        dt_scope: given_scope.unwrap_or_else(|| default_dt_scope(facts).into()),
         imex_implicit,
     })
 }
@@ -421,30 +435,22 @@ mod tests {
             r.linsolve,
             Some(json!({"block_lu": {"pivot": true, "refine": 0}}))
         );
-        assert_eq!(r.dt_scope, "global");
+        // D97: cell for a pointwise leaf with block_diagonal storage.
+        assert_eq!(r.dt_scope, "cell");
         let mut f = facts(Class::Pointwise, true);
         f.reltol = 1e-6;
         f.block_vars = Some(Some(17));
         let r = resolve_leaf(&auto, &f, "/schedule").unwrap();
         assert_eq!(r.alg, "Rodas4");
         assert_eq!(r.linsolve, Some(json!({"sparse_block_lu": {"refine": 0}})));
-        // An operator that depends on t: TRBDF2 at any reltol, the row's
-        // linsolve unchanged (D94).
-        for reltol in [1e-3, 1e-6] {
+        // An operator that depends on t keeps the Rosenbrock row (D102).
+        for (reltol, alg) in [(1e-3, "Rosenbrock23"), (1e-6, "Rodas4")] {
             let g = LeafFacts {
                 depends_on_t: true,
                 reltol,
                 ..facts(Class::Pointwise, true)
             };
-            let r = resolve_leaf(&auto, &g, "/schedule").unwrap();
-            assert_eq!(
-                (r.alg.as_str(), r.jacobian.as_deref(), r.linsolve),
-                (
-                    "TRBDF2",
-                    Some("symbolic"),
-                    Some(json!({"block_lu": {"pivot": true, "refine": 0}}))
-                )
-            );
+            assert_eq!(resolve_leaf(&auto, &g, "/schedule").unwrap().alg, alg);
         }
         f.block_vars = Some(None);
         assert_eq!(
@@ -460,7 +466,7 @@ mod tests {
         let r = resolve_leaf(&auto, &facts(Class::Pointwise, false), "/s").unwrap();
         assert_eq!(
             (r.alg.as_str(), r.dt_scope.as_str(), r.linsolve),
-            ("Tsit5", "global", None)
+            ("Tsit5", "cell", None)
         );
         let r = resolve_leaf(&auto, &facts(Class::Column, true), "/s").unwrap();
         assert_eq!(r.alg, "TRBDF2");
@@ -516,8 +522,9 @@ mod tests {
 
     #[test]
     fn given_methods() {
-        // Explicit: no jacobian, no linsolve, the class's dt_scope (global
-        // for every class at M2, D94); a given dt_scope is kept.
+        // Explicit: no jacobian, no linsolve, the class's dt_scope (cell for
+        // a pointwise leaf with block_diagonal storage, D97); a given
+        // dt_scope is kept.
         let r = resolve_leaf(
             &json!({"alg": "ForwardEuler", "dt": "step"}),
             &facts(Class::Pointwise, false),
@@ -526,7 +533,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (r.jacobian, r.linsolve, r.dt_scope.as_str()),
-            (None, None, "global")
+            (None, None, "cell")
         );
         let r = resolve_leaf(
             &json!({"alg": "ForwardEuler", "dt": "step", "control": {"dt_scope": "auto"}}),
@@ -534,7 +541,7 @@ mod tests {
             "/s",
         )
         .unwrap();
-        assert_eq!(r.dt_scope, "global");
+        assert_eq!(r.dt_scope, "cell");
         // Implicit with omitted jacobian and linsolve: the class's row.
         let r = resolve_leaf(
             &json!({"alg": "Rodas4"}),

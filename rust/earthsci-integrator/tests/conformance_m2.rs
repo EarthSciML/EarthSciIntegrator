@@ -140,6 +140,10 @@ fn m2_conformance_cases() {
                 }
                 // Run in CI on both implementations' result files.
                 Check::CrossLanguage { .. } => continue,
+                // M3 checks; no M2 case has them.
+                Check::Invariance { .. } | Check::ScopeAgreement { .. } => {
+                    return fail("an M3 check in an M2 case".into())
+                }
             };
             let Some(m1_case) = m1.cases.iter().find(|c| &c.id == against) else {
                 return fail(format!("no M1 case {against}"));

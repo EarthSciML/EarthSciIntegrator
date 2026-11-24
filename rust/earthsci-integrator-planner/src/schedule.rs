@@ -292,6 +292,9 @@ pub struct CheckContext<'a> {
     pub info: &'a ModelInfo,
     pub ops: &'a BTreeMap<String, Operator>,
     pub interval: Interval,
+    /// The operators that have `structure.block` (§5.4), for rule 19's
+    /// storage test.
+    pub blocks: &'a BTreeSet<String>,
 }
 
 /// spec/plan.md §7.1: the unsupported nodes of §0.1 in tree order, then
@@ -310,6 +313,7 @@ pub fn check(root: &Node, cx: &CheckContext) -> Result<()> {
     forcing_refresh_hit(cx)?;
     rule_13(root)?;
     rule_15(root, cx)?;
+    rule_19(root, cx)?;
     Ok(())
 }
 
@@ -359,22 +363,20 @@ fn check_step_limits(cx: &CheckContext) -> Result<()> {
 fn check_unsupported(root: &Node, cx: &CheckContext) -> Result<()> {
     for n in root.preorder() {
         match n.kind {
-            Kind::Leaf { .. } => {
-                // §0.1, D94: both runtimes run dt_scope global only until M3.
-                let scope = n
-                    .value
-                    .get("control")
-                    .and_then(|c| c.get("dt_scope"))
-                    .and_then(Value::as_str);
-                if let Some(scope @ ("cell" | "shard")) = scope {
-                    return Err(refuse(
-                        codes::UNSUPPORTED_DT_SCOPE,
-                        ptr(&n.key_ptr("control"), "dt_scope"),
-                        format!(
-                            "leaf {}: dt_scope \"{scope}\" arrives at M3; at M2 the runtimes step every leaf with dt_scope \"global\" (give \"global\" or omit dt_scope)",
-                            n.id()
-                        ),
-                    ));
+            Kind::Leaf { coupled: false, .. } => {
+                // Column lane pools are specified but not yet implemented
+                // (spec/partitioning.md §2.5, D97).
+                if let Some(scope) = local_scope(n) {
+                    if leaf_class(n, cx.ops) == Class::Column {
+                        return Err(refuse(
+                            codes::UNSUPPORTED_DT_SCOPE,
+                            ptr(&n.key_ptr("control"), "dt_scope"),
+                            format!(
+                                "leaf {}: dt_scope \"{scope}\" on a column leaf needs column lane pools, which are not yet implemented (spec/partitioning.md §2.5)",
+                                n.id()
+                            ),
+                        ));
+                    }
                 }
             }
             Kind::Map => {
@@ -1019,6 +1021,107 @@ fn rule_15(root: &Node, cx: &CheckContext) -> Result<()> {
                 at,
                 "an adaptive leaf binds a parameter to its step but gives no control.dt0",
             ));
+        }
+    }
+    Ok(())
+}
+
+/// A leaf's or coupled node's `control.dt_scope` when it is `cell` or
+/// `shard`.
+fn local_scope(n: &Node) -> Option<&str> {
+    n.value
+        .get("control")
+        .and_then(|c| c.get("dt_scope"))
+        .and_then(Value::as_str)
+        .filter(|s| matches!(*s, "cell" | "shard"))
+}
+
+/// Whether a leaf's Jacobian storage is `block_diagonal`
+/// (spec/operator-interface.md §8.3): every operator pointwise with
+/// `structure.block`, and the leaf's states all of one shape.
+fn block_storage(n: &Node, cx: &CheckContext) -> bool {
+    let Kind::Leaf { ops: names, .. } = &n.kind else {
+        return false;
+    };
+    let shapes: BTreeSet<&Vec<String>> = crate::settings::leaf_states(n, cx.ops)
+        .iter()
+        .filter_map(|s| cx.info.shapes.get(s))
+        .collect();
+    leaf_class(n, cx.ops) == Class::Pointwise
+        && shapes.len() <= 1
+        && names.iter().all(|o| cx.blocks.contains(o))
+}
+
+/// Rule 19 (spec/partitioning.md §2.1, §6.2; D97, D104), nodes in tree
+/// order, each checked for `dt_scope_not_local`, then `dt_scope_bind_dt`,
+/// then `reshard_without_shard_scope`.
+fn rule_19(root: &Node, cx: &CheckContext) -> Result<()> {
+    let binds_leaf = |b: Option<&Value>| {
+        b.and_then(Value::as_object)
+            .is_some_and(|m| m.values().any(|v| v.as_str() == Some("leaf")))
+    };
+    for n in root.preorder() {
+        let Kind::Leaf { ops, coupled } = &n.kind else {
+            continue;
+        };
+        let scope_at = || ptr(&n.key_ptr("control"), "dt_scope");
+        let storage = block_storage(n, cx);
+        if let Some(scope) = local_scope(n) {
+            let class = leaf_class(n, cx.ops);
+            let why = if *coupled {
+                Some("a coupled node is not sharded")
+            } else if matches!(class, Class::Stencil | Class::Global) {
+                Some("its cells read each other within a step")
+            } else if class == Class::Pointwise && !storage {
+                Some("its Jacobian storage is not block_diagonal, so it has no cells")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return Err(refuse(
+                    codes::DT_SCOPE_NOT_LOCAL,
+                    scope_at(),
+                    format!("node {}: dt_scope \"{scope}\": {why}", n.id()),
+                ));
+            }
+            let bound = binds_leaf(n.value.get("bind_dt"))
+                || ops
+                    .iter()
+                    .any(|o| binds_leaf(cx.ops.get(o).and_then(|op| op.bind_dt.as_ref())));
+            if bound {
+                return Err(refuse(
+                    codes::DT_SCOPE_BIND_DT,
+                    scope_at(),
+                    format!(
+                        "leaf {}: dt_scope \"{scope}\" with a bind_dt \"leaf\" parameter, which cannot hold several step sizes at once",
+                        n.id()
+                    ),
+                ));
+            }
+        }
+        let reshard = n
+            .value
+            .get("partition")
+            .and_then(|p| p.get("reshard"))
+            .filter(|r| r.as_str() != Some("none"));
+        if reshard.is_some() {
+            let given = n
+                .value
+                .get("control")
+                .and_then(|c| c.get("dt_scope"))
+                .and_then(Value::as_str)
+                .filter(|s| *s != "auto");
+            let resolved = given.unwrap_or(if storage { "cell" } else { "global" });
+            if resolved != "shard" {
+                return Err(refuse(
+                    codes::RESHARD_WITHOUT_SHARD_SCOPE,
+                    ptr(&n.key_ptr("partition"), "reshard"),
+                    format!(
+                        "leaf {}: partition.reshard needs dt_scope \"shard\", not \"{resolved}\"",
+                        n.id()
+                    ),
+                ));
+            }
         }
     }
     Ok(())
