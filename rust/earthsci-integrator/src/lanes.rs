@@ -82,11 +82,10 @@ impl LaneDoc {
                         b.name, b.sets
                     ));
                 }
-                match state_source(&b.name) {
-                    Some(s) => out.push((b.offset, s)),
-                    // A block the program writes and does not read (a band
-                    // field of the Jacobian document) has no input.
-                    None => {}
+                // A block the program writes and does not read (a band field
+                // of the Jacobian document) has no input.
+                if let Some(src) = state_source(&b.name) {
+                    out.push((b.offset, src));
                 }
             }
             Ok(out)

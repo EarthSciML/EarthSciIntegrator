@@ -181,6 +181,10 @@ impl Document {
     }
 }
 
+/// A time-derivative document and, per band field, `(program offset, row
+/// variable's first canonical DOF, cells)`.
+pub(crate) type TimeDocument = (Document, Vec<(usize, usize, usize)>);
+
 /// An operator built from a plan (§8).
 pub struct PlannedOperator {
     pub(crate) name: String,
@@ -207,7 +211,7 @@ pub struct PlannedOperator {
     /// The time-derivative document (spec/plan.md §6.4) with, per band
     /// field, `(program offset, row variable's first canonical DOF,
     /// cells)`; `None` when the plan has none for this operator.
-    pub(crate) time: Option<(Document, Vec<(usize, usize, usize)>)>,
+    pub(crate) time: Option<TimeDocument>,
     /// Every band point that lands on a DOF (§8.3):
     /// (program-layout offset of its `J_k` element, row DOF, column DOF).
     /// Ghost reads (a column outside its variable's extent) are left out.

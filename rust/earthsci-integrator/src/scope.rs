@@ -466,7 +466,10 @@ pub fn invoke<T: Scalar>(
         signal.macro_step = Some(call.macro_step);
         if plan.kind == ScopeKind::Shard {
             if let Some(k) = plan.reshard_every {
-                if call.macro_step > 0 && call.macro_step % k == 0 && !persist.units.is_empty() {
+                if call.macro_step > 0
+                    && (call.macro_step / k) * k == call.macro_step
+                    && !persist.units.is_empty()
+                {
                     reshard(plan, persist, &signal.previous);
                 }
             }
