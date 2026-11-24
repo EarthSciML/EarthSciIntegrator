@@ -217,7 +217,13 @@ side and Jacobian documents built by EarthSciAST, the canonical DOFs it
 writes, its structure, and every point of its bands as `(slot, row, col)`,
 the slot of the band field `J_k` cell in the Jacobian document and the
 canonical row and column DOFs it adds into. It provides `rhs`, `jvp_u`,
-`vjp_u` and `jac` (§8.3); the other calls are not provided at M2.
+`vjp_u` and `jac` (§8.3), and `ft` when it does not depend on t (zero) or
+the plan gives it a time-derivative document (`derived/<op>.time_derivative.esm`,
+spec/plan.md §6.4, D102): `time` is that document and `time_points` each
+`(k, slot, row)`, the slot of band field `J_k`'s cell in it and the canonical
+DOF of its row variable's cell that it adds into. `bandpts` are the band
+points as `(k, f, row, col)` (band, field cell, canonical row and column), in
+the order of `points`.
 """
 struct PlannedOperator{R <: PlanDocument, J <: PlanDocument} <: AbstractOperator
     name::String
@@ -236,6 +242,11 @@ struct PlannedOperator{R <: PlanDocument, J <: PlanDocument} <: AbstractOperator
     forcing::Union{Nothing, ForcingRuntime}
     rhs_fs::EpochSetRef
     jac_fs::EpochSetRef
+    bandpts::Vector{NTuple{4, Int}}
+    time::Union{Nothing, PlanDocument}
+    time_points::Vector{NTuple{3, Int}}
+    time_rows::Vector{String}    # the row variable of each time band field J_k
+    time_fs::EpochSetRef
 end
 
 forcing_boundary(op::PlannedOperator, t) = op.forcing !== nothing && is_epoch_start(op.forcing, t)
@@ -243,6 +254,10 @@ forcing_boundary(op::PlannedOperator, t) = op.forcing !== nothing && is_epoch_st
 """The forcing set of `op`'s right-hand-side (`jac = false`) or Jacobian program at `t` (§8.4.1), or `nothing` without data."""
 op_forcing(op::PlannedOperator, t, jac::Bool)::Union{Nothing, EarthSciAST.ForcingSet} = op.forcing === nothing ? nothing :
     forcing_set_for(op.forcing, (jac ? op.jac : op.rhs).prog, t, jac ? op.jac_fs : op.rhs_fs)
+
+"""The forcing set of `op`'s time-derivative program at `t` (§8.4.1), or `nothing` without data."""
+op_time_forcing(op::PlannedOperator, t)::Union{Nothing, EarthSciAST.ForcingSet} = op.forcing === nothing ? nothing :
+    forcing_set_for(op.forcing, op.time.prog, t, op.time_fs)
 
 """The [`forcing_key`](@ref) of a call of `op` at `t`; `(0, 0)` without data."""
 op_forcing_key(op::PlannedOperator, t) = op.forcing === nothing ? (0, 0) : forcing_key(op.forcing, t)
@@ -261,9 +276,25 @@ writes(op::PlannedOperator, N) = op.writes
 # for a leaf over every state too, so the bands' completeness is the planner's
 # to guarantee (esm-jacobian-spec), not something this check can add.
 reads(op::PlannedOperator, N) = sort!(unique!(Int[c for (_, _, c) in op.points]))
-# §8.3: a Rosenbrock leaf on a planned operator that depends on t is refused,
-# whatever the method's dᵢ.
-ft_refused_on_rosenbrock(::PlannedOperator) = true
+# §8.3: a Rosenbrock leaf on a planned operator that depends on t and has no
+# time-derivative document is refused, whatever the method's dᵢ.
+ft_refused_on_rosenbrock(op::PlannedOperator) = op.time === nothing
+
+# §8.3 (D102): `ft` is provided by an operator that does not depend on t (zero)
+# and by one the plan gives a time-derivative document.
+provides(op::PlannedOperator, call::Symbol) =
+    call === :ft ? (!op.depends_on_t || op.time !== nothing) : invoke(provides, Tuple{AbstractOperator, Symbol}, op, call)
+
+function ft!(op::PlannedOperator, out, u, p, t)
+    op.depends_on_t || return out
+    op.time === nothing && throw(UnsupportedError("operator $(op.name) depends on t and its plan gives it no time-derivative document (spec/plan.md §6.4)"))
+    return evaluate(op.time, u, p, t, op_time_forcing(op, t)) do du
+        @inbounds for (_, s, r) in op.time_points
+            out[r] += du[s]
+        end
+        out
+    end
+end
 
 function rhs!(op::PlannedOperator, out, u, p, t)
     d = op.rhs
@@ -363,7 +394,9 @@ linear_in_u(o::LeafOperator) = o.op.linear_in_u
 writes(o::LeafOperator, N) = o.writes
 # Model-state DOFs, as the adjoint's check compares them with the leaf's (§1).
 reads(o::LeafOperator, N) = reads(o.op, N)
-ft_refused_on_rosenbrock(::LeafOperator) = true
+ft_refused_on_rosenbrock(o::LeafOperator) = ft_refused_on_rosenbrock(o.op)
+provides(o::LeafOperator, call::Symbol) =
+    call === :ft ? provides(o.op, :ft) : invoke(provides, Tuple{AbstractOperator, Symbol}, o, call)
 
 """
 `op` bound to a leaf invocation that starts from the model state `u`
@@ -418,6 +451,23 @@ function jvp_u!(o::LeafOperator, out, x, p, t, v)
         with_band_values(o.op, u, p, t) do vals
             @inbounds for (k, r, c) in o.points
                 out[r] += vals[k] * v[c]
+            end
+            out
+        end
+    end
+end
+
+function ft!(o::LeafOperator, out, x, p, t)
+    o.op.depends_on_t || return out
+    op = o.op
+    op.time === nothing && throw(UnsupportedError("operator $(op.name) depends on t and its plan gives it no time-derivative document (spec/plan.md §6.4)"))
+    loc = o.leaf.loc
+    return with_full_state(o, x) do u
+        evaluate(op.time, u, p, t, op_time_forcing(op, t)) do du
+            @inbounds for (_, s, r) in op.time_points
+                # A time band of a state outside the leaf adds nothing to the
+                # leaf's f_t.
+                loc[r] > 0 && (out[loc[r]] += du[s])
             end
             out
         end
@@ -566,6 +616,10 @@ function plan_problem(
         return _with(d; path)
     end
     built = Dict{String, Tuple{PlanDocument, PlanDocument}}(n => (doc(n, "rhs"), doc(n, "jacobian")) for n in names)
+    # §6.4 (D102): the time-derivative documents the plan gives.
+    timed = Dict{String, PlanDocument}(
+        n => doc(n, "time_derivative") for n in names if haskey(plan["derived"], "derived/$n.time_derivative.esm")
+    )
     # The layout comes from the first operator's right-hand side; every other
     # document must declare the same states (§8.2). The parameters are the
     # model's: every scalar parameter any of the documents reads, at its
@@ -573,7 +627,8 @@ function plan_problem(
     first_rhs = built[first(names)][1]
     L = canonical_layout(first_rhs)
     defaults = Dict{String, Float64}()
-    for n in names, d in built[n], s in EarthSciAST.parameters(d.prog)
+    alldocs(n) = haskey(timed, n) ? (built[n]..., timed[n]) : built[n]
+    for n in names, d in alldocs(n), s in EarthSciAST.parameters(d.prog)
         s.default === nothing &&
             throw(ConfigError("operator '$n': parameter $(s.name) of $(basename(d.path)) has no default (spec/operator-interface.md §8.2)"))
         # Defaults are compared as the Float64 the parameter vector holds, so
@@ -599,7 +654,7 @@ function plan_problem(
         # operator's forcing lists, of their planned shapes (§8.4.1), checked
         # before any data is read.
         shapes = forcing_shapes(mfile, plan["forcing"])
-        for n in names, d in built[n], s in EarthSciAST.forcing_slots(d.prog)
+        for n in names, d in alldocs(n), s in EarthSciAST.forcing_slots(d.prog)
             (s.name in readers && haskey(shapes, s.name)) || throw(
                 ConfigError("operator '$n': $(basename(d.path)) has a forcing slot $(s.name), which no operator's forcing in the plan lists")
             )
@@ -621,7 +676,8 @@ function plan_problem(
         u0 === nothing && (u0 = x0)
         bitwise_same(u0, x0) ||
             throw(ConfigError("operator '$n': derived/$n.rhs.esm gives another initial state than derived/$(first(names)).rhs.esm"))
-        op = planned_operator(n, plan["operators"][n], L, r, j)
+        tdoc = haskey(timed, n) ? bind_document(timed[n], L, pnames, n) : nothing
+        op = planned_operator(n, plan["operators"][n], L, r, j, tdoc)
         haskey(plan["operators"][n], "forcing") && (op = _with_forcing(op, F))
         push!(ops, n => op)
     end
@@ -644,7 +700,7 @@ end
 
 _with_forcing(op::PlannedOperator, F) = PlannedOperator(
     op.name, op.writes, op.structure, op.depends_on_t, op.linear_in_u, op.rhs, op.jac, op.points, op.cache,
-    op.layout, op.blockable, F, EpochSetRef(), EpochSetRef()
+    op.layout, op.blockable, F, EpochSetRef(), EpochSetRef(), op.bandpts, op.time, op.time_points, op.time_rows, EpochSetRef()
 )
 
 """
@@ -677,8 +733,8 @@ end
 
 bitwise_same(a, b) = length(a) == length(b) && all(i -> reinterpret(UInt64, a[i]) == reinterpret(UInt64, b[i]), eachindex(a))
 
-"""The [`PlannedOperator`](@ref) of plan entry `entry` (spec/plan.md §3) on its built documents."""
-function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDocument)
+"""The [`PlannedOperator`](@ref) of plan entry `entry` (spec/plan.md §3) on its built documents (`time` its time-derivative document, or `nothing`)."""
+function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDocument, time = nothing)
     st = entry["structure"]
     bands = BandEntry[BandEntry(b) for b in st["bands"]]
     w = state_dofs(L, String.(entry["writes"]))
@@ -692,10 +748,32 @@ function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDoc
             end for c in cells(ext)
         ]
     end
-    points = NTuple{3, Int}[(fields[k][f], row, col) for (k, f, row, col) in band_points(L, bands)]
+    bandpts = band_points(L, bands)
+    points = NTuple{3, Int}[(fields[k][f], row, col) for (k, f, row, col) in bandpts]
+    # §6.4: field J_k of the time-derivative document is over its row
+    # variable's extents; cell f adds into that variable's cell f.
+    tpoints = NTuple{3, Int}[]
+    trows = String[]
+    if time !== nothing
+        haskey(st, "time_bands") ||
+            throw(ConfigError("operator '$name': the plan gives derived/$name.time_derivative.esm but no structure.time_bands"))
+        for (k, b) in enumerate(st["time_bands"])
+            row = String(b["row"])
+            haskey(L.extents, row) || throw(ConfigError("operator '$name': time band $k's row $row is not a state"))
+            push!(trows, row)
+            for (f, c) in enumerate(cells(L.extents[row]))
+                e = element_name("JacobianEval.J_$k", c)
+                slot = get(time.slots, e) do
+                    throw(ConfigError("operator '$name': derived/$name.time_derivative.esm has no band field element $e"))
+                end
+                push!(tpoints, (k, slot, L.offset[row] + f))
+            end
+        end
+    end
     return PlannedOperator(
         String(name), w, planned_structure(entry, L), Bool(st["depends_on_t"]), Bool(st["linear_in_u"]), r, j, points,
-        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block"), nothing, EpochSetRef(), EpochSetRef()
+        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block"), nothing, EpochSetRef(), EpochSetRef(),
+        bandpts, time, tpoints, trows, EpochSetRef()
     )
 end
 
@@ -734,10 +812,16 @@ A run of the plan in `dir` (spec/operator-interface.md §8, spec/toy-problems.md
 §4): its operators built by [`plan_problem`](@ref), its resolved schedule and
 step, over the plan's `time`. A caller's `tspan` other than the plan's is
 refused (the plan is stale, spec/plan.md §3). Run it with [`forward!`](@ref).
+`threads` is the number of executor threads a leaf with `dt_scope` `cell` or
+`shard` runs its units on (spec/partitioning.md §4, D99: a run-time option,
+never a plan key; no result depends on it), at most Julia's own thread count
+in parallel. `whole_state` is for tests only: scoped leaves evaluate their
+operators over the whole state instead of their lane programs (the oracle of
+spec/partitioning.md §9.3).
 """
 function build_plan_run(
         dir::AbstractString; saveat = nothing, tspan = nothing, cache = nothing, model = nothing,
-        cache_root = nothing, url_overrides = Dict{String, String}()
+        cache_root = nothing, url_overrides = Dict{String, String}(), threads::Integer = 1, whole_state::Bool = false
     )
     pp = plan_problem(dir; cache, model, cache_root, url_overrides)
     prob, plan = pp.prob, pp.plan
@@ -748,7 +832,7 @@ function build_plan_run(
         "esm_integrator" => plan["esm_integrator"], "schedule" => plan["schedule"], "step" => plan["step"]
     )
     # build_run makes the forcing epochs' starts tstops (§8.4.3).
-    return build_run(config; tspan = prob.tspan, saveat, prob), pp
+    return build_run(config; tspan = prob.tspan, saveat, prob, partition = get(plan, "partition", nothing), threads, whole_state), pp
 end
 
 """

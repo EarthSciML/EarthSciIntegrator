@@ -22,6 +22,25 @@ mutable struct LeafRecord <: TapeRecord
     rejected::Int
     retcode::String
     clips::Vector{Pair{Int, Vector{Int}}}
+    # Under `dt_scope: cell`, each cell's accepted and rejected counts in
+    # canonical cell order, in place of `steps`; under `shard`, each shard's
+    # record (spec/partitioning.md §11). `nothing` under `global`.
+    cells::Union{Nothing, Tuple{Vector{Int}, Vector{Int}}}
+    shards::Any
+    failed_unit::Union{Nothing, String}   # the cell or shard whose code is the record's (not serialized)
+end
+LeafRecord(path, t, dt, steps, accepted, rejected, retcode, clips) =
+    LeafRecord(path, t, dt, steps, accepted, rejected, retcode, clips, nothing, nothing, nothing)
+
+"""
+One shard of a `dt_scope: shard` leaf invocation (spec/partitioning.md §11):
+its cells (0-based, ascending), its accepted steps and counts.
+"""
+struct ShardRecord
+    cells::Union{Nothing, Vector{Int}}
+    steps::Vector{NTuple{2, Float64}}
+    accepted::Int
+    rejected::Int
 end
 
 """A `map` invocation and the mask of discrete decisions the map recorded."""
@@ -95,6 +114,17 @@ function _jline(io::IO, r::LeafRecord)
         clips = join(("[" * string(k) * ", [" * join(string.(idx), ", ") * "]]" for (k, idx) in r.clips), ", ")
         print(io, ", \"clips\": [", clips, "]")
     end
+    if r.cells !== nothing
+        print(io, ", \"cells\": {\"accepted\": [", join(string.(r.cells[1]), ", "), "], \"rejected\": [", join(string.(r.cells[2]), ", "), "]}")
+    end
+    if r.shards !== nothing
+        sh = map(r.shards) do x
+            c = x.cells === nothing ? "" : "\"cells\": [" * join(string.(x.cells), ", ") * "], "
+            st = join(("[" * _jnum(t) * ", " * _jnum(h) * "]" for (t, h) in x.steps), ", ")
+            "{" * c * "\"steps\": [" * st * "], \"accepted\": " * string(x.accepted) * ", \"rejected\": " * string(x.rejected) * "}"
+        end
+        print(io, ", \"shards\": [", join(sh, ", "), "]")
+    end
     return print(io, "}")
 end
 _jline(io::IO, r::MapRecord) = print(
@@ -133,12 +163,22 @@ function read_tape(io::IO)
         if node == "leaf"
             steps = NTuple{2, Float64}[(_f(s[1]), _f(s[2])) for s in d["steps"]]
             clips = Pair{Int, Vector{Int}}[Int(c[1]) => Int.(c[2]) for c in get(d, "clips", [])]
-            push!(
-                tape, LeafRecord(
-                    d["path"], _f(d["t"]), _f(d["dt"]), steps, Int(d["accepted"]), Int(d["rejected"]),
-                    d["retcode"], clips
-                )
+            rec = LeafRecord(
+                d["path"], _f(d["t"]), _f(d["dt"]), steps, Int(d["accepted"]), Int(d["rejected"]),
+                d["retcode"], clips
             )
+            if haskey(d, "cells")
+                rec.cells = (Int.(d["cells"]["accepted"]), Int.(d["cells"]["rejected"]))
+            end
+            if haskey(d, "shards")
+                rec.shards = ShardRecord[
+                    ShardRecord(
+                        haskey(x, "cells") ? Int.(x["cells"]) : nothing,
+                        NTuple{2, Float64}[(_f(s[1]), _f(s[2])) for s in x["steps"]], Int(x["accepted"]), Int(x["rejected"])
+                    ) for x in d["shards"]
+                ]
+            end
+            push!(tape, rec)
         elseif node == "map"
             push!(tape, MapRecord(d["path"], _f(d["t"]), _f(d["dt"]), Bool.(d["mask"])))
         elseif node == "subcycle"
@@ -170,4 +210,8 @@ struct Checkpoint
     t::Float64
     u::Vector{Float64}
     controllers::Dict{String, ControllerState}
+    # A `dt_scope` `cell` or `shard` leaf's per-unit controller states and,
+    # under `shard`, its composition (spec/partitioning.md §11), by leaf id.
+    units::Dict{String, Any}
 end
+Checkpoint(index, t, u, controllers) = Checkpoint(index, t, u, controllers, Dict{String, Any}())

@@ -22,7 +22,14 @@ struct Tolerances
     reltol::Float64
     abstol::Vector{Float64}
     dofs::Vector{Int}
+    # A `dt_scope: shard` unit (spec/partitioning.md §6.2): each cell's sum of
+    # squared ratios at the latest norm (`cellsq`, `m` cells, the unit's DOF
+    # `j` in cell `(j - 1) % m + 1`), and their sum over the invocation's step
+    # attempts (`cellacc`). `nothing` otherwise.
+    cellsq::Union{Nothing, Vector{Float64}}
+    cellacc::Union{Nothing, Vector{Float64}}
 end
+Tolerances(reltol, abstol, dofs) = Tolerances(reltol, abstol, dofs, nothing, nothing)
 Tolerances(reltol, abstol) = Tolerances(reltol, abstol, collect(eachindex(abstol)))
 
 """
@@ -35,12 +42,37 @@ summed sequentially in ascending DOF order with no fused multiply-add.
 function error_norm(e, un, un1, tol::Tolerances)
     N = length(tol.dofs)
     s = 0.0
-    @inbounds for j in tol.dofs
-        sc = tol.abstol[j] + tol.reltol * max(abs(_f64(un[j])), abs(_f64(un1[j])))
-        r = _f64(e[j]) / sc
-        s = s + r * r
+    cq = tol.cellsq
+    if cq === nothing
+        @inbounds for j in tol.dofs
+            sc = tol.abstol[j] + tol.reltol * max(abs(_f64(un[j])), abs(_f64(un1[j])))
+            r = _f64(e[j]) / sc
+            s = s + r * r
+        end
+    else
+        # The same sum; each cell's squared ratios are also kept (§6.2).
+        fill!(cq, 0.0)
+        m = length(cq)
+        @inbounds for j in tol.dofs
+            sc = tol.abstol[j] + tol.reltol * max(abs(_f64(un[j])), abs(_f64(un1[j])))
+            r = _f64(e[j]) / sc
+            s = s + r * r
+            c = (j - 1) % m + 1
+            cq[c] = cq[c] + r * r
+        end
     end
     return sqrt(s / N)
+end
+
+"""
+Add the latest norm's per-cell squared ratios to the invocation's sums: once
+per step attempt whose error was estimated, the last norm being its error's
+(spec/partitioning.md §6.2). Nothing without the buffers.
+"""
+function add_cell_ratios!(tol::Union{Nothing, Tolerances})
+    (tol === nothing || tol.cellacc === nothing) && return nothing
+    tol.cellacc .+= tol.cellsq
+    return nothing
 end
 
 """The controllers of spec/methods.md §8."""

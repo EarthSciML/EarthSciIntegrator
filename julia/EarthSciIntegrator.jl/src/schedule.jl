@@ -79,8 +79,10 @@ struct LeafNode{O <: OperatorSum, M <: AbstractMethod} <: Node
     ψ::Union{Nothing, Integrand} # the integrand of a functional over time, on the leaf that integrates it
     imex::Any                    # IMEX Euler: (explicit part or nothing, implicit part) as OperatorSums; else nothing
     state::Union{Nothing, LeafState} # the part of the model state the leaf advances, when it is not the whole state; else nothing
+    scope::Any                   # dt_scope cell or shard: the leaf's `ScopeState` (spec/partitioning.md §2); global: nothing
 end
-LeafNode(args::Vararg{Any, 19}) = LeafNode(args..., nothing)
+LeafNode(args::Vararg{Any, 19}) = LeafNode(args..., nothing, nothing)
+LeafNode(args::Vararg{Any, 20}) = LeafNode(args..., nothing)
 is_adaptive(l::LeafNode) = l.dt === nothing
 
 """The [`RosenbrockContext`](@ref) of a Rosenbrock leaf."""
@@ -614,8 +616,19 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
             throw(ConfigError("unknown control key '$k' on leaf $id"))
     end
     scope = get(ctrl, "dt_scope", "auto")
-    scope in ("auto", "global") ||
-        throw(UnsupportedError("dt_scope '$scope' (leaf $id): M1 runs dt_scope global only (spec/tape.md)"))
+    scope in ("auto", "global", "cell", "shard") ||
+        throw(ConfigError("leaf $id: dt_scope '$scope' (global, shard, cell or auto)"))
+    # spec/partitioning.md §2: cell and shard need cells, the leaf's storage
+    # block_diagonal; an "auto" leaf that was not planned runs global.
+    scopestate = nothing
+    if scope in ("cell", "shard")
+        st = structure(OperatorSum(ops))
+        st isa BlockDiagonalStructure ||
+            throw(ConfigError("leaf $id: dt_scope \"$scope\" needs block_diagonal storage, so that its cells can step alone (spec/partitioning.md §2.1)"))
+        tab.family === :imex &&
+            throw(UnsupportedError("leaf $id: dt_scope \"$scope\" on an IMEX leaf is not implemented in this stage"))
+        scopestate = ScopeState(Symbol(scope), st.ncells, st.n, 1, nothing, DEFAULT_LANES)
+    end
     # Defaults when control omits them are OrdinaryDiffEq's (reltol 1e-3, abstol 1e-6).
     tol = nothing
     # Implicit leaves need the tolerances at fixed dt too: they scale the Newton
@@ -670,7 +683,7 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     end
     return LeafNode(
         id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
-        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex, leafstate
+        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex, leafstate, scopestate
     )
 end
 
@@ -696,7 +709,7 @@ function with_background(l::LeafNode, u)
     return LeafNode(
         l.id, l.opnames, rebind(l.ops), l.tab, l.method, l.dt, l.tol, l.dt0,
         l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, l.ψ,
-        imex, l.state
+        imex, l.state, l.scope
     )
 end
 
@@ -704,7 +717,7 @@ end
 with_integrand(l::LeafNode, ψ::Integrand) = LeafNode(
     l.id, l.opnames, l.ops, l.tab, l.method, l.dt, l.tol, l.dt0,
     l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, ψ,
-    l.imex, l.state
+    l.imex, l.state, l.scope
 )
 
 """
