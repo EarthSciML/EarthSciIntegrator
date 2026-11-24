@@ -28,5 +28,5 @@ SciMLBase = "3"
 # Planner stage C: EarthSciAST main after 0.14.0 (see ../Project.toml).
 [sources]
 EarthSciAST = {url = "https://github.com/EarthSciML/EarthSciAST.git", subdir = "pkg/EarthSciAST.jl", rev = "48edb585cf880c35636b325cdee91cc49b4400a3"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "844fa0c7da318718d9da737ea83acee351e4c90c"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "74249c2023c2d1003471b900df6f6209907b9794"}
 EarthSciIntegrator = {path = ".."}
