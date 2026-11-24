@@ -142,7 +142,7 @@
                 "op": "/",
                 "args": [
                   "t",
-                  "Mini.dtrec"
+                  "dtrec"
                 ]
               },
               {
@@ -152,7 +152,7 @@
                     "op": "/",
                     "args": [
                       "t",
-                      "Mini.dtrec"
+                      "dtrec"
                     ]
                   }
                 ]
@@ -164,7 +164,7 @@
           "lhs": {
             "op": "D",
             "args": [
-              "Mini.NO2"
+              "NO2"
             ],
             "wrt": "t"
           },
@@ -205,7 +205,7 @@
                             {
                               "op": "*",
                               "args": [
-                                "Mini.j0",
+                                "j0",
                                 {
                                   "op": "max",
                                   "args": [
@@ -219,7 +219,7 @@
                                             {
                                               "op": "*",
                                               "args": [
-                                                "Mini.omega",
+                                                "omega",
                                                 "t"
                                               ]
                                             },
@@ -266,7 +266,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO2",
+                                "NO2",
                                 "i",
                                 "j",
                                 "k"
@@ -280,7 +280,7 @@
                             {
                               "op": "*",
                               "args": [
-                                "Mini.k0",
+                                "k0",
                                 {
                                   "op": "+",
                                   "args": [
@@ -298,7 +298,7 @@
                                                 {
                                                   "op": "index",
                                                   "args": [
-                                                    "Mini.TS",
+                                                    "TS",
                                                     1,
                                                     "i",
                                                     "j"
@@ -307,14 +307,14 @@
                                                 {
                                                   "op": "*",
                                                   "args": [
-                                                    "Mini.w",
+                                                    "w",
                                                     {
                                                       "op": "-",
                                                       "args": [
                                                         {
                                                           "op": "index",
                                                           "args": [
-                                                            "Mini.TS",
+                                                            "TS",
                                                             2,
                                                             "i",
                                                             "j"
@@ -323,7 +323,7 @@
                                                         {
                                                           "op": "index",
                                                           "args": [
-                                                            "Mini.TS",
+                                                            "TS",
                                                             1,
                                                             "i",
                                                             "j"
@@ -347,7 +347,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO",
+                                "NO",
                                 "i",
                                 "j",
                                 "k"
@@ -356,7 +356,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.O3",
+                                "O3",
                                 "i",
                                 "j",
                                 "k"
@@ -432,8 +432,8 @@
                         {
                           "op": "/",
                           "args": [
-                            "Mini.u",
-                            "Mini.dx"
+                            "u",
+                            "dx"
                           ]
                         },
                         {
@@ -442,7 +442,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO2",
+                                "NO2",
                                 "i",
                                 "j",
                                 "k"
@@ -451,7 +451,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO2",
+                                "NO2",
                                 {
                                   "op": "-",
                                   "args": [
@@ -492,8 +492,8 @@
                         {
                           "op": "/",
                           "args": [
-                            "Mini.u",
-                            "Mini.dx"
+                            "u",
+                            "dx"
                           ]
                         },
                         {
@@ -502,7 +502,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO2",
+                                "NO2",
                                 1,
                                 "j",
                                 "k"
@@ -511,7 +511,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO2",
+                                "NO2",
                                 6,
                                 "j",
                                 "k"
@@ -549,7 +549,7 @@
                 "expr": {
                   "op": "*",
                   "args": [
-                    "Mini.kmix",
+                    "kmix",
                     {
                       "op": "-",
                       "args": [
@@ -569,7 +569,7 @@
                               "expr": {
                                 "op": "index",
                                 "args": [
-                                  "Mini.NO2",
+                                  "NO2",
                                   "i",
                                   "j",
                                   "kk"
@@ -582,7 +582,7 @@
                         {
                           "op": "index",
                           "args": [
-                            "Mini.NO2",
+                            "NO2",
                             "i",
                             "j",
                             "k"
@@ -600,7 +600,7 @@
           "lhs": {
             "op": "D",
             "args": [
-              "Mini.NO"
+              "NO"
             ],
             "wrt": "t"
           },
@@ -641,7 +641,7 @@
                             {
                               "op": "*",
                               "args": [
-                                "Mini.j0",
+                                "j0",
                                 {
                                   "op": "max",
                                   "args": [
@@ -655,7 +655,7 @@
                                             {
                                               "op": "*",
                                               "args": [
-                                                "Mini.omega",
+                                                "omega",
                                                 "t"
                                               ]
                                             },
@@ -702,7 +702,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO2",
+                                "NO2",
                                 "i",
                                 "j",
                                 "k"
@@ -716,7 +716,7 @@
                             {
                               "op": "*",
                               "args": [
-                                "Mini.k0",
+                                "k0",
                                 {
                                   "op": "+",
                                   "args": [
@@ -734,7 +734,7 @@
                                                 {
                                                   "op": "index",
                                                   "args": [
-                                                    "Mini.TS",
+                                                    "TS",
                                                     1,
                                                     "i",
                                                     "j"
@@ -743,14 +743,14 @@
                                                 {
                                                   "op": "*",
                                                   "args": [
-                                                    "Mini.w",
+                                                    "w",
                                                     {
                                                       "op": "-",
                                                       "args": [
                                                         {
                                                           "op": "index",
                                                           "args": [
-                                                            "Mini.TS",
+                                                            "TS",
                                                             2,
                                                             "i",
                                                             "j"
@@ -759,7 +759,7 @@
                                                         {
                                                           "op": "index",
                                                           "args": [
-                                                            "Mini.TS",
+                                                            "TS",
                                                             1,
                                                             "i",
                                                             "j"
@@ -783,7 +783,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO",
+                                "NO",
                                 "i",
                                 "j",
                                 "k"
@@ -792,7 +792,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.O3",
+                                "O3",
                                 "i",
                                 "j",
                                 "k"
@@ -805,7 +805,7 @@
                     {
                       "op": "*",
                       "args": [
-                        "Mini.e0",
+                        "e0",
                         {
                           "op": "max",
                           "args": [
@@ -887,8 +887,8 @@
                         {
                           "op": "/",
                           "args": [
-                            "Mini.u",
-                            "Mini.dx"
+                            "u",
+                            "dx"
                           ]
                         },
                         {
@@ -897,7 +897,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO",
+                                "NO",
                                 "i",
                                 "j",
                                 "k"
@@ -906,7 +906,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO",
+                                "NO",
                                 {
                                   "op": "-",
                                   "args": [
@@ -947,8 +947,8 @@
                         {
                           "op": "/",
                           "args": [
-                            "Mini.u",
-                            "Mini.dx"
+                            "u",
+                            "dx"
                           ]
                         },
                         {
@@ -957,7 +957,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO",
+                                "NO",
                                 1,
                                 "j",
                                 "k"
@@ -966,7 +966,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO",
+                                "NO",
                                 6,
                                 "j",
                                 "k"
@@ -1004,7 +1004,7 @@
                 "expr": {
                   "op": "*",
                   "args": [
-                    "Mini.kmix",
+                    "kmix",
                     {
                       "op": "-",
                       "args": [
@@ -1024,7 +1024,7 @@
                               "expr": {
                                 "op": "index",
                                 "args": [
-                                  "Mini.NO",
+                                  "NO",
                                   "i",
                                   "j",
                                   "kk"
@@ -1037,7 +1037,7 @@
                         {
                           "op": "index",
                           "args": [
-                            "Mini.NO",
+                            "NO",
                             "i",
                             "j",
                             "k"
@@ -1055,7 +1055,7 @@
           "lhs": {
             "op": "D",
             "args": [
-              "Mini.O3"
+              "O3"
             ],
             "wrt": "t"
           },
@@ -1096,7 +1096,7 @@
                             {
                               "op": "*",
                               "args": [
-                                "Mini.j0",
+                                "j0",
                                 {
                                   "op": "max",
                                   "args": [
@@ -1110,7 +1110,7 @@
                                             {
                                               "op": "*",
                                               "args": [
-                                                "Mini.omega",
+                                                "omega",
                                                 "t"
                                               ]
                                             },
@@ -1157,7 +1157,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO2",
+                                "NO2",
                                 "i",
                                 "j",
                                 "k"
@@ -1171,7 +1171,7 @@
                             {
                               "op": "*",
                               "args": [
-                                "Mini.k0",
+                                "k0",
                                 {
                                   "op": "+",
                                   "args": [
@@ -1189,7 +1189,7 @@
                                                 {
                                                   "op": "index",
                                                   "args": [
-                                                    "Mini.TS",
+                                                    "TS",
                                                     1,
                                                     "i",
                                                     "j"
@@ -1198,14 +1198,14 @@
                                                 {
                                                   "op": "*",
                                                   "args": [
-                                                    "Mini.w",
+                                                    "w",
                                                     {
                                                       "op": "-",
                                                       "args": [
                                                         {
                                                           "op": "index",
                                                           "args": [
-                                                            "Mini.TS",
+                                                            "TS",
                                                             2,
                                                             "i",
                                                             "j"
@@ -1214,7 +1214,7 @@
                                                         {
                                                           "op": "index",
                                                           "args": [
-                                                            "Mini.TS",
+                                                            "TS",
                                                             1,
                                                             "i",
                                                             "j"
@@ -1238,7 +1238,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.NO",
+                                "NO",
                                 "i",
                                 "j",
                                 "k"
@@ -1247,7 +1247,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.O3",
+                                "O3",
                                 "i",
                                 "j",
                                 "k"
@@ -1260,11 +1260,11 @@
                     {
                       "op": "*",
                       "args": [
-                        "Mini.vd",
+                        "vd",
                         {
                           "op": "index",
                           "args": [
-                            "Mini.O3",
+                            "O3",
                             "i",
                             "j",
                             "k"
@@ -1338,8 +1338,8 @@
                         {
                           "op": "/",
                           "args": [
-                            "Mini.u",
-                            "Mini.dx"
+                            "u",
+                            "dx"
                           ]
                         },
                         {
@@ -1348,7 +1348,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.O3",
+                                "O3",
                                 "i",
                                 "j",
                                 "k"
@@ -1357,7 +1357,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.O3",
+                                "O3",
                                 {
                                   "op": "-",
                                   "args": [
@@ -1398,8 +1398,8 @@
                         {
                           "op": "/",
                           "args": [
-                            "Mini.u",
-                            "Mini.dx"
+                            "u",
+                            "dx"
                           ]
                         },
                         {
@@ -1408,7 +1408,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.O3",
+                                "O3",
                                 1,
                                 "j",
                                 "k"
@@ -1417,7 +1417,7 @@
                             {
                               "op": "index",
                               "args": [
-                                "Mini.O3",
+                                "O3",
                                 6,
                                 "j",
                                 "k"
@@ -1455,7 +1455,7 @@
                 "expr": {
                   "op": "*",
                   "args": [
-                    "Mini.kmix",
+                    "kmix",
                     {
                       "op": "-",
                       "args": [
@@ -1475,7 +1475,7 @@
                               "expr": {
                                 "op": "index",
                                 "args": [
-                                  "Mini.O3",
+                                  "O3",
                                   "i",
                                   "j",
                                   "kk"
@@ -1488,7 +1488,7 @@
                         {
                           "op": "index",
                           "args": [
-                            "Mini.O3",
+                            "O3",
                             "i",
                             "j",
                             "k"
