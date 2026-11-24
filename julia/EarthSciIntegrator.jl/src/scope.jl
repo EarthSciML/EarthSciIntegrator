@@ -28,67 +28,6 @@
 # ---------------------------------------------------------------------------
 # Lane programs (spec/partitioning.md §3)
 
-"""
-    lane_form(doc) -> doc
-
-The derived document `doc` (a parsed JSON object, changed in place) in the
-form EarthSciAST's lane rewriter takes: every state equation `D(x) = faq{…}`
-over the whole array, or `D(x) = makearray` whose last region is the whole
-array and holds such a `faq`, becomes `faq(D(x[i, …])) = faq(…)` over the
-same ranges. The two are the same array (esm-spec §4.3): a later region of a
-`makearray` overwrites the earlier ones. EarthSciAST.jl's lane programs
-(pinned revision) refuse the first forms (`an array producer is indexed
-inside the lane scope`; a `faq` inside a `makearray` region reads `x` at its
-own index, which the rewriter reads as leaving the cell) and take the last,
-whose values the tests check bit for bit against the whole-domain program
-(spec/partitioning.md §3.1 rule 4). No operator or template reference is
-touched.
-"""
-function lane_form(doc::AbstractDict)
-    sizes = Dict{String, Int}(String(k) => Int(v["size"]) for (k, v) in get(doc, "index_sets", Dict()) if haskey(v, "size"))
-    _lane_form!(doc, sizes)
-    return doc
-end
-
-function _range_extent(r, sizes)
-    r isa AbstractVector && length(r) == 2 && return (Int(r[1]), Int(r[2]))
-    r isa AbstractDict && haskey(r, "from") && haskey(sizes, r["from"]) && length(r) == 1 && return (1, sizes[r["from"]])
-    return nothing
-end
-
-function _lane_form!(node::AbstractDict, sizes)
-    for eq in get(node, "equations", Any[])
-        l, r = eq["lhs"], eq["rhs"]
-        (l isa AbstractDict && get(l, "op", "") == "D" && r isa AbstractDict) || continue
-        f = r
-        if get(r, "op", "") == "makearray"
-            regs, vals = r["regions"], r["values"]
-            isempty(vals) && continue
-            f = vals[end]
-            (f isa AbstractDict && get(f, "op", "") == "faq") || continue
-            # The last region must be the faq's whole output box.
-            box = [_range_extent(f["ranges"][String(k)], sizes) for k in f["output_idx"]]
-            any(isnothing, box) && continue
-            [(Int(x[1]), Int(x[2])) for x in regs[end]] == box || continue
-        end
-        (f isa AbstractDict && get(f, "op", "") == "faq" && !isempty(get(f, "output_idx", Any[]))) || continue
-        oi = f["output_idx"]
-        x = l["args"][1]
-        eq["lhs"] = Dict{String, Any}(
-            "op" => "faq", "args" => Any[], "output_idx" => oi, "ranges" => f["ranges"],
-            "expr" => Dict{String, Any}(
-                "op" => "D", "wrt" => get(l, "wrt", "t"),
-                "args" => Any[Dict{String, Any}("op" => "index", "args" => Any[x, oi...])]
-            )
-        )
-        eq["rhs"] = Dict{String, Any}("op" => "faq", "args" => Any[], "output_idx" => oi, "ranges" => f["ranges"], "expr" => f["expr"])
-    end
-    for k in ("models", "subsystems")
-        haskey(node, k) && foreach(m -> m isa AbstractDict && _lane_form!(m, sizes), values(node[k]))
-    end
-    return node
-end
-
 """The lane programs built so far, by derived document (its path and bytes' hash) and lane capacity."""
 const _LANE_PROGRAMS = Dict{Tuple{String, String, Int}, Any}()
 const _LANE_LOCK = ReentrantLock()
@@ -97,7 +36,7 @@ const _LANE_LOCK = ReentrantLock()
     lane_program(d::PlanDocument, sets, capacity, tspan) -> LaneProgram
 
 EarthSciAST's lane program (`lanes(op, :cells, sets; chunk = capacity)`) of
-the derived document `d`, in its [`lane_form`](@ref), compiled natively.
+the derived document `d`, compiled natively.
 Built once per document and capacity, and shared by every thread and every
 run that uses that document (it is reentrant across workspaces).
 """
@@ -106,7 +45,7 @@ function lane_program(d::PlanDocument, sets::Vector{String}, capacity::Int, tspa
     key = (d.path, bytes2hex(sha256(bytes)), capacity)
     return lock(_LANE_LOCK) do
         get!(_LANE_PROGRAMS, key) do
-            doc = lane_form(JSON.parse(String(bytes)))
+            doc = JSON.parse(String(bytes))
             file = EarthSciAST.load_document(wire_form(doc))
             prob = EarthSciAST.esm_problem(file, tspan; compiler = :native, base_path = dirname(d.path))
             EarthSciAST.lanes(EarthSciAST.rhs_program(prob), :cells, sets; chunk = capacity)
