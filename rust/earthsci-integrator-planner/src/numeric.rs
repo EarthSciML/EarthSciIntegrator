@@ -5,7 +5,7 @@
 //! band Jacobian assembled from a Jacobian document's fields.
 
 use crate::model::ModelInfo;
-use earthsci_ast::provider::{CadenceProvider, NativeField, ProviderError};
+use earthsci_ast::provider::{DataProvider, ProviderError};
 use earthsci_ast::{
     esm_problem, rhs_program, Compiler, Expr, ForcingSet, ProblemInput, ProblemOptions, RhsProgram,
     RhsWorkspace,
@@ -134,17 +134,10 @@ impl FixedProvider {
     }
 }
 
-impl CadenceProvider for FixedProvider {
-    fn materialize(&mut self) -> Result<HashMap<String, NativeField>, ProviderError> {
-        Ok([("value".to_string(), NativeField::new(self.array.clone()))].into())
-    }
-
-    fn refresh(&mut self, _t: f64) -> Result<Option<HashMap<String, NativeField>>, ProviderError> {
-        self.materialize().map(Some)
-    }
-
-    fn refresh_times(&self) -> Vec<f64> {
-        Vec::new()
+// A CONST provider: no refresh times, so it never refreshes.
+impl DataProvider for FixedProvider {
+    fn sample(&mut self) -> Result<ndarray::ArrayD<f64>, ProviderError> {
+        Ok(self.array.clone())
     }
 }
 
@@ -158,8 +151,8 @@ impl CadenceProvider for FixedProvider {
 /// the same way, to the same value.
 pub fn default_providers(
     info: &ModelInfo,
-) -> Result<HashMap<String, Box<dyn CadenceProvider>>, String> {
-    let mut out: HashMap<String, Box<dyn CadenceProvider>> = HashMap::new();
+) -> Result<HashMap<String, Box<dyn DataProvider>>, String> {
+    let mut out: HashMap<String, Box<dyn DataProvider>> = HashMap::new();
     for name in &info.used {
         let values = info
             .default_column_major(name)
@@ -469,7 +462,7 @@ impl Program {
         input: impl Into<ProblemInput<'a>>,
         tspan: (f64, f64),
         dofs: &Dofs,
-        providers: HashMap<String, Box<dyn CadenceProvider>>,
+        providers: HashMap<String, Box<dyn DataProvider>>,
         initial: bool,
     ) -> Result<(Program, Option<Vec<f64>>), String> {
         let prob = esm_problem(
