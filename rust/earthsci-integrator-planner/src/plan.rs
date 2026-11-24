@@ -837,6 +837,7 @@ impl Planned {
             uniform_shapes,
             block_vars,
             depends_on_t: names.iter().any(|o| self.structures[o].depends_on_t),
+            coupled: matches!(&n.kind, Kind::Leaf { coupled: true, .. }),
         }
     }
 
@@ -947,6 +948,46 @@ impl Planned {
         let jb = numeric::band_jacobian(&prog, &dofs, bands, u, t, forcing).map_err(internal)?;
         for ((r, c), v) in jb {
             out.insert((names[r].clone(), names[c].clone()), v);
+        }
+        Ok(out)
+    }
+
+    /// The planner's `f_t` of operator `op` from its time-derivative
+    /// document at `(u, t)` with forcing `forcing`, by row element name, for
+    /// every row a time band writes (the cells of its `rows` region): the
+    /// rows a band-value file's `time_entries` list (§8.1, §8.2). Empty for an
+    /// operator without a time-derivative document.
+    pub fn time_derivative_at(
+        &self,
+        op: &str,
+        u: &[f64],
+        t: f64,
+        forcing: &numeric::Forcing,
+    ) -> Result<BTreeMap<String, f64>> {
+        let docs = self
+            .documents
+            .get(op)
+            .ok_or_else(|| internal(format!("no operator {op}")))?;
+        let (Some(bytes), Some(tb)) = (&docs.time_derivative, &self.structures[op].time_bands)
+        else {
+            return Ok(BTreeMap::new());
+        };
+        let doc: Value = serde_json::from_slice(bytes).map_err(internal)?;
+        let dofs = self.dofs();
+        let prog = Program::new(&doc, (self.interval.start, self.interval.end), &dofs)
+            .map_err(internal)?;
+        let ft = numeric::time_derivative(&prog, &dofs, tb, u, t, forcing).map_err(internal)?;
+        let names = dofs.element_names();
+        let mut out = BTreeMap::new();
+        for en in tb {
+            let mut rows = Vec::new();
+            numeric::band_points(en, &mut |cell, _, _| rows.push(cell.to_vec()))
+                .map_err(internal)?;
+            for cell in rows {
+                if let Some(r) = dofs.dof(&en.u, &cell) {
+                    out.insert(names[r].clone(), ft[r]);
+                }
+            }
         }
         Ok(out)
     }

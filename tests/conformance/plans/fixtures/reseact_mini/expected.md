@@ -29,3 +29,11 @@ The chemistry leaf `chem` gives `TRBDF2`, `jacobian` `symbolic` (its `linsolve` 
 - **Partition**: `shards` `{"chem": 3}`; `reshard` `{"chem": {"every": 2}}`; no `lanes` key.
 - **Derived documents**: the four `rhs` and `jacobian` documents only: `TRBDF2` is not a Rosenbrock method, so no time-derivative document.
 - **Validation**: as at M2, no `time_band_model`.
+
+## coupled
+
+The chemistry is advanced by a `coupled` node `chem` (`TRBDF2`, `jacobian` `symbolic`, `control` without `dt_scope`, no `partition`) instead of a `leaf`.
+
+- **`dt_scope`** (spec/partitioning.md §2.1, D97): `"global"`. A `coupled` node is never sharded, so the pointwise `cell` default does not apply to it, although its operator's storage is `block_diagonal`.
+- **Partition** (§7.4): `shards` `{}` (a `coupled` node gets no entry); no `lanes` and no `reshard` key.
+- **Derived documents**: the four `rhs` and `jacobian` documents only (`TRBDF2` is not a Rosenbrock method).

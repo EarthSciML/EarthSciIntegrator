@@ -39,7 +39,13 @@ const CASES: &[(&str, &str)] = &[
     ("toy_robertson", "rodas4"),
     ("reseact_mini", "cell"),
     ("reseact_mini", "shard"),
+    ("reseact_mini", "coupled"),
 ];
+
+/// Cases whose goldens the Julia planner has not yet written: planned and
+/// checked against everything but their golden. Goldens are written by
+/// Julia (spec/plan.md §9).
+const AWAITING_JULIA_GOLDENS: &[(&str, &str)] = &[("reseact_mini", "coupled")];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.
 fn lhs_ops(model: &Value, out: &mut Vec<String>) {
@@ -321,6 +327,10 @@ fn every_case() {
                 let reach = (-offs.clone().min().unwrap(), offs.max().unwrap());
                 assert_eq!(Some(&reach), radius.get(h), "{fixture}/{case} {op} {h}");
             }
+        }
+        if AWAITING_JULIA_GOLDENS.contains(&(*fixture, *case)) {
+            eprintln!("{fixture}/{case}: golden awaits the Julia planner");
+            continue;
         }
         check_golden(fixture, case, &p, &bytes);
     }

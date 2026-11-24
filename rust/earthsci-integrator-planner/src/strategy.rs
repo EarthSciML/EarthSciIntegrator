@@ -126,6 +126,9 @@ pub struct LeafFacts {
     /// when every operator has `structure.block`, `Some(None)` when one has
     /// none; `None` when structure is not known.
     pub block_vars: Option<Option<usize>>,
+    /// A `coupled` node rather than a `leaf`: never sharded, so its
+    /// `dt_scope` is `global` (spec/partitioning.md §2.1).
+    pub coupled: bool,
     /// Whether any of its operators has `structure.depends_on_t` (§5.4).
     pub depends_on_t: bool,
 }
@@ -215,7 +218,8 @@ fn table_linsolve(facts: &LeafFacts, pointer: &str) -> Result<Value> {
 /// (spec/operator-interface.md §8.3): every operator pointwise with
 /// `structure.block`, the leaf's states all of one shape.
 pub fn block_storage(facts: &LeafFacts) -> bool {
-    facts.class == Class::Pointwise
+    !facts.coupled
+        && facts.class == Class::Pointwise
         && facts.uniform_shapes
         && matches!(facts.block_vars, Some(Some(_)))
 }
@@ -336,6 +340,7 @@ mod tests {
             uniform_shapes: true,
             block_vars: Some(Some(3)),
             depends_on_t: false,
+            coupled: false,
         }
     }
 
