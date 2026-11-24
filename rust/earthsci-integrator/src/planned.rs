@@ -51,25 +51,6 @@ fn build_program(
     Ok((prob, prog))
 }
 
-/// [`build_program`] of a document given as JSON. A derived document
-/// references no file (its data sources are stubs, spec/plan.md §6.3).
-pub(crate) fn build_program_value(
-    doc: &Value,
-    tspan: (f64, f64),
-) -> Result<(earthsci_ast::EsmProblem, RhsProgram), String> {
-    let prob = esm_problem(
-        ProblemInput::from(doc),
-        tspan,
-        ProblemOptions {
-            compiler: Some(Compiler::Native),
-            ..Default::default()
-        },
-    )
-    .map_err(|e| format!("EarthSciAST esm_problem: {e}"))?;
-    let prog = rhs_program(&prob).map_err(|e| format!("EarthSciAST rhs_program: {e}"))?;
-    Ok((prob, prog))
-}
-
 /// The canonical order of a program's states, leaving out the names `skip`
 /// accepts.
 fn program_dofs(prog: &RhsProgram, skip: impl Fn(&str) -> bool) -> Dofs {
@@ -99,9 +80,6 @@ pub(crate) struct Document {
     pub(crate) p_index: Vec<ParamSource>,
     /// The forcing epochs of the run (§8.4).
     pub(crate) timeline: Arc<ForcingTimeline>,
-    /// The document's file and the run interval it was built for, for the
-    /// lane programs of spec/partitioning.md §3 ([`crate::lanes`]).
-    pub(crate) source: Option<(std::path::PathBuf, (f64, f64))>,
 }
 
 impl Document {
@@ -142,7 +120,6 @@ impl Document {
             prog: Arc::new(prog),
             p_index,
             timeline,
-            source: None,
         })
     }
 
@@ -795,9 +772,8 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
     for b in built {
         let (name, rhs_path, jac_path) = (&b.name, &b.rhs_path, &b.jac_path);
         let entry = &plan["operators"][name];
-        let mut rhs = Document::new(b.rhs_prog, &m.dofs, &m.params, &forcing, timeline.clone())
+        let rhs = Document::new(b.rhs_prog, &m.dofs, &m.params, &forcing, timeline.clone())
             .map_err(|e| refuse(name, rhs_path, e))?;
-        rhs.source = Some((dir.join(rhs_path), tspan));
         let jacobian = Document::new(b.jac_prog, &m.dofs, &m.params, &forcing, timeline.clone())
             .map_err(|e| refuse(name, jac_path, e))?;
         // A document that cannot be evaluated at the initial state is

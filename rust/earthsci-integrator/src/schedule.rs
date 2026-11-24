@@ -686,14 +686,17 @@ fn scope_plan<T: Scalar>(
         }
     };
     let nshards = num("shards").unwrap_or(1) as usize;
-    let largest = match kind {
-        ScopeKind::Cell => 1,
-        ScopeKind::Shard => ncells.div_ceil(nshards.max(1)),
-    };
-    let capacity = num("lanes")
-        .map_or(largest, |l| l as usize)
-        .min(largest)
-        .max(1);
+    // Under `cell` the lanes are a lane pool's (spec/partitioning.md §3.2;
+    // 8 when the plan gives none); under `shard` a shard's cells are
+    // evaluated `lanes` at a time.
+    let capacity = match kind {
+        ScopeKind::Cell => num("lanes").map_or(8, |l| l as usize).min(ncells),
+        ScopeKind::Shard => {
+            let largest = ncells.div_ceil(nshards.max(1));
+            num("lanes").map_or(largest, |l| l as usize).min(largest)
+        }
+    }
+    .max(1);
     let species: Vec<usize> = (0..n).map(|i| x.dofs[i * ncells]).collect();
     let mut sources = Vec::with_capacity(x.ops.len());
     for o in x.ops {

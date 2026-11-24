@@ -19,7 +19,7 @@ repository.workspace = true
 # reads a calendar-template scalar (EarthSciAST#739), which reseact's NEI
 # emissions need; esm 2.3.0 (the pointwise lift on every route, deprecated
 # `neg`/`pow`, canonical unit spelling).
-earthsci-ast = { version = "0.14.0", default-features = false, features = ["solve"] }
+earthsci-ast = { version = "0.15.0", default-features = false, features = ["solve"] }
 earthsci-astdiff = "0.6.2"
 earthsci-integrator-solvers.workspace = true
 indexmap = "2"

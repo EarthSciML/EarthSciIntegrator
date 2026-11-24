@@ -9,10 +9,12 @@
 //! layouts and a unit's state: a unit is the list of cells one integration
 //! advances, its state species-major over those cells.
 //!
-//! A lane program takes one time `t` per call (D98, U19), so a call
-//! evaluates only cells that share their time, which the callers here always
-//! do: a unit's cells step together. Cells are taken `capacity` at a time;
-//! a remainder is padded by the program (rule 2).
+//! Under `dt_scope: cell` a lane pool (spec/partitioning.md §3.2) integrates
+//! each cell on a lane of its own, and [`Batcher`] serves the cells'
+//! evaluations together: one lane-program call per document, forcing set and
+//! parameter vector, each lane at its own time (U19, EarthSciAST#781). Under
+//! `shard` a unit's cells step together and are evaluated `capacity` at a
+//! time; a remainder is padded by the program (rule 2).
 
 use crate::forcing::ForcingTimeline;
 use crate::operator::MatrixStorage;
@@ -63,10 +65,7 @@ impl LaneDoc {
         state_source: &dyn Fn(&str) -> Option<Source>,
         what: &str,
     ) -> Result<LaneDoc, String> {
-        let prog = match &doc.source {
-            Some((path, tspan)) => Arc::new(lane_form(doc, path, *tspan)?),
-            None => doc.prog.clone(),
-        };
+        let prog = doc.prog.clone();
         let lanes = prog
             .program()
             .lanes(kind.clone(), capacity)
@@ -181,87 +180,6 @@ impl LaneDoc {
         self.pool.lock().expect("lane pool").push(s);
         res
     }
-}
-
-/// The right-hand-side document `path` in the form EarthSciAST's lane
-/// rewriter takes, compiled: every state equation `D(x) = faq{…}` over the
-/// whole array becomes `D(x) = makearray` of one region, the state's whole
-/// extent, holding that `faq`. The two are the same array (esm-spec §4.3);
-/// EarthSciAST's Rust lane programs refuse the first ("subscripts an array
-/// expression a lane cannot restrict", EarthSciAST pinned revision
-/// 3a61fe4) and take the second, which is how the planner's Jacobian
-/// documents are written. The parameters must come out in the program's
-/// order, which is checked.
-fn lane_form(doc: &Document, path: &std::path::Path, tspan: (f64, f64)) -> Result<Program, String> {
-    use serde_json::{json, Value};
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let sizes: std::collections::HashMap<String, i64> = v["index_sets"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .filter_map(|(k, d)| Some((k.clone(), d["size"].as_i64()?)))
-        .collect();
-    let walk = &mut |node: &mut Value| walk_with(node, &sizes);
-    fn walk_with(node: &mut Value, sizes: &std::collections::HashMap<String, i64>) {
-        if let Some(eqs) = node.get_mut("equations").and_then(Value::as_array_mut) {
-            for eq in eqs {
-                let is_d = eq["lhs"]["op"] == "D";
-                let rhs = &mut eq["rhs"];
-                let whole = rhs["op"] == "faq"
-                    && rhs["output_idx"].as_array().is_some_and(|o| !o.is_empty());
-                if !(is_d && whole) {
-                    continue;
-                }
-                let Some(ranges) = rhs["ranges"].as_object() else {
-                    continue;
-                };
-                let mut region = Vec::new();
-                let mut ok = true;
-                for k in rhs["output_idx"].as_array().into_iter().flatten() {
-                    match k.as_str().and_then(|k| ranges.get(k)) {
-                        Some(Value::Array(r)) if r.len() == 2 => region.push(r.clone()),
-                        Some(Value::Object(o)) => match o
-                            .get("from")
-                            .and_then(Value::as_str)
-                            .and_then(|set| sizes.get(set))
-                        {
-                            Some(&n) => region.push(vec![json!(1), json!(n)]),
-                            None => ok = false,
-                        },
-                        _ => ok = false,
-                    }
-                }
-                if ok {
-                    let f = rhs.take();
-                    *rhs =
-                        json!({"op": "makearray", "args": [], "regions": [region], "values": [f]});
-                }
-            }
-        }
-        for key in ["models", "subsystems"] {
-            if let Some(m) = node.get_mut(key).and_then(Value::as_object_mut) {
-                m.values_mut().for_each(|x| walk_with(x, sizes));
-            }
-        }
-    }
-    walk(&mut v);
-    let (_, prog) = crate::planned::build_program_value(&v, tspan)?;
-    if prog.parameters().iter().map(|p| &p.name).ne(doc
-        .prog
-        .program()
-        .parameters()
-        .iter()
-        .map(|p| &p.name))
-    {
-        return Err("its lane form has other parameters than the document".into());
-    }
-    let shapes = prog
-        .state_layout()
-        .iter()
-        .map(|b| (b.name.clone(), b.shape.clone()));
-    let dofs = earthsci_integrator_planner::numeric::Dofs::from_shapes(shapes);
-    Program::from_program(prog, &dofs)
 }
 
 /// A plan's pointwise operator over lists of cells of one leaf.
@@ -588,5 +506,322 @@ impl LaneOps {
             at += nb;
         }
         Ok(())
+    }
+}
+
+/// Which derived document of an operator a lane request evaluates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Doc {
+    Rhs,
+    Jac,
+    Ft,
+}
+
+/// One cell's evaluation, made by the cell's own integration and served
+/// together with the other lanes of its pool ([`Batcher`]).
+struct Request {
+    ops: Arc<LaneOps>,
+    doc: Doc,
+    cell: usize,
+    /// The lane's `u` and `aux` columns, in the program's fill order.
+    u: Vec<f64>,
+    aux: Vec<f64>,
+    p: Vec<f64>,
+    t: f64,
+    fs: earthsci_ast::ForcingSet,
+}
+
+impl LaneOps {
+    fn doc(&self, d: Doc) -> &LaneDoc {
+        match d {
+            Doc::Rhs => &self.rhs,
+            Doc::Jac => &self.jac,
+            Doc::Ft => &self.ft.as_ref().expect("a time-derivative document").0,
+        }
+    }
+
+    /// The request for cell `cell` with state `x` (one cell, species in leaf
+    /// order), model state `bg`, parameters `p`, time `t`.
+    fn request<T: Scalar>(
+        self: &Arc<Self>,
+        doc: Doc,
+        cell: usize,
+        x: &[T],
+        bg: &[T],
+        p: &[f64],
+        t: f64,
+    ) -> Result<Request, String> {
+        let d = self.doc(doc);
+        let col = |fills: &[(usize, Source)]| -> Vec<f64> {
+            fills
+                .iter()
+                .map(|&(_, src)| match src {
+                    Source::Leaf(i) => x[i].to_f64(),
+                    Source::Model(start) => bg[start + cell].to_f64(),
+                })
+                .collect()
+        };
+        let pv = d
+            .p_of
+            .iter()
+            .map(|s| match *s {
+                crate::planned::ParamSource::P(k) => p[k],
+                crate::planned::ParamSource::Fixed(v) => v,
+            })
+            .collect();
+        let fs = d.prog.forcing_set(self.timeline.at(t))?;
+        Ok(Request {
+            ops: Arc::clone(self),
+            doc,
+            cell,
+            u: col(&d.u_fill),
+            aux: col(&d.aux_fill),
+            p: pv,
+            t,
+            fs,
+        })
+    }
+
+    /// `out += f` at one cell through the pool's batcher (U19: the cells of
+    /// one call are at their own times).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rhs_pooled<T: Scalar>(
+        self: &Arc<Self>,
+        b: &Batcher,
+        lane: usize,
+        out: &mut [T],
+        cell: usize,
+        x: &[T],
+        bg: &[T],
+        p: &[f64],
+        t: f64,
+    ) -> Result<(), String> {
+        let du = b.submit(lane, self.request(Doc::Rhs, cell, x, bg, p, t)?)?;
+        for &(off, i) in &self.rhs_out {
+            out[i] += T::from_f64(du[off]);
+        }
+        Ok(())
+    }
+
+    /// `out += f_t` at one cell through the pool's batcher.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ft_pooled<T: Scalar>(
+        self: &Arc<Self>,
+        b: &Batcher,
+        lane: usize,
+        out: &mut [T],
+        cell: usize,
+        x: &[T],
+        bg: &[T],
+        p: &[f64],
+        t: f64,
+    ) -> Result<(), String> {
+        let Some((_, outs)) = &self.ft else {
+            return Ok(());
+        };
+        let du = b.submit(lane, self.request(Doc::Ft, cell, x, bg, p, t)?)?;
+        for &(lo, i) in outs {
+            out[i] += T::from_f64(du[lo]);
+        }
+        Ok(())
+    }
+
+    /// The Jacobian block at one cell through the pool's batcher, added into
+    /// `out` (one cell's storage), in the whole-domain operator's point
+    /// order.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn jac_pooled<T: Scalar>(
+        self: &Arc<Self>,
+        b: &Batcher,
+        lane: usize,
+        out: &mut MatrixStorage<T>,
+        cell: usize,
+        x: &[T],
+        bg: &[T],
+        p: &[f64],
+        t: f64,
+    ) -> Result<(), String> {
+        let du = b.submit(lane, self.request(Doc::Jac, cell, x, bg, p, t)?)?;
+        for &(lo, i, j) in &self.jac_out[cell] {
+            out.add(i, j, T::from_f64(du[lo]));
+        }
+        Ok(())
+    }
+}
+
+impl LaneDoc {
+    /// Evaluates `reqs` (one document, one forcing set, equal parameters),
+    /// `capacity` at a time, each lane at its own time (U19); returns each
+    /// request's output column: the value of every block at its lane.
+    fn eval_requests(
+        &self,
+        reqs: &[&Request],
+        coords: &[Vec<i32>],
+    ) -> Result<Vec<Vec<f64>>, String> {
+        let cap = self.lanes.capacity();
+        let d = coords.first().map_or(0, Vec::len);
+        let nblocks = self.u_len / cap.max(1);
+        let popped = self.pool.lock().expect("lane pool").pop();
+        let mut s = popped.unwrap_or_else(|| Scratch {
+            ws: self.lanes.new_workspace(),
+            u: vec![0.0; self.u_len],
+            aux: vec![0.0; self.aux_len],
+            du: vec![0.0; self.u_len],
+            p: vec![0.0; self.p_of.len()],
+            cells: vec![1; d.max(1) * cap],
+        });
+        let mut out = Vec::with_capacity(reqs.len());
+        let mut res = Ok(());
+        for chunk in reqs.chunks(cap.max(1)) {
+            let nb = chunk.len();
+            let mut ts = Vec::with_capacity(nb);
+            for (l, r) in chunk.iter().enumerate() {
+                for (k, &(off, _)) in self.u_fill.iter().enumerate() {
+                    s.u[off * cap + l] = r.u[k];
+                }
+                for (k, &(off, _)) in self.aux_fill.iter().enumerate() {
+                    s.aux[off * cap + l] = r.aux[k];
+                }
+                s.cells[l * d..(l + 1) * d].copy_from_slice(&coords[r.cell]);
+                ts.push(r.t);
+            }
+            s.p.copy_from_slice(&chunk[0].p);
+            res = self
+                .lanes
+                .eval_times_into(
+                    &s.u,
+                    &s.aux,
+                    &s.p,
+                    &ts,
+                    &chunk[0].fs,
+                    &s.cells[..d * nb],
+                    nb,
+                    &mut s.du,
+                    &mut s.ws,
+                )
+                .map_err(|e| format!("EarthSciAST lane evaluation: {e}"));
+            if res.is_err() {
+                break;
+            }
+            for l in 0..nb {
+                out.push((0..nblocks).map(|o| s.du[o * cap + l]).collect());
+            }
+        }
+        self.pool.lock().expect("lane pool").push(s);
+        res.map(|()| out)
+    }
+}
+
+/// The largest number of distinct times any one lane-program call of a pool
+/// has served, over the process: how the tests see that cells at different
+/// times share a call (U19).
+pub static MIXED_TIME_LANES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// The rendezvous of one lane pool (spec/partitioning.md §3.2): each lane
+/// integrates its own cell on its own thread, and every evaluation it needs
+/// is posted here; when every active lane has posted one, the evaluations
+/// are served together, one lane-program call per document, forcing set and
+/// parameter vector, each lane at its own time (U19). A lane's result
+/// depends only on its own request (the lane programs' contract), so how
+/// lanes are grouped changes no value.
+pub struct Batcher {
+    state: std::sync::Mutex<BatchState>,
+    cv: std::sync::Condvar,
+}
+
+struct BatchState {
+    active: usize,
+    pending: Vec<(usize, Request)>,
+    done: Vec<Option<Result<Vec<f64>, String>>>,
+}
+
+impl Batcher {
+    /// A pool of `lanes` lanes, all active.
+    pub(crate) fn new(lanes: usize) -> Batcher {
+        Batcher {
+            state: std::sync::Mutex::new(BatchState {
+                active: lanes,
+                pending: Vec::new(),
+                done: (0..lanes).map(|_| None).collect(),
+            }),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+
+    fn submit(&self, lane: usize, r: Request) -> Result<Vec<f64>, String> {
+        let mut st = self.state.lock().expect("batcher");
+        st.pending.push((lane, r));
+        loop {
+            if let Some(res) = st.done[lane].take() {
+                return res;
+            }
+            if !st.pending.is_empty() && st.pending.len() == st.active {
+                Self::serve(&mut st);
+                self.cv.notify_all();
+                continue;
+            }
+            st = self.cv.wait(st).expect("batcher");
+        }
+    }
+
+    /// The lane has no more cells: the pool waits for one lane fewer.
+    pub(crate) fn leave(&self) {
+        let mut st = self.state.lock().expect("batcher");
+        st.active -= 1;
+        if st.active > 0 && st.pending.len() == st.active {
+            Self::serve(&mut st);
+        }
+        self.cv.notify_all();
+    }
+
+    fn serve(st: &mut BatchState) {
+        let pending = std::mem::take(&mut st.pending);
+        // Groups in order of their first request; requests in lane order.
+        let mut order: Vec<usize> = (0..pending.len()).collect();
+        order.sort_by_key(|&k| pending[k].0);
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for k in order {
+            let r = &pending[k].1;
+            let same = |g: &Vec<usize>| {
+                let q = &pending[g[0]].1;
+                Arc::ptr_eq(&q.ops, &r.ops)
+                    && q.doc == r.doc
+                    && q.fs.epoch() == r.fs.epoch()
+                    && q.p.len() == r.p.len()
+                    && q.p
+                        .iter()
+                        .zip(&r.p)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+            };
+            match groups.iter_mut().find(|g| same(g)) {
+                Some(g) => g.push(k),
+                None => groups.push(vec![k]),
+            }
+        }
+        for g in groups {
+            let first = &pending[g[0]].1;
+            let mut times: Vec<u64> = g.iter().map(|&k| pending[k].1.t.to_bits()).collect();
+            times.sort_unstable();
+            times.dedup();
+            MIXED_TIME_LANES.fetch_max(times.len(), std::sync::atomic::Ordering::Relaxed);
+            let reqs: Vec<&Request> = g.iter().map(|&k| &pending[k].1).collect();
+            let res = first
+                .ops
+                .doc(first.doc)
+                .eval_requests(&reqs, &first.ops.coords);
+            match res {
+                Ok(cols) => {
+                    for (&k, col) in g.iter().zip(cols) {
+                        st.done[pending[k].0] = Some(Ok(col));
+                    }
+                }
+                Err(e) => {
+                    for &k in &g {
+                        st.done[pending[k].0] = Some(Err(e.clone()));
+                    }
+                }
+            }
+        }
     }
 }

@@ -676,8 +676,8 @@ checksum = "e1d926b4d407d372f141f93bb444696142c29d32962ccbd3531117cf3aa0bfa9"
 
 [[package]]
 name = "earthsci-ast"
-version = "0.14.0"
-source = "git+https://github.com/ctessum-claude/EarthSciSerialization.git?rev=3a61fe45496c4d567a9e530d3f853087950c9aac#3a61fe45496c4d567a9e530d3f853087950c9aac"
+version = "0.15.0"
+source = "git+https://github.com/ctessum-claude/EarthSciSerialization.git?rev=250fcecf6b27026a9b7c012be0dbcd61bffb797c#250fcecf6b27026a9b7c012be0dbcd61bffb797c"
 dependencies = [
  "diffsol",
  "earthsciio",

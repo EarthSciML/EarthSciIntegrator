@@ -17,12 +17,11 @@
 //! and re-sharding (§6.2) changes them at macro-step boundaries from each
 //! cell's share of its shard's squared error sums.
 //!
-//! *Lane pools.* A unit's cells are evaluated together through the
-//! operators' lane programs ([`crate::lanes`]), `lanes` at a time. Cells of
-//! different units are never batched together: lane programs take one time
-//! per call (D98), and cells of different units are at different times
-//! after their first step. When lane programs take a time per lane (U19),
-//! one pool may batch the cells of many units without changing a value.
+//! *Lane pools.* Under `cell` each executor runs a pool of `lanes` lanes, one
+//! thread per lane, each integrating the cells it takes from the shared
+//! queue; their evaluations are served together through lane programs that
+//! take a time per lane ([`crate::lanes::Batcher`], U19). A lane's value
+//! depends only on its own inputs, so the pool's grouping changes nothing.
 
 use crate::lanes::LaneOps;
 use crate::leaf::{DomainSpec, DtMode, LeafCall, LeafMethod, LeafOutcome, LeafSpec};
@@ -118,6 +117,9 @@ struct Target<T> {
     /// The unit's state index `i·m + k` is model DOF `model_dofs[i·m + k]`.
     model_dofs: Vec<usize>,
     bg: Arc<Vec<T>>,
+    /// The lane pool this unit's cell is evaluated in, and its lane
+    /// (spec/partitioning.md §3.2); `None` outside a pool.
+    batch: Option<(Arc<crate::lanes::Batcher>, usize)>,
 }
 
 /// One of the leaf's operators over a unit's state vector.
@@ -204,7 +206,11 @@ impl<T: Scalar> Operator<T> for UnitOperator<T> {
         match &self.lanes {
             Some(l) => {
                 let tg = self.target.lock().expect("unit target");
-                if let Err(e) = l.rhs(out, &tg.cells, u, &tg.bg, p, t) {
+                let r = match &tg.batch {
+                    Some((b, lane)) => l.rhs_pooled(b, *lane, out, tg.cells[0], u, &tg.bg, p, t),
+                    None => l.rhs(out, &tg.cells, u, &tg.bg, p, t),
+                };
+                if let Err(e) = r {
                     self.record(e);
                     out.iter_mut().for_each(|o| *o = T::from_f64(f64::NAN));
                 }
@@ -238,7 +244,11 @@ impl<T: Scalar> Operator<T> for UnitOperator<T> {
         let tg = self.target.lock().expect("unit target");
         match &self.lanes {
             Some(l) => {
-                if let Err(e) = l.jac(out, &tg.cells, u, &tg.bg, p, t) {
+                let r = match &tg.batch {
+                    Some((b, lane)) => l.jac_pooled(b, *lane, out, tg.cells[0], u, &tg.bg, p, t),
+                    None => l.jac(out, &tg.cells, u, &tg.bg, p, t),
+                };
+                if let Err(e) = r {
                     self.record(e);
                     for i in 0..self.n * self.m {
                         out.add(i, i, T::from_f64(f64::NAN));
@@ -260,7 +270,11 @@ impl<T: Scalar> Operator<T> for UnitOperator<T> {
         match &self.lanes {
             Some(l) => {
                 let tg = self.target.lock().expect("unit target");
-                if let Err(e) = l.ft(out, &tg.cells, u, &tg.bg, p, t) {
+                let r = match &tg.batch {
+                    Some((b, lane)) => l.ft_pooled(b, *lane, out, tg.cells[0], u, &tg.bg, p, t),
+                    None => l.ft(out, &tg.cells, u, &tg.bg, p, t),
+                };
+                if let Err(e) = r {
                     self.record(e);
                     out.iter_mut().for_each(|o| *o = T::from_f64(f64::NAN));
                 }
@@ -323,6 +337,7 @@ impl<T: Scalar> ScopePlan<T> {
             cells: Vec::new(),
             model_dofs: Vec::new(),
             bg: Arc::new(Vec::new()),
+            batch: None,
         }));
         let ops: Vec<Arc<dyn Operator<T>>> = tp
             .ops
@@ -413,15 +428,28 @@ struct UnitTargetHandle<T> {
 
 /// Points a unit leaf's operators at a unit.
 pub trait UnitTarget<T>: Send + Sync {
-    fn set(&self, cells: Vec<usize>, model_dofs: Vec<usize>, bg: Arc<Vec<T>>);
+    fn set(
+        &self,
+        cells: Vec<usize>,
+        model_dofs: Vec<usize>,
+        bg: Arc<Vec<T>>,
+        batch: Option<(Arc<crate::lanes::Batcher>, usize)>,
+    );
 }
 
 impl<T: Send + Sync> UnitTarget<T> for UnitTargetHandle<T> {
-    fn set(&self, cells: Vec<usize>, model_dofs: Vec<usize>, bg: Arc<Vec<T>>) {
+    fn set(
+        &self,
+        cells: Vec<usize>,
+        model_dofs: Vec<usize>,
+        bg: Arc<Vec<T>>,
+        batch: Option<(Arc<crate::lanes::Batcher>, usize)>,
+    ) {
         let mut tg = self.target.lock().expect("unit target");
         tg.cells = cells;
         tg.model_dofs = model_dofs;
         tg.bg = bg;
+        tg.batch = batch;
     }
 }
 
@@ -491,7 +519,25 @@ pub fn invoke<T: Scalar>(
         .threads
         .load(Ordering::Relaxed)
         .clamp(1, units.len().max(1));
-    let work = |_: usize| {
+    // Under `cell` with lane programs, each executor runs a lane pool of
+    // `capacity` lanes (§3.2): one thread per lane, each integrating the
+    // cells it takes, their evaluations served together (U19).
+    let pooled = plan.kind == ScopeKind::Cell
+        && plan.capacity > 1
+        && !plan.whole_state.load(Ordering::Relaxed)
+        && plan
+            .template
+            .sources
+            .iter()
+            .all(|s| matches!(s, UnitSource::Lanes(_)));
+    let lanes_per = if pooled { plan.capacity } else { 1 };
+    let batchers: Vec<Option<Arc<crate::lanes::Batcher>>> = (0..threads)
+        .map(|_| pooled.then(|| Arc::new(crate::lanes::Batcher::new(lanes_per))))
+        .collect();
+    let work = |k: usize| {
+        let batch = batchers[k / lanes_per]
+            .as_ref()
+            .map(|b| (Arc::clone(b), k % lanes_per));
         let mut held: HashMap<usize, LeafSpec<T>> = HashMap::new();
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
@@ -506,7 +552,8 @@ pub fn invoke<T: Scalar>(
                 .collect();
             let mut x: Vec<T> = model_dofs.iter().map(|&d| bg[d]).collect();
             let st = unit.unit.as_ref().expect("a unit leaf");
-            st.target.set(cells.clone(), model_dofs, bg.clone());
+            st.target
+                .set(cells.clone(), model_dofs, bg.clone(), batch.clone());
             if let Ok(mut c) = st.cells.lock() {
                 c.iter_mut().for_each(|v| *v = 0.0);
             }
@@ -520,15 +567,19 @@ pub fn invoke<T: Scalar>(
                 signal,
             });
         }
+        if let Some((b, _)) = &batch {
+            b.leave();
+        }
         for (m, u) in held {
             plan.put_unit(m, u);
         }
     };
-    if threads == 1 {
+    let total = threads * lanes_per;
+    if total == 1 {
         work(0);
     } else {
         std::thread::scope(|s| {
-            for k in 0..threads {
+            for k in 0..total {
                 let w = &work;
                 s.spawn(move || w(k));
             }

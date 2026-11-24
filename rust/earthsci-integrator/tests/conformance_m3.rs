@@ -178,3 +178,24 @@ fn lanes_equal_the_whole_domain_program() {
         }
     }
 }
+
+/// spec/partitioning.md §3.2, U19: under `dt_scope: cell` a lane pool
+/// serves cells at different times in one lane-program call.
+#[test]
+fn a_lane_pool_batches_cells_at_different_times() {
+    let c = case_json("m3.reseact_mini.cell");
+    let _ = run(
+        &c,
+        Variant {
+            lanes: Some(8),
+            ..Default::default()
+        },
+        "pooled",
+    );
+    let mixed =
+        earthsci_integrator::lanes::MIXED_TIME_LANES.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        mixed > 1,
+        "the pool never served cells at different times together ({mixed})"
+    );
+}
