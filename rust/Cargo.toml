@@ -26,9 +26,11 @@ earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = 
 # kept at load and flatten, EarthSciAST#772 and #776) with the lane-program
 # fixes EarthSciIntegrator M3 needs: an array faq read at the lane's own cell
 # (EarthSciAST#780) and a time per lane (EarthSciAST#781, U19), pinned at the
-# head of #781 on the fork; and the EarthSciASTDiff that differentiates
-# references without expanding them (EarthSciASTDiff#77). Drop both when the
-# releases are out (spec/plan.md §0.2).
+# head of #781 on the fork; and EarthSciASTDiff 0.7.0 (references
+# differentiated without expanding them, #77) with time bands that hold data
+# fixed and read an elementwise observed at a cell (fork branch
+# time-bands-data-fixed), which reseact's Rosenbrock23 chemistry needs. Drop
+# both when the releases are out (spec/plan.md §0.2).
 [patch.crates-io]
 earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "21189c881b567d5833bd6309927c508dffaaa4ed" }
-earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "9021c78bb3962da194219a03e72e7d2391ca5da0" }
+earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "d9a733e8b6fca5b4819835a5ef59c0d0d75f0239" }
