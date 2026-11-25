@@ -210,8 +210,9 @@ def _cell_faq(expr):
 def reseact_mini_doc():
     n, m = RM_NLON, RM_NLAT
     # The model's own variables by their local names, the form every binding
-    # validates (EarthSciAST.jl 0.14 does not count `D(Mini.NO2)` inside model
-    # `Mini` as an equation for `NO2`).
+    # validates: EarthSciAST.jl does not count `D(Mini.NO2)` inside model
+    # `Mini` as an equation for `NO2` (EarthSciAST#782). Restore the qualified
+    # names when that is fixed.
     X = {s: s for s in ("NO2", "NO", "O3")}
     # Photolysis: half-wave with a phase per longitude, attenuated with level.
     jrate = _op(
@@ -245,9 +246,7 @@ def reseact_mini_doc():
     )
     chem = {
         "NO2": _cell_faq(_op("-", r)),
-        "NO": _cell_faq(
-            _op("+", r, _op("*", "e0", _op("max", 0, _op("-", 2, "k"))))
-        ),
+        "NO": _cell_faq(_op("+", r, _op("*", "e0", _op("max", 0, _op("-", 2, "k"))))),
         "O3": _cell_faq(_op("-", r, _op("*", "vd", _ix(X["O3"], "i", "j", "k")))),
     }
 

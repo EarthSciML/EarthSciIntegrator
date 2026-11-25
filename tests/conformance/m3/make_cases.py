@@ -128,9 +128,7 @@ def cases():
                 CROSS,
             ],
         ),
-        mini(
-            "m3.reseact_mini.global_trbdf2", "TRBDF2", "global", {"shards": 4}, [inv, CROSS]
-        ),
+        mini("m3.reseact_mini.global_trbdf2", "TRBDF2", "global", {"shards": 4}, [inv, CROSS]),
         mini(
             "m3.reseact_mini.cell_trbdf2",
             "TRBDF2",
