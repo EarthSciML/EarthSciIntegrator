@@ -144,7 +144,7 @@ pub fn structure(
         .terms
         .iter()
         .flat_map(|&i| &term_bands[i])
-        .map(|b| band_reach(b, &info.shapes, &info.index_sets, axes))
+        .map(|b| band_reach(b, &info.array_shapes, &info.index_sets, axes))
         .collect();
 
     let column = match (&op.locality.class, &axes.vertical) {

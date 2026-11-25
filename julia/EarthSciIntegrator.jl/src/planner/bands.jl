@@ -11,18 +11,25 @@ locality_rank(c::Symbol) = findfirst(==(c), LOCALITY_ORDER)
 coarser(a::Symbol, b::Symbol) = locality_rank(a) >= locality_rank(b) ? a : b
 
 """
-    Axes(horizontal, vertical)
+    Axes(horizontal, vertical, faces = Dict())
 
 The roles of the index sets (§5.2.1, D67): one or two horizontal axes in
-`partition` order, and at most one vertical axis.
+`partition` order, and at most one vertical axis; and the declared face
+sets (`axes.faces`, D105), each face index set mapped to the cell axis it
+staggers off, cell `i` owning face `i`, its low face.
 """
 struct Axes
     horizontal::Vector{String}
     vertical::Union{String, Nothing}
+    faces::Dict{String, String}
 end
+Axes(horizontal, vertical) = Axes(horizontal, vertical, Dict{String, String}())
 
 """The role of index set `X`: `:horizontal`, `:vertical` or `:other`."""
 axis_role(a::Axes, X::AbstractString) = X in a.horizontal ? :horizontal : X == a.vertical ? :vertical : :other
+
+"""Index set `X` as §5.2.3 pairs it: a declared face set is its cell axis, any other set itself (D105)."""
+cell_axis(a::Axes, X::AbstractString) = get(a.faces, X, String(X))
 
 # ---------------------------------------------------------------------------
 # Band entries
@@ -41,7 +48,10 @@ its `serialize_band` writes, without `coef`:
   `Dict` with `"op"` and `"args"`); empty for a scalar column;
 - `contracted`: free contracted dimensions `(name, lo, hi)`, possibly empty;
 - `guard`: the band's `where` guard in serialized form, or `nothing`. A
-  cell where it evaluates to zero is not a point of the band.
+  cell where it evaluates to zero is not a point of the band;
+- `argument`: whether the band is an argument band (§5.2.2, D105): its
+  column is a variable an operator reference reads as an argument, not a
+  state, so its dimensions on other axes reach nothing (§5.2.3).
 
 [`DiffBackend`](@ref) builds these from `EarthSciASTDiff.serialize_band`'s output.
 """
@@ -53,9 +63,15 @@ struct BandEntry
     col_idx::Vector{Any}
     contracted::Vector{Tuple{String, Int, Int}}
     guard::Any
+    argument::Bool
 end
+BandEntry(row, col, rows, row_idx, col_idx, contracted, guard) =
+    BandEntry(row, col, rows, row_idx, col_idx, contracted, guard, false)
 BandEntry(row, col, rows, row_idx, col_idx, contracted = Tuple{String, Int, Int}[]) =
-    BandEntry(row, col, rows, row_idx, col_idx, contracted, nothing)
+    BandEntry(row, col, rows, row_idx, col_idx, contracted, nothing, false)
+"""`b` as an argument band (§5.2.2, D105), its row renamed to `row`."""
+argument_band(b::BandEntry, row::AbstractString) =
+    BandEntry(String(row), b.col, b.rows, b.row_idx, b.col_idx, b.contracted, b.guard, true)
 
 """A `BandEntry` from `serialize_band`'s dictionary (its `coef`, if present, is ignored)."""
 function BandEntry(d::AbstractDict)
@@ -178,18 +194,23 @@ end
 §5.2.3 for one band entry. `shapes` gives each array variable's index-set
 names. Dimensions of the row and column variables are paired by index-set
 name: the `j`-th dimension of the column variable on an index set pairs with
-the `j`-th dimension of the row variable on it (§5.2.3).
+the `j`-th dimension of the row variable on it (§5.2.3). A declared face set
+pairs as its cell axis (D105). An argument band's dimensions on other axes
+reach nothing: they are dropped before pairing (§5.2.3, D105).
 """
 function band_reach(b::BandEntry, shapes, axes::Axes, sizes)
-    xs = get(shapes, b.row, String[])
-    ys = get(shapes, b.col, String[])
+    xs = String[cell_axis(axes, X) for X in get(shapes, b.row, String[])]
+    ys = String[cell_axis(axes, X) for X in get(shapes, b.col, String[])]
+    dims = b.argument ? [d for d in eachindex(ys) if axis_role(axes, ys[d]) !== :other] : collect(eachindex(ys))
     covers = Set{String}()
     offsets = Dict{String, Vector{Int}}()
-    isempty(xs) && isempty(ys) && return BandReach(false, covers, offsets)       # scalar and scalar
-    (isempty(xs) || isempty(ys)) && return BandReach(true, covers, offsets)     # one scalar, one array
+    isempty(xs) && isempty(dims) && return BandReach(false, covers, offsets)     # scalar and scalar
+    b.argument && isempty(dims) && return BandReach(false, covers, offsets)      # only other axes: read whole
+    (isempty(xs) || isempty(dims)) && return BandReach(true, covers, offsets)   # one scalar, one array
     contracted = [c[1] for c in b.contracted]
-    for (d, X) in enumerate(ys)
-        occ = count(==(X), ys[1:d])
+    for (p, d) in enumerate(dims)
+        X = ys[d]
+        occ = count(==(X), ys[dims[1:p]])
         xd = findall(==(X), xs)
         if length(xd) < occ
             push!(covers, X)                 # x has no dimension on X

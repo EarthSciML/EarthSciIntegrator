@@ -8,7 +8,11 @@
 that is a dimension of some state's shape (lifted states by §6.1.3), other
 than the vertical one, horizontal, in `index_sets` order. A named index set
 that does not exist, a name in both roles, or more than two horizontal axes
-is `axes_unresolved` at `/axes`.
+is `axes_unresolved` at `/axes`. Then `axes.faces` (D105), entries in
+code-point order of the face set: a face set that is not an index set, or
+that is itself a horizontal or vertical axis, a cell axis that is neither,
+or a face set whose size is not its cell axis's plus one, is
+`axes_unresolved` at `/axes/faces/<face set>`.
 """
 function resolve_axes(m::PlanModel, config::AbstractDict)
     ax = get(config, "axes", Dict{String, Any}())
@@ -34,19 +38,65 @@ function resolve_axes(m::PlanModel, config::AbstractDict)
         "axes_unresolved", "/axes",
         "$(length(horizontal)) horizontal axes ($(join(horizontal, ", "))); at most two (give axes in the run config)"
     )
-    return Axes(horizontal, vertical)
+    faces = Dict{String, String}()
+    for (f, c) in sort!(collect(get(ax, "faces", Dict{String, Any}())); by = first)
+        f, c = String(f), String(c)
+        at = "/axes/faces/$f"
+        haskey(m.sizes, f) || refuse("axes_unresolved", at, "the face set $f is not an index set of the model")
+        (f in horizontal || f == vertical) && refuse("axes_unresolved", at, "the face set $f is itself a horizontal or vertical axis")
+        (c in horizontal || c == vertical) || refuse("axes_unresolved", at, "the face set $f staggers off $c, which is neither a horizontal nor the vertical axis")
+        m.sizes[f] == m.sizes[c] + 1 || refuse(
+            "axes_unresolved", at, "the face set $f has $(m.sizes[f]) elements; the faces of $c, of $(m.sizes[c]) cells, are $(m.sizes[c] + 1)"
+        )
+        faces[f] = c
+    end
+    return Axes(horizontal, vertical, faces)
+end
+
+"""
+    face_set_warnings(m, axes) -> Vector{Dict{String, Any}}
+
+The plan report's `likely_face_set` warnings (§5.2.1, D105): one per index
+set of the model that is neither an axis nor a declared face set and has
+exactly one more element than a horizontal or the vertical axis, index sets
+in code-point order, then axes in `horizontal` order, the vertical last. A
+warning, not a refusal: such a set read in an operator reference's argument
+reaches nothing (§5.2.3), so a face set left undeclared hides a coupling.
+"""
+function face_set_warnings(m::PlanModel, axes::Axes)
+    out = Dict{String, Any}[]
+    cells = String[axes.horizontal...]
+    axes.vertical === nothing || push!(cells, axes.vertical)
+    for s in sort!(collect(keys(m.sizes)))
+        (s in cells || haskey(axes.faces, s)) && continue
+        for c in cells
+            m.sizes[s] == m.sizes[c] + 1 || continue
+            push!(
+                out, Dict{String, Any}(
+                    "code" => "likely_face_set", "index_set" => s, "axis" => c,
+                    "message" => "index set $s has one element more than axis $c: if it holds $c's faces, declare it in axes.faces"
+                )
+            )
+        end
+    end
+    return out
 end
 
 """
     term_localities!(ctx, terms)
 
-§5.2.2–§5.2.4 for every term: its bands from the backend, kept on the term
-(pass 4 reads them, §5.4), then class and radius. Left `nothing` when the
+§5.2.2–§5.2.4 for every term: its bands from the backend and its argument
+bands (D105), kept on the term (pass 4 reads them, §5.4), then class and
+radius. Left `nothing` when the
 backend has no bands for it yet.
 """
 function term_localities!(ctx, terms::Vector{Term})
-    for (t, bands) in zip(terms, all_term_bands(ctx.backend, ctx, terms))
+    all = all_term_bands(ctx.backend, ctx, terms)
+    argb = any(isnothing, all) ? nothing : all_argument_bands(ctx.backend, ctx, terms)
+    for (k, (t, bands)) in enumerate(zip(terms, all))
         bands === nothing && continue
+        # §5.2.2: the term's band list, then its argument bands (D105).
+        argb === nothing || (bands = vcat(bands, argb[k]))
         t.bands = bands
         t.locality, t.radius = classify_bands(bands, ctx.model.shapes, ctx.axes, ctx.model.sizes)
     end

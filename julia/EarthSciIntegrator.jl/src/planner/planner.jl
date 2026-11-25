@@ -239,7 +239,7 @@ function write_plan(d::PlanDraft, dir::AbstractString; bandvalues::Bool = false)
     for (path, bytes) in derived_files(b)
         write(joinpath(dir, path), bytes)
     end
-    write(joinpath(dir, "plan.report.json"), EarthSciASTDiff.stable_json(plan_report(b)))
+    write(joinpath(dir, "plan.report.json"), EarthSciASTDiff.stable_json(plan_report(b, d.ctx)))
     if bandvalues
         mkpath(joinpath(dir, "validation"))
         for (o, v) in b.bandvalues
@@ -250,7 +250,7 @@ function write_plan(d::PlanDraft, dir::AbstractString; bandvalues::Bool = false)
 end
 
 """`plan.report.json` (§1): the planner, the upstream versions it was built with, and the measured errors behind the validation checks. Its format is not specified."""
-function plan_report(b::DiffBackend)
+function plan_report(b::DiffBackend, ctx)
     vers(m) = string(pkgversion(m))
     return Dict{String, Any}(
         "planner" => Dict{String, Any}("name" => "EarthSciIntegrator.jl", "version" => vers(@__MODULE__)),
@@ -258,6 +258,8 @@ function plan_report(b::DiffBackend)
             "EarthSciAST" => vers(EarthSciAST), "EarthSciASTDiff" => vers(EarthSciASTDiff),
             "ForwardDiff" => vers(ForwardDiff)
         ),
-        "measured" => b.report
+        "measured" => b.report,
+        # §5.2.1: the same list, in the same order, in every planner's report.
+        "warnings" => face_set_warnings(ctx.model, ctx.axes)
     )
 end

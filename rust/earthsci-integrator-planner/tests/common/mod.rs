@@ -56,6 +56,7 @@ fn band(info: &ModelInfo, x: &str, y: &str, col: &dyn Fn(usize) -> Option<Expr>)
             })
             .collect(),
         contracted: vec![],
+        argument: false,
     }
 }
 

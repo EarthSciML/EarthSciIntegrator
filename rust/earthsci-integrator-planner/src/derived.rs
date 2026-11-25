@@ -365,7 +365,7 @@ pub fn domain_json(domain: &Domain) -> Result<Option<Value>> {
 /// The right-hand-side document of an operator named `name` whose terms are
 /// `terms` (§6.1). Also the document of a single term (§5.2.2).
 pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
-    term_document(info, name, terms, false)
+    term_document(info, name, terms, false, &BTreeSet::new())
 }
 
 /// The component of the probe document's new states (§5.2.2): the name
@@ -391,19 +391,124 @@ pub fn probe_state(k: usize) -> String {
 /// are carried as in every derived document (§6.1.5).
 pub fn probe_document(info: &ModelInfo, terms: &[Term]) -> Value {
     let terms: Vec<&Term> = terms.iter().collect();
-    term_document(info, "probe", &terms, true)
+    term_document(info, "probe", &terms, true, &BTreeSet::new())
+}
+
+/// §5.2.2's argument probe: the probe document of `terms`
+/// ([`probe_document`]) in which every variable of `args` is instead a
+/// state of its own shape with the zero right-hand side: its definition (an
+/// observed's equation) and its data rule (a data-fed parameter's) are
+/// dropped. Its bands with row `probe_state(k)` and column in `args` are
+/// the `k`-th term's argument bands (D105).
+pub fn argument_probe_document(
+    info: &ModelInfo,
+    terms: &[&Term],
+    args: &BTreeSet<String>,
+) -> Value {
+    term_document(info, "probe", terms, true, args)
+}
+
+/// The variables term `t` reads as operator-reference arguments (§5.2.2,
+/// D105): every name in a binding of an operator reference that `t`'s
+/// expression holds, or that the definition of an observed `t` reads holds,
+/// transitively, that is not a state and is an array with a dimension on a
+/// horizontal or the vertical axis or on a declared face set. (A dimension
+/// on any other index set reaches nothing, §5.2.3, so an array with only
+/// such dimensions is never differentiated.)
+pub fn argument_variables(
+    info: &ModelInfo,
+    axes: &crate::axes::Axes,
+    t: &Term,
+) -> BTreeSet<String> {
+    fn walk(v: &Value, info: &ModelInfo, axes: &crate::axes::Axes, out: &mut BTreeSet<String>) {
+        match v {
+            Value::Object(o) => {
+                if o.get("op").and_then(Value::as_str) == Some("apply_operator") {
+                    if let Some(Value::Object(bs)) = o.get("bindings") {
+                        for b in bs.values() {
+                            crate::model::collect_strings(b, &mut |s| {
+                                let arg = !info.is_state(s)
+                                    && (info.is_observed(s) || info.is_parameter(s))
+                                    && info.array_shapes.get(s).is_some_and(|sh| {
+                                        sh.iter().any(|x| {
+                                            axes.role(axes.cell_axis(x)) != crate::axes::Role::Other
+                                        })
+                                    });
+                                if arg {
+                                    out.insert(s.to_string());
+                                }
+                            });
+                        }
+                    }
+                }
+                for x in o.values() {
+                    walk(x, info, axes, out);
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    walk(x, info, axes, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(&expr_json(&t.expr), info, axes, &mut out);
+    for o in live_observeds(info, &t.names) {
+        if let Some(d) = info.observed_defs.get(&o) {
+            walk(&expr_json(d), info, axes, &mut out);
+        }
+    }
+    out
+}
+
+/// Whether the serialized left-hand side `lhs` defines `v` (`v`,
+/// `index(v, …)`, or either inside a `faq`).
+fn wire_defines(lhs: &Value, v: &str) -> bool {
+    let lhs = match lhs {
+        Value::Object(o) if o.get("op").and_then(Value::as_str) == Some("faq") => {
+            o.get("expr").unwrap_or(lhs)
+        }
+        _ => lhs,
+    };
+    match lhs {
+        Value::String(s) => s == v,
+        Value::Object(o) => {
+            o.get("op").and_then(Value::as_str) == Some("index")
+                && o.get("args")
+                    .and_then(Value::as_array)
+                    .and_then(|a| a.first())
+                    .and_then(Value::as_str)
+                    == Some(v)
+        }
+        _ => false,
+    }
 }
 
 /// [`rhs_document`] (`probe` false) or [`probe_document`] (`probe` true) of
-/// `terms`, so the two documents are built by the same code.
-fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: bool) -> Value {
+/// `terms`, so the two documents are built by the same code; with `args`,
+/// the argument probe ([`argument_probe_document`]).
+fn term_document(
+    info: &ModelInfo,
+    name: &str,
+    terms: &[&Term],
+    probe: bool,
+    args: &BTreeSet<String>,
+) -> Value {
     let mut by_eq: BTreeMap<usize, Vec<&Term>> = BTreeMap::new();
     let mut names = BTreeSet::new();
     for t in terms {
         by_eq.entry(t.equation).or_default().push(t);
         names.extend(t.names.iter().cloned());
     }
-    let live = live_observeds(info, &names);
+    // §6.1.1: the observeds the terms reference and those every `ic`
+    // equation (all are written) references, with their definitions'.
+    let mut live_roots = names.clone();
+    for (_, e) in &info.flat.field_ics {
+        live_roots.extend(info.names_in(e));
+    }
+    let live = live_observeds(info, &live_roots);
     let forcing = forcing_of(info, &names);
     let rhs = |i: usize, x: &str| {
         let ts = match by_eq.get(&i) {
@@ -423,6 +528,18 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: bool) -> 
             for (_, e) in info.flat.field_ics.iter().filter(|(s, _)| *s == t.variable) {
                 tree.push(&x, ic_equation(&x, e));
             }
+        }
+        for v in args {
+            let shape = &info.array_shapes[v];
+            tree.declare(v, json!({"type": "unknown", "shape": shape}));
+            let c = tree.at(component_of(v));
+            c.equations.retain(|eq| !wire_defines(&eq["lhs"], v));
+            let region: Vec<Value> = shape
+                .iter()
+                .map(|s| json!([1, info.index_sets[s]]))
+                .collect();
+            let rhs = json!({"op": "makearray", "args": [], "regions": [region], "values": [0.0]});
+            c.equations.push(json!({"lhs": d_of(v), "rhs": rhs}));
         }
     }
     let mut models = tree.to_json();

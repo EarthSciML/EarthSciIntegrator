@@ -374,6 +374,63 @@ function _term_bands!(out, b::DiffBackend, ctx, terms, r::UnitRange{Int}; coeffi
 end
 
 """
+    all_argument_bands(b::DiffBackend, ctx, terms) -> Vector{Vector{BandEntry}}
+
+Every term's argument bands (§5.2.2, D105), structure-only, in term order:
+the bands of the term with respect to the variables it reads as
+operator-reference arguments ([`argument_variables`](@ref)), from argument
+probe documents ([`argument_probe_document`](@ref)) over the terms that have
+such variables, batched as the probes are ([`probe_batches`](@ref)). A
+batch whose argument probe fails is split in halves, down to single terms;
+a single term's that fails is `band_model_failed`, naming the term.
+"""
+function all_argument_bands(b::DiffBackend, ctx, terms::AbstractVector{Term})
+    bind!(b, ctx)
+    m = ctx.model
+    out = [BandEntry[] for _ in terms]
+    args = [argument_variables(m, ctx.axes, t) for t in terms]
+    idx = [k for k in eachindex(terms) if !isempty(args[k])]
+    sub = terms[idx]
+    for r in probe_batches(sub)
+        _argument_bands!(out, b, ctx, terms, args, idx[r])
+    end
+    return out
+end
+
+function _argument_bands!(out, b::DiffBackend, ctx, terms, args, ks::AbstractVector{Int})
+    isempty(ks) && return out
+    allargs = sort!(unique!(reduce(vcat, (args[k] for k in ks))))
+    doc = argument_probe_document(ctx.model, terms[ks], allargs)
+    what = length(ks) == 1 ? "the argument bands of term ($(terms[only(ks)].variable), $(terms[only(ks)].contribution), $(terms[only(ks)].summand))" :
+        "an argument probe document"
+    entries = try
+        document_bands(EarthSciAST.flatten(load_wire(doc)), what; coefficients = false)
+    catch e
+        e isa InterruptException && rethrow()
+        length(ks) == 1 && (e isa PlannerRefusal ? rethrow() : refuse("band_model_failed", "/model", "$what: " * sprint(showerror, e)))
+        e isa PlannerRefusal && e.code != "band_model_failed" && rethrow()
+        nothing
+    end
+    if entries === nothing
+        mid = length(ks) ÷ 2
+        _argument_bands!(out, b, ctx, terms, args, ks[1:mid])
+        _argument_bands!(out, b, ctx, terms, args, ks[(mid + 1):end])
+        return out
+    end
+    index = Dict(probe_state(j) => k for (j, k) in enumerate(ks))
+    for en in entries
+        k = get(index, en.u, nothing)
+        k === nothing && error("argument probe document: a band whose row $(en.u) is not a probe state")
+        en.v in args[k] || continue
+        push!(out[k], argument_band(BandEntry(en, terms[k].variable), terms[k].variable))
+    end
+    return out
+end
+
+"""Argument bands need EarthSciASTDiff: none from another backend (§5.2.2)."""
+all_argument_bands(::PlanBackend, ctx, terms::AbstractVector{Term}) = [BandEntry[] for _ in terms]
+
+"""
     refuse_failing_term(b::DiffBackend, ctx, terms)
 
 Pass 4's search (§5.2.2), when an operator's own document fails in the full

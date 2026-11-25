@@ -32,6 +32,11 @@ pub struct ModelInfo {
     /// Each state's index sets (its declared shape, or for a lifted state
     /// the shape `flatten` records, §6.1.3); empty for a scalar.
     pub shapes: BTreeMap<String, Vec<String>>,
+    /// Every array variable's index sets: the states' as in `shapes`, and
+    /// the declared shape of every parameter and observed that has a
+    /// non-empty one. Pass 2's locality reads it, an argument band's column
+    /// being a parameter or observed (spec/plan.md §5.2.2, D105).
+    pub array_shapes: BTreeMap<String, Vec<String>>,
     /// Observed definitions: observed name → its right-hand side.
     pub observed_defs: BTreeMap<String, Expr>,
     /// The merged operator registry the flattened model's references
@@ -564,6 +569,7 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         index_sets,
         states: states.into_iter().collect(),
         shapes: BTreeMap::new(),
+        array_shapes: BTreeMap::new(),
         observed_defs,
         operators,
         domain: None,
@@ -600,6 +606,20 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
             .unwrap_or_default();
         info.shapes.insert(s, declared);
     }
+    let declared = |v: &earthsci_ast::ModelVariable| v.shape.clone().filter(|s| !s.is_empty());
+    let mut arrays: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (n, v) in info
+        .flat
+        .parameters
+        .iter()
+        .chain(info.flat.observed_variables.iter())
+    {
+        if let Some(s) = declared(v) {
+            arrays.insert(n.clone(), s);
+        }
+    }
+    arrays.extend(info.shapes.iter().map(|(k, v)| (k.clone(), v.clone())));
+    info.array_shapes = arrays;
     check_shapes(&info)?;
     Ok(info)
 }

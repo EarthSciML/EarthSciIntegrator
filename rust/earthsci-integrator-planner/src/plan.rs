@@ -283,6 +283,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let mut info = model::read(&rc)?;
     // §4 step 8: the axes, then the time.
     let axes = axes::resolve(&rc, &info)?;
+    // §5.2.1: the report's `likely_face_set` warnings (D105).
+    let warnings = axes::face_set_warnings(&info, &axes);
     let interval = time::resolve(&rc, &info, options.time.as_ref())?;
 
     // Pass 1: terms.
@@ -295,7 +297,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
 
     // Each term's locality, before selection, which reads it (§4 "Order of
     // refusals" item 2, D81).
-    let bands = match bands.term_bands(&info, &terms) {
+    let source = bands;
+    let mut bands = match source.term_bands(&info, &terms) {
         Ok(Some(b)) => b,
         Ok(None) => {
             return Err(PlanError::NotYetImplemented(
@@ -309,9 +312,23 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             }));
         }
     };
+    // §5.2.2: each term's band list, then its argument bands (D105).
+    match source.argument_bands(&info, &axes, &terms) {
+        Ok(arg) => {
+            for (b, a) in bands.iter_mut().zip(arg) {
+                b.extend(a);
+            }
+        }
+        Err(e) => {
+            let all: Vec<&Term> = terms.iter().collect();
+            return Err(band_source_error(e, &all, |m| {
+                refuse(codes::BAND_MODEL_FAILED, "/model", m)
+            }));
+        }
+    }
     let term_localities: Vec<Locality> = bands
         .iter()
-        .map(|b| locality::classify(b, &info.shapes, &info.index_sets, &axes))
+        .map(|b| locality::classify(b, &info.array_shapes, &info.index_sets, &axes))
         .collect();
 
     // Pass 1 selection, then pass 2 per operator; pass 3 is in `select`.
@@ -378,7 +395,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         // means the two modes disagree. The column bandwidth and the
         // footprint read the terms' structure-only bands themselves (§5.4).
         let full: Vec<BandEntry> = band_list.iter().map(astdiff::band_entry).collect();
-        let full = locality::classify(&full, &info.shapes, &info.index_sets, &axes);
+        let full = locality::classify(&full, &info.array_shapes, &info.index_sets, &axes);
         if locality::operator_locality([&op.locality, &full], &axes) != op.locality {
             return Err(internal(format!(
                 "operator {name}: its full band list implies locality {full:?}, wider than {:?} from its terms' structure-only entries (spec/plan.md §5.2.2: the full mode's points are a subset of the structure-only mode's)",
@@ -677,6 +694,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             "earthsci-astdiff": env!("ESI_EARTHSCI_ASTDIFF_VERSION"),
         },
         "validation": Value::Object(report),
+        // §5.2.1: the same list, in the same order, in every planner's report.
+        "warnings": warnings,
     });
     Ok(planned)
 }

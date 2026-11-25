@@ -133,7 +133,13 @@ probe_document(m::PlanModel, terms::AbstractVector) = _rhs_document(m, "probe", 
 
 function _rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector, probe::Bool)
     flat = m.flat
-    live = live_observeds(m, reduce(vcat, (t.refs for t in terms); init = String[]))
+    # §6.1.1: the observeds the terms reference and those every `ic` equation
+    # (all are written) references, with their definitions'.
+    roots = reduce(vcat, (t.refs for t in terms); init = String[])
+    for (_, e) in flat.field_ics
+        append!(roots, String[n for n in EarthSciAST.free_variables(e)])
+    end
+    live = live_observeds(m, roots)
     models = Dict{String, Any}()
     # §6.3: the data-fed parameters this document's terms read, directly or
     # through live observeds, are its forcing slots.
@@ -362,3 +368,67 @@ end
 
 """The bytes of a derived document: EarthSciASTDiff's `stable_json` (§2.2)."""
 document_bytes(doc::AbstractDict) = EarthSciASTDiff.stable_json(doc)
+
+# ---------------------------------------------------------------------------
+# Argument bands (§5.2.2, D105)
+
+"""
+    argument_variables(m, axes, t) -> Vector{String}
+
+The variables term `t` reads as operator-reference arguments (§5.2.2,
+D105): every name in a binding of an operator reference that `t`'s
+expression holds, or that the definition of an observed `t` reads holds,
+transitively, that is not a state and is an array with a dimension on a
+horizontal or the vertical axis or on a declared face set. (A dimension on
+any other index set reaches nothing, §5.2.3, so an array with only such
+dimensions is never differentiated.) Sorted by code point.
+"""
+function argument_variables(m::PlanModel, axes::Axes, t::Term)
+    out = Set{String}()
+    function walk(e)
+        e isa OpExpr || return
+        if e.op == APPLY_OPERATOR && e.bindings !== nothing
+            for b in values(e.bindings), v in EarthSciAST.free_variables(b)
+                is_state(m, v) && continue
+                (is_observed(m, v) || is_param(m, v)) && haskey(m.shapes, v) || continue
+                any(X -> axis_role(axes, cell_axis(axes, X)) !== :other, m.shapes[v]) && push!(out, v)
+            end
+        end
+        EarthSciAST.foreach_child(walk, e)
+        return
+    end
+    walk(t.expr)
+    for o in live_observeds(m, t.refs), r in get(m.observed_rhs, o, ASTExpr[])
+        walk(r)
+    end
+    return sort!(collect(out))
+end
+
+"""Whether the serialized left-hand side `lhs` defines `v` (`v`, `index(v, …)`, or either inside a `faq`)."""
+function _wire_defines(lhs, v::AbstractString)
+    lhs isa AbstractDict && get(lhs, "op", nothing) == "faq" && haskey(lhs, "expr") && (lhs = lhs["expr"])
+    lhs isa AbstractString && return lhs == v
+    return lhs isa AbstractDict && get(lhs, "op", nothing) == "index" && !isempty(lhs["args"]) && lhs["args"][1] == v
+end
+
+"""
+    argument_probe_document(m, terms, args) -> Dict
+
+§5.2.2's argument probe: the probe document of `terms` ([`probe_document`](@ref))
+in which every variable of `args` is instead a state of its own shape with
+the zero right-hand side: its definition (an observed's equation) and its
+data rule (a data-fed parameter's) are dropped. Its bands with row
+`probe_state(k)` and column in `args` are the `k`-th term's argument bands.
+"""
+function argument_probe_document(m::PlanModel, terms::AbstractVector, args)
+    doc = probe_document(m, terms)
+    models = doc["models"]
+    for v in args
+        comp = component_model!(models, component_of(v))
+        comp["variables"][last_segment(v)] = Dict{String, Any}("type" => "unknown", "shape" => Any[m.shapes[v]...])
+        filter!(eq -> !_wire_defines(eq["lhs"], v), comp["equations"])
+        push!(comp["equations"], Dict{String, Any}("lhs" => Dict{String, Any}("op" => "D", "args" => Any[v], "wrt" => "t"), "rhs" => zero_rhs(m, v)))
+    end
+    attach_operators!(models, m.operators)
+    return doc
+end

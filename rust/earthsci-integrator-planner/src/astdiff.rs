@@ -12,7 +12,7 @@ use crate::terms::Term;
 use earthsci_ast::{Expr, ExpressionNode, FlattenedSystem};
 use earthsci_astdiff::{BandError, JacEntry, RIdx, StructureEntry, SysView, Wrt};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 
 /// A derived document, loaded and flattened by EarthSciAST.
@@ -111,6 +111,7 @@ fn entry(
         row_idx: row_idx(ridx),
         col_idx: cidx.to_vec(),
         contracted: contracted.to_vec(),
+        argument: false,
     }
 }
 
@@ -457,5 +458,82 @@ impl BandSource for AstDiffBands {
         terms: &[Term],
     ) -> Result<Option<Vec<Vec<BandEntry>>>, BandSourceError> {
         Self::batched(info, terms, LARGE_TERM_NODES, Mode::Structure).map(Some)
+    }
+
+    /// Every term's argument bands (§5.2.2, D105), structure-only, in term
+    /// order: the bands of the term with respect to the variables it reads
+    /// as operator-reference arguments ([`derived::argument_variables`]),
+    /// from argument probe documents ([`derived::argument_probe_document`])
+    /// over the terms that have such variables, batched as the probes are.
+    /// A batch whose argument probe fails is split in halves, down to single
+    /// terms; a single term's that fails is `band_model_failed` for it.
+    fn argument_bands(
+        &self,
+        info: &ModelInfo,
+        axes: &crate::axes::Axes,
+        terms: &[Term],
+    ) -> Result<Vec<Vec<BandEntry>>, BandSourceError> {
+        let args: Vec<BTreeSet<String>> = terms
+            .iter()
+            .map(|t| derived::argument_variables(info, axes, t))
+            .collect();
+        let idx: Vec<usize> = (0..terms.len()).filter(|&k| !args[k].is_empty()).collect();
+        let sub: Vec<Term> = idx.iter().map(|&k| terms[k].clone()).collect();
+        let mut out = vec![Vec::new(); terms.len()];
+        for r in probe_batches(&sub, LARGE_TERM_NODES) {
+            argument_search(info, terms, &args, &idx[r], &mut out)?;
+        }
+        Ok(out)
+    }
+}
+
+/// The argument bands of the terms at positions `ks` into `out`: one
+/// argument probe, or when it fails each half in turn, down to single
+/// terms, whose failure is `band_model_failed` for the term.
+fn argument_search(
+    info: &ModelInfo,
+    terms: &[Term],
+    args: &[BTreeSet<String>],
+    ks: &[usize],
+    out: &mut [Vec<BandEntry>],
+) -> Result<(), BandSourceError> {
+    if ks.is_empty() {
+        return Ok(());
+    }
+    let all: BTreeSet<String> = ks.iter().flat_map(|&k| args[k].iter().cloned()).collect();
+    let ts: Vec<&Term> = ks.iter().map(|&k| &terms[k]).collect();
+    let doc = derived::argument_probe_document(info, &ts, &all);
+    match document_entries(doc, Mode::Structure) {
+        Ok(entries) => {
+            let index: HashMap<String, usize> = ks
+                .iter()
+                .enumerate()
+                .map(|(j, &k)| (derived::probe_state(j), k))
+                .collect();
+            for mut b in entries {
+                let k = *index.get(&b.row).ok_or_else(|| {
+                    BandSourceError::Internal(format!(
+                        "an argument probe document (spec/plan.md §5.2.2) gives a band with row {}, which is not a probe state",
+                        b.row
+                    ))
+                })?;
+                if !args[k].contains(&b.col) {
+                    continue;
+                }
+                b.row = terms[k].variable.clone();
+                b.argument = true;
+                out[k].push(b);
+            }
+            Ok(())
+        }
+        Err(message) if ks.len() == 1 => Err(BandSourceError::Failed(BandFailure {
+            term: ks[0],
+            message: format!("the argument bands: {message}"),
+        })),
+        Err(_) => {
+            let (a, b) = ks.split_at(ks.len() / 2);
+            argument_search(info, terms, args, a, out)?;
+            argument_search(info, terms, args, b, out)
+        }
     }
 }

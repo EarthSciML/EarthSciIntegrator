@@ -37,6 +37,10 @@ pub struct BandEntry {
     pub col_idx: Vec<Expr>,
     /// Contracted index names with their ranges.
     pub contracted: Vec<(String, i64, i64)>,
+    /// Whether this is an argument band (§5.2.2, D105): its column is a
+    /// variable an operator reference reads as an argument, not a state, so
+    /// its dimensions on other axes reach nothing (§5.2.3).
+    pub argument: bool,
 }
 
 /// A failure of the band source for one term (`band_model_failed`).
@@ -73,6 +77,17 @@ pub trait BandSource {
         info: &ModelInfo,
         terms: &[Term],
     ) -> Result<Option<Vec<Vec<BandEntry>>>, BandSourceError>;
+
+    /// Each term's argument bands (§5.2.2, D105), in the order given; none
+    /// by default.
+    fn argument_bands(
+        &self,
+        _info: &ModelInfo,
+        _axes: &Axes,
+        terms: &[Term],
+    ) -> Result<Vec<Vec<BandEntry>>, BandSourceError> {
+        Ok(vec![Vec::new(); terms.len()])
+    }
 }
 
 /// A band source with no bands: planning stops after the refusals that
@@ -232,9 +247,28 @@ pub fn band_reach(
 ) -> Reach {
     let mut reach = Reach::default();
     let empty = Vec::new();
-    let xs = shapes.get(&b.row).unwrap_or(&empty);
-    let ys = shapes.get(&b.col).unwrap_or(&empty);
-    match (xs.is_empty(), ys.is_empty()) {
+    // A declared face set pairs as its cell axis (D105).
+    let xs: Vec<String> = shapes
+        .get(&b.row)
+        .unwrap_or(&empty)
+        .iter()
+        .map(|s| axes.cell_axis(s).to_string())
+        .collect();
+    let ys: Vec<String> = shapes
+        .get(&b.col)
+        .unwrap_or(&empty)
+        .iter()
+        .map(|s| axes.cell_axis(s).to_string())
+        .collect();
+    // An argument band's dimensions on other axes reach nothing: dropped
+    // before pairing (§5.2.3, D105).
+    let dims: Vec<usize> = (0..ys.len())
+        .filter(|&d| !b.argument || axes.role(&ys[d]) != Role::Other)
+        .collect();
+    if b.argument && dims.is_empty() {
+        return reach;
+    }
+    match (xs.is_empty(), dims.is_empty()) {
         (true, true) => return reach,
         (true, false) | (false, true) => {
             reach.global = true;
@@ -243,10 +277,11 @@ pub fn band_reach(
         _ => {}
     }
     let contracted: BTreeSet<&str> = b.contracted.iter().map(|(n, _, _)| n.as_str()).collect();
-    for (d, set) in ys.iter().enumerate() {
+    for (p, &d) in dims.iter().enumerate() {
+        let set = &ys[d];
         // The j-th dimension of y on `set` (counting y's dimensions on `set`
         // from the left) pairs with the j-th dimension of x on `set`.
-        let j = ys[..d].iter().filter(|s| *s == set).count();
+        let j = dims[..p].iter().filter(|&&e| ys[e] == *set).count();
         let Some(xd) = xs
             .iter()
             .enumerate()
@@ -425,6 +460,7 @@ mod tests {
             axes: Axes {
                 horizontal: vec!["lon".into(), "lat".into()],
                 vertical: Some("lev".into()),
+                faces: BTreeMap::new(),
             },
         }
     }
@@ -443,6 +479,7 @@ mod tests {
             row_idx: ri,
             col_idx: ci,
             contracted: vec![],
+            argument: false,
         }
     }
 
@@ -454,6 +491,64 @@ mod tests {
             vec![name("i"), name("j"), name("k")],
             ci.to_vec(),
         )
+    }
+
+    /// Face sets and argument bands (§5.2.3, D105), the cases Julia's
+    /// planner_pure.jl checks.
+    #[test]
+    fn face_sets_and_argument_bands() {
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut shapes = BTreeMap::new();
+        shapes.insert("m".to_string(), set(&["lon", "lat", "lev"]));
+        shapes.insert("Mz".to_string(), set(&["lon", "lat", "lev_nodes"]));
+        shapes.insert("F".to_string(), set(&["src"]));
+        shapes.insert("G".to_string(), set(&["src", "lev"]));
+        shapes.insert("s".to_string(), vec![]);
+        let sizes: IndexMap<String, i64> = [
+            ("lon", 6),
+            ("lat", 3),
+            ("lev", 4),
+            ("lev_nodes", 5),
+            ("src", 9),
+        ]
+        .into_iter()
+        .map(|(k, n)| (k.to_string(), n))
+        .collect();
+        let noax = Axes {
+            horizontal: vec!["lon".into(), "lat".into()],
+            vertical: Some("lev".into()),
+            faces: BTreeMap::new(),
+        };
+        let mut ax = noax.clone();
+        ax.faces.insert("lev_nodes".into(), "lev".into());
+        let up = e(r#"{"op":"+","args":["k",1]}"#);
+        let r3 = [(1, 6), (1, 3), (1, 4)];
+        let ijk = || vec![name("i"), name("j"), name("k")];
+        let arg = |mut b: BandEntry| {
+            b.argument = true;
+            b
+        };
+        let mz = band("m", "Mz", &r3, ijk(), vec![v("i"), v("j"), up.clone()]);
+        let class = |b: Vec<BandEntry>, a: &Axes| classify(&b, &shapes, &sizes, a).class;
+        assert_eq!(class(vec![arg(mz.clone())], &ax), Class::Column);
+        assert_eq!(class(vec![mz.clone()], &ax), Class::Column);
+        assert_eq!(class(vec![mz.clone()], &noax), Class::Global);
+        assert_eq!(class(vec![arg(mz.clone())], &noax), Class::Pointwise);
+        let f = band(
+            "m",
+            "F",
+            &r3,
+            ijk(),
+            vec![e(r#"{"op":"+","args":["i","j"]}"#)],
+        );
+        assert_eq!(class(vec![arg(f)], &ax), Class::Pointwise);
+        let g = band("m", "G", &r3, ijk(), vec![v("i"), up.clone()]);
+        assert_eq!(class(vec![arg(g)], &ax), Class::Column);
+        let one = || Expr::Integer(1);
+        let s_mz = band("s", "Mz", &[], vec![], vec![one(), one(), one()]);
+        assert_eq!(class(vec![arg(s_mz)], &ax), Class::Global);
+        let s_f = band("s", "F", &[], vec![], vec![one()]);
+        assert_eq!(class(vec![arg(s_f)], &ax), Class::Pointwise);
     }
 
     fn reach(b: &BandEntry) -> Reach {
