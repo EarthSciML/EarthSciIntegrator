@@ -307,7 +307,11 @@ impl Implicit {
     /// adjoint linearizes at (SDIRK: `Z_i = τ_i + γ z_i`, with `Z_1 = u_n` for
     /// an explicit first stage; θ-method and IMEX Euler: `[u_n, u_{n+1}]`)
     /// and `w.z` the stage unknowns (linearized IMEX Euler: `[Δ]`).
-    /// `norm(e, u_a, u_b)` is §7's norm; the error is formed when `want_err`.
+    /// `norm(e, u_a, u_b)` is §7's norm of the error estimate, formed when
+    /// `want_err`; `increment_norm` is the same norm of the Newton
+    /// increments (§5.2). They are separate so that a caller can tell the
+    /// norm the step is accepted or rejected on from the others
+    /// (spec/partitioning.md §6.2).
     #[allow(clippy::too_many_arguments)]
     pub fn step<T: Scalar>(
         &self,
@@ -320,6 +324,7 @@ impl Implicit {
         mode: NewtonMode,
         want_err: bool,
         norm: &mut NormFn<'_, T>,
+        increment_norm: &mut NormFn<'_, T>,
     ) -> ImplicitOutcome {
         let n = un.len();
         let hh = T::from_f64(h);
@@ -374,7 +379,7 @@ impl Implicit {
                         w,
                         f,
                         Part::All,
-                        norm,
+                        increment_norm,
                         un,
                         *gamma,
                         sigma,
@@ -475,7 +480,7 @@ impl Implicit {
                     w,
                     f,
                     Part::All,
-                    norm,
+                    increment_norm,
                     un,
                     th,
                     sigma,
@@ -540,7 +545,7 @@ impl Implicit {
                     w,
                     f,
                     Part::Implicit,
-                    norm,
+                    increment_norm,
                     un,
                     1.0,
                     sigma,
@@ -733,6 +738,7 @@ mod tests {
                 NewtonMode::Fixed,
                 false,
                 &mut norm,
+                &mut { norm },
             );
             assert_eq!(o, ImplicitOutcome::Done(None));
             u.copy_from_slice(&w.unew);
@@ -783,6 +789,7 @@ mod tests {
             h,
             NewtonMode::Adaptive,
             true,
+            &mut { nrm },
             &mut nrm,
         );
         let ImplicitForm::Sdirk {
@@ -824,6 +831,7 @@ mod tests {
             h,
             NewtonMode::Fixed,
             false,
+            &mut { nrm },
             &mut nrm,
         );
         assert_eq!(o, ImplicitOutcome::Singular);
@@ -841,6 +849,7 @@ mod tests {
             1.0,
             NewtonMode::Fixed,
             false,
+            &mut { nrm },
             &mut nrm,
         );
         assert_eq!(o, ImplicitOutcome::NewtonFailure);
