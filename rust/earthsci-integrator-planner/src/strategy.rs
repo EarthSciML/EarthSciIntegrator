@@ -219,9 +219,19 @@ fn table_linsolve(facts: &LeafFacts, pointer: &str) -> Result<Value> {
 /// `structure.block`, the leaf's states all of one shape.
 pub fn block_storage(facts: &LeafFacts) -> bool {
     !facts.coupled
-        && facts.class == Class::Pointwise
-        && facts.uniform_shapes
-        && matches!(facts.block_vars, Some(Some(_)))
+        && block_diagonal_storage(
+            facts.class,
+            facts.uniform_shapes,
+            matches!(facts.block_vars, Some(Some(_))),
+        )
+}
+
+/// The storage test itself, shared by §5.5.3 ([`block_storage`]) and rule 19
+/// (spec/run-config.md §8): a leaf's storage is `block_diagonal` when its
+/// class is pointwise, its states are all of one shape (or all scalars) and
+/// every operator has `structure.block`.
+pub fn block_diagonal_storage(class: Class, uniform_shapes: bool, every_op_blocked: bool) -> bool {
+    class == Class::Pointwise && uniform_shapes && every_op_blocked
 }
 
 /// The `dt_scope` an omitted or `"auto"` one resolves to (§5.5.3, D97).

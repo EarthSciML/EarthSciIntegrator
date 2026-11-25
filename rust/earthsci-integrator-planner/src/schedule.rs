@@ -1047,9 +1047,11 @@ fn block_storage(n: &Node, cx: &CheckContext) -> bool {
         .iter()
         .filter_map(|s| cx.info.shapes.get(s))
         .collect();
-    leaf_class(n, cx.ops) == Class::Pointwise
-        && shapes.len() <= 1
-        && names.iter().all(|o| cx.blocks.contains(o))
+    crate::strategy::block_diagonal_storage(
+        leaf_class(n, cx.ops),
+        shapes.len() <= 1,
+        names.iter().all(|o| cx.blocks.contains(o)),
+    )
 }
 
 /// Rule 19 (spec/partitioning.md §2.1, §6.2; D97, D104), nodes in tree
