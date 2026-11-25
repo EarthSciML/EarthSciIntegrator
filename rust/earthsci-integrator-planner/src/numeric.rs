@@ -679,6 +679,41 @@ impl Program {
         })
     }
 
+    /// `S_r` (spec/plan.md §8.2, D106) at `(u, t)` with `forcing`: for every
+    /// canonical DOF, the sum of the absolute values of the operator's terms
+    /// there. `self` is the program of the probe document of the operator's
+    /// terms `vars` (each term's variable, in term order), whose state
+    /// `JacobianEval.term_k` holds the `k`-th term alone (§5.2.2).
+    pub fn summand_magnitudes(
+        &self,
+        dofs: &Dofs,
+        vars: &[&str],
+        u: &[f64],
+        t: f64,
+        forcing: &Forcing,
+    ) -> Result<Vec<f64>, String> {
+        self.with_du(u, t, forcing, |du| {
+            let mut s = vec![0.0; dofs.n];
+            for (k, x) in vars.iter().enumerate() {
+                let name = crate::derived::probe_state(k);
+                let (Some(block), Some(range)) = (self.block(du, &name), dofs.dofs_of(x)) else {
+                    return Err(format!("the terms' probe has no {name} for {x}"));
+                };
+                if block.len() != range.len() {
+                    return Err(format!(
+                        "{name} has {} cells, {x} {}",
+                        block.len(),
+                        range.len()
+                    ));
+                }
+                for (i, v) in block.iter().enumerate() {
+                    s[range.start + i] += v.abs();
+                }
+            }
+            Ok(s)
+        })?
+    }
+
     /// The block of variable `name` in a program-layout vector.
     pub fn block<'v>(&self, v: &'v [f64], name: &str) -> Option<&'v [f64]> {
         self.blocks.get(name).map(|(off, len)| &v[*off..off + len])

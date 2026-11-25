@@ -471,6 +471,7 @@ fn band_model_catches_errors() {
                 sample: s,
                 base: &base,
                 names: &names,
+                scale: None,
             };
             validation::band_model(&f, &at, jb, pattern, &rows)
         };

@@ -620,13 +620,30 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         let (base, samples) = numbers.states.as_ref().expect("set above");
         let on = &numbers.ops[name];
         let rhs = &numbers.rhs[name];
+        // S_r, the floor's scale (§8.2, D106): the operator's terms one by
+        // one, from the probe document of its terms.
+        let op_terms: Vec<Term> = op.terms.iter().map(|&i| planned.terms[i].clone()).collect();
+        let vars: Vec<&str> = op_terms.iter().map(|t| t.variable.as_str()).collect();
+        let terms_prog = Program::new(
+            &derived::probe_document(&info, &op_terms),
+            (interval.start, interval.end),
+            &numbers.dofs,
+        )
+        .map_err(internal)?;
+        let scales: Vec<Vec<f64>> = samples
+            .iter()
+            .map(|s| terms_prog.summand_magnitudes(&numbers.dofs, &vars, &s.u, s.t, &s.forcing))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(internal)?;
+        drop(terms_prog);
         let mut measured = Vec::new();
-        for (s, jb) in samples.iter().zip(&on.jb) {
+        for ((s, jb), sc) in samples.iter().zip(&on.jb).zip(&scales) {
             let at = validation::At {
                 dofs: &numbers.dofs,
                 sample: s,
                 base,
                 names: &numbers.names,
+                scale: Some(sc),
             };
             let r = validation::band_model(rhs, &at, jb, &on.pattern, &on.rows).map_err(|m| {
                 refuse(
@@ -652,7 +669,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             let rhs = &numbers.rhs[name];
             let rows = &numbers.ops[name].rows;
             let mut tm = Vec::new();
-            for s in samples {
+            for (s, sc) in samples.iter().zip(&scales) {
                 let ftb =
                     numeric::time_derivative(&tprog, &numbers.dofs, tb, &s.u, s.t, &s.forcing)
                         .map_err(internal)?;
@@ -664,6 +681,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                     tb,
                     rows,
                     &numbers.names,
+                    sc,
                 )
                 .map_err(|m| {
                     refuse(
