@@ -77,15 +77,6 @@ pub struct Template<T: Scalar> {
     pub sources: Vec<UnitSource<T>>,
 }
 
-/// The re-sharding signal (§6.2): `R_c` summed over the current macro step,
-/// and over the previous one.
-#[derive(Debug, Default)]
-struct Signal {
-    macro_step: Option<usize>,
-    current: Vec<f64>,
-    previous: Vec<f64>,
-}
-
 /// A scoped leaf's plan: its units and how to build a unit's leaf.
 pub struct ScopePlan<T: Scalar> {
     pub kind: ScopeKind,
@@ -107,7 +98,13 @@ pub struct ScopePlan<T: Scalar> {
     pub template: Template<T>,
     /// Unit leaves not in use, by unit size.
     pool: Mutex<HashMap<usize, Vec<LeafSpec<T>>>>,
-    signal: Mutex<Signal>,
+    /// Tests only: panic in the lane that takes this unit, before it
+    /// integrates it, or (with `test_panic_in_serve`) in the lane pool
+    /// while serving an evaluation of this cell. `usize::MAX`: never.
+    #[doc(hidden)]
+    pub test_panic_unit: AtomicUsize,
+    #[doc(hidden)]
+    pub test_panic_in_serve: std::sync::atomic::AtomicBool,
 }
 
 /// The cells a unit advances, and the model state at the invocation's
@@ -120,6 +117,9 @@ struct Target<T> {
     /// The lane pool this unit's cell is evaluated in, and its lane
     /// (spec/partitioning.md §3.2); `None` outside a pool.
     batch: Option<(Arc<crate::lanes::Batcher>, usize)>,
+    /// Why the unit's operators failed, in the order they did, at most
+    /// once per operator: cleared when the target is set to a new unit.
+    faults: Vec<(String, String)>,
 }
 
 /// One of the leaf's operators over a unit's state vector.
@@ -130,14 +130,14 @@ struct UnitOperator<T: Scalar> {
     n: usize,
     m: usize,
     dense: bool,
-    fault: Mutex<Option<String>>,
 }
 
 impl<T: Scalar> UnitOperator<T> {
-    fn record(&self, e: String) {
-        let mut f = self.fault.lock().expect("fault");
-        if f.is_none() {
-            *f = Some(e);
+    /// Records why an evaluation of this operator failed, on the unit.
+    fn record(&self, tg: &mut Target<T>, e: String) {
+        let name = self.base.name();
+        if !tg.faults.iter().any(|(o, _)| o == name) {
+            tg.faults.push((name.to_string(), e));
         }
     }
 
@@ -196,22 +196,23 @@ impl<T: Scalar> Operator<T> for UnitOperator<T> {
         self.base.provides(call)
     }
     fn fault(&self) -> Option<String> {
-        self.fault
-            .lock()
-            .expect("fault")
-            .clone()
+        let tg = self.target.lock().expect("unit target");
+        tg.faults
+            .iter()
+            .find(|(o, _)| o == self.base.name())
+            .map(|(_, e)| e.clone())
             .or_else(|| self.base.fault())
     }
     fn rhs(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
         match &self.lanes {
             Some(l) => {
-                let tg = self.target.lock().expect("unit target");
+                let mut tg = self.target.lock().expect("unit target");
                 let r = match &tg.batch {
                     Some((b, lane)) => l.rhs_pooled(b, *lane, out, tg.cells[0], u, &tg.bg, p, t),
                     None => l.rhs(out, &tg.cells, u, &tg.bg, p, t),
                 };
                 if let Err(e) = r {
-                    self.record(e);
+                    self.record(&mut tg, e);
                     out.iter_mut().for_each(|o| *o = T::from_f64(f64::NAN));
                 }
             }
@@ -241,7 +242,7 @@ impl<T: Scalar> Operator<T> for UnitOperator<T> {
         self.whole(out, u, |o, full| self.base.vjp_u(o, full, p, t, &wt))
     }
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
-        let tg = self.target.lock().expect("unit target");
+        let mut tg = self.target.lock().expect("unit target");
         match &self.lanes {
             Some(l) => {
                 let r = match &tg.batch {
@@ -249,7 +250,7 @@ impl<T: Scalar> Operator<T> for UnitOperator<T> {
                     None => l.jac(out, &tg.cells, u, &tg.bg, p, t),
                 };
                 if let Err(e) = r {
-                    self.record(e);
+                    self.record(&mut tg, e);
                     for i in 0..self.n * self.m {
                         out.add(i, i, T::from_f64(f64::NAN));
                     }
@@ -269,13 +270,13 @@ impl<T: Scalar> Operator<T> for UnitOperator<T> {
     fn ft(&self, out: &mut [T], u: &[T], p: &[f64], t: f64) {
         match &self.lanes {
             Some(l) => {
-                let tg = self.target.lock().expect("unit target");
+                let mut tg = self.target.lock().expect("unit target");
                 let r = match &tg.batch {
                     Some((b, lane)) => l.ft_pooled(b, *lane, out, tg.cells[0], u, &tg.bg, p, t),
                     None => l.ft(out, &tg.cells, u, &tg.bg, p, t),
                 };
                 if let Err(e) = r {
-                    self.record(e);
+                    self.record(&mut tg, e);
                     out.iter_mut().for_each(|o| *o = T::from_f64(f64::NAN));
                 }
             }
@@ -307,7 +308,8 @@ impl<T: Scalar> ScopePlan<T> {
             whole_state: std::sync::atomic::AtomicBool::new(false),
             template,
             pool: Mutex::new(HashMap::new()),
-            signal: Mutex::new(Signal::default()),
+            test_panic_unit: AtomicUsize::new(usize::MAX),
+            test_panic_in_serve: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -338,6 +340,7 @@ impl<T: Scalar> ScopePlan<T> {
             model_dofs: Vec::new(),
             bg: Arc::new(Vec::new()),
             batch: None,
+            faults: Vec::new(),
         }));
         let ops: Vec<Arc<dyn Operator<T>>> = tp
             .ops
@@ -356,7 +359,6 @@ impl<T: Scalar> ScopePlan<T> {
                     n,
                     m,
                     dense: tp.dense,
-                    fault: Mutex::new(None),
                 });
                 o
             })
@@ -407,8 +409,9 @@ impl<T: Scalar> ScopePlan<T> {
         };
         u.unit = Some(crate::leaf::UnitState {
             target: Box::new(UnitTargetHandle { target }),
-            cells: Mutex::new(vec![0.0; if self.kind == ScopeKind::Shard { m } else { 0 }]),
-            last: Mutex::new(vec![0.0; if self.kind == ScopeKind::Shard { m } else { 0 }]),
+            signal: Mutex::new(crate::leaf::UnitSignal::new(
+                if self.kind == ScopeKind::Shard { m } else { 0 },
+            )),
             ncells: m,
         });
         u
@@ -435,6 +438,9 @@ pub trait UnitTarget<T>: Send + Sync {
         bg: Arc<Vec<T>>,
         batch: Option<(Arc<crate::lanes::Batcher>, usize)>,
     );
+    /// Why the unit's operators failed since it was set, as
+    /// `operator <name>: <reason>`.
+    fn faults(&self) -> Vec<String>;
 }
 
 impl<T: Send + Sync> UnitTarget<T> for UnitTargetHandle<T> {
@@ -450,6 +456,14 @@ impl<T: Send + Sync> UnitTarget<T> for UnitTargetHandle<T> {
         tg.model_dofs = model_dofs;
         tg.bg = bg;
         tg.batch = batch;
+        tg.faults.clear();
+    }
+    fn faults(&self) -> Vec<String> {
+        let tg = self.target.lock().expect("unit target");
+        tg.faults
+            .iter()
+            .map(|(o, e)| format!("operator {o}: {e}"))
+            .collect()
     }
 }
 
@@ -458,8 +472,57 @@ struct UnitResult<T> {
     x: Vec<T>,
     persist: LeafPersist,
     out: Result<LeafOutcome<T>, Error>,
-    /// `R_c` of each of the unit's cells (§6.2), under `shard`.
+    /// `R_c` of each of the unit's cells (§6.2) after the unit's attempts,
+    /// under `shard`.
     signal: Vec<f64>,
+    /// Why the unit's operators failed (§2.3).
+    faults: Vec<String>,
+}
+
+/// How an error names the unit it happened in: its cell, or its shard.
+fn unit_name(kind: ScopeKind, i: usize, cells: &[usize]) -> String {
+    match kind {
+        ScopeKind::Cell => format!("cell {}", cells[0]),
+        ScopeKind::Shard => format!("shard {i} (cells {cells:?})"),
+    }
+}
+
+/// `e`, naming the unit it happened in.
+fn at_unit(e: Error, name: &str) -> Error {
+    match e {
+        Error::Config(s) => Error::Config(format!("{s} (at {name})")),
+        Error::Unimplemented(s) => Error::Unimplemented(format!("{s} (at {name})")),
+        Error::Run(s) => Error::Run(format!("{s} (at {name})")),
+    }
+}
+
+/// Before a `shard` leaf's first invocation of a macro step: re-shards when
+/// the macro step is one `reshard: {"every": k}` names, from the signal of
+/// the previous macro step, then starts the macro step's signal at zero
+/// (§6.2). The signal lives in the leaf's persistent state, so a resumed run
+/// sees the one the uninterrupted run had.
+fn start_macro_step<T: Scalar>(plan: &ScopePlan<T>, persist: &mut LeafPersist, k: usize) {
+    let nc = plan.ncells;
+    if persist.signal.len() != nc {
+        persist.signal = vec![0.0; nc];
+    }
+    if persist.signal_step == Some(k) {
+        return;
+    }
+    if let Some(every) = plan.reshard_every {
+        if every > 0 && k > 0 && k.is_multiple_of(every) && !persist.units.is_empty() {
+            // R_c of the previous macro step; zero when the leaf was not
+            // invoked in it.
+            let r = if persist.signal_step == Some(k - 1) {
+                persist.signal.clone()
+            } else {
+                vec![0.0; nc]
+            };
+            reshard(plan, persist, &r);
+        }
+    }
+    persist.signal.iter_mut().for_each(|x| *x = 0.0);
+    persist.signal_step = Some(k);
 }
 
 /// One invocation of a scoped leaf: every unit integrated over
@@ -479,31 +542,12 @@ pub fn invoke<T: Scalar>(
     }
     let (n, nc) = (plan.n, plan.ncells);
     // The units: cells, or the shards of the current composition.
-    if plan.kind == ScopeKind::Shard && persist.shards.is_empty() {
-        persist.shards = plan.initial_shards();
-    }
-    let mut signal = plan.signal.lock().expect("signal");
-    if signal.current.len() != nc {
-        signal.current = vec![0.0; nc];
-        signal.previous = vec![0.0; nc];
-    }
-    if signal.macro_step != Some(call.macro_step) {
-        if signal.macro_step.is_some() {
-            signal.previous = std::mem::replace(&mut signal.current, vec![0.0; nc]);
+    if plan.kind == ScopeKind::Shard {
+        if persist.shards.is_empty() {
+            persist.shards = plan.initial_shards();
         }
-        signal.macro_step = Some(call.macro_step);
-        if plan.kind == ScopeKind::Shard {
-            if let Some(k) = plan.reshard_every {
-                if call.macro_step > 0
-                    && (call.macro_step / k) * k == call.macro_step
-                    && !persist.units.is_empty()
-                {
-                    reshard(plan, persist, &signal.previous);
-                }
-            }
-        }
+        start_macro_step(plan, persist, call.macro_step);
     }
-    drop(signal);
     let units: Vec<Vec<usize>> = match plan.kind {
         ScopeKind::Cell => (0..nc).map(|c| vec![c]).collect(),
         ScopeKind::Shard => persist.shards.clone(),
@@ -515,6 +559,8 @@ pub fn invoke<T: Scalar>(
     let results: Vec<Mutex<Option<UnitResult<T>>>> =
         units.iter().map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
+    // Set when a lane panics: the others take no more units.
+    let abort = std::sync::atomic::AtomicBool::new(false);
     let threads = plan
         .threads
         .load(Ordering::Relaxed)
@@ -531,18 +577,41 @@ pub fn invoke<T: Scalar>(
             .iter()
             .all(|s| matches!(s, UnitSource::Lanes(_)));
     let lanes_per = if pooled { plan.capacity } else { 1 };
+    let panic_unit = plan.test_panic_unit.load(Ordering::Relaxed);
+    let panic_cell = (panic_unit != usize::MAX && plan.test_panic_in_serve.load(Ordering::Relaxed))
+        .then_some(panic_unit);
     let batchers: Vec<Option<Arc<crate::lanes::Batcher>>> = (0..threads)
-        .map(|_| pooled.then(|| Arc::new(crate::lanes::Batcher::new(lanes_per))))
+        .map(|_| pooled.then(|| Arc::new(crate::lanes::Batcher::new(lanes_per, panic_cell))))
         .collect();
+    let persist_units = &persist.units;
+    let signal_in = &persist.signal;
     let work = |k: usize| {
         let batch = batchers[k / lanes_per]
             .as_ref()
             .map(|b| (Arc::clone(b), k % lanes_per));
+        // Leaves the pool on every exit, a panic included, so no other lane
+        // waits for this one; a panic also stops the other lanes.
+        struct Abort<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Abort<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        let _abort = Abort(&abort);
+        let _lane = crate::lanes::LaneGuard(batch.as_ref().map(|(b, _)| Arc::clone(b)));
         let mut held: HashMap<usize, LeafSpec<T>> = HashMap::new();
         loop {
+            if abort.load(Ordering::Relaxed) {
+                break;
+            }
             let i = next.fetch_add(1, Ordering::Relaxed);
             if i >= units.len() {
                 break;
+            }
+            if panic_cell.is_none() && i == panic_unit {
+                panic!("test: a panic in the lane integrating unit {i}");
             }
             let cells = &units[i];
             let m = cells.len();
@@ -554,21 +623,25 @@ pub fn invoke<T: Scalar>(
             let st = unit.unit.as_ref().expect("a unit leaf");
             st.target
                 .set(cells.clone(), model_dofs, bg.clone(), batch.clone());
-            if let Ok(mut c) = st.cells.lock() {
-                c.iter_mut().for_each(|v| *v = 0.0);
+            // The unit's cells' R_c so far: its attempts add to it in order.
+            if let Ok(mut sg) = st.signal.lock() {
+                for (r, &c) in sg.r.iter_mut().zip(cells) {
+                    *r = signal_in.get(c).copied().unwrap_or(0.0);
+                }
             }
-            let mut p = persist.units[i].clone();
+            let mut p = persist_units[i].clone();
             let out = unit.invoke(&mut x, &mut p, call);
-            let signal = st.cells.lock().map(|c| c.clone()).unwrap_or_default();
-            *results[i].lock().expect("result") = Some(UnitResult {
+            let signal = st.signal.lock().map(|s| s.r.clone()).unwrap_or_default();
+            let faults = st.target.faults();
+            *results[i]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(UnitResult {
                 x,
                 persist: p,
                 out,
                 signal,
+                faults,
             });
-        }
-        if let Some((b, _)) = &batch {
-            b.leave();
         }
         for (m, u) in held {
             plan.put_unit(m, u);
@@ -578,6 +651,7 @@ pub fn invoke<T: Scalar>(
     if total == 1 {
         work(0);
     } else {
+        // A panic in any lane ends every lane (above) and is re-raised here.
         std::thread::scope(|s| {
             for k in 0..total {
                 let w = &work;
@@ -586,8 +660,8 @@ pub fn invoke<T: Scalar>(
         });
     }
 
-    // Merge, units in order (§2.3, §2.4): counts summed, the first
-    // non-success code.
+    // Merge, units in order (§2.3, §2.4): counts summed; the first failure
+    // in unit order, an error or a non-success code, naming its unit.
     let mut merged = LeafOutcome {
         steps: Vec::new(),
         accepted: 0,
@@ -600,6 +674,7 @@ pub fn invoke<T: Scalar>(
         stop_states: Vec::new(),
         background: None,
         units: None,
+        failure: None,
     };
     let mut counts = UnitCounts {
         accepted: Vec::new(),
@@ -607,12 +682,22 @@ pub fn invoke<T: Scalar>(
     };
     let mut shard_records = Vec::new();
     let mut stop_states: Vec<(f64, Vec<T>)> = Vec::new();
-    let mut signal = plan.signal.lock().expect("signal");
+    // Clips by step index, as the leaf's state-vector indices (spec/tape.md §2).
+    let mut clips: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>> =
+        Default::default();
     for (i, r) in results.into_iter().enumerate() {
-        let r = r.into_inner().expect("result").expect("every unit ran");
+        let r = r
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expect("every unit ran");
         let cells = &units[i];
         let m = cells.len();
-        let out = r.out?;
+        let out = match r.out {
+            Ok(o) => o,
+            // An earlier unit's non-success code is the invocation's failure.
+            Err(_) if merged.failure.is_some() => continue,
+            Err(e) => return Err(at_unit(e, &unit_name(plan.kind, i, cells))),
+        };
         for s in 0..n {
             for (k, &c) in cells.iter().enumerate() {
                 u[leaf.dofs[s * nc + c]] = r.x[s * m + k];
@@ -630,12 +715,22 @@ pub fn invoke<T: Scalar>(
                 }
             }
         }
+        for (step, dofs) in &out.clips {
+            let e = clips.entry(*step).or_default();
+            e.extend(dofs.iter().map(|&j| (j / m) * nc + cells[j % m]));
+        }
         persist.units[i] = r.persist;
         merged.accepted += out.accepted;
         merged.rejected += out.rejected;
         merged.rhs_calls += out.rhs_calls;
-        if merged.retcode == Retcode::Success && out.retcode != Retcode::Success {
+        if merged.failure.is_none() && out.retcode != Retcode::Success {
             merged.retcode = out.retcode;
+            let mut why = unit_name(plan.kind, i, cells);
+            for f in &r.faults {
+                why.push_str("; ");
+                why.push_str(f);
+            }
+            merged.failure = Some(why);
         }
         match plan.kind {
             ScopeKind::Cell => {
@@ -644,10 +739,19 @@ pub fn invoke<T: Scalar>(
             }
             ScopeKind::Shard => {
                 for (k, &c) in cells.iter().enumerate() {
-                    signal.current[c] += r.signal.get(k).copied().unwrap_or(0.0);
+                    if let Some(&v) = r.signal.get(k) {
+                        persist.signal[c] = v;
+                    }
                 }
+                // A shard's cells on its first record and when they changed
+                // since its last (§11).
+                if persist.recorded.len() <= i {
+                    persist.recorded.resize(i + 1, Vec::new());
+                }
+                let listed = (persist.recorded[i] != *cells).then(|| cells.clone());
+                persist.recorded[i] = cells.clone();
                 shard_records.push(ShardRecord {
-                    cells: Some(cells.clone()),
+                    cells: listed,
                     steps: out.steps.clone(),
                     accepted: out.accepted,
                     rejected: out.rejected,
@@ -656,6 +760,10 @@ pub fn invoke<T: Scalar>(
         }
     }
     merged.stop_states = stop_states;
+    merged.clips = clips
+        .into_iter()
+        .map(|(k, d)| (k, d.into_iter().collect()))
+        .collect();
     merged.units = Some(match plan.kind {
         ScopeKind::Cell => crate::leaf::UnitOutcome::Cells(counts),
         ScopeKind::Shard => crate::leaf::UnitOutcome::Shards(shard_records),
@@ -664,7 +772,8 @@ pub fn invoke<T: Scalar>(
 }
 
 /// Re-composes a `shard` leaf's shards from the signal of the previous
-/// macro step (§6.2).
+/// macro step (§6.2). The new shards are kept in shard order, by their
+/// smallest cell (§2.4).
 fn reshard<T: Scalar>(plan: &ScopePlan<T>, persist: &mut LeafPersist, r: &[f64]) {
     let mut order: Vec<usize> = (0..plan.ncells).collect();
     // R_c descending, ties (equal bits) by cell index.
@@ -684,6 +793,7 @@ fn reshard<T: Scalar>(plan: &ScopePlan<T>, persist: &mut LeafPersist, r: &[f64])
         })
         .filter(|v| !v.is_empty())
         .collect();
+    shards.sort_by_key(|sh| sh[0]);
     // Each new shard's controller starts from the old shard that held its
     // smallest cell.
     let owner = |cell: usize| {
@@ -697,7 +807,6 @@ fn reshard<T: Scalar>(plan: &ScopePlan<T>, persist: &mut LeafPersist, r: &[f64])
         .iter()
         .map(|sh| persist.units[owner(sh[0])].clone())
         .collect();
-    shards.shrink_to_fit();
     persist.shards = shards;
     persist.units = units;
 }

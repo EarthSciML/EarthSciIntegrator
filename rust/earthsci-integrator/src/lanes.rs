@@ -728,49 +728,104 @@ pub static MIXED_TIME_LANES: std::sync::atomic::AtomicUsize =
 pub struct Batcher {
     state: std::sync::Mutex<BatchState>,
     cv: std::sync::Condvar,
+    /// Tests only: panic while serving an evaluation of this cell.
+    test_panic_cell: Option<usize>,
 }
 
 struct BatchState {
     active: usize,
     pending: Vec<(usize, Request)>,
     done: Vec<Option<Result<Vec<f64>, String>>>,
+    /// Set when a lane of the pool panicked: every evaluation posted after
+    /// it fails, so no lane waits for one that will never post again.
+    failed: Option<String>,
 }
 
 impl Batcher {
     /// A pool of `lanes` lanes, all active.
-    pub(crate) fn new(lanes: usize) -> Batcher {
+    pub(crate) fn new(lanes: usize, test_panic_cell: Option<usize>) -> Batcher {
         Batcher {
             state: std::sync::Mutex::new(BatchState {
                 active: lanes,
                 pending: Vec::new(),
                 done: (0..lanes).map(|_| None).collect(),
+                failed: None,
             }),
             cv: std::sync::Condvar::new(),
+            test_panic_cell,
         }
     }
 
+    /// The pool's state. A lane that panicked while holding the lock leaves
+    /// it poisoned; the state stays consistent (a panic in `serve` is caught
+    /// and recorded in `failed` before it unwinds further), so the other
+    /// lanes go on reading it.
+    fn lock(&self) -> std::sync::MutexGuard<'_, BatchState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn submit(&self, lane: usize, r: Request) -> Result<Vec<f64>, String> {
-        let mut st = self.state.lock().expect("batcher");
+        let mut st = self.lock();
+        if let Some(e) = &st.failed {
+            return Err(e.clone());
+        }
         st.pending.push((lane, r));
         loop {
             if let Some(res) = st.done[lane].take() {
                 return res;
             }
+            if let Some(e) = &st.failed {
+                let e = e.clone();
+                st.pending.retain(|(l, _)| *l != lane);
+                return Err(e);
+            }
             if !st.pending.is_empty() && st.pending.len() == st.active {
-                Self::serve(&mut st);
-                self.cv.notify_all();
+                self.serve_guarded(&mut st);
                 continue;
             }
-            st = self.cv.wait(st).expect("batcher");
+            st = self
+                .cv
+                .wait(st)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
-    /// The lane has no more cells: the pool waits for one lane fewer.
-    pub(crate) fn leave(&self) {
-        let mut st = self.state.lock().expect("batcher");
+    /// The lane has no more cells, or it panicked: the pool waits for one
+    /// lane fewer. Runs on every exit of a lane ([`LaneGuard`]).
+    pub(crate) fn leave(&self, panicked: bool) {
+        let mut st = self.lock();
         st.active -= 1;
-        if st.active > 0 && st.pending.len() == st.active {
-            Self::serve(&mut st);
+        if panicked && st.failed.is_none() {
+            st.failed = Some("a lane of the pool panicked".to_string());
+        }
+        if st.failed.is_none() && st.active > 0 && st.pending.len() == st.active {
+            self.serve_guarded(&mut st);
+        }
+        self.cv.notify_all();
+    }
+
+    /// Serves the pending evaluations and wakes the lanes. A panic while
+    /// serving fails every pending evaluation and the pool, wakes the other
+    /// lanes, and then goes on unwinding in the serving lane.
+    fn serve_guarded(&self, st: &mut BatchState) {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(c) = self.test_panic_cell {
+                if st.pending.iter().any(|(_, r)| r.cell == c) {
+                    panic!("test: a panic serving cell {c}");
+                }
+            }
+            Self::serve(st)
+        }));
+        if let Err(p) = r {
+            let e = "a lane pool's evaluation panicked".to_string();
+            st.failed = Some(e.clone());
+            for (lane, _) in std::mem::take(&mut st.pending) {
+                st.done[lane] = Some(Err(e.clone()));
+            }
+            self.cv.notify_all();
+            std::panic::resume_unwind(p);
         }
         self.cv.notify_all();
     }
@@ -822,6 +877,19 @@ impl Batcher {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Leaves a lane's pool when the lane's thread ends, however it ends: on a
+/// panic the pool fails, so that the other lanes stop waiting for this one
+/// and the panic reaches the executor's scope.
+pub(crate) struct LaneGuard(pub Option<Arc<Batcher>>);
+
+impl Drop for LaneGuard {
+    fn drop(&mut self) {
+        if let Some(b) = &self.0 {
+            b.leave(std::thread::panicking());
         }
     }
 }

@@ -81,6 +81,19 @@ pub fn run_plan_with_options(
     threads: usize,
     whole_state: bool,
 ) -> Result<RunResult, String> {
+    run_plan_configured(case, plan_dir, data, threads, whole_state, &|_| {})
+}
+
+/// [`run_plan_with_options`], with `configure` applied to the run before it
+/// starts (tests set their hooks there).
+pub fn run_plan_configured(
+    case: &Case,
+    plan_dir: &Path,
+    data: &DataOptions,
+    threads: usize,
+    whole_state: bool,
+    configure: &dyn Fn(&RunSpec<f64>),
+) -> Result<RunResult, String> {
     let lp = load_plan_with::<f64>(plan_dir, data).map_err(|e| e.to_string())?;
     let tspan = (case.tspan[0], case.tspan[1]);
     let mut order: Vec<usize> = Vec::new();
@@ -101,6 +114,7 @@ pub fn run_plan_with_options(
     .map_err(|e| e.to_string())?;
     spec.set_threads(threads);
     spec.set_whole_state_units(whole_state);
+    configure(&spec);
     let u0 = spec.u0();
     let p = spec.problem.p.clone();
     let fwd = spec.forward(&u0, &p).map_err(|e| e.to_string())?;
@@ -244,4 +258,110 @@ pub fn scope_agreement(a: &RunResult, b: &RunResult, rtol: f64) -> Outcome {
     } else {
         Outcome::Fail(format!("worst relative difference {worst:e} > {rtol:e}"))
     }
+}
+
+/// spec/partitioning.md §6.2, §11: the re-sharding signal is part of a run's
+/// persistent state. A run resumed at each macro-step boundary from the
+/// uninterrupted run's checkpoint takes the same steps, shards included, and
+/// reproduces the next checkpoint bitwise; two runs of one [`RunSpec`] at
+/// once, and one after them, equal the first run bitwise. Returns how many
+/// shard records list cells after their first (re-sharded compositions).
+pub fn resume_and_concurrent_runs(
+    case: &Case,
+    plan_dir: &Path,
+    data: &DataOptions,
+) -> Result<usize, String> {
+    let lp = load_plan_with::<f64>(plan_dir, data).map_err(|e| e.to_string())?;
+    let spec = RunSpec::<f64>::with_problem_and_tstops(
+        lp.problem,
+        &lp.run_config,
+        (case.tspan[0], case.tspan[1]),
+        case.saveat.as_deref(),
+        lp.timeline.refresh_times(),
+    )
+    .map_err(|e| e.to_string())?;
+    let u0 = spec.u0();
+    let p = spec.problem.p.clone();
+    let fwd = spec.forward(&u0, &p).map_err(|e| e.to_string())?;
+    let same = |a: &crate::schedule::ForwardRun<f64>| {
+        a.tape.records.len() == fwd.tape.records.len()
+            && a.tape
+                .records
+                .iter()
+                .zip(&fwd.tape.records)
+                .all(|(x, y)| x.bitwise_eq(y))
+            && a.checkpoints.len() == fwd.checkpoints.len()
+            && a.checkpoints
+                .iter()
+                .zip(&fwd.checkpoints)
+                .all(|(x, y)| x.bitwise_eq(y))
+    };
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| spec.forward(&u0, &p));
+        let b = s.spawn(|| spec.forward(&u0, &p));
+        (a.join(), b.join())
+    });
+    for r in [a, b] {
+        let r = r
+            .map_err(|_| "a concurrent run panicked".to_string())?
+            .map_err(|e| e.to_string())?;
+        if !same(&r) {
+            return Err("two runs of one RunSpec at once differ from a run alone".into());
+        }
+    }
+    let again = spec.forward(&u0, &p).map_err(|e| e.to_string())?;
+    if !same(&again) {
+        return Err("a second run differs from the first".into());
+    }
+    let index = fwd.tape.index();
+    for k in 0..fwd.checkpoints.len() - 1 {
+        let cp = &fwd.checkpoints[k];
+        let (t0, delta) = match index.get(k.to_string().as_str()) {
+            Some(TapeRecord::Macro { t, dt, .. }) => (*t, *dt),
+            _ => return Err(format!("no macro record {k}")),
+        };
+        let t1 = fwd.checkpoints[k + 1].t;
+        let mut u = cp.u.clone();
+        let mut persist = cp.leaves.clone();
+        let recs = spec
+            .macro_step(k, &mut u, &mut persist, &p, t0, t1, delta, None, None)
+            .map_err(|e| format!("resumed macro step {k}: {e}"))?
+            .records;
+        let seg = fwd.tape.macro_segment(k);
+        let seg = &seg[..seg.len() - 1];
+        if recs.len() != seg.len() || !recs.iter().zip(seg).all(|(a, b)| a.bitwise_eq(b)) {
+            return Err(format!("resumed macro step {k} took different steps"));
+        }
+        let next = crate::tape::Checkpoint {
+            macro_index: k + 1,
+            t: t1,
+            u,
+            leaves: persist,
+        };
+        if !next.bitwise_eq(&fwd.checkpoints[k + 1]) {
+            return Err(format!(
+                "resumed macro step {k} does not reproduce the next checkpoint"
+            ));
+        }
+    }
+    // Shard records that list their cells after the leaf's first invocation.
+    let mut first = std::collections::HashSet::new();
+    let mut relisted = 0;
+    for r in &fwd.tape.records {
+        if let TapeRecord::Leaf {
+            path,
+            shards: Some(sh),
+            ..
+        } = r
+        {
+            let leaf = path.split_once('/').map_or(path.as_str(), |x| x.1);
+            let leaf = leaf.split('#').next().unwrap_or(leaf);
+            if !first.insert(leaf.to_string()) {
+                relisted += sh.iter().filter(|s| s.cells.is_some()).count();
+            } else if sh.iter().any(|s| s.cells.is_none()) {
+                return Err("a shard's first record does not list its cells".into());
+            }
+        }
+    }
+    Ok(relisted)
 }

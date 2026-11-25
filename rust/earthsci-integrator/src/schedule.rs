@@ -1127,6 +1127,13 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     },
                 });
                 if out.retcode != Retcode::Success {
+                    // Under `dt_scope` `cell` or `shard`, the unit that failed
+                    // and why its operators did (spec/partitioning.md §2.3).
+                    let unit = out
+                        .failure
+                        .as_ref()
+                        .map(|f| format!(", at {f}"))
+                        .unwrap_or_default();
                     // Why an operator's evaluation failed, when one did.
                     let faults: String = leaf
                         .ops
@@ -1134,7 +1141,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                         .filter_map(|o| o.fault().map(|f| format!("; operator {}: {f}", o.name())))
                         .collect();
                     return Err(Error::Run(format!(
-                        "leaf {} ({}) returned {:?} at {path}{faults}",
+                        "leaf {} ({}) returned {:?} at {path}{unit}{faults}",
                         leaf.id, leaf.alg, out.retcode
                     )));
                 }
@@ -1631,7 +1638,6 @@ impl<T: Scalar> RunSpec<T> {
         })
     }
 
-    /// The initial state in `T`.
     /// The number of executor threads a `dt_scope` `cell` or `shard` leaf
     /// integrates its units on (spec/partitioning.md §4, D99): a run-time
     /// option, which changes no result. Default 1.
@@ -1640,6 +1646,23 @@ impl<T: Scalar> RunSpec<T> {
             if let Some(sc) = &l.scope {
                 sc.threads
                     .store(threads.max(1), std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Tests only: make a `dt_scope` `cell` or `shard` leaf panic in the
+    /// executor lane that takes unit `unit`, or, with `in_serve`, in its lane
+    /// pool while serving an evaluation of cell `unit`.
+    #[doc(hidden)]
+    pub fn set_test_panic(&self, unit: Option<usize>, in_serve: bool) {
+        for l in &self.schedule.leaves {
+            if let Some(sc) = &l.scope {
+                sc.test_panic_unit.store(
+                    unit.unwrap_or(usize::MAX),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                sc.test_panic_in_serve
+                    .store(in_serve, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -1656,6 +1679,7 @@ impl<T: Scalar> RunSpec<T> {
         }
     }
 
+    /// The initial state in `T`.
     pub fn u0(&self) -> Vec<T> {
         self.problem.u0.iter().map(|&x| T::from_f64(x)).collect()
     }

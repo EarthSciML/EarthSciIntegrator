@@ -229,13 +229,37 @@ pub struct LeafSpec<T: Scalar> {
 pub struct UnitState<T> {
     /// Points the unit leaf's operators at a unit.
     pub target: Box<dyn crate::scope::UnitTarget<T>>,
-    /// Under `shard`: `R_c` of each of the unit's cells, summed over the
-    /// invocation's step attempts.
-    pub cells: Mutex<Vec<f64>>,
-    /// Under `shard`: each cell's squared ratios at the last norm.
-    pub last: Mutex<Vec<f64>>,
+    /// Under `shard`, the signal: empty under `cell`.
+    pub signal: Mutex<UnitSignal>,
     /// The unit's cells.
     pub ncells: usize,
+}
+
+/// A `shard` unit's re-sharding signal (spec/partitioning.md §6.2).
+#[derive(Debug, Default)]
+pub struct UnitSignal {
+    /// `R_c` of each of the unit's cells, in the unit's cell order: set from
+    /// the leaf's persistent state before the unit's integration, each
+    /// attempt's ratios added to it in attempt order, and read back after.
+    pub r: Vec<f64>,
+    /// The current attempt's candidate: each cell's sum of squared ratios
+    /// of the norm that gave the largest value so far (the first on a tie),
+    /// and that value; `None` before the attempt's first error norm.
+    cand: Vec<f64>,
+    best: Option<f64>,
+    scratch: Vec<f64>,
+}
+
+impl UnitSignal {
+    /// The signal of a unit of `m` cells under `shard`, or none (`m = 0`).
+    pub fn new(m: usize) -> UnitSignal {
+        UnitSignal {
+            r: vec![0.0; m],
+            cand: vec![0.0; m],
+            best: None,
+            scratch: vec![0.0; m],
+        }
+    }
 }
 
 /// A scoped leaf invocation's per-unit records (spec/partitioning.md §11).
@@ -426,6 +450,10 @@ pub struct LeafOutcome<T> {
     pub background: Option<Vec<T>>,
     /// Per-unit records of a scoped leaf.
     pub units: Option<UnitOutcome>,
+    /// Under a scoped leaf, the unit that gave a non-success return code
+    /// (its cell or shard, spec/partitioning.md §2.3) and why its operators
+    /// failed, when they recorded a reason.
+    pub failure: Option<String>,
 }
 
 impl<T: Scalar> LeafSpec<T> {
@@ -524,33 +552,60 @@ impl<T: Scalar> LeafSpec<T> {
         }
     }
 
-    /// A `shard` unit leaf keeps each cell's squared ratios of the latest
-    /// norm (spec/partitioning.md §6.2), apart from the norm's own sum.
-    fn note_ratios(&self, e: &[f64], un: &[T], unew: &[T]) {
-        let Some(st) = &self.unit else { return };
-        let Ok(mut last) = st.last.lock() else { return };
-        if last.is_empty() {
-            return;
+    /// §7's error norm of an attempt's error estimate. A `shard` unit leaf
+    /// also keeps each cell's squared ratios of the norm, as the attempt's
+    /// candidate for the re-sharding signal (spec/partitioning.md §6.2) when
+    /// it is the attempt's first error norm or larger than the candidate (a
+    /// method whose estimate is the larger of two norms, the first on a tie).
+    fn error_norm_noting(&self, e: &[f64], un: &[T], unew: &[T]) -> f64 {
+        let v = error_norm(e, un, unew, &self.tol);
+        let Some(st) = &self.unit else { return v };
+        let Ok(mut sg) = st.signal.lock() else {
+            return v;
+        };
+        if sg.r.is_empty() || !(sg.best.is_none() || v.is_nan() || sg.best.is_some_and(|b| v > b)) {
+            return v;
         }
         let m = st.ncells;
-        last.iter_mut().for_each(|v| *v = 0.0);
+        let sg = &mut *sg;
+        sg.scratch.iter_mut().for_each(|x| *x = 0.0);
+        // Unit index j = species·m + cell: per cell, the species in order.
         for (j, ((&ej, u0), u1)) in e.iter().zip(un).zip(unew).enumerate() {
             let mx = u0.to_f64().abs().max(u1.to_f64().abs());
             let r = ej / (self.tol.abstol[j] + self.tol.reltol * mx);
-            last[j % m] += r * r;
+            sg.scratch[j % m] += r * r;
+        }
+        std::mem::swap(&mut sg.cand, &mut sg.scratch);
+        sg.best = Some(v);
+        v
+    }
+
+    /// Starts a step attempt's signal: no candidate yet.
+    fn begin_attempt(&self) {
+        if let Some(st) = &self.unit {
+            if let Ok(mut sg) = st.signal.lock() {
+                sg.best = None;
+            }
         }
     }
 
-    /// Adds the latest norm's ratios to the cells' signal: once per step
-    /// attempt whose error was estimated, the last norm being its error's.
-    fn add_ratios(&self) {
+    /// Ends a step attempt whose error estimate is `e`: adds the candidate's
+    /// ratios to the cells' `R_c` when the attempt computed a finite
+    /// estimate from a norm (spec/partitioning.md §6.2). An attempt with no
+    /// estimate, an estimate taken without a norm or a non-finite one adds
+    /// nothing.
+    fn end_attempt(&self, e: Option<f64>) {
         let Some(st) = &self.unit else { return };
-        let (Ok(last), Ok(mut acc)) = (st.last.lock(), st.cells.lock()) else {
+        let Ok(mut sg) = st.signal.lock() else {
             return;
         };
-        for (a, l) in acc.iter_mut().zip(last.iter()) {
-            *a += l;
+        let sg = &mut *sg;
+        if e.is_some_and(f64::is_finite) && sg.best.is_some() {
+            for (a, l) in sg.r.iter_mut().zip(&sg.cand) {
+                *a += l;
+            }
         }
+        sg.best = None;
     }
 
     /// Whether every operator provides `vjp_p`, so parameter cotangents are formed.
@@ -954,6 +1009,7 @@ impl<T: Scalar> LeafSpec<T> {
             stop_states: Vec::new(),
             background: None,
             units: None,
+            failure: None,
         };
         let (t0, t1) = (call.t0, call.t1);
         // The stops of this invocation: interior output times, then the end.
@@ -1009,10 +1065,7 @@ impl<T: Scalar> LeafSpec<T> {
             let reuse = cache.filter(|&(_, hb)| !leaf_bound || hb == h);
             let mut f = |o: &mut [T], uu: &[T], tt: f64| b.rhs(o, uu, pb, tt);
             let tol = &self.tol;
-            let mut norm = |e: &[f64], un: &[T], unew: &[T]| {
-                self.note_ratios(e, un, unew);
-                error_norm(e, un, unew, tol)
-            };
+            let mut norm = |e: &[f64], un: &[T], unew: &[T]| self.error_norm_noting(e, un, unew);
             let norm: Option<&mut NormFn<'_, T>> = if want_err { Some(&mut norm) } else { None };
             match (&self.method, w) {
                 (LeafMethod::Erk(m), MethodWork::Erk(w)) => {
@@ -1056,10 +1109,10 @@ impl<T: Scalar> LeafSpec<T> {
                     let mut jp = |part: Part, o: &mut MatrixStorage<T>, uu: &[T], tt: f64| {
                         b.jac_part(part, o, uu, pb, tt)
                     };
-                    let mut nrm = |e: &[f64], un: &[T], unew: &[T]| {
-                        self.note_ratios(e, un, unew);
-                        error_norm(e, un, unew, tol)
-                    };
+                    let mut nrm =
+                        |e: &[f64], un: &[T], unew: &[T]| self.error_norm_noting(e, un, unew);
+                    // Newton increments are never the signal's (§6.2).
+                    let mut inc = |e: &[f64], un: &[T], unew: &[T]| error_norm(e, un, unew, tol);
                     let o = m.step(
                         w,
                         &mut fp,
@@ -1070,6 +1123,7 @@ impl<T: Scalar> LeafSpec<T> {
                         newton_mode,
                         want_err,
                         &mut nrm,
+                        &mut inc,
                     );
                     let (e, singular, newton_fail) = match o {
                         ImplicitOutcome::Singular => (None, true, false),
@@ -1255,10 +1309,11 @@ impl<T: Scalar> LeafSpec<T> {
                 tk1,
                 singular,
                 newton_fail,
-            } = take(w, &mut pbuf, fsal, cache, u, t, h, adaptive);
-            if e.is_some() {
-                self.add_ratios();
-            }
+            } = {
+                self.begin_attempt();
+                take(w, &mut pbuf, fsal, cache, u, t, h, adaptive)
+            };
+            self.end_attempt(e);
             let violation = !singular
                 && !newton_fail
                 && ((self.violates(w.unew()) && !self.domain.as_ref().is_some_and(|d| d.clip))

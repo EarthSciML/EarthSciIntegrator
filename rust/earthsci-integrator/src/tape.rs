@@ -44,9 +44,10 @@ pub enum TapeRecord {
         /// nothing are omitted, and the key when nothing clipped.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         clips: Vec<(usize, Vec<usize>)>,
-        /// Under `dt_scope: cell`, each cell's counts and return code, in
-        /// canonical cell order, in place of `steps`; under `shard`, each
-        /// shard's (spec/partitioning.md §11).
+        /// Under `dt_scope: cell`, each cell's accepted and rejected counts,
+        /// in canonical cell order, in place of `steps`; under `shard`, each
+        /// shard's steps and counts, and its cells when §11 lists them
+        /// (spec/partitioning.md §11).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cells: Option<UnitCounts>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -382,6 +383,17 @@ pub struct LeafPersist {
     pub units: Vec<LeafPersist>,
     /// Under `dt_scope: shard`, the current composition.
     pub shards: Vec<Vec<usize>>,
+    /// Under `dt_scope: shard`, the re-sharding signal `R_c` of each cell
+    /// (spec/partitioning.md §6.2), summed over the step attempts of the
+    /// macro step `signal_step`, in attempt order; empty before the leaf's
+    /// first invocation.
+    pub signal: Vec<f64>,
+    /// The macro step `signal` sums over.
+    pub signal_step: Option<usize>,
+    /// Under `dt_scope: shard`, each shard's cells at its last tape record,
+    /// by shard: a record lists a shard's cells only on its first record or
+    /// when they changed since (spec/partitioning.md §11).
+    pub recorded: Vec<Vec<usize>>,
 }
 
 impl LeafPersist {
@@ -392,6 +404,9 @@ impl LeafPersist {
             ctrl,
             units: Vec::new(),
             shards: Vec::new(),
+            signal: Vec::new(),
+            signal_step: None,
+            recorded: Vec::new(),
         }
     }
 
@@ -411,6 +426,14 @@ impl LeafPersist {
                 .zip(&o.units)
                 .all(|(a, b)| a.bitwise_eq(b))
             && self.shards == o.shards
+            && self.signal.len() == o.signal.len()
+            && self
+                .signal
+                .iter()
+                .zip(&o.signal)
+                .all(|(x, y)| b(*x) == b(*y))
+            && self.signal_step == o.signal_step
+            && self.recorded == o.recorded
     }
 }
 

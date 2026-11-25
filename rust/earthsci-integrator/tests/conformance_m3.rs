@@ -7,9 +7,10 @@
 use earthsci_integrator::conformance::Outcome;
 use earthsci_integrator::conformance_m2::{write_result, Case, Check, RunResult};
 use earthsci_integrator::conformance_m3::{
-    bitwise_same, run_plan_with_options, scope_agreement, Variant,
+    bitwise_same, resume_and_concurrent_runs, run_plan_configured, scope_agreement, Variant,
 };
 use earthsci_integrator::forcing::DataOptions;
+use earthsci_integrator::schedule::RunSpec;
 use earthsci_integrator_planner::astdiff::AstDiffBands;
 use earthsci_integrator_planner::{plan, Options};
 use serde_json::{json, Value};
@@ -43,6 +44,17 @@ fn run(c: &Value, v: Variant, tag: &str) -> RunResult {
 /// [`run`], with the whole-state oracle in place of lane programs when
 /// `whole` is set.
 fn run_as(c: &Value, v: Variant, tag: &str, whole: bool) -> RunResult {
+    run_configured(c, v, tag, whole, &|_| {})
+}
+
+/// [`run_as`], with `configure` applied to the run before it starts.
+fn run_configured(
+    c: &Value,
+    v: Variant,
+    tag: &str,
+    whole: bool,
+    configure: &dyn Fn(&RunSpec<f64>),
+) -> RunResult {
     let id = c["id"].as_str().unwrap();
     let work = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("conformance_m3");
     std::fs::create_dir_all(&work).unwrap();
@@ -70,8 +82,15 @@ fn run_as(c: &Value, v: Variant, tag: &str, whole: bool) -> RunResult {
         ..Default::default()
     };
     let case: Case = serde_json::from_value(c.clone()).unwrap();
-    run_plan_with_options(&case, &plan_dir, &data, v.threads.unwrap_or(1), whole)
-        .unwrap_or_else(|e| panic!("{id} ({tag}): {e}"))
+    run_plan_configured(
+        &case,
+        &plan_dir,
+        &data,
+        v.threads.unwrap_or(1),
+        whole,
+        configure,
+    )
+    .unwrap_or_else(|e| panic!("{id} ({tag}): {e}"))
 }
 
 /// Runs every check of case `id` the Rust side runs on its own.
@@ -198,4 +217,72 @@ fn a_lane_pool_batches_cells_at_different_times() {
         mixed > 1,
         "the pool never served cells at different times together ({mixed})"
     );
+}
+
+/// spec/partitioning.md §3.2, §4: a panic in a lane of a lane pool, outside
+/// the pool's evaluations or while serving one, fails the run (a panic or an
+/// error) instead of leaving the pool's other lanes waiting for it.
+#[test]
+fn a_panicking_lane_fails_the_run_instead_of_hanging() {
+    for in_serve in [false, true] {
+        let c = case_json("m3.reseact_mini.cell");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let r = std::panic::catch_unwind(|| {
+                run_configured(
+                    &c,
+                    Variant {
+                        lanes: Some(4),
+                        threads: Some(2),
+                        ..Default::default()
+                    },
+                    if in_serve {
+                        "panic-serve"
+                    } else {
+                        "panic-lane"
+                    },
+                    false,
+                    &|s| s.set_test_panic(Some(1), in_serve),
+                )
+            });
+            let _ = tx.send(r.is_err());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(600)) {
+            Ok(failed) => assert!(failed, "the run with a panicking lane succeeded"),
+            Err(_) => panic!("a panicking lane (in_serve = {in_serve}) left the run hanging"),
+        }
+    }
+}
+
+/// spec/partitioning.md §6.2, §11: the re-sharding signal is the run's own
+/// persistent state. A run resumed from any checkpoint re-shards and steps
+/// as the uninterrupted run, concurrent runs of one RunSpec do not mix, and
+/// a shard's tape record lists its cells only on its first record or after
+/// its composition changed.
+#[test]
+fn resharding_resumes_and_does_not_leak_between_runs() {
+    let c = case_json("m3.reseact_mini.shard");
+    let _ = run(&c, Variant::default(), "resume");
+    let plan_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("conformance_m3")
+        .join("m3.reseact_mini.shard.resume");
+    let data = DataOptions {
+        model: Some(
+            repo()
+                .join("tests/conformance/m3")
+                .join(c["run_config"]["model"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+        ),
+        cache_dir: Some(
+            PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+                .join("conformance_m3")
+                .join("esio-cache"),
+        ),
+        ..Default::default()
+    };
+    let case: Case = serde_json::from_value(c.clone()).unwrap();
+    let relisted = resume_and_concurrent_runs(&case, &plan_dir, &data)
+        .unwrap_or_else(|e| panic!("m3.reseact_mini.shard: {e}"));
+    eprintln!("m3.reseact_mini.shard: {relisted} shard records list re-sharded cells");
 }
