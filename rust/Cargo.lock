@@ -703,8 +703,9 @@ dependencies = [
 
 [[package]]
 name = "earthsci-astdiff"
-version = "0.6.2"
-source = "git+https://github.com/EarthSciML/EarthSciASTDiff.git?rev=382316a935629bbe2623c155d6cb2511caa32b47#382316a935629bbe2623c155d6cb2511caa32b47"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b35ea873d267870f18c17af4951c1d16fb5e1a6d8e3c65e3e6cc2363e2c34ba"
 dependencies = [
  "earthsci-ast",
  "indexmap",
