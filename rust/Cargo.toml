@@ -21,16 +21,15 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.2.0" }
 earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.2.0" }
 
-# Unreleased dependencies, pinned by git revision until they are released:
-# the Rust EarthSciAST of upstream main after 0.15.0 (operator references
-# kept at load and flatten, EarthSciAST#772 and #776) with the lane-program
-# fixes EarthSciIntegrator M3 needs: an array faq read at the lane's own cell
-# (EarthSciAST#780) and a time per lane (EarthSciAST#781, U19), pinned at the
-# head of #781 on the fork; and EarthSciASTDiff 0.7.0 (references
-# differentiated without expanding them, #77) with time bands that hold data
-# fixed and read an elementwise observed at a cell (fork branch
-# time-bands-data-fixed), which reseact's Rosenbrock23 chemistry needs. Drop
-# both when the releases are out (spec/plan.md §0.2).
+# Unreleased dependencies, pinned by git revision until they are released.
+# EarthSciAST: upstream main at the merge of EarthSciAST#781 (a time per lane,
+# U19), which also carries #780 (an array faq read at the lane's own cell);
+# both are merged but not yet in a release after 0.15.0.
+# EarthSciASTDiff: the fork branch time-bands-data-fixed on top of 0.7.0, with
+# two commits that are in neither the 0.7.0 release nor upstream main:
+# "Time bands: read an elementwise observed at a cell" (81b11c6) and "Time
+# bands hold data fixed" (d9a733e), which reseact's Rosenbrock23 chemistry
+# needs. Drop both pins when the releases are out (spec/plan.md §0.2).
 [patch.crates-io]
-earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "21189c881b567d5833bd6309927c508dffaaa4ed" }
+earthsci-ast = { git = "https://github.com/EarthSciML/EarthSciSerialization.git", rev = "88240f2a2154aa462ef7635fba5528901c444ab0" }
 earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "d9a733e8b6fca5b4819835a5ef59c0d0d75f0239" }

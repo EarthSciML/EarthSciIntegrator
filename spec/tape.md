@@ -66,3 +66,4 @@ For tests and debugging, an implementation can write its tape as JSON Lines, one
 - The macro-step record follows the invocations of its step.
 - The form is for comparison and diagnosis. Implementations need not hold the tape in this form in memory.
 - Cross-language comparison of tapes is by path and count, not by value: step sizes agree across languages only to tolerance (D10).
+- A `dt_scope: cell` leaf's record (spec/partitioning.md §11) writes `"steps": []`: it records per-cell counts in `cells`, not steps. Readers MUST accept an empty `steps` list, and with `cells` present MUST NOT read it as a leaf that took no step.
