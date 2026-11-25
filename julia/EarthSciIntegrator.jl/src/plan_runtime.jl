@@ -35,7 +35,8 @@ DocWorkspace(prog, nslots::Integer, npar::Integer) = DocWorkspace(
     PlanDocument
 
 One derived document built as spec/operator-interface.md §8.1 says:
-`rhs_program(esm_problem(path, tspan))` with the native compiler. `perm`
+`rhs_program(esm_problem(flatten(load_path(path)), tspan))` with the native
+compiler, the problem built as its program (`program_build`). `perm`
 maps each canonical DOF to its slot in the program's `u`, `pidx` each of the
 program's parameters to its index in the model's parameter vector (§8.2),
 and `nslots` is the length of the program's `u`. `slots` maps each state
@@ -75,22 +76,29 @@ function program_slots(prog)
     return slots
 end
 
-"""Load and build the derived document at `path` (§8.1). A build failure is a [`ConfigError`](@ref) naming the operator and the document."""
+"""
+Load and build the derived document at `path` (§8.1). The document is loaded
+and flattened once, and the problem is built as its program (EarthSciAST's
+`program_build`), so `rhs_program` returns the program that build made rather
+than loading and lowering the document again. A build failure is a
+[`ConfigError`](@ref) naming the operator and the document.
+"""
 function build_plan_document(path::AbstractString, opname::AbstractString, tspan)
     # A document whose `ic` equations read one of its data-fed parameters
     # (spec/plan.md §6.3) is built twice: EarthSciAST's `rhs_program` cannot
     # yet rebuild such an `ic` equation, so the program is built without the
     # `ic` equations and the initial state from the document as written.
     prob, prog, u0 = try
-        prob = EarthSciAST.esm_problem(path, tspan; compiler = :native, base_path = dirname(path))
         flat = EarthSciAST.flatten(EarthSciAST.load_path(path))
         if ic_reads(flat, Set(fed_parameters(flat)))
-            src, ic_u0 = without_ic(flat, prob)
-            pp = EarthSciAST.esm_problem(src, tspan; compiler = :native, u0 = ic_u0)
-            Dict(String(k) => Int(v) for (k, v) in pp.var_map) == Dict(String(k) => Int(v) for (k, v) in prob.var_map) ||
+            full = EarthSciAST.esm_problem(flat, tspan; compiler = :native)
+            src, ic_u0 = without_ic(flat, full)
+            pp = EarthSciAST.esm_problem(src, tspan; compiler = :native, u0 = ic_u0, program_build = true)
+            Dict(String(k) => Int(v) for (k, v) in pp.var_map) == Dict(String(k) => Int(v) for (k, v) in full.var_map) ||
                 error("its two builds lay out the states differently")
-            pp, EarthSciAST.rhs_program(pp), prob.u0
+            pp, EarthSciAST.rhs_program(pp), full.u0
         else
+            prob = EarthSciAST.esm_problem(flat, tspan; compiler = :native, program_build = true)
             prob, EarthSciAST.rhs_program(prob), prob.u0
         end
     catch e
@@ -642,18 +650,19 @@ function plan_problem(
     p = Float64[defaults[x] for x in pnames]
     # The data (spec/operator-interface.md §8.4): the plan's model, located by
     # its `inputs` entry and checked against its hash, gives the providers.
-    F, mfile = nothing, nothing
+    F, mfile, mflat = nothing, nothing, nothing
     if haskey(plan, "forcing")
         mpath = model === nothing ? joinpath(dir, String(plan["inputs"]["model"]["path"])) : String(model)
         isfile(mpath) || throw(ConfigError("the plan's model $(plan["inputs"]["model"]["path"]) is not at $mpath; pass its path as `model`"))
         bytes2hex(sha256(read(mpath))) == plan["inputs"]["model"]["sha256"] ||
             throw(ConfigError("the model at $mpath does not match the plan's hash (the plan is stale)"))
         mfile = EarthSciAST.load_path(mpath)
+        mflat = EarthSciAST.flatten(mfile)
         readers = sort!(unique!(String[x for n in names for x in get(plan["operators"][n], "forcing", Any[])]))
         # Every program's forcing slots must be data-fed parameters some
         # operator's forcing lists, of their planned shapes (§8.4.1), checked
         # before any data is read.
-        shapes = forcing_shapes(mfile, plan["forcing"])
+        shapes = forcing_shapes(mflat, plan["forcing"])
         for n in names, d in alldocs(n), s in EarthSciAST.forcing_slots(d.prog)
             (s.name in readers && haskey(shapes, s.name)) || throw(
                 ConfigError("operator '$n': $(basename(d.path)) has a forcing slot $(s.name), which no operator's forcing in the plan lists")
@@ -663,7 +672,7 @@ function plan_problem(
             )
         end
         root = cache_root === nothing ? joinpath(dir, "data-cache") : String(cache_root)
-        F = forcing_runtime(mfile, plan, tspan, readers; cache_root = root, url_overrides)
+        F = forcing_runtime(mfile, plan, tspan, readers; cache_root = root, url_overrides, flat = mflat)
     end
     ops = Dict{String, AbstractOperator}()
     u0 = nothing
@@ -684,7 +693,7 @@ function plan_problem(
     # §8.4.5: when an `ic` equation of the plan's model reads a data-fed
     # parameter, the run starts from EarthSciAST's initial state of the model
     # with its providers, not from the derived documents' (bound to defaults).
-    if mfile !== nothing && ic_reads(EarthSciAST.flatten(mfile), Set(keys(plan["forcing"])))
+    if mflat !== nothing && ic_reads(mflat, Set(keys(plan["forcing"])))
         u0 = data_initial_state(mfile, F, tspan, L)
     end
     variables = Pair{String, Vector{Int}}[

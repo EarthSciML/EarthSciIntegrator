@@ -17,8 +17,8 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 
 [compat]
 DiffEqCallbacks = "4"
-EarthSciAST = "0.14, 0.15"
-EarthSciASTDiff = "0.6.2"
+EarthSciAST = "0.15"
+EarthSciASTDiff = "0.7"
 EarthSciIO = "0.4"
 ForwardDiff = "0.10, 1"
 JSON = "0.21, 1"
@@ -28,11 +28,8 @@ SHA = "0.7, 1"
 SciMLBase = "2, 3"
 julia = "1.10"
 
-# Planner stage C needs EarthSciAST main after 0.14.0 (EarthSciAST#766, #768:
-# `operators` / `apply_operator`), and M3's lane programs need the planner's
-# document forms read at a lane's cell (EarthSciAST#780) and a time per lane
-# (EarthSciAST#781): pinned at the head of #781 on the fork. Replace with the
-# release that carries them.
+# M3's lane programs need a time per lane (EarthSciAST#781), merged upstream
+# after the 0.15.0 release: pinned at #781's merge commit. Replace with the
+# release that carries it.
 [sources]
-EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "21189c881b567d5833bd6309927c508dffaaa4ed"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "9021c78bb3962da194219a03e72e7d2391ca5da0"}
+EarthSciAST = {url = "https://github.com/EarthSciML/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "88240f2a2154aa462ef7635fba5528901c444ab0"}

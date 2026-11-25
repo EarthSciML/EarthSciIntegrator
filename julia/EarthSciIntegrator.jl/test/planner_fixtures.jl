@@ -119,19 +119,10 @@ _floats!(out, y::AbstractVector) = (foreach(z -> _floats!(out, z), y); out)
 _floats!(out, y::AbstractFloat) = (isinteger(y) && push!(out, y); out)
 _floats!(out, y) = out
 
-"""
-The fixture cases whose terms hold operator references. Planning them needs
-EarthSciASTDiff to differentiate through a reference without expanding it
-(spec/plan.md §10 item 27): EarthSciASTDiff 0.6.2 expands every reference
-first, so they are not planned until it does, and their goldens are the ones
-written before the planner kept references.
-"""
-const AWAITING_ASTDIFF_REFERENCES = Tuple{String, String}[]
-
-"""Every fixture case, `(fixture, case)`, in code-point order, but those [`AWAITING_ASTDIFF_REFERENCES`](@ref)."""
+"""Every fixture case, `(fixture, case)`, in code-point order."""
 fixture_cases() = [
     (f, c[1:(end - length(".run.json"))]) for f in sort!(readdir(PFIX)) for c in sort!(readdir(joinpath(PFIX, f)))
-        if endswith(c, ".run.json") && !((f, c[1:(end - length(".run.json"))]) in AWAITING_ASTDIFF_REFERENCES)
+        if endswith(c, ".run.json")
 ]
 
 # What each case's expected.md says of its operators: (locality, stiffness,
@@ -273,10 +264,6 @@ const PLAN_FILES = String[]
         J = Dict((1, 2) => -2.0, (1, 1) => 1.5, (2, 1) => 0.5, (4, 2) => 3.0)
         @test EarthSciIntegrator.gershgorin(J, [1, 2, 3]) == 3.5
         @test EarthSciIntegrator.gershgorin(J, [3]) == 0.0
-    end
-
-    @testset "fixture $fixture/$case awaits EarthSciASTDiff reference support (spec/plan.md §10 item 27)" for (fixture, case) in AWAITING_ASTDIFF_REFERENCES
-        @test_broken false
     end
 
     @testset "fixture $fixture/$case" for (fixture, case) in fixture_cases()

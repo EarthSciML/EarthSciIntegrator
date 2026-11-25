@@ -676,8 +676,9 @@ checksum = "e1d926b4d407d372f141f93bb444696142c29d32962ccbd3531117cf3aa0bfa9"
 
 [[package]]
 name = "earthsci-ast"
-version = "0.14.0"
-source = "git+https://github.com/ctessum-claude/EarthSciSerialization.git?rev=3a61fe45496c4d567a9e530d3f853087950c9aac#3a61fe45496c4d567a9e530d3f853087950c9aac"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fad4d68b6bcf7685cfbe8170a5d710b8102a8435c189c29619f77ccfd8f4865"
 dependencies = [
  "diffsol",
  "earthsciio",
@@ -703,7 +704,7 @@ dependencies = [
 [[package]]
 name = "earthsci-astdiff"
 version = "0.6.2"
-source = "git+https://github.com/ctessum-claude/EarthSciASTDiff.git?rev=9021c78bb3962da194219a03e72e7d2391ca5da0#9021c78bb3962da194219a03e72e7d2391ca5da0"
+source = "git+https://github.com/EarthSciML/EarthSciASTDiff.git?rev=382316a935629bbe2623c155d6cb2511caa32b47#382316a935629bbe2623c155d6cb2511caa32b47"
 dependencies = [
  "earthsci-ast",
  "indexmap",
@@ -1838,9 +1839,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.61.0"
+version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1324c9bebe052584e96e7c80d2f9cf2d86e1a6d83d621a46932c5636996be18"
+checksum = "0e37f27df77c7887edbc5f5a59ecd8e5ec4a669319266ec1b61068667a603183"
 dependencies = [
  "ahash",
  "bytecount",
@@ -1866,18 +1867,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.61.1"
+version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84cdf272371326ec8db8ce2608a52635d8edeeaf0189604e2ad627327b79e6db"
+checksum = "7e41151614b6c927e21982be8bef5a26741ae5a0ae6a781eedee2aa930a980e6"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.61.1"
+version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5e4a7f3b3c19c9cd2aa37937e1704229a0bcb1b446308a148574d56ace0c6ba"
+checksum = "1515b9a91134ef67d7bac95c2d76fbc7e383c4c55ee544204ceec8088f881fef"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2988,9 +2989,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.61.1"
+version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eba9bfd41f0d7d8fbf9c7ed23b788a3f97e9f5d9419be812ff7e08b8dc6b14ec"
+checksum = "a028057ef852c58a42d75e09da87b5e733f4030f4c7411728955e4f87203a577"
 dependencies = [
  "ahash",
  "fluent-uri",
