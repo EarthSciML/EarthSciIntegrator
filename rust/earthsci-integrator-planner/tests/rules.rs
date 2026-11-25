@@ -558,59 +558,47 @@ fn lift_onto_declared_unnamed_grid() {
     }
 }
 
-/// §0.1, §7.1, D94: `dt_scope` `cell` and `shard` wait for M3 and are refused
-/// at the leaf's `control/dt_scope`, in tree order with the other
-/// unsupported constructs; `global` and `"auto"` plan, and an omitted or
-/// `"auto"` `dt_scope` resolves to `global`, the pointwise leaf included.
+/// §5.5.3, D97: `cell` and `shard` plan on a pointwise leaf with
+/// block_diagonal storage, and an omitted or `"auto"` `dt_scope` resolves to
+/// `cell` there; rule 19 refuses `cell` with a `bind_dt: "leaf"` parameter
+/// and a `reshard` without `shard` scope, at the leaf's pointers.
 #[test]
-fn dt_scope_at_m2() {
-    for scope in ["cell", "shard"] {
-        assert_eq!(
-            refused(
-                &format!("dt-scope-{scope}"),
-                None,
-                rob(json!({}), json!({"control": {"dt_scope": scope}}))
-            ),
-            (
-                codes::UNSUPPORTED_DT_SCOPE,
-                "/schedule/control/dt_scope".into()
-            ),
-            "{scope}"
-        );
-    }
-    // In a sequence, the refusal points into the child, and a map node
-    // earlier in tree order is refused first.
-    let mut rc = rob(json!({}), json!({}));
-    rc["schedule"] = json!({"sequence": [
-        {"leaf": "kinetics", "alg": "Rodas4", "control": {"dt_scope": "cell"}}
-    ]});
-    assert_eq!(
-        refused("dt-scope-seq", None, rc.clone()),
-        (
-            codes::UNSUPPORTED_DT_SCOPE,
-            "/schedule/sequence/0/control/dt_scope".into()
-        )
-    );
-    rc["schedule"]["sequence"]
-        .as_array_mut()
-        .unwrap()
-        .insert(0, json!({"map": "m"}));
-    assert_eq!(
-        refused("dt-scope-after-map", None, rc).0,
-        codes::UNSUPPORTED_MAP_OPERATOR
-    );
-    for (case, control) in [
-        ("dt-scope-global", json!({"dt_scope": "global"})),
-        ("dt-scope-auto", json!({"dt_scope": "auto"})),
-        ("dt-scope-omitted", json!({})),
+fn dt_scope_at_m3() {
+    for (case, control, want) in [
+        ("dt-scope-global", json!({"dt_scope": "global"}), "global"),
+        ("dt-scope-auto", json!({"dt_scope": "auto"}), "cell"),
+        ("dt-scope-omitted", json!({}), "cell"),
+        ("dt-scope-cell", json!({"dt_scope": "cell"}), "cell"),
+        ("dt-scope-shard", json!({"dt_scope": "shard"}), "shard"),
     ] {
         let p = run(case, None, rob(json!({}), json!({"control": control}))).unwrap();
         assert_eq!(p.operators["kinetics"].locality.class.as_str(), "pointwise");
-        assert_eq!(
-            p.resolved_schedule["control"]["dt_scope"], "global",
-            "{case}"
-        );
+        assert_eq!(p.resolved_schedule["control"]["dt_scope"], want, "{case}");
     }
+    let p = run(
+        "dt-scope-reshard",
+        None,
+        rob(
+            json!({}),
+            json!({"control": {"dt_scope": "shard"}, "partition": {"shards": 1, "reshard": {"every": 2}}}),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        p.plan_json()["partition"]["reshard"],
+        json!({"root": {"every": 2}})
+    );
+    assert_eq!(
+        refused(
+            "reshard-cell",
+            None,
+            rob(json!({}), json!({"partition": {"reshard": {"every": 2}}}))
+        ),
+        (
+            codes::RESHARD_WITHOUT_SHARD_SCOPE,
+            "/schedule/partition/reshard".into()
+        )
+    );
 }
 
 /// spec/plan.md §0.2: `plan.report.json` names the upstream versions this

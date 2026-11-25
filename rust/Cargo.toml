@@ -20,3 +20,20 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 [workspace.dependencies]
 earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.2.0" }
 earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.2.0" }
+
+# Unreleased dependencies, pinned by git revision until they are released.
+# EarthSciAST: upstream main at the merge of EarthSciAST#781 (a time per lane,
+# U19), which also carries #780 (an array faq read at the lane's own cell);
+# both are merged but not yet in a release after 0.15.0. Pinned at the fork's
+# test branch nested-refs-on-main-781 (4e29e6d), that merge plus the Julia fix
+# of draft EarthSciAST#784 (nested reference calls, 41bfc1363), which the Julia
+# runtime needs to build reseact; the Rust code is that of upstream 88240f2a.
+# EarthSciASTDiff: the fork branch time-bands-data-fixed on top of 0.7.0, at
+# effdb9a, with commits that are in neither the 0.7.0 release nor upstream
+# main and have no upstream pull request yet: "Time bands: read an elementwise
+# observed at a cell" (81b11c6), "Time bands hold data fixed" (d9a733e) and
+# "Time bands: an operand left unfollowed is still read at the cell"
+# (effdb9a), which reseact's Rosenbrock23 chemistry needs. Drop both pins when the releases are out (spec/plan.md §0.2).
+[patch.crates-io]
+earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "4e29e6d857876a6789bed98355dcf3e1dee89579" }
+earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "effdb9af6d88f32f8a160af07d5b5ed4a56bb621" }

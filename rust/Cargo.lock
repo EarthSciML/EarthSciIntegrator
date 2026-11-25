@@ -677,8 +677,7 @@ checksum = "e1d926b4d407d372f141f93bb444696142c29d32962ccbd3531117cf3aa0bfa9"
 [[package]]
 name = "earthsci-ast"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fad4d68b6bcf7685cfbe8170a5d710b8102a8435c189c29619f77ccfd8f4865"
+source = "git+https://github.com/ctessum-claude/EarthSciSerialization.git?rev=4e29e6d857876a6789bed98355dcf3e1dee89579#4e29e6d857876a6789bed98355dcf3e1dee89579"
 dependencies = [
  "diffsol",
  "earthsciio",
@@ -704,8 +703,7 @@ dependencies = [
 [[package]]
 name = "earthsci-astdiff"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b35ea873d267870f18c17af4951c1d16fb5e1a6d8e3c65e3e6cc2363e2c34ba"
+source = "git+https://github.com/ctessum-claude/EarthSciASTDiff.git?rev=effdb9af6d88f32f8a160af07d5b5ed4a56bb621#effdb9af6d88f32f8a160af07d5b5ed4a56bb621"
 dependencies = [
  "earthsci-ast",
  "indexmap",

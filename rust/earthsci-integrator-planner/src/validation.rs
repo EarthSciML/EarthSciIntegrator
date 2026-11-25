@@ -314,6 +314,109 @@ pub(crate) fn band_model_with(
     Ok(report)
 }
 
+/// One smaller step of the kink fallback: its size and `f` at `t ± h`.
+type SmallStep = (f64, Vec<f64>, Vec<f64>);
+
+/// `time_band_model` at one sampled state (spec/plan.md §8.1, Rust; D102):
+/// `f_t` from the time-derivative document, `ftb` in canonical order,
+/// against central differences of the operator's right-hand side `f` in
+/// `t`, rows of `rows` only, with the forcing held at the sample's; §8.2's
+/// kink fallback at the step over 10 and 100. A row no time band writes
+/// must not depend on `t` beyond rounding.
+pub fn time_band_model(
+    f: &Program,
+    dofs: &Dofs,
+    s: &Sample,
+    ftb: &[f64],
+    entries: &[earthsci_astdiff::JacEntry],
+    rows: &[bool],
+    names: &[String],
+) -> Result<serde_json::Value, String> {
+    let eps = f64::EPSILON;
+    let banded: std::collections::BTreeSet<usize> = entries
+        .iter()
+        .filter_map(|en| dofs.dofs_of(&en.u))
+        .flatten()
+        .collect();
+    let at = |t: f64| f.eval(dofs, &s.u, t, &s.forcing);
+    let t = s.t;
+    let h = eps.cbrt() * t.abs().max(1.0);
+    let step = |h: f64| (t + h) - t;
+    let ht = step(h);
+    let (fp, fm, f0) = (at(t + ht)?, at(t - ht)?, at(t)?);
+    let mut worst = 0.0f64;
+    let mut smaller = 0usize;
+    // The smaller steps' evaluations, made only when some row needs them.
+    let mut small: Vec<Option<SmallStep>> = vec![None, None];
+    for r in 0..dofs.n {
+        if !rows[r] {
+            continue;
+        }
+        let fr = fp[r].abs().max(fm[r].abs());
+        if !banded.contains(&r) {
+            let d = (fp[r] - fm[r]).abs() / 2.0;
+            if d > 1e3 * eps * fr {
+                return Err(format!(
+                    "{} depends on t (central difference {:e}) but no time band writes it",
+                    names[r],
+                    (fp[r] - fm[r]) / (2.0 * ht)
+                ));
+            }
+            continue;
+        }
+        let fi = (fp[r] - fm[r]) / (2.0 * ht);
+        let m = ftb[r]
+            .abs()
+            .max(fi.abs())
+            .max(f0[r].abs() / t.abs().max(1.0));
+        let tol = 1e-6 * m + 1e3 * eps * fr / ht;
+        let ratio = (ftb[r] - fi).abs() / tol.max(f64::MIN_POSITIVE);
+        if ratio <= 1.0 {
+            worst = worst.max(ratio);
+            continue;
+        }
+        // §8.2 "Kinks": the central, forward or backward difference at a
+        // tenth, then a hundredth, of the step.
+        let mut accepted = false;
+        let mut tried = Vec::new();
+        for (j, d) in SMALLER_STEPS.iter().enumerate() {
+            if small[j].is_none() {
+                let hj = step(h / d);
+                small[j] = Some((hj, at(t + hj)?, at(t - hj)?));
+            }
+            let (hj, pj, mj) = small[j].as_ref().expect("set above");
+            let cands = [
+                ((pj[r] - mj[r]) / (2.0 * hj), pj[r].abs().max(mj[r].abs())),
+                ((pj[r] - f0[r]) / hj, pj[r].abs().max(f0[r].abs())),
+                ((f0[r] - mj[r]) / hj, f0[r].abs().max(mj[r].abs())),
+            ];
+            for (fd, fj) in cands {
+                tried.push(fd);
+                let tj = 1e-6 * m + 1e3 * eps * fj / hj;
+                if (ftb[r] - fd).abs() <= tj {
+                    accepted = true;
+                    break;
+                }
+            }
+            if accepted {
+                break;
+            }
+        }
+        if !accepted {
+            return Err(format!(
+                "f_t at {}: the time bands give {:e}, the central difference {fi:e} (tolerance {tol:e}), the smaller steps' differences {tried:?}",
+                names[r], ftb[r]
+            ));
+        }
+        smaller += 1;
+    }
+    Ok(serde_json::json!({
+        "t": t,
+        "worst_ratio": worst,
+        "entries_accepted_at_smaller_step": smaller,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

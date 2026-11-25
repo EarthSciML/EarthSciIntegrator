@@ -358,9 +358,11 @@ fn refusals() {
     assert!(
         matches!(err(json!({"leaf": "decay", "alg": "auto", "dt": 0.1})), Error::Unimplemented(m) if m.contains("planner"))
     );
+    // forced_decay's one scalar state has no cells (spec/partitioning.md
+    // §2.1): dt_scope cell is refused.
     assert!(matches!(
         err(json!({"leaf": "decay", "alg": "Tsit5", "control": {"dt_scope": "cell"}})),
-        Error::Unimplemented(_)
+        Error::Config(m) if m.contains("dt_scope")
     ));
     assert!(matches!(
         err(json!({"leaf": "decay", "alg": "Tsit5", "theta": 0.5})),

@@ -37,6 +37,9 @@ const CASES: &[(&str, &str)] = &[
     ("unnamed_lift", "auto"),
     ("toy_photostationary_cells", "kvaerno4"),
     ("toy_robertson", "rodas4"),
+    ("reseact_mini", "cell"),
+    ("reseact_mini", "shard"),
+    ("reseact_mini", "coupled"),
 ];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.
@@ -355,7 +358,7 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
     files.sort();
     let mut ours: Vec<String> = Vec::new();
     for (op, d) in &p.documents {
-        for (kind, bytes) in [("jacobian", &d.jacobian), ("rhs", &d.rhs)] {
+        for (kind, bytes) in d.kinds() {
             let name = format!("{op}.{kind}.esm");
             let want = std::fs::read(golden.join("derived").join(&name))
                 .unwrap_or_else(|e| panic!("{fixture}/{case}: golden derived/{name}: {e}"));
@@ -748,7 +751,10 @@ fn rhs_sum_catches_broken_splits() {
 fn hand_bands_agree() {
     // The hand-written bands are written fixture by fixture and have none
     // for `forced_column`'s column contraction, so it is left out.
-    for (fixture, case) in CASES.iter().filter(|(f, _)| *f != "forced_column") {
+    for (fixture, case) in CASES
+        .iter()
+        .filter(|(f, _)| !matches!(*f, "forced_column" | "reseact_mini"))
+    {
         let ours = planned(fixture, case);
         let hand = plan(&run_config(fixture, case), &Options::default(), &HandBands).unwrap();
         assert_eq!(
@@ -993,7 +999,7 @@ fn cross_component_term_by_owner() {
     // leaf is `root.0` (expected.md).
     same(
         &p.resolved_schedule,
-        &json!({"id": "root", "sequence": [{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}]}),
+        &json!({"id": "root", "sequence": [{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}]}),
         "schedule",
     );
     same(&p.partition["shards"], &json!({"root.0": 1}), "shards");
@@ -1146,9 +1152,9 @@ fn pointwise_chemistry() {
         );
         same(&p.precision, &json!({"root": f64s()}), "precision");
         let schedule = if case == "auto" {
-            json!({"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}})
+            json!({"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}})
         } else {
-            json!({"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}})
+            json!({"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}})
         };
         same(&p.resolved_schedule, &schedule, case);
         same(
@@ -1456,7 +1462,7 @@ fn reseact_shaped() {
                 &json!({"id": "root", "sequence": [
                     {"alg": "SSPRK43", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "leaf": ["default_stencil"]},
                     {"alg": "Tsit5", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.1", "leaf": ["default_column"]},
-                    {"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.2", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
+                    {"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.2", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
                 ]}),
                 "schedule",
             );

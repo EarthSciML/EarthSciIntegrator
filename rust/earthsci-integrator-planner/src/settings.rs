@@ -192,6 +192,8 @@ pub fn partition(
         }
     }
     let mut shards = Map::new();
+    let mut lanes = Map::new();
+    let mut reshard = Map::new();
     for n in root.leaves() {
         let Kind::Leaf {
             ops: names,
@@ -236,8 +238,32 @@ pub fn partition(
             found.map_or(1, |(_, c)| c)
         };
         shards.insert(n.id().to_string(), json!(k));
+        // D104: the lane capacity a leaf gives, and the re-sharding of a
+        // leaf with dt_scope shard ("none" when not given). Only a given
+        // dt_scope can be shard (§5.5.3).
+        if let Some(l) = own.and_then(|p| p.get("lanes")) {
+            lanes.insert(n.id().to_string(), l.clone());
+        }
+        let scope = n
+            .value
+            .get("control")
+            .and_then(|c| c.get("dt_scope"))
+            .and_then(Value::as_str);
+        if scope == Some("shard") {
+            let r = own
+                .and_then(|p| p.get("reshard"))
+                .cloned()
+                .unwrap_or_else(|| json!("none"));
+            reshard.insert(n.id().to_string(), r);
+        }
     }
     out.insert("shards".into(), Value::Object(shards));
+    if !lanes.is_empty() {
+        out.insert("lanes".into(), Value::Object(lanes));
+    }
+    if !reshard.is_empty() {
+        out.insert("reshard".into(), Value::Object(reshard));
+    }
     Ok(Value::Object(out))
 }
 
