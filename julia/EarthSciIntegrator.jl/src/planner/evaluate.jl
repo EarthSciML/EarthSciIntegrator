@@ -122,11 +122,15 @@ end
     BuiltDocument
 
 A document built with EarthSciAST as spec/operator-interface.md §8.1 has
-runtimes build it: `rhs_program(esm_problem(file, tspan))` with the native
-compiler, with one workspace, its default forcing set and its parameter
-vector at the defaults. The problem's own `f!` (also native) is kept for
-ForwardDiff's dual numbers, which the program's Float64 workspace does not
-take (§8.2). `aux` is the program's `aux` buffer at zero, of the length
+runtimes build it: `rhs_program(esm_problem(flat, tspan))` with the native
+compiler, the problem built as its program (`program_build`), with one
+workspace, its default forcing set and its parameter vector at the defaults.
+The problem's own `f!` (the program's evaluator over the problem's layout,
+generic in its element type) is kept for ForwardDiff's dual numbers, which
+the program's Float64 workspace does not take (§8.2). Both are called with
+one parameter representation, the program's parameter vector `pvec`: the
+problem's own `p` (a named tuple of the same values in the same order) would
+make Julia compile the generated code the two share once for each. `aux` is the program's `aux` buffer at zero, of the length
 its layout gives (a whole-model program has none). Also: its initial state (its `u0`, in its own slot order), the
 number of its state slots, `perm` mapping each canonical DOF to its slot,
 and the slots of every band field `J_k` (column-major over the field's
@@ -139,7 +143,6 @@ struct BuiltDocument
     pvec::Vector{Float64}
     aux::Vector{Float64}
     f!::Any
-    p::Any
     u0::Vector{Float64}
     nslots::Int
     perm::Vector{Int}
@@ -241,15 +244,20 @@ function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
     fed = fed_parameters(flat)
     arrays = Dict{String, Array{Float64}}(n => default_array(flat, n) for n in fed)
     u0prob = ic_u0 = nothing
+    # The problem whose program is kept is built as that program
+    # (EarthSciAST's `program_build`), so `rhs_program` returns it rather than
+    # lowering the document a second time.
     prob = if isempty(fed)
-        EarthSciAST.esm_problem(file, time; compiler = :native)
+        EarthSciAST.esm_problem(flat, time; compiler = :native, program_build = true)
     else
         src = flat
         if ic_reads(flat, Set(fed))
             u0prob = EarthSciAST.esm_problem(flat, time; compiler = :native)
             src, ic_u0 = without_ic(flat, u0prob)
         end
-        EarthSciAST.esm_problem(src, time; compiler = :native, u0 = ic_u0, param_arrays = Dict{String, Any}(arrays))
+        EarthSciAST.esm_problem(
+            src, time; compiler = :native, u0 = ic_u0, param_arrays = Dict{String, Any}(arrays), program_build = true
+        )
     end
     prog = EarthSciAST.rhs_program(prob)
     EarthSciAST.n_states(prog) == length(prob.u0) ||
@@ -260,13 +268,21 @@ function build_document(file, L::DofLayout, time; fields = Vector{Int}[])
     perm = Int[slot(n) for n in L.names]
     fslots = [Int[slot(element_name("JacobianEval.J_$k", c)) for c in cells(ext)] for (k, ext) in enumerate(fields)]
     u0 = u0prob === nothing ? prob.u0 : u0prob.u0
+    # `f!` is called with the program's parameter vector (see
+    # [`BuiltDocument`](@ref)), which must hold the problem's parameters in
+    # its order (a problem without parameters has `p === nothing`).
+    pvec = EarthSciAST.parameter_vector(prog)
+    pnames = prob.p === nothing ? String[] : collect(String.(keys(prob.p)))
+    pvals = prob.p === nothing ? Float64[] : Float64[values(prob.p)...]
+    (pnames == [s.name for s in EarthSciAST.parameters(prog)] && isequal(pvals, pvec)) ||
+        error("EarthSciAST's program of a derived document orders its parameters other than its problem does")
     if u0prob !== nothing
         Dict{String, Int}(String(k) => Int(v) for (k, v) in u0prob.var_map) == vm ||
             error("EarthSciAST's two builds of a derived document lay out its states differently")
     end
     return BuiltDocument(
-        prog, EarthSciAST.rhs_workspace(prog), EarthSciAST.default_forcing_set(prog), EarthSciAST.parameter_vector(prog),
-        zeros(EarthSciAST.tile_layout(prog).n_aux), prob.f!, prob.p, u0, length(prob.u0), perm, fslots, arrays, prob
+        prog, EarthSciAST.rhs_workspace(prog), EarthSciAST.default_forcing_set(prog), pvec,
+        zeros(EarthSciAST.tile_layout(prog).n_aux), prob.f!, u0, length(prob.u0), perm, fslots, arrays, prob
     )
 end
 
@@ -300,7 +316,7 @@ function eval_slots(B::BuiltDocument, u::AbstractVector{T}, t, F = nothing) wher
                 EarthSciAST.notify_forcing_refresh!(B.prob, n)
             end
         end
-        B.f!(du, U, B.p, t)
+        B.f!(du, U, B.pvec, t)
     end
     return du
 end

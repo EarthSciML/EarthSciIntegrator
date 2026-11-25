@@ -189,14 +189,14 @@ function provider_clock_origin(file::EarthSciAST.EsmFile, origin::Float64, windo
 end
 
 """
-    forcing_shapes(file, forcing) -> Dict{String, Vector{Int}}
+    forcing_shapes(flat, forcing) -> Dict{String, Vector{Int}}
 
 The extents of each data-fed parameter of the plan's `forcing`, from its
-index-set names and the flattened model `file`'s index sets (synthetic lift
+index-set names and the flattened model `flat`'s index sets (synthetic lift
 sets included).
 """
-function forcing_shapes(file::EarthSciAST.EsmFile, pf::AbstractDict)
-    sizes = Dict{String, Int}(k => Int(s.size) for (k, s) in EarthSciAST.flatten(file).index_sets)
+function forcing_shapes(flat::EarthSciAST.FlattenedSystem, pf::AbstractDict)
+    sizes = Dict{String, Int}(k => Int(s.size) for (k, s) in flat.index_sets)
     return Dict{String, Vector{Int}}(
         String(n) => Int[
             get(sizes, X) do
@@ -207,9 +207,10 @@ function forcing_shapes(file::EarthSciAST.EsmFile, pf::AbstractDict)
 end
 
 """
-    forcing_runtime(file, plan, tspan, readers; cache_root, url_overrides) -> ForcingRuntime
+    forcing_runtime(file, plan, tspan, readers; cache_root, url_overrides, flat) -> ForcingRuntime
 
-The data layer of the plan whose model, loaded, is `file` (spec/operator-interface.md
+The data layer of the plan whose model, loaded, is `file` and, flattened,
+`flat` (spec/operator-interface.md
 §8.4.2): providers from EarthSciAST's `providers_from_document`, built for the
 sources of the parameters of the plan's `forcing` only; `readers` the names
 some operator reads (the union of the operators' `forcing`). The const
@@ -218,7 +219,8 @@ the run before its first step.
 """
 function forcing_runtime(
         file::EarthSciAST.EsmFile, plan::AbstractDict, tspan::Tuple{Float64, Float64}, readers::Vector{String};
-        cache_root::AbstractString, url_overrides::AbstractDict = Dict{String, String}()
+        cache_root::AbstractString, url_overrides::AbstractDict = Dict{String, String}(),
+        flat::EarthSciAST.FlattenedSystem = EarthSciAST.flatten(file)
     )
     pf = plan["forcing"]
     # Model time t is UTC origin + t (D74). EarthSciIO's window is half-open,
@@ -242,7 +244,7 @@ function forcing_runtime(
         e isa InterruptException && rethrow()
         throw(ConfigError("building the providers of the plan's model failed: " * sprint(showerror, e)))
     end
-    shapes = forcing_shapes(file, pf)
+    shapes = forcing_shapes(flat, pf)
     providers = Dict{String, Any}()
     for n in keys(pf)
         haskey(all_provs, n) || throw(ConfigError("data-fed parameter $n: EarthSciAST built no provider for it from the plan's model"))
