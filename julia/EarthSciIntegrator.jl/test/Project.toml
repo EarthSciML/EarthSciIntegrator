@@ -21,12 +21,12 @@ Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [compat]
 EarthSciAST = "0.14, 0.15"
-EarthSciASTDiff = "0.6.2"
+EarthSciASTDiff = "0.7"
 OrdinaryDiffEqSDIRK = "2"
 SciMLBase = "3"
 
 # Planner stage C: EarthSciAST main after 0.14.0 (see ../Project.toml).
 [sources]
 EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "21189c881b567d5833bd6309927c508dffaaa4ed"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "9021c78bb3962da194219a03e72e7d2391ca5da0"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "effdb9af6d88f32f8a160af07d5b5ed4a56bb621"}
 EarthSciIntegrator = {path = ".."}
