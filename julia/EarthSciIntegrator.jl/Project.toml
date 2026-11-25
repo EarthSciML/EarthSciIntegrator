@@ -29,7 +29,13 @@ SciMLBase = "2, 3"
 julia = "1.10"
 
 # M3's lane programs need a time per lane (EarthSciAST#781), merged upstream
-# after the 0.15.0 release: pinned at #781's merge commit. Replace with the
-# release that carries it.
+# after the 0.15.0 release: pinned at #781's merge commit. Time-derivative
+# documents need EarthSciASTDiff's time-band fixes on top of 0.7.0 (an
+# elementwise observed read at a cell, data held fixed, an operand left
+# unfollowed still read at the cell): unreleased work on the fork's
+# time-bands-data-fixed branch, with no upstream pull request yet, pinned at
+# effdb9a, the commit the Rust runtime pins. Replace both with the releases
+# that carry them.
 [sources]
 EarthSciAST = {url = "https://github.com/EarthSciML/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "88240f2a2154aa462ef7635fba5528901c444ab0"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "effdb9af6d88f32f8a160af07d5b5ed4a56bb621"}
