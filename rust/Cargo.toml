@@ -30,5 +30,5 @@ earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = 
 # references without expanding them (EarthSciASTDiff#77). Drop both when the
 # releases are out (spec/plan.md §0.2).
 [patch.crates-io]
-earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "250fcecf6b27026a9b7c012be0dbcd61bffb797c" }
+earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "21189c881b567d5833bd6309927c508dffaaa4ed" }
 earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "9021c78bb3962da194219a03e72e7d2391ca5da0" }
