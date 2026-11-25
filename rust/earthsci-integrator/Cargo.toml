@@ -20,7 +20,7 @@ repository.workspace = true
 # `neg`/`pow`, canonical unit spelling).
 earthsci-ast = { version = "0.15.0", default-features = false, features = ["solve", "esio"] }
 # Reading the plan's band positions (esm-jacobian-spec §4).
-earthsci-astdiff = "0.6.2"
+earthsci-astdiff = "0.7.0"
 # The planner's canonical order, derived-document evaluation and band
 # scatter (its `numeric` module), shared so that a plan is read the way it
 # was checked.

@@ -18,7 +18,7 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 [compat]
 DiffEqCallbacks = "4"
 EarthSciAST = "0.15"
-EarthSciASTDiff = "0.6.2"
+EarthSciASTDiff = "0.7"
 EarthSciIO = "0.4"
 ForwardDiff = "0.10, 1"
 JSON = "0.21, 1"
@@ -27,9 +27,3 @@ OrderedCollections = "1, 2"
 SHA = "0.7, 1"
 SciMLBase = "2, 3"
 julia = "1.10"
-
-# Planner stage C needs EarthSciASTDiff#77 (it differentiates operator
-# references without expanding them), merged but not yet released: pinned to
-# its merge commit on EarthSciASTDiff main. Replace with the release.
-[sources]
-EarthSciASTDiff = {url = "https://github.com/EarthSciML/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "382316a935629bbe2623c155d6cb2511caa32b47"}

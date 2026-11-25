@@ -21,11 +21,9 @@ Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [compat]
 EarthSciAST = "0.15"
-EarthSciASTDiff = "0.6.2"
+EarthSciASTDiff = "0.7"
 OrdinaryDiffEqSDIRK = "2"
 SciMLBase = "3"
 
-# Planner stage C: EarthSciASTDiff#77, merged, unreleased (see ../Project.toml).
 [sources]
-EarthSciASTDiff = {url = "https://github.com/EarthSciML/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "382316a935629bbe2623c155d6cb2511caa32b47"}
 EarthSciIntegrator = {path = ".."}

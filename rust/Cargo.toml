@@ -20,10 +20,3 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 [workspace.dependencies]
 earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.2.0" }
 earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.2.0" }
-
-# Unreleased dependency, pinned by git revision until it is released: the
-# EarthSciASTDiff that differentiates operator references without expanding
-# them (EarthSciML/EarthSciASTDiff#77, merged into its main). Drop when the
-# release is out (spec/plan.md §0.2).
-[patch.crates-io]
-earthsci-astdiff = { git = "https://github.com/EarthSciML/EarthSciASTDiff.git", rev = "382316a935629bbe2623c155d6cb2511caa32b47" }
