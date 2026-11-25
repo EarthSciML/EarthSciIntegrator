@@ -625,14 +625,15 @@ end
 
 """
 A checkpoint's part for the scoped leaves (spec/partitioning.md §11): per
-leaf id, each unit's controller state and, under `shard`, the composition.
+leaf id, [`scope_saved`](@ref): each unit's controller state and, under
+`shard`, the composition and the re-sharding signal summed so far.
 """
 function scope_checkpoint(run::Run)
     out = Dict{String, Any}()
     for (id, l) in run.leaves
         s = l.scope
         s === nothing && continue
-        out[id] = (units = ControllerState[copy(c) for c in s.units], shards = [copy(x) for x in s.shards])
+        out[id] = scope_saved(s)
     end
     return out
 end

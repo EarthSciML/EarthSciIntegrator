@@ -625,8 +625,6 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         st = structure(OperatorSum(ops))
         st isa BlockDiagonalStructure ||
             throw(ConfigError("leaf $id: dt_scope \"$scope\" needs block_diagonal storage, so that its cells can step alone (spec/partitioning.md §2.1)"))
-        tab.family === :imex &&
-            throw(UnsupportedError("leaf $id: dt_scope \"$scope\" on an IMEX leaf is not implemented in this stage"))
         scopestate = ScopeState(Symbol(scope), st.ncells, st.n, 1, nothing, DEFAULT_LANES)
     end
     # Defaults when control omits them are OrdinaryDiffEq's (reltol 1e-3, abstol 1e-6).

@@ -35,23 +35,18 @@ const _LANE_PROGRAMS = Dict{Tuple{String, String, Int}, Any}()
 const _LANE_LOCK = ReentrantLock()
 
 """
-    lane_program(d::PlanDocument, sets, capacity, tspan) -> LaneProgram
+    lane_program(d::PlanDocument, sets, capacity) -> LaneProgram
 
-EarthSciAST's lane program (`lanes(op, :cells, sets; chunk = capacity)`) of
-the derived document `d`, compiled natively.
-Built once per document and capacity, and shared by every thread and every
-run that uses that document (it is reentrant across workspaces).
+EarthSciAST's lane program (`lanes(prog, :cells, sets; chunk = capacity)`) of
+the derived document `d`'s program, the one its build made (the document is
+loaded once, spec/operator-interface.md §8.1), compiled natively. Built once
+per document and capacity, and shared by every thread and every run that uses
+that document (it is reentrant across workspaces).
 """
-function lane_program(d::PlanDocument, sets::Vector{String}, capacity::Int, tspan)
-    bytes = read(d.path)
-    key = (d.path, bytes2hex(sha256(bytes)), capacity)
+function lane_program(d::PlanDocument, sets::Vector{String}, capacity::Int)
+    key = (d.path, bytes2hex(sha256(read(d.path))), capacity)
     return lock(_LANE_LOCK) do
-        get!(_LANE_PROGRAMS, key) do
-            doc = JSON.parse(String(bytes))
-            file = EarthSciAST.load_document(wire_form(doc))
-            prob = EarthSciAST.esm_problem(file, tspan; compiler = :native, base_path = dirname(d.path))
-            EarthSciAST.lanes(EarthSciAST.rhs_program(prob), :cells, sets; chunk = capacity)
-        end
+        get!(() -> EarthSciAST.lanes(d.prog, :cells, sets; chunk = capacity), _LANE_PROGRAMS, key)
     end
 end
 
@@ -85,6 +80,12 @@ struct LaneDoc{P}
     na::Int
     offsets::Dict{String, Int}
     pool::Vector{Any}
+    # The forcing set of a call without data, built once, so that every lane
+    # takes the same set and lanes batch (§3.2); `nothing` when the program
+    # reads data.
+    empty::Union{Nothing, EarthSciAST.ForcingSet}
+    # The sets of the resident epochs (§7), by forcing key; a set whose
+    # epochs the forcing runtime has dropped is dropped too.
     sets::Dict{NTuple{2, Int}, EarthSciAST.ForcingSet}
     lock::ReentrantLock
 end
@@ -112,7 +113,10 @@ function LaneDoc(lp, L::Int, pnames::Vector{String}, species::Vector{String}, la
             push!(fill, (b.offset, 0, layout.offset[b.name] + 1))
         end
     end
-    return LaneDoc(lp, L, pidx, fill, lay.n_u, lay.n_aux, offsets, Any[], Dict{NTuple{2, Int}, EarthSciAST.ForcingSet}(), ReentrantLock())
+    empty = isempty(EarthSciAST.forcing_slots(lp)) ? EarthSciAST.forcing_set(lp, Any[]) : nothing
+    return LaneDoc(
+        lp, L, pidx, fill, lay.n_u, lay.n_aux, offsets, Any[], empty, Dict{NTuple{2, Int}, EarthSciAST.ForcingSet}(), ReentrantLock()
+    )
 end
 
 function _acquire(d::LaneDoc)
@@ -129,22 +133,28 @@ _release(d::LaneDoc, w) = lock(() -> push!(d.pool, w), d.lock)
 The lane program's forcing set for a call at `t` (spec/operator-interface.md
 §8.4.1; spec/partitioning.md §7): the buffers of the epochs
 [`forcing_key`](@ref) selects, which are resident before the invocation;
-one set per key, built once.
+one set per key, built once and kept while the forcing runtime keeps its
+epochs' buffers. Without data, the document's one empty set.
 """
 function lane_forcing(d::LaneDoc, F::Union{Nothing, ForcingRuntime}, t)
-    slots = EarthSciAST.forcing_slots(d.lp)
     if F === nothing
-        isempty(slots) || throw(ConfigError("a lane program reads data, but the operator has no forcing"))
-        return EarthSciAST.forcing_set(d.lp, Any[])
+        d.empty === nothing && throw(ConfigError("a lane program reads data, but the operator has no forcing"))
+        return d.empty
     end
     key = forcing_key(F, t)
     return lock(d.lock) do
-        get!(d.sets, key) do
-            ks, kt = key
-            bt = epoch_buffers(F, kt)
-            bs = ks == kt ? bt : epoch_buffers(F, ks)
-            EarthSciAST.forcing_set(d.lp, [F.records[s.name] == 2 ? bt[s.name] : bs[s.name] for s in slots])
-        end
+        fs = get(d.sets, key, nothing)
+        fs === nothing || return fs
+        ks, kt = key
+        bt = epoch_buffers(F, kt)
+        bs = ks == kt ? bt : epoch_buffers(F, ks)
+        fs = EarthSciAST.forcing_set(d.lp, [F.records[s.name] == 2 ? bt[s.name] : bs[s.name] for s in EarthSciAST.forcing_slots(d.lp)])
+        d.sets[key] = fs
+        # Drop the sets of epochs the runtime no longer keeps (§7): a call
+        # that needs one again rebuilds it from the epoch's new buffers.
+        resident = lock(() -> Set(F.order), F.lock)
+        filter!(kv -> first(kv)[1] in resident && first(kv)[2] in resident, d.sets)
+        fs
     end
 end
 
@@ -222,7 +232,7 @@ function lane_ops(op::PlannedOperator, species::Vector{String}, capacity::Int, p
     sets = String[String(s) for s in sets]
     what(kind) = "operator '$(op.name)': derived/$(op.name).$kind.esm"
     build(d, kind) = try
-        LaneDoc(lane_program(d, sets, capacity, tspan), capacity, pnames, species, L, ncells, what(kind))
+        LaneDoc(lane_program(d, sets, capacity), capacity, pnames, species, L, ncells, what(kind))
     catch e
         e isa InterruptException && rethrow()
         e isa ConfigError && rethrow()
@@ -353,6 +363,13 @@ a call (U19).
 const MIXED_TIME_LANES = Threads.Atomic{Int}(0)
 
 """
+The largest number of distinct Julia threads the executor tasks of one scoped
+leaf invocation have run on in this process: how the tests see that the
+thread-invariance variants run in parallel.
+"""
+const EXECUTOR_THREADS = Threads.Atomic{Int}(0)
+
+"""
     Batcher(lanes)
 
 The rendezvous of one lane pool (spec/partitioning.md §3.2): each lane task
@@ -371,7 +388,7 @@ end
 Batcher(lanes::Int) = Batcher(Threads.Condition(), lanes, Tuple{Int, LaneRequest}[], Any[nothing for _ in 1:lanes])
 
 function submit!(b::Batcher, lane::Int, r::LaneRequest)
-    lock(b.cond) do
+    return lock(b.cond) do
         push!(b.pending, (lane, r))
         while true
             res = b.done[lane]
@@ -609,8 +626,11 @@ What a leaf with `dt_scope` `cell` or `shard` keeps across its invocations
 species, the plan's shard count, `reshard: {"every": k}` (under `shard`),
 the lane capacity, the run-time thread count, whether the tests' whole-state
 oracle replaces the lane programs; per unit (cell, or shard of the current
-composition) its controller state; the re-sharding signal of the current and
-the previous macro step; and the lane programs, built on first use.
+composition) its controller state; the re-sharding signal `R_c` of the
+current and the previous macro step; the composition the tape last recorded
+(§11); and the lane programs, built on first use. All but the lane programs
+are the run's own: [`reset!`](@ref) clears them when a run starts, and a
+checkpoint saves them ([`scope_saved`](@ref)).
 """
 mutable struct ScopeState
     kind::Symbol
@@ -626,6 +646,7 @@ mutable struct ScopeState
     macro_step::Int
     signal::Vector{Float64}
     previous::Vector{Float64}
+    recorded::Vector{Vector{Int}}
     lanes::Any
     lock::ReentrantLock
 end
@@ -635,7 +656,7 @@ const DEFAULT_LANES = 8
 
 ScopeState(kind::Symbol, ncells, n, nshards, reshard_every, capacity) = ScopeState(
     kind, ncells, n, max(nshards, 1), reshard_every, max(capacity, 1), 1, false, ControllerState[], Vector{Int}[], -1,
-    Float64[], Float64[], nothing, ReentrantLock()
+    Float64[], Float64[], Vector{Int}[], nothing, ReentrantLock()
 )
 
 """Forget every unit's controller state, the composition and the signal: a new run starts."""
@@ -645,6 +666,29 @@ function reset!(s::ScopeState)
     s.macro_step = -1
     s.signal = zeros(s.ncells)
     s.previous = zeros(s.ncells)
+    empty!(s.recorded)
+    return s
+end
+
+"""
+What a checkpoint holds of a scoped leaf (spec/partitioning.md §11): each
+unit's controller state and, under `shard`, the composition, the re-sharding
+signal summed so far and the macro step it belongs to, and the composition
+the tape last recorded.
+"""
+scope_saved(s::ScopeState) = (
+    units = ControllerState[copy(c) for c in s.units], shards = [copy(x) for x in s.shards], macro_step = s.macro_step,
+    signal = copy(s.signal), previous = copy(s.previous), recorded = [copy(x) for x in s.recorded],
+)
+
+"""Restore a scoped leaf's run state from [`scope_saved`](@ref), so a resumed run continues exactly as the uninterrupted one."""
+function restore!(s::ScopeState, saved)
+    s.units = ControllerState[copy(c) for c in saved.units]
+    s.shards = [copy(x) for x in saved.shards]
+    s.macro_step = saved.macro_step
+    s.signal = copy(saved.signal)
+    s.previous = copy(saved.previous)
+    s.recorded = [copy(x) for x in saved.recorded]
     return s
 end
 
@@ -664,18 +708,22 @@ end
 Re-compose a `shard` leaf's shards from the signal `R` of the previous macro
 step (§6.2): cells sorted by `R_c` descending, ties (equal bits) by cell
 index, cut into as many contiguous shards as before, each listing its cells
-ascending; each new shard's controller starts from the old shard that held
-its smallest cell.
+ascending, the shards in order of their smallest cell (§2.4); each new
+shard's controller starts from the old shard that held its smallest cell.
 """
 function reshard!(s::ScopeState, R::Vector{Float64})
     C, S = s.ncells, length(s.shards)
-    order = sort(collect(1:C); lt = (a, b) -> reinterpret(UInt64, R[a]) == reinterpret(UInt64, R[b]) ? a < b :
-        (isless(R[b], R[a]) || (!isless(R[a], R[b]) && a < b)))
+    order = sort(
+        collect(1:C); lt = (a, b) -> reinterpret(UInt64, R[a]) == reinterpret(UInt64, R[b]) ? a < b :
+            (isless(R[b], R[a]) || (!isless(R[a], R[b]) && a < b))
+    )
     shards = Vector{Int}[]
     for k in 0:(S - 1)
         v = sort!(order[(fld(k * C, S) + 1):fld((k + 1) * C, S)])
         isempty(v) || push!(shards, v)
     end
+    # The shards in order of their smallest cell (§2.4).
+    sort!(shards; by = first)
     owner(c) = something(findfirst(sh -> insorted(c, sh), s.shards), 1)
     s.units = ControllerState[copy(s.units[owner(first(sh))]) for sh in shards]
     s.shards = shards
@@ -683,13 +731,13 @@ function reshard!(s::ScopeState, R::Vector{Float64})
 end
 
 """
-    unit_leaf(leaf, s, m, ops) -> (LeafNode, UnitTarget, cellsq, cellacc)
+    unit_leaf(leaf, s, m, lanes) -> (LeafNode, UnitTarget)
 
 A leaf over a unit of `m` cells of the scoped leaf `leaf`: its operators
 ([`UnitOperator`](@ref)) over the unit's state, `block_diagonal` storage of
-`m` cells, the leaf's tolerances, domain and method at the unit's DOFs.
-Under `shard`, its tolerances carry the buffers the error norm writes each
-cell's squared ratios into (§6.2).
+`m` cells, the leaf's tolerances, domain and method at the unit's DOFs, and
+an IMEX leaf's parts over the same unit operators. Under `shard`, its
+tolerances carry the unit's [`CellRatios`](@ref) (§6.2).
 """
 function unit_leaf(leaf::LeafNode, s::ScopeState, m::Int, lanes)
     n, nc = s.n, s.ncells
@@ -697,19 +745,23 @@ function unit_leaf(leaf::LeafNode, s::ScopeState, m::Int, lanes)
     ops = AbstractOperator[
         UnitOperator(op, lanes === nothing ? nothing : lanes[k], target, n, m, nc) for (k, op) in enumerate(leaf.ops.ops)
     ]
+    # IMEX Euler (spec/partitioning.md §2.3): each part sums the unit operators
+    # of its operators, in the part's order, as the leaf's parts do.
+    unit_of = IdDict{Any, AbstractOperator}(op => ops[k] for (k, op) in enumerate(leaf.ops.ops))
+    part(x) = x === nothing ? nothing : OperatorSum(AbstractOperator[unit_of[o] for o in x.ops])
+    imex = leaf.imex === nothing ? nothing : (part(leaf.imex[1]), part(leaf.imex[2]))
     tol = nothing
     if leaf.tol !== nothing
         # Every unit DOF (i, k) takes the leaf's abstol at species i; a
         # leaf's tolerance per variable is equal over its cells.
         abstol = Float64[leaf.tol.abstol[(i - 1) * nc + 1] for i in 1:n for _ in 1:m]
-        tol = s.kind === :shard ? Tolerances(leaf.tol.reltol, abstol, collect(1:(n * m)), zeros(m), zeros(m)) :
-            Tolerances(leaf.tol.reltol, abstol, collect(1:(n * m)))
+        tol = Tolerances(leaf.tol.reltol, abstol, collect(1:(n * m)), s.kind === :shard ? CellRatios(m) : nothing)
     end
     nonneg = sort!(unique!(Int[(div(j - 1, nc)) * m + k for j in leaf.nonnegative for k in 1:m]))
     ul = LeafNode(
         leaf.id, leaf.opnames, OperatorSum(ops), leaf.tab, leaf.method, leaf.dt, tol, leaf.dt0, leaf.dtmin, leaf.dtmax,
         leaf.controller, leaf.maxiters, nonneg, leaf.on_violation, leaf.bindings, leaf.linsolve, leaf.check_stages, nothing,
-        nothing, nothing
+        imex, nothing
     )
     return ul, target
 end
@@ -735,6 +787,11 @@ function scope_lanes!(leaf::LeafNode, s::ScopeState, pnames, tspan)
         end
         s.lanes = [lane_ops(op, species, s.capacity, pnames, tspan) for op in planned]
     end
+end
+
+"""A unit's integration threw `e` (rethrown after every executor ends)."""
+struct UnitFailure
+    e::Any
 end
 
 """
@@ -779,7 +836,9 @@ function scoped_forward(
     # The signal of the macro step (§6.2), and re-sharding at its start.
     if s.macro_step != k
         if s.macro_step >= 0
-            s.previous = s.signal
+            # R_c of the previous macro step; zero when the leaf was not
+            # invoked in it.
+            s.previous = s.macro_step == k - 1 ? s.signal : zeros(nc)
             s.signal = zeros(nc)
         end
         s.macro_step = k
@@ -794,7 +853,7 @@ function scoped_forward(
     lanes = scope_lanes!(leaf, s, pnames, tspan)
     lanes === false && (lanes = nothing)
     make_resident!(leaf, ta, tb)
-    results = Vector{Any}(undef, length(units))
+    results = Any[nothing for _ in units]
     next = Threads.Atomic{Int}(1)
     nt = clamp(s.threads, 1, max(length(units), 1))
     # Under `cell` with lane programs, each executor runs a lane pool of
@@ -827,10 +886,23 @@ function scoped_forward(
             target.batch = batch
             xu = Float64[x[(sp - 1) * nc + c] for sp in 1:n for c in cells]
             cs = copy(s.units[i])
-            ul.tol !== nothing && ul.tol.cellacc !== nothing && fill!(ul.tol.cellacc, 0.0)
-            out = leaf_forward(ul, cs, xu, p, ta, tb, path, Δmacro, copy(stops))
-            sig = ul.tol === nothing || ul.tol.cellacc === nothing ? nothing : copy(ul.tol.cellacc)
-            results[i] = (out, cs, sig)
+            # The unit's cells' R_c so far in the macro step, to which each
+            # step attempt adds, in attempt order (§6.2).
+            cr = ul.tol === nothing ? nothing : ul.tol.cells
+            if cr !== nothing
+                for (kk, c) in enumerate(cells)
+                    cr.acc[kk] = s.signal[c]
+                end
+            end
+            results[i] = try
+                out = leaf_forward(ul, cs, xu, p, ta, tb, path, Δmacro, copy(stops))
+                (out, cs, cr === nothing ? nothing : copy(cr.acc))
+            catch e
+                e isa InterruptException && rethrow()
+                # The unit's failure; the executor takes no more units.
+                UnitFailure(e)
+            end
+            results[i] isa UnitFailure && break
         end
         return nothing
     end
@@ -838,8 +910,20 @@ function scoped_forward(
     if total == 1
         work(1)
     else
-        tasks = [Threads.@spawn work(k) for k in 1:total]
-        foreach(wait, tasks)
+        tids = zeros(Int, total)
+        tasks = [Threads.@spawn (tids[k] = Threads.threadid(); work(k)) for k in 1:total]
+        # Every task ends before anything is rethrown: a failure outside a
+        # unit's integration, the first in task order.
+        other = nothing
+        for tk in tasks
+            try
+                wait(tk)
+            catch e
+                other === nothing && (other = e isa TaskFailedException ? tk.result : e)
+            end
+        end
+        Threads.atomic_max!(EXECUTOR_THREADS, length(unique(filter(>(0), tids))))
+        other === nothing || throw(other)
     end
     # Merge, units in order.
     xnew = copy(x)
@@ -849,8 +933,20 @@ function scoped_forward(
     acc, rej = Int[], Int[]
     shard_recs = ShardRecord[]
     failed = nothing
+    # Clips by step index (numbered within each unit), as the leaf's 0-based
+    # state-vector indices (spec/tape.md §2).
+    clips = Dict{Int, Set{Int}}()
     for (i, cells) in enumerate(units)
-        out, cs, sig = results[i]
+        res = results[i]
+        # The first failure in unit order, a thrown error or a non-success
+        # code: an error is rethrown as itself unless an earlier unit's code
+        # is already the invocation's failure, so what is thrown does not
+        # depend on the thread count. A unit not run follows a failure.
+        if res === nothing || res isa UnitFailure
+            failed === nothing && res isa UnitFailure && throw(res.e)
+            continue
+        end
+        out, cs, sig = res
         m = length(cells)
         for sp in 1:n, (kk, c) in enumerate(cells)
             xnew[(sp - 1) * nc + c] = out.u[(sp - 1) * m + kk]
@@ -863,6 +959,12 @@ function scoped_forward(
         end
         s.units[i] = cs
         r = out.record
+        for (step, idx) in r.clips
+            d = get!(Set{Int}, clips, step)
+            for j in idx
+                push!(d, div(j, m) * nc + cells[j % m + 1] - 1)
+            end
+        end
         rec.accepted += r.accepted
         rec.rejected += r.rejected
         nf += out.nf
@@ -874,10 +976,17 @@ function scoped_forward(
             push!(acc, r.accepted)
             push!(rej, r.rejected)
         else
-            for (kk, c) in enumerate(cells)
-                s.signal[c] += sig === nothing ? 0.0 : sig[kk]
+            if sig !== nothing
+                for (kk, c) in enumerate(cells)
+                    s.signal[c] = sig[kk]
+                end
             end
-            push!(shard_recs, ShardRecord(Int[c - 1 for c in cells], r.steps, r.accepted, r.rejected))
+            # A shard's cells on its first record and when they changed since
+            # its last (§11).
+            length(s.recorded) < i && resize!(s.recorded, i)
+            listed = !isassigned(s.recorded, i) || s.recorded[i] != cells
+            s.recorded[i] = copy(cells)
+            push!(shard_recs, ShardRecord(listed ? Int[c - 1 for c in cells] : nothing, r.steps, r.accepted, r.rejected))
         end
     end
     if s.kind === :cell
@@ -886,5 +995,8 @@ function scoped_forward(
         rec.shards = shard_recs
     end
     failed === nothing || (rec.failed_unit = failed)
+    for step in sort!(collect(keys(clips)))
+        push!(rec.clips, step => sort!(collect(clips[step])))
+    end
     return LeafOutcome(xnew, rec, nf, interior, 0.0)
 end

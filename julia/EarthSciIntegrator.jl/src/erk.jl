@@ -247,7 +247,7 @@ function erk_step(m::ButcherERK, f!, u, t, h, k1, adaptive::Bool, tol; tk1 = t +
                     _axpy!(e, e, h * bt[i], K[i])
                 end
             end
-            E = error_norm(e, u, unew, tol)
+            E = estimate_norm(e, u, unew, tol)
         elseif est === :residual_control
             E, k5, nfr = rk4_residual_error(m, f!, u, unew, t, h, K[1], tol)
             nf += nfr
@@ -287,6 +287,10 @@ function rk4_residual_error(m::ButcherERK, f!, un, u1, t, h, k1, tol)
     nf = 1
     σs = something(m.tab.residual_sigma)
     Es = Float64[]
+    # A shard unit keeps the ratios of the norm that gives the maximum, the
+    # first on a tie (spec/partitioning.md §6.2).
+    cr = tol.cells
+    best = cr === nothing ? nothing : similar(cr.sq)
     for σ in σs
         pσ = similar(un)
         ppσ = similar(un)
@@ -306,8 +310,13 @@ function rk4_residual_error(m::ButcherERK, f!, un, u1, t, h, k1, tol)
         @inbounds for j in eachindex(r)
             r[j] = h * (fp[j] - ppσ[j])
         end
-        push!(Es, error_norm(r, un, u1, tol))
+        E = estimate_norm(r, un, u1, tol)
+        if cr !== nothing && (isempty(Es) || E > maximum(Es))
+            copyto!(best, cr.sq)
+        end
+        push!(Es, E)
     end
+    cr === nothing || copyto!(cr.sq, best)
     return something(m.tab.residual_scale) * maximum(Es), k5, nf
 end
 
@@ -427,7 +436,7 @@ function erk_step(m::ShuOsherERK, f!, u, t, h, k1, adaptive::Bool, tol; tk1 = t,
         @inbounds for k in eachindex(e)
             e[k] = σ * (ũ[k] - unew[k])
         end
-        E = error_norm(e, u, unew, tol)
+        E = estimate_norm(e, u, unew, tol)
     end
     return StepResult(unew, E, nothing, nf)
 end

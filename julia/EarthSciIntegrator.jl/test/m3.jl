@@ -13,7 +13,8 @@
 # interleave, which must not change a value either.
 
 using EarthSciIntegrator: build_plan_run, layout_dofs, result_json, write_tape, LeafRecord, plan_problem, LeafOperator,
-    PlannedOperator, BlockJacobian, lane_ops, lane_rhs!, lane_jac!, lane_ft!, rhs!, jac!, ft!
+    PlannedOperator, BlockJacobian, lane_ops, lane_rhs!, lane_jac!, lane_ft!, rhs!, jac!, ft!, CellRatios, estimate_norm,
+    begin_attempt!, add_cell_ratios!
 const sha256 = EarthSciIntegrator.sha256
 
 @isdefined(RESULTS_DIR) || include("conformance.jl")
@@ -119,7 +120,15 @@ end
                 name = chk["check"]
                 if name == "invariance"
                     @testset "invariance" begin
+                        EarthSciIntegrator.EXECUTOR_THREADS[] = 0
                         runs = [m3_run(case, v)[1] for v in chk["variants"]]
+                        # With several Julia threads, the variants with
+                        # several executor threads run on several (CI runs
+                        # the tests on four).
+                        if Threads.nthreads() > 1 && any(v -> get(v, "threads", 1) > 1, chk["variants"]) && !occursin("global", id)
+                            @test EarthSciIntegrator.EXECUTOR_THREADS[] > 1
+                        end
+                        @info "$id: executor tasks on at most $(EarthSciIntegrator.EXECUTOR_THREADS[]) threads"
                         @info "$id: invariance over $(length(runs)) variants"
                         for (k, r) in enumerate(runs)
                             k == 1 && continue
@@ -226,5 +235,130 @@ end
             end
             @test bad == 0
         end
+    end
+end
+
+# spec/partitioning.md §2.3, §2.4: an IMEX Euler leaf of pointwise operators
+# runs per cell and per shard, each unit's implicit part solved alone (as the
+# Rust runtime's units do). Its NO2 terms are the explicit part, the rest the
+# implicit part. With `dt_scope` omitted the planner resolves the leaf to
+# `cell` (spec/plan.md §7.4). Every scope agrees with `global` to the Newton
+# iteration's tolerance, and each is the same bit for bit on any threads and
+# lanes.
+@testset "M3: IMEX Euler leaves per cell and per shard" begin
+    pat = get(ENV, "EARTHSCIINTEGRATOR_CASES", "")
+    if isempty(pat) || occursin(Regex(pat), "m3.imex")
+        function imex_case(scope)
+            control = Dict{String, Any}("reltol" => 1.0e-8, "abstol" => 1.0e-12)
+            scope === nothing || (control["dt_scope"] = scope)
+            leaf = Dict{String, Any}(
+                "leaf" => ["photo_no2", "photo_rest"], "alg" => "IMEXEuler", "dt" => 60,
+                "imex" => Dict("explicit" => ["photo_no2"], "implicit" => ["photo_rest"]),
+                "control" => control, "partition" => Dict{String, Any}("shards" => 3),
+            )
+            rc = Dict{String, Any}(
+                "esm_integrator" => "0.1.0", "model" => "../toys/photostationary_cells.esm",
+                "operators" => Dict(
+                    "photo_no2" => Dict("select" => Dict("variables" => ["Photo.NO2"])),
+                    "photo_rest" => Dict("select" => Dict("variables" => ["Photo.NO", "Photo.O3"])),
+                ),
+                "schedule" => leaf, "step" => Dict("dt" => 600, "hit" => ["output"]), "output" => Dict("saveat" => 600),
+            )
+            return Dict{String, Any}(
+                "id" => "m3.imex.$(something(scope, "auto"))", "run_config" => rc, "tspan" => [0.0, 3600.0],
+                "saveat" => [600.0 * k for k in 1:6],
+            )
+        end
+        layout = ["Photo.NO2", "Photo.NO", "Photo.O3"]
+        global_run, gpp = m3_run(imex_case("global"), Dict{String, Any}())
+        @test global_run.retcode == "Success"
+        dofs = layout_dofs(gpp, layout)
+        for scope in ("cell", "shard", nothing)
+            case = imex_case(scope)
+            base, pp = m3_run(case, Dict{String, Any}())
+            @test base.retcode == "Success"
+            recs = [r for r in base.tape.records if r isa LeafRecord]
+            @test !isempty(recs)
+            # The leaf ran per cell (per shard): its records carry per-unit counts.
+            @test all(r -> (scope == "shard" ? r.shards !== nothing : r.cells !== nothing), recs)
+            ok, detail = scope_agreement(base, global_run, dofs, 1.0e-6)
+            @test ok
+            ok || @info "$(case["id"]) against global: $detail"
+            # Under `shard` the shards are the units, so only lanes and
+            # threads vary (§9.1).
+            variants = scope == "shard" ? (Dict("lanes" => 4, "threads" => 2), Dict("lanes" => 5, "threads" => 4)) :
+                (Dict("lanes" => 4, "threads" => 2), Dict("shards" => 7, "lanes" => 5, "threads" => 4))
+            for v in variants
+                why = bitwise_diff(base, m3_run(case, Dict{String, Any}(v))[1])
+                @test why === nothing
+                why === nothing || @info "$(case["id"]) $v: $why"
+            end
+        end
+    end
+end
+
+# spec/partitioning.md §6.2: which attempts add to a shard unit's R_c. Only
+# the ratios of the norm the controller decides on (`estimate_norm`), never
+# another norm's (`error_norm`, a Newton increment's); an attempt with no
+# estimate, or a non-finite one, adds nothing; attempts add in order.
+@testset "M3: the re-sharding signal's attempts" begin
+    m = 2
+    tol = Tolerances(0.0, ones(2m), collect(1:(2m)), CellRatios(m))
+    u = zeros(2m)
+    e = [1.0, 2.0, 3.0, 4.0]        # species-major: cell 1 has DOFs 1 and 3
+    # An attempt whose only norm is not the estimate adds nothing.
+    begin_attempt!(tol)
+    error_norm(e, u, u, tol)
+    add_cell_ratios!(tol, 0.5)
+    @test tol.cells.acc == [0.0, 0.0]
+    # The estimate's ratios, in species order per cell.
+    begin_attempt!(tol)
+    E = estimate_norm(e, u, u, tol)
+    error_norm(100 .* e, u, u, tol)  # a later norm of another kind changes nothing
+    add_cell_ratios!(tol, E)
+    @test tol.cells.acc == [1.0 + 9.0, 4.0 + 16.0]
+    # A non-finite estimate adds nothing, and neither does the next attempt
+    # when it computes no estimate (the stale ratios stay unused).
+    begin_attempt!(tol)
+    E = estimate_norm([Inf, 0.0, 0.0, 0.0], u, u, tol)
+    add_cell_ratios!(tol, E)
+    begin_attempt!(tol)
+    add_cell_ratios!(tol, 2.0)
+    @test tol.cells.acc == [10.0, 20.0]
+
+    # The shard case: the tape writes a shard's cells on the first record and
+    # after the composition changed only (§11), and every checkpoint holds the
+    # signal summed so far.
+    cases = JSON.parsefile(M3_CASES_FILE)["cases"]
+    case = cases[findfirst(c -> c["id"] == "m3.reseact_mini.shard", cases)]
+    pat = get(ENV, "EARTHSCIINTEGRATOR_CASES", "")
+    if isempty(pat) || occursin(Regex(pat), case["id"])
+        run, _ = m3_run(case, Dict{String, Any}())
+        recs = [r for r in run.tape.records if r isa LeafRecord && r.shards !== nothing]
+        @test !isempty(recs)
+        @test all(sh -> sh.cells !== nothing, recs[1].shards)
+        # Each shard's cells as last listed; a record lists them exactly when
+        # they changed. Shards are in order of their smallest cell (§2.4).
+        prev = [sh.cells for sh in recs[1].shards]
+        listed = 0
+        sorted = issorted(first.(prev))
+        for r in recs[2:end]
+            for (i, sh) in enumerate(r.shards)
+                sh.cells === nothing && continue
+                @test sh.cells != prev[i]
+                prev[i] = sh.cells
+                listed += 1
+            end
+            sorted &= issorted(first.(prev))
+        end
+        @test sorted
+        @info "m3.reseact_mini.shard: $(length(recs)) records, $listed later shard entries list their cells"
+        @test listed < (length(recs) - 1) * length(recs[1].shards)
+        saved = [cp.units["chem"] for cp in run.checkpoints]
+        @test all(sv -> length(sv.signal) == 120 && all(isfinite, sv.signal), saved)
+        @test any(sv -> any(>(0), sv.signal), saved)
+        s = EarthSciIntegrator.ScopeState(:shard, 120, 3, 4, 2, 8)
+        EarthSciIntegrator.restore!(s, saved[3])
+        @test s.signal == saved[3].signal && s.shards == saved[3].shards && s.macro_step == saved[3].macro_step
     end
 end

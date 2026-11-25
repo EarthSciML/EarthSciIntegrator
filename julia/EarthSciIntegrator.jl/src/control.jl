@@ -12,6 +12,23 @@ primal(x::ForwardDiff.Dual) = primal(ForwardDiff.value(x))
 _f64(x) = Float64(primal(x))
 
 """
+    CellRatios(m)
+
+A `dt_scope: shard` unit's re-sharding signal (spec/partitioning.md §6.2) over
+its `m` cells (the unit's DOF `j` in cell `(j - 1) % m + 1`): `sq`, each
+cell's sum of squared ratios of the attempt's error estimate, in species
+order; `fresh`, whether the attempt in progress has computed that estimate;
+and `acc`, each cell's `R_c`, to which each attempt adds its `sq`, in attempt
+order.
+"""
+mutable struct CellRatios
+    sq::Vector{Float64}
+    acc::Vector{Float64}
+    fresh::Bool
+end
+CellRatios(m::Integer) = CellRatios(zeros(m), zeros(m), false)
+
+"""
     Tolerances(reltol, abstol, dofs=eachindex(abstol))
 
 `reltol` is a scalar; `abstol` holds one absolute tolerance per entry of the
@@ -22,14 +39,10 @@ struct Tolerances
     reltol::Float64
     abstol::Vector{Float64}
     dofs::Vector{Int}
-    # A `dt_scope: shard` unit (spec/partitioning.md §6.2): each cell's sum of
-    # squared ratios at the latest norm (`cellsq`, `m` cells, the unit's DOF
-    # `j` in cell `(j - 1) % m + 1`), and their sum over the invocation's step
-    # attempts (`cellacc`). `nothing` otherwise.
-    cellsq::Union{Nothing, Vector{Float64}}
-    cellacc::Union{Nothing, Vector{Float64}}
+    # A `dt_scope: shard` unit's [`CellRatios`](@ref); `nothing` otherwise.
+    cells::Union{Nothing, CellRatios}
 end
-Tolerances(reltol, abstol, dofs) = Tolerances(reltol, abstol, dofs, nothing, nothing)
+Tolerances(reltol, abstol, dofs) = Tolerances(reltol, abstol, dofs, nothing)
 Tolerances(reltol, abstol) = Tolerances(reltol, abstol, collect(eachindex(abstol)))
 
 """
@@ -38,40 +51,70 @@ Tolerances(reltol, abstol) = Tolerances(reltol, abstol, collect(eachindex(abstol
 spec/methods.md §7: `sqrt(Σⱼ (eⱼ/scⱼ)² / N)` with `scⱼ = abstolⱼ + reltol·max(|u_{n,j}|, |u_{n+1,j}|)`,
 over the `N` DOFs the leaf writes (`tol.dofs`), in f64 whatever the state type,
 summed sequentially in ascending DOF order with no fused multiply-add.
+A norm that is not the step's error estimate (a Newton increment's, the
+first step's) is this one; the estimate is [`estimate_norm`](@ref).
 """
 function error_norm(e, un, un1, tol::Tolerances)
     N = length(tol.dofs)
     s = 0.0
-    cq = tol.cellsq
-    if cq === nothing
-        @inbounds for j in tol.dofs
-            sc = tol.abstol[j] + tol.reltol * max(abs(_f64(un[j])), abs(_f64(un1[j])))
-            r = _f64(e[j]) / sc
-            s = s + r * r
-        end
-    else
-        # The same sum; each cell's squared ratios are also kept (§6.2).
-        fill!(cq, 0.0)
-        m = length(cq)
-        @inbounds for j in tol.dofs
-            sc = tol.abstol[j] + tol.reltol * max(abs(_f64(un[j])), abs(_f64(un1[j])))
-            r = _f64(e[j]) / sc
-            s = s + r * r
-            c = (j - 1) % m + 1
-            cq[c] = cq[c] + r * r
-        end
+    @inbounds for j in tol.dofs
+        sc = tol.abstol[j] + tol.reltol * max(abs(_f64(un[j])), abs(_f64(un1[j])))
+        r = _f64(e[j]) / sc
+        s = s + r * r
     end
     return sqrt(s / N)
 end
 
 """
-Add the latest norm's per-cell squared ratios to the invocation's sums: once
-per step attempt whose error was estimated, the last norm being its error's
-(spec/partitioning.md §6.2). Nothing without the buffers.
+    estimate_norm(e, un, un1, tol) -> Float64
+
+The [`error_norm`](@ref) of a step attempt's error estimate, the norm the
+controller accepts or rejects the attempt on. In a `dt_scope: shard` unit it
+also keeps each cell's sum of squared ratios, in species order, for the
+re-sharding signal (spec/partitioning.md §6.2), and marks the attempt as
+having an estimate.
 """
-function add_cell_ratios!(tol::Union{Nothing, Tolerances})
-    (tol === nothing || tol.cellacc === nothing) && return nothing
-    tol.cellacc .+= tol.cellsq
+function estimate_norm(e, un, un1, tol::Tolerances)
+    cr = tol.cells
+    cr === nothing && return error_norm(e, un, un1, tol)
+    N = length(tol.dofs)
+    s = 0.0
+    cq = cr.sq
+    fill!(cq, 0.0)
+    m = length(cq)
+    @inbounds for j in tol.dofs
+        sc = tol.abstol[j] + tol.reltol * max(abs(_f64(un[j])), abs(_f64(un1[j])))
+        r = _f64(e[j]) / sc
+        s = s + r * r
+        c = (j - 1) % m + 1
+        cq[c] = cq[c] + r * r
+    end
+    cr.fresh = true
+    return sqrt(s / N)
+end
+
+"""A step attempt starts: it has no error estimate yet (spec/partitioning.md §6.2). Nothing without a [`CellRatios`](@ref)."""
+function begin_attempt!(tol::Union{Nothing, Tolerances})
+    (tol === nothing || tol.cells === nothing) && return nothing
+    tol.cells.fresh = false
+    return nothing
+end
+
+"""
+Add the attempt's per-cell squared ratios to each cell's `R_c`
+(spec/partitioning.md §6.2): only when the attempt computed its error
+estimate `E` with [`estimate_norm`](@ref) and `E` is finite; an attempt with
+no estimate (a singular iteration matrix, a failed Newton iteration, a first
+step estimated without a norm) adds nothing. Nothing without a
+[`CellRatios`](@ref).
+"""
+function add_cell_ratios!(tol::Union{Nothing, Tolerances}, E::Float64)
+    (tol === nothing || tol.cells === nothing) && return nothing
+    cr = tol.cells
+    (cr.fresh && isfinite(E)) || return nothing
+    @inbounds for c in eachindex(cr.acc)
+        cr.acc[c] = cr.acc[c] + cr.sq[c]
+    end
     return nothing
 end
 
