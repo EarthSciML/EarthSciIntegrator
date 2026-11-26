@@ -363,7 +363,7 @@ The pairing is the matching Kuhn's augmenting-path algorithm finds on the diagon
 
 #### 5.9.6 Uniqueness
 
-The pairing is **unique** when the directed graph with an arc from each residual block to every diagonal partner it is not paired with, and from each unknown block to its paired residual block, has no cycle. A cycle is an alternating cycle: exchanging along it gives another pairing. A cycle that passes through a bounded unknown block (spec/run-config.md §4.10) is refused, `solve_pairing_ambiguous` at the node's pointer, naming the blocks of the first such cycle found by a depth-first search from the residual blocks in residual order. A cycle through unbounded blocks only is allowed: the canonical pairing stands (D120).
+The pairing is **unique** when the directed graph with an arc from each residual block to every diagonal partner it is not paired with, and from each unknown block to its paired residual block, has no cycle. A cycle is an alternating cycle: exchanging along it gives another pairing. A cycle that passes through a bounded unknown block (spec/run-config.md §4.10) is refused, `solve_pairing_ambiguous` at the node's pointer, naming the blocks of the first such cycle found by a depth-first search from the residual blocks in residual order. A cycle through unbounded blocks only is allowed: the canonical pairing stands (D120). *Possible follow-up:* a model-stated pairing (an equation naming the unknown it constrains) would let a model with several bounded unknowns that each equation reads be planned; it is not specified until a model needs it.
 
 #### 5.9.7 What the plan holds, and rule 18
 
