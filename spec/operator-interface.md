@@ -80,7 +80,7 @@ The names above are the spec's. Each binding spells them idiomatically and docum
 - **Forcing derivatives** (M4): `vjp_F`, `hess_F` and `ft_vjp_F` (U7, U8). The forcing-set argument $F$ itself is M2's (§1, §8.4).
 - **Array parameters** (M4): gridded parameters as additional $p$-shaped arguments with their own `vjp_*` (D5, U7).
 - **Range restriction** (M3): calls over a tile with halos or a list of lanes rather than the whole state (U3).
-- **Maps, limits, conditions and residuals** (M1 maps; M4b the rest): §7 defines maps; the others follow with U6.
+- **Maps, limits, conditions and residuals** (M1 maps; M4b the rest): §7 defines maps; limits and conditions follow with U6. A residual is a right-hand-side document whose state slots for the paired unknowns hold the residual (spec/plan.md §6.4, D121), evaluated like §8's right-hand side.
 
 ## 7. Map operators
 

@@ -1,0 +1,14 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "An index-1 DAE (D122): Robertson's kinetics with the third species replaced by its conservation law, written in the model as the algebraic equation 0 ~ 1 - y1 - y2 - y3. The coupled node integrates the two kinetic states and the algebraic unknown Rober.y3 monolithically with a stiffly accurate Rosenbrock method, the residual paired with y3 by the diagonal structural pairing (D120), and solves the conservation law for y3 at the start of every invocation (consistent initialization). Checked against the schema only; the planner's fixture is spec/toy-problems.md's.",
+  "model": "robertson_dae.esm",
+  "operators": {
+    "kinetics": {"select": {"terms": ["Rober"]}},
+    "conservation": {"select": {"components": "Rober", "variables": ["Rober.y3"]}}
+  },
+  "schedule": {
+    "coupled": ["kinetics", "conservation"], "alg": "Rodas4",
+    "control": {"reltol": 1e-6, "abstol": 1e-10},
+    "initialize": {"newton": {}, "linesearch": "backtracking", "converged": {"residual": 1e-12}, "maxiter": 50}
+  }
+}

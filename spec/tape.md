@@ -22,7 +22,7 @@ Invocation order within a macro step is the execution order. Paths and order are
 
 | Node | Recorded per invocation |
 |---|---|
-| `leaf`, `coupled` | `t`, `Δ`; the accepted steps as a list of `(t_n, h_n)`; counts of accepted and rejected steps; the return code. For SDIRK and IMEX leaves, nothing about Newton iterations: the adjoint differentiates the converged stages (spec/adjoint.md §4.3). |
+| `leaf`, `coupled` | `t`, `Δ`; for a `coupled` node with algebraic operators, the unknowns its consistent initialization converged to and the iterations it took (spec/methods.md §14.4); the accepted steps as a list of `(t_n, h_n)`; counts of accepted and rejected steps; the return code. For SDIRK and IMEX leaves, nothing about Newton iterations: the adjoint differentiates the converged stages (spec/adjoint.md §4.3). |
 | `subcycle` | the number of substeps and, under `limits`, each substep's size and the limit that set it. |
 | `every` | whether it fired, and Δₑ when it did (spec/run-config.md §4.9). |
 | `map` | the mask of discrete decisions the map recorded (operator-interface.md §7). |

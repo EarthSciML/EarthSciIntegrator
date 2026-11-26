@@ -494,11 +494,11 @@ The exact forward arithmetic, and hence its adjoint, is specified with the M7 me
 
 Without algebraic operators, `coupled` is a single leaf on the summed operators, and its adjoint is the family's. With `imex`, it is §4.4.
 
-With algebraic operators it is a semi-explicit index-1 DAE (D3b; specified in v1, implemented after M6 unless M4b needs it, D35). What can be stated now: with $M = \mathrm{diag}(I, 0)$, stiffly accurate Rodas and SDIRK, and consistent initialization by solving $g(u_0, z_0) = 0$:
+With algebraic operators it is a semi-explicit index-1 DAE (D3b, implemented at M4b, D122; spec/methods.md §14). What can be stated now: with $M = \mathrm{diag}(I, 0)$, stiffly accurate Rodas and SDIRK, and consistent initialization by solving $g(u_0, z_0) = 0$:
 - the stage adjoints of §4.2 and §4.3 hold with $W$ replaced by the block $2\times2$ matrix $\begin{pmatrix} I/(h\gamma) - f_u & -f_z \\ -g_u & -g_z \end{pmatrix}$ (Rosenbrock) or its SDIRK analogue;
-- the consistent initialization contributes a §4.6-type solve at $t_0$, mapping $\bar z_0$ into $\bar u_0$ and $\bar p$.
+- the consistent initialization at the start of every invocation (spec/methods.md §14.4) contributes a §4.6-type solve, mapping the cotangent of the initialized $z$ into $\bar u$ and $\bar p$ at the invocation's start.
 
-The DAE adjoint is written out when D3b is implemented.
+The DAE adjoint is written out with the runtimes' M4b work. The residual Jacobians $g_u$, $g_z$ come from the residual's Jacobian document (spec/plan.md §6.4), and $g_z$ is square in the rows of the pairing (D120).
 
 ## 6. Accumulation
 

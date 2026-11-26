@@ -1,0 +1,14 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Solve MOSAIC's MESA solid-liquid equilibrium of every size bin of every grid cell (mosaic_mesa_equilibrium.esm, unknowns on lev x bin x salt; the bins are independent, so the system is block diagonal, one fifteen-salt block per bin) with a bounded solve node (EarthSciIntegrator D95, PR #74): unknowns Mesa.e_salt (fifteen solid salt amounts, nmol/m3), residual Mesa's constraint 0 ~ g (g = S - 1 where MOSAIC lets the salt exchange, else 0), bound e_salt >= 0 (declared in the model as `lb`, esm 2.1.0, EarthSciAST #706; the run configuration does not state bounds since EarthSciIntegrator #74), so the solution is the complementarity e_salt >= 0, g <= 0, e_salt g = 0. ptc rather than newton: a salt MOSAIC does not let exchange has g identically 0, a zero Jacobian row, and pseudo-time keeps it at its warm start, which is mesa_ptc's own behaviour; warm_start initial is the document's starting value e_salt = 0 (mesa_ptc starts every hand-off with no salt solid). The pseudo-time carries amount units (rate S - 1 is dimensionless), as in the Fortran; dt0 is a placeholder until the assembly fixes a per-bin scale. converged.residual 1e-10 matches the tolerance at which the EqWeFiC converged-state tests were generated (WRF's mesa_ptc at rtol 1e-10). The Fortran instead integrates by explicit Euler with an adaptive per-salt step to |phi| <= 1e-2, at most 80 passes; data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md measures how far that stops from this solution.",
+  "model": "mosaic_mesa_equilibrium.esm",
+  "operators": {
+    "mesa": {"select": {"components": "Mesa"}}
+  },
+  "schedule": {
+    "solve": "mesa",
+    "unknowns": ["Mesa.e_salt"],
+    "method": {"ptc": {"dt0": 1e-6, "growth": 2}, "converged": {"residual": 1e-10}, "maxiter": 10000},
+    "warm_start": "initial"
+  }
+}

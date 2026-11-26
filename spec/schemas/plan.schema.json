@@ -146,7 +146,7 @@
     },
     "operatorPlan": {
       "type": "object",
-      "required": ["kind", "locality", "writes", "reads", "terms", "structure", "stiffness"],
+      "required": ["kind", "locality", "writes", "reads", "structure"],
       "additionalProperties": false,
       "properties": {
         "kind": {"enum": ["rhs", "algebraic", "map", "limit", "condition"]},
@@ -175,6 +175,21 @@
         "forcing": {
           "description": "The data-fed parameters among reads (spec/plan.md §5.3, D87). Present only when non-empty.",
           "allOf": [{"$ref": "#/$defs/sortedNames"}, {"minItems": 1}]
+        },
+        "residuals": {
+          "description": "An algebraic operator's residuals (spec/plan.md §5.9.7), in flattened equation order, each with the unknown the canonical pairing gives it (D120).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "origin", "unknown"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string"},
+              "origin": {"type": "string"},
+              "unknown": {"$ref": "run-config.schema.json#/$defs/qualifiedName"}
+            }
+          }
         },
         "terms": {
           "description": "The operator's terms (spec/plan.md §5.1), in flattened-equation order, then contribution, then summand.",
@@ -209,6 +224,11 @@
         }
       },
       "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "algebraic"}}},
+          "then": {"required": ["residuals"], "not": {"anyOf": [{"required": ["terms"]}, {"required": ["stiffness"]}]}},
+          "else": {"required": ["terms", "stiffness"], "not": {"required": ["residuals"]}}
+        },
         {
           "if": {"properties": {"locality": {"properties": {"class": {"const": "stencil"}}}}},
           "then": {"properties": {"structure": {"required": ["stencil"]}}},
