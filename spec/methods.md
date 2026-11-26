@@ -252,7 +252,7 @@ This is DiffEqBase's `calculate_residuals` (`src/calculate_residuals.jl:9-14`) u
 
 - **Precision** (D13, D41). The ratios, squares, sum and square root are computed in f64 whatever the state precision. A `Dual` number with f64 value type counts as f64; with step-size tangents off its partials are stripped before the norm ([`adjoint.md`](adjoint.md) §2.3).
 - **Order** (D10). The sum runs over ascending DOF index in the leaf's plan order, sequentially. Implementations MUST NOT reorder it, use pairwise or SIMD-tree summation, or contract it into fused multiply-adds unless the other implementation does the same; bitwise reproducibility within a language for a fixed decomposition depends on it.
-- **Scope.** With `dt_scope: global` the sum runs over all the leaf's DOFs on all ranks, reduced in fixed order (architecture §7.4). With `shard` or `cell` it runs over the DOFs of one shard or one cell, and each has its own controller state (§8.6).
+- **Scope.** With `dt_scope: global` the sum runs over all the leaf's DOFs, in the order above whatever the decomposition within a rank, and across ranks (M5) in rank order (architecture §7.4). With `shard` or `cell` it runs over the DOFs of one shard or one cell, in ascending DOF order, and each has its own controller state (§8.6). spec/partitioning.md §2 and §5 give the details (D97).
 - **Non-finite.** A non-finite $E$ rejects the step, and $h \leftarrow h \cdot q_{\min}$. *Deviation:* OrdinaryDiffEq has no such branch; a NaN estimate there propagates into $h$ and ends the solve with `DtNaN`.
 
 ## 8. Step-size control

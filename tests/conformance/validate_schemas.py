@@ -48,6 +48,7 @@ SUITES = {
 DOCUMENTS = [
     ("tests/conformance/m1/cases.json", "cases.schema.json", True),
     ("tests/conformance/m2/cases.json", "cases.schema.json", True),
+    ("tests/conformance/m3/cases.json", "cases.schema.json", True),
     ("spec/tableaus/*.json", "tableau.schema.json", False),
     ("tests/conformance/m1/reference/*.json", "result.schema.json", False),
     ("tests/conformance/m2/reference/*.json", "result.schema.json", True),
@@ -59,7 +60,7 @@ DOCUMENTS = [
 ]
 PLAN_FIXTURES = FIXTURES / "plans" / "fixtures"
 REFUSALS = FIXTURES / "plans" / "refusals"
-ESM_VERSION = "0.14.0"  # EarthSciAST, esm 2.3.0 (spec/plan.md §0.2)
+ESM_VERSION = "0.15.0"  # EarthSciAST, esm 2.4.0 (spec/plan.md §0.2)
 
 
 def load(path):

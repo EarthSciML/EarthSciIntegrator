@@ -57,6 +57,11 @@ pub enum Check {
         #[serde(default)]
         rtol_steps_differ: Option<f64>,
     },
+    /// M3: bitwise across shard counts, lane capacities and thread counts
+    /// (spec/partitioning.md §9.3).
+    Invariance { variants: Vec<Value> },
+    /// M3: agreement with the case that differs only in `dt_scope`.
+    ScopeAgreement { against: String, rtol: f64 },
 }
 
 /// A run's result file (spec/toy-problems.md §3) and its tape.

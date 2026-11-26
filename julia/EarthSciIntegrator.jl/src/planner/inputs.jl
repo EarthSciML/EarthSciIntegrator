@@ -136,11 +136,12 @@ function read_inputs(config_path::AbstractString)
             "the model's solver.external resolves to $ext, not to this run config ($mine)"
         )
     end
-    # Step 5: flatten and expand surviving template references (enums were
-    # lowered at load, EarthSciAST's own pass; esm 2.0.0 has no table_lookup).
+    # Step 5: flatten (enums were lowered at load, EarthSciAST's own pass;
+    # esm 2.0.0 has no table_lookup). Operator references are kept, never
+    # expanded: they resolve against the merged registry `flatten` carries
+    # (operator_refs.jl).
     flat = try
-        f = EarthSciAST.flatten(file)
-        EarthSciAST.expand_flattened_refs(f)
+        EarthSciAST.flatten(file)
     catch e
         e isa PlannerRefusal && rethrow()
         refuse("model_flatten_failed", "/model", "EarthSciAST refused to flatten $model: " * _load_error_message(e))

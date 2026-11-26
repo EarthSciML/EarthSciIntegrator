@@ -71,6 +71,12 @@ pub fn bands(sv: &SysView) -> Result<Vec<JacEntry>, BandError> {
     earthsci_astdiff::jacobian_bands_view(sv, Wrt::States, None)
 }
 
+/// The time-derivative band list of the view `sv` (`wrt = time`,
+/// esm-jacobian-spec §4.2), in EarthSciASTDiff's order (spec/plan.md §6.4).
+pub fn time_bands(sv: &SysView) -> Result<Vec<JacEntry>, BandError> {
+    earthsci_astdiff::jacobian_bands_view(sv, Wrt::Time, None)
+}
+
 /// The state Jacobian's structure-only entries of the view `sv`
 /// (`jacobian_structure_view`, `wrt = states`; esm-jacobian-spec §2.1):
 /// the pattern pass 2 reads (§5.2.2), without coefficients.
@@ -103,20 +109,9 @@ fn entry(
         col: v.to_string(),
         rows: rows.to_vec(),
         row_idx: row_idx(ridx),
-        col_idx: cidx.iter().map(without_provenance).collect(),
+        col_idx: cidx.to_vec(),
         contracted: contracted.to_vec(),
     }
-}
-
-/// `e` without EarthSciAST's load provenance (`template_origin`, which
-/// EarthSciAST 0.11 sets on the root of each expanded template and never
-/// serializes), so that a band read from a document whose terms are written
-/// as templates (the probe document, §5.2.2) equals the same band read from
-/// the terms written out: a band is what `serialize_band` writes.
-fn without_provenance(e: &Expr) -> Expr {
-    serde_json::to_value(e)
-        .and_then(serde_json::from_value)
-        .unwrap_or_else(|_| e.clone())
 }
 
 /// A band entry as the locality rules read it (§5.2.3).
@@ -284,22 +279,10 @@ impl AstDiffBands {
     /// EarthSciASTDiff's message when it fails on it. A band whose row is
     /// not a probe state is the planner's own error.
     fn probe(info: &ModelInfo, terms: &[Term], mode: Mode) -> Result<Probe, BandSourceError> {
-        Self::probe_with(info, terms, derived::PROBE_TEMPLATE_MIN_NODES, mode)
-    }
-
-    /// [`Self::probe`] of the probe document whose templates have at least
-    /// `min_nodes` operator nodes ([`derived::probe_document_with`]).
-    fn probe_with(
-        info: &ModelInfo,
-        terms: &[Term],
-        min_nodes: u64,
-        mode: Mode,
-    ) -> Result<Probe, BandSourceError> {
-        let entries =
-            match document_entries(derived::probe_document_with(info, terms, min_nodes), mode) {
-                Ok(e) => e,
-                Err(message) => return Ok(Err(message)),
-            };
+        let entries = match document_entries(derived::probe_document(info, terms), mode) {
+            Ok(e) => e,
+            Err(message) => return Ok(Err(message)),
+        };
         let index: HashMap<String, usize> = (0..terms.len())
             .map(|k| (derived::probe_state(k), k))
             .collect();
@@ -426,16 +409,6 @@ pub mod testing {
     /// message.
     pub fn probe(info: &ModelInfo, terms: &[Term]) -> Result<Probe, BandSourceError> {
         AstDiffBands::probe(info, terms, Mode::Structure)
-    }
-
-    /// The structure-only band lists of the probe document whose templates
-    /// have at least `min_nodes` operator nodes, or its failure's message.
-    pub fn probe_with(
-        info: &ModelInfo,
-        terms: &[Term],
-        min_nodes: u64,
-    ) -> Result<Probe, BandSourceError> {
-        AstDiffBands::probe_with(info, terms, min_nodes, Mode::Structure)
     }
 
     /// Every term's band list in `mode`, in batches whose terms hold at

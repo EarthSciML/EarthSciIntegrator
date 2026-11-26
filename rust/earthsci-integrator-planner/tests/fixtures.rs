@@ -37,6 +37,9 @@ const CASES: &[(&str, &str)] = &[
     ("unnamed_lift", "auto"),
     ("toy_photostationary_cells", "kvaerno4"),
     ("toy_robertson", "rodas4"),
+    ("reseact_mini", "cell"),
+    ("reseact_mini", "shard"),
+    ("reseact_mini", "coupled"),
 ];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.
@@ -355,7 +358,7 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
     files.sort();
     let mut ours: Vec<String> = Vec::new();
     for (op, d) in &p.documents {
-        for (kind, bytes) in [("jacobian", &d.jacobian), ("rhs", &d.rhs)] {
+        for (kind, bytes) in d.kinds() {
             let name = format!("{op}.{kind}.esm");
             let want = std::fs::read(golden.join("derived").join(&name))
                 .unwrap_or_else(|e| panic!("{fixture}/{case}: golden derived/{name}: {e}"));
@@ -748,7 +751,10 @@ fn rhs_sum_catches_broken_splits() {
 fn hand_bands_agree() {
     // The hand-written bands are written fixture by fixture and have none
     // for `forced_column`'s column contraction, so it is left out.
-    for (fixture, case) in CASES.iter().filter(|(f, _)| *f != "forced_column") {
+    for (fixture, case) in CASES
+        .iter()
+        .filter(|(f, _)| !matches!(*f, "forced_column" | "reseact_mini"))
+    {
         let ours = planned(fixture, case);
         let hand = plan(&run_config(fixture, case), &Options::default(), &HandBands).unwrap();
         assert_eq!(
@@ -765,43 +771,6 @@ fn hand_bands_agree() {
     }
 }
 
-/// `e` with every `apply_expression_template` reference to one of
-/// `bodies` replaced, recursively, by its body.
-fn expand_templates(
-    e: &earthsci_ast::Expr,
-    bodies: &std::collections::HashMap<&str, &earthsci_ast::Expr>,
-) -> earthsci_ast::Expr {
-    use earthsci_ast::Expr;
-    let Expr::Operator(node) = e else {
-        return e.clone();
-    };
-    if node.op == "apply_expression_template" {
-        if let Some(b) = node.name.as_deref().and_then(|n| bodies.get(n)) {
-            return expand_templates(b, bodies);
-        }
-    }
-    Expr::Operator(std::sync::Arc::new(
-        node.map_children(&mut |c| expand_templates(c, bodies)),
-    ))
-}
-
-/// Adds to `refs` the `apply_expression_template` references in `e`, by
-/// template name.
-fn count_template_refs<'a>(
-    e: &'a earthsci_ast::Expr,
-    refs: &mut std::collections::HashMap<&'a str, usize>,
-) {
-    let earthsci_ast::Expr::Operator(node) = e else {
-        return;
-    };
-    if node.op == "apply_expression_template" {
-        if let Some(n) = node.name.as_deref() {
-            *refs.entry(n).or_default() += 1;
-        }
-    }
-    node.for_each_child(&mut |c| count_template_refs(c, refs));
-}
-
 /// The probe document (§5.2.2) gives every term, band for band and in
 /// order, the bands of its own right-hand-side document, and its probe
 /// states carry their equation states' index sets and `ic` equations.
@@ -809,7 +778,6 @@ fn count_template_refs<'a>(
 fn probe_document_gives_each_terms_bands() {
     use earthsci_integrator_planner::astdiff::{self, testing, Mode};
     use earthsci_integrator_planner::{derived, model, runconfig, terms};
-    let mut templated = 0;
     for (fixture, case) in CASES {
         let rc = runconfig::read(&run_config(fixture, case)).unwrap();
         let info = model::read(&rc).unwrap();
@@ -863,42 +831,6 @@ fn probe_document_gives_each_terms_bands() {
                 "{fixture}/{case}: batches with large = {large}"
             );
         }
-        // So does the probe with more of its shared subexpressions written
-        // as templates, down to every repeated one (§5.2.2).
-        for min_nodes in [1, 2, u64::MAX] {
-            let p = testing::probe_with(&info, &ts, min_nodes)
-                .unwrap()
-                .unwrap_or_else(|m| panic!("{fixture}/{case} {min_nodes}: {m}"));
-            assert_eq!(p, each, "{fixture}/{case}: templates of {min_nodes} nodes");
-        }
-        // The templates expand to exactly the terms, and each is referenced
-        // at least twice.
-        let exprs: Vec<&earthsci_ast::Expr> = ts.iter().map(|t| &t.expr).collect();
-        for min_nodes in [1, 2, derived::PROBE_TEMPLATE_MIN_NODES] {
-            let (tpl, out) = derived::shared_templates(&exprs, min_nodes);
-            if min_nodes == 1 && !tpl.is_empty() {
-                templated += 1;
-            }
-            let bodies: std::collections::HashMap<&str, &earthsci_ast::Expr> =
-                tpl.iter().map(|(n, b)| (n.as_str(), b)).collect();
-            let mut refs = std::collections::HashMap::new();
-            for e in out.iter().chain(tpl.iter().map(|(_, b)| b)) {
-                count_template_refs(e, &mut refs);
-            }
-            for (nm, _) in &tpl {
-                assert!(
-                    refs.get(nm.as_str()).copied().unwrap_or(0) >= 2,
-                    "{fixture}/{case} {min_nodes}: {nm} is referenced fewer than twice"
-                );
-            }
-            for (k, e) in out.iter().enumerate() {
-                assert_eq!(
-                    &expand_templates(e, &bodies),
-                    exprs[k],
-                    "{fixture}/{case} {min_nodes}: term {k}"
-                );
-            }
-        }
         let doc = derived::probe_document(&info, &ts);
         let probe_model = &doc["models"][derived::PROBE_COMPONENT];
         let vars = probe_model["variables"].as_object();
@@ -939,8 +871,86 @@ fn probe_document_gives_each_terms_bands() {
             assert_eq!(ics(&x), want, "{fixture}/{case} {k}: ic equations");
         }
     }
-    // Some fixture has repeated subexpressions, so templates were tested.
-    assert!(templated > 0);
+}
+
+/// The number of `apply_operator` nodes in `x`.
+fn nrefs(x: &Value) -> usize {
+    match x {
+        Value::Object(m) => {
+            usize::from(m.get("op") == Some(&json!("apply_operator")))
+                + m.values().map(nrefs).sum::<usize>()
+        }
+        Value::Array(a) => a.iter().map(nrefs).sum(),
+        _ => 0,
+    }
+}
+
+/// Derived documents keep operator references and carry their definitions
+/// (spec/plan.md §4 step 5, §6.1.5). No EarthSciASTDiff here: these
+/// documents are only written, loaded and flattened (the Julia planner's
+/// test of the same name).
+#[test]
+fn derived_documents_keep_operator_references() {
+    use earthsci_integrator_planner::{derived, model, runconfig, terms};
+    for (fixture, case) in [("interp_slope", "named"), ("emission_compose", "named")] {
+        let rc = runconfig::read(&run_config(fixture, case)).unwrap();
+        let info = model::read(&rc).unwrap();
+        assert_eq!(
+            info.flat.template_registry.keys().collect::<Vec<_>>(),
+            ["linear"],
+            "{fixture}"
+        );
+        let ts = terms::terms(&info).unwrap();
+        let want: usize = ts
+            .iter()
+            .map(|t| nrefs(&serde_json::to_value(&t.expr).unwrap()))
+            .sum();
+        assert!(want > 0, "{fixture}");
+        let all: Vec<&terms::Term> = ts.iter().collect();
+        for doc in [
+            derived::rhs_document(&info, "all", &all),
+            derived::probe_document(&info, &ts),
+        ] {
+            // Every reference is written as a reference, in the component
+            // that holds it, which carries the one definition it reaches.
+            assert_eq!(nrefs(&doc["models"]), want, "{fixture}");
+            let with: Vec<&String> = doc["models"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(_, c)| c.get("operators").is_some())
+                .map(|(k, _)| k)
+                .collect();
+            assert!(
+                with == ["Chem"] || with == ["JacobianEval"],
+                "{fixture}: {with:?}"
+            );
+            for c in doc["models"].as_object().unwrap().values() {
+                let Some(ops) = c.get("operators") else {
+                    continue;
+                };
+                assert_eq!(
+                    ops.as_object().unwrap().keys().collect::<Vec<_>>(),
+                    ["linear"]
+                );
+                assert_eq!(ops["linear"], info.flat.template_registry["linear"]);
+            }
+            // The document loads and flattens with its references kept,
+            // against the same registry.
+            let f = FlatView::of_document(doc).unwrap().flat;
+            assert_eq!(
+                f.template_registry.keys().collect::<Vec<_>>(),
+                ["linear"],
+                "{fixture}"
+            );
+            let kept: usize = f
+                .equations
+                .iter()
+                .map(|eq| nrefs(&serde_json::to_value(&eq.rhs).unwrap()))
+                .sum();
+            assert_eq!(kept, want, "{fixture}");
+        }
+    }
 }
 
 #[test]
@@ -989,7 +999,7 @@ fn cross_component_term_by_owner() {
     // leaf is `root.0` (expected.md).
     same(
         &p.resolved_schedule,
-        &json!({"id": "root", "sequence": [{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}]}),
+        &json!({"id": "root", "sequence": [{"alg": "Rodas4", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "jacobian": "symbolic", "leaf": ["chemistry", "deposition", "scavenging"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}]}),
         "schedule",
     );
     same(&p.partition["shards"], &json!({"root.0": 1}), "shards");
@@ -1142,9 +1152,9 @@ fn pointwise_chemistry() {
         );
         same(&p.precision, &json!({"root": f64s()}), "precision");
         let schedule = if case == "auto" {
-            json!({"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}})
+            json!({"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}})
         } else {
-            json!({"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}})
+            json!({"alg": "Rodas4", "control": {"abstol": 1e-9, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.000001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root", "jacobian": "symbolic", "leaf": ["chemistry"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}})
         };
         same(&p.resolved_schedule, &schedule, case);
         same(
@@ -1452,7 +1462,7 @@ fn reseact_shaped() {
                 &json!({"id": "root", "sequence": [
                     {"alg": "SSPRK43", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.0", "leaf": ["default_stencil"]},
                     {"alg": "Tsit5", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.1", "leaf": ["default_column"]},
-                    {"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "global", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.2", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
+                    {"alg": "Rosenbrock23", "control": {"abstol": 0.000001, "controller": "PI", "dt_scope": "cell", "maxiters": 1000000, "reltol": 0.001}, "domain": {"check_stages": false, "on_violation": "reject"}, "id": "root.2", "jacobian": "symbolic", "leaf": ["default_pointwise"], "linsolve": {"block_lu": {"pivot": true, "refine": 0}}}
                 ]}),
                 "schedule",
             );

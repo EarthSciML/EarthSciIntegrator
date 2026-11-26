@@ -229,6 +229,32 @@ pub fn compare_band_values(p: &Planned, op: &str, file: &Value) -> Result<(), St
                 ));
             }
         }
+        // f_t (§8.1 `time_band_model`): every row a time band writes, at the
+        // ForwardDiff tolerance relative to the row's value.
+        let ft = p
+            .time_derivative_at(op, &u, t, &forcing)
+            .map_err(|e| e.to_string())?;
+        let mut fwant: BTreeMap<String, f64> = BTreeMap::new();
+        for e in s["time_entries"].as_array().into_iter().flatten() {
+            let r = e[0].as_str().ok_or("a time entry has no row")?;
+            let v = e[1].as_f64().ok_or("a time entry has no value")?;
+            fwant.insert(r.to_string(), v);
+        }
+        if ft.keys().ne(fwant.keys()) {
+            return Err(format!(
+                "sample {k}: time_entries list {} rows, Rust's time bands write {}",
+                fwant.len(),
+                ft.len()
+            ));
+        }
+        for (r, g) in &ft {
+            let w = fwant[r];
+            if (g - w).abs() > 1e-10 * g.abs().max(w.abs()) {
+                return Err(format!(
+                    "sample {k}: f_t at {r} is {g:e} in Rust, {w:e} in the file"
+                ));
+            }
+        }
     }
     Ok(())
 }

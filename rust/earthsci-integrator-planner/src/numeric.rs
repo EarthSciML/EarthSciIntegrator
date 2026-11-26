@@ -5,7 +5,7 @@
 //! band Jacobian assembled from a Jacobian document's fields.
 
 use crate::model::ModelInfo;
-use earthsci_ast::provider::{CadenceProvider, NativeField, ProviderError};
+use earthsci_ast::provider::{DataProvider, ProviderError};
 use earthsci_ast::{
     esm_problem, rhs_program, Compiler, Expr, ForcingSet, ProblemInput, ProblemOptions, RhsProgram,
     RhsWorkspace,
@@ -134,17 +134,10 @@ impl FixedProvider {
     }
 }
 
-impl CadenceProvider for FixedProvider {
-    fn materialize(&mut self) -> Result<HashMap<String, NativeField>, ProviderError> {
-        Ok([("value".to_string(), NativeField::new(self.array.clone()))].into())
-    }
-
-    fn refresh(&mut self, _t: f64) -> Result<Option<HashMap<String, NativeField>>, ProviderError> {
-        self.materialize().map(Some)
-    }
-
-    fn refresh_times(&self) -> Vec<f64> {
-        Vec::new()
+// A CONST provider: no refresh times, so it never refreshes.
+impl DataProvider for FixedProvider {
+    fn sample(&mut self) -> Result<ndarray::ArrayD<f64>, ProviderError> {
+        Ok(self.array.clone())
     }
 }
 
@@ -158,8 +151,8 @@ impl CadenceProvider for FixedProvider {
 /// the same way, to the same value.
 pub fn default_providers(
     info: &ModelInfo,
-) -> Result<HashMap<String, Box<dyn CadenceProvider>>, String> {
-    let mut out: HashMap<String, Box<dyn CadenceProvider>> = HashMap::new();
+) -> Result<HashMap<String, Box<dyn DataProvider>>, String> {
+    let mut out: HashMap<String, Box<dyn DataProvider>> = HashMap::new();
     for name in &info.used {
         let values = info
             .default_column_major(name)
@@ -469,7 +462,7 @@ impl Program {
         input: impl Into<ProblemInput<'a>>,
         tspan: (f64, f64),
         dofs: &Dofs,
-        providers: HashMap<String, Box<dyn CadenceProvider>>,
+        providers: HashMap<String, Box<dyn DataProvider>>,
         initial: bool,
     ) -> Result<(Program, Option<Vec<f64>>), String> {
         let prob = esm_problem(
@@ -659,7 +652,7 @@ impl Program {
 
     /// Evaluates `f(u, p, t)` with the parameters at their defaults and
     /// hands the program-layout result to `g`.
-    fn with_du<R>(
+    pub(crate) fn with_du<R>(
         &self,
         u: &[f64],
         t: f64,
@@ -830,6 +823,47 @@ pub fn band_jacobian(
         let mut out = Sparse::new();
         for (k, r, c) in points {
             *out.entry((r, c)).or_insert(0.0) += du[k];
+        }
+        out
+    })
+}
+
+/// `f_t` from a time-derivative document (spec/plan.md §6.4) at `(u, t)`,
+/// in canonical order: band field `J_k`'s cell `f` adds into the canonical
+/// position of its row variable's cell `f` (esm-jacobian-spec §8).
+pub fn time_derivative(
+    doc: &Program,
+    dofs: &Dofs,
+    entries: &[JacEntry],
+    u: &[f64],
+    t: f64,
+    forcing: &Forcing,
+) -> Result<Vec<f64>, String> {
+    let mut places = Vec::new();
+    for (k, en) in entries.iter().enumerate() {
+        let name = band_field(k + 1);
+        let (base, len) = doc
+            .block_range(&name)
+            .ok_or_else(|| format!("the time-derivative document's program has no {name}"))?;
+        let rows = dofs
+            .dofs_of(&en.u)
+            .ok_or_else(|| format!("time band {}: its row {} is not a state", k + 1, en.u))?;
+        if rows.len() != len {
+            return Err(format!(
+                "time band {}: the field {name} has {len} cells, its row {} {}",
+                k + 1,
+                en.u,
+                rows.len()
+            ));
+        }
+        places.push((base, rows.start, len));
+    }
+    doc.with_du(u, t, forcing, |du| {
+        let mut out = vec![0.0; dofs.n];
+        for &(base, start, len) in &places {
+            for f in 0..len {
+                out[start + f] += du[base + f];
+            }
         }
         out
     })
