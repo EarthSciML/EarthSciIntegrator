@@ -5,6 +5,7 @@ description: "Extend EarthSciAST.jl's direct StableHLO emitter so an external in
 
 Status: merged upstream in EarthSciAST#775 (closes #544), released in EarthSciAST v0.15.0. Still open after the merge:
 - The emitter placed each template body at every use and re-emitted the operator at every fragment call (open question 2 below). EarthSciAST#807 (draft) emits both as called functions (`calls = :functions`). Reactant's passes inline the calls again before XLA, so run time is unchanged. On a 14-tracer PPM transport model on reseact's 13×7×72 grid the emitted module shrank from 211 MB to 60 MB, and compile time went from 52.5 s to 19.7 s.
+- EarthSciAST#807 also makes template bodies that read state or live-forcing array arguments called functions (the arrays are passed as tensors and read at traced subscripts), and folds fixed balanced trees in Float32 where precision is unspecified. XLA output aims for speed, not bit-for-bit agreement with native; it stays bitwise run to run on one device.
 - §6 approach A (manual SPMD) was not exercised upstream: the four-device test runs one program per device (approach B). An M5g spike ran approach A on four virtual CPU devices (see open question 1).
 
 (Proposed by EarthSciIntegrator, 2026-10-13.)
