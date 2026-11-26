@@ -34,6 +34,7 @@ pub mod jcs;
 pub mod locality;
 pub mod model;
 pub mod numeric;
+pub mod operator_refs;
 pub mod operators;
 pub mod plan;
 pub mod runconfig;
