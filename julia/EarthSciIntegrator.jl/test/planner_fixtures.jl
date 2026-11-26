@@ -355,7 +355,7 @@ const PLAN_FILES = String[]
             Any[Dict("check" => "rhs_sum", "passed" => true)],
             Any[
                 Dict("check" => c, "operator" => o, "passed" => true) for o in ops
-                    for c in (o in timed ? ("band_model", "non_empty", "time_band_model") : ("band_model", "non_empty"))
+                    for c in ("band_model", "non_empty")
             ]
         )
         for o in ops

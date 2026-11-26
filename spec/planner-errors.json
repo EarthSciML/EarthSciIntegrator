@@ -1,6 +1,6 @@
 {
   "esm_integrator": "0.1.0",
-  "description": "Refusal codes of the planner (spec/plan.md, spec/run-config.md §8, D79). A refusal reports its code, a JSON pointer into the run config (or a model location) and a message; conformance tests compare the code and the pointer only. 'rule' is the rule number of spec/run-config.md §8, or null for a refusal that section does not list.",
+  "description": "Refusal codes of the planner (spec/plan.md, spec/run-config.md §8, D79). A refusal reports its code, a JSON pointer into the run config (or a model location) and a message; conformance tests compare the code and the pointer only. 'rule' is the rule number of spec/run-config.md §8, or null for a refusal that section does not list. 'planners', where present, lists the only planners that raise the refusal (a check not every planner makes, D107); absent, every planner does.",
   "codes": [
     {"code": "run_config_invalid", "rule": null, "where": "spec/plan.md §4 step 1", "meaning": "The run config does not validate against its JSON Schema (pointer \"\", the document root), or a duration read from a parameter is not a positive finite number (pointer: the duration's key), or a partition.shards entry names a coupled node or an operator a coupled node names (pointer: /partition/shards/<key>, spec/plan.md §7.4)."},
     {"code": "version_unsupported", "rule": null, "where": "spec/run-config.md §1", "meaning": "The run config's esm_integrator version is not one this planner implements. Pointer: /esm_integrator."},
@@ -67,7 +67,7 @@
     {"code": "partition_conflict", "rule": null, "where": "spec/plan.md §7.4", "meaning": "partition.shards entries for two operators of one leaf disagree. Pointer: the first entry in the leaf's operator order that disagrees with the leaf's first entry, /partition/shards/<op>."},
     {"code": "validation_rhs_sum_failed", "rule": null, "where": "spec/plan.md §8.1", "meaning": "The operators' right-hand sides do not sum to the model's. Pointer: /model."},
     {"code": "validation_band_model_failed", "rule": null, "where": "spec/plan.md §8.1", "meaning": "An operator's band Jacobian disagrees with the independent Jacobian. Pointer: /model."},
-    {"code": "validation_time_band_model_failed", "rule": null, "where": "spec/plan.md §6.4, §8.1, D102", "meaning": "An operator's time-derivative document disagrees with the independent derivative in t at a sampled state beyond the tolerance of spec/plan.md §8.1, or a row with no time band depends on t. Pointer: /model."},
+    {"code": "validation_time_band_model_failed", "rule": null, "where": "spec/plan.md §6.4, §8.1, D102, D107", "meaning": "An operator's time-derivative document disagrees with the exact derivative in t at a sampled state beyond the tolerance of spec/plan.md §8.1, or a row with no time band depends on t. Only a planner that differentiates exactly in t makes this check (Julia); the others skip it. Pointer: /model.", "planners": ["julia"]},
     {"code": "validation_empty_operator", "rule": null, "where": "spec/plan.md §8.1", "meaning": "An operator has no term, or no band although a term reads a state. Pointer: /model."}
   ]
 }

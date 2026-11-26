@@ -812,10 +812,10 @@ function derived_and_validation(b::DiffBackend, ctx, schedule = nothing)
         band_model_check!(b, ctx, op)
         push!(validation, Dict{String, Any}("check" => "band_model", "operator" => o, "passed" => true))
         push!(validation, Dict{String, Any}("check" => "non_empty", "operator" => o, "passed" => true))
-        if o in timed
-            time_band_model_check!(b, ctx, op)
-            push!(validation, Dict{String, Any}("check" => "time_band_model", "operator" => o, "passed" => true))
-        end
+        # `time_band_model` (§8.1, D107): made here because Julia
+        # differentiates exactly in t; a planner that cannot skips it, so the
+        # plan's `validation` does not list it (its result is in the report).
+        o in timed && time_band_model_check!(b, ctx, op)
     end
     return derived, validation
 end

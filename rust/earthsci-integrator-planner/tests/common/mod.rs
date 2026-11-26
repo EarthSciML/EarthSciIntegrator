@@ -230,7 +230,7 @@ pub fn compare_band_values(p: &Planned, op: &str, file: &Value) -> Result<(), St
                 ));
             }
         }
-        // f_t (§8.1 `time_band_model`): every row a time band writes, at the
+        // f_t (§8.2 `time_entries`, written from ForwardDiff): every row a time band writes, at the
         // ForwardDiff tolerance relative to the row's value.
         let ft = p
             .time_derivative_at(op, &u, t, &forcing)

@@ -97,7 +97,7 @@
         "required": ["check", "passed"],
         "additionalProperties": false,
         "properties": {
-          "check": {"enum": ["rhs_sum", "band_model", "non_empty", "time_band_model"]},
+          "check": {"enum": ["rhs_sum", "band_model", "non_empty"]},
           "operator": {"$ref": "run-config.schema.json#/$defs/operatorName"},
           "passed": {"const": true}
         },

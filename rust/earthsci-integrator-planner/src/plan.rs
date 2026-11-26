@@ -660,43 +660,10 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         planned
             .validation
             .push(json!({"check": "non_empty", "operator": name, "passed": true}));
-        let mut entry = json!({"band_model": measured});
-        // time_band_model (§8.1, D102), after band_model.
-        if let Some((doc, tb)) = time_docs.get(name) {
-            let tprog = Program::new(doc, (interval.start, interval.end), &numbers.dofs)
-                .map_err(internal)?;
-            let (_, samples) = numbers.states.as_ref().expect("set above");
-            let rhs = &numbers.rhs[name];
-            let rows = &numbers.ops[name].rows;
-            let mut tm = Vec::new();
-            for (s, sc) in samples.iter().zip(&scales) {
-                let ftb =
-                    numeric::time_derivative(&tprog, &numbers.dofs, tb, &s.u, s.t, &s.forcing)
-                        .map_err(internal)?;
-                let r = validation::time_band_model(
-                    rhs,
-                    &numbers.dofs,
-                    s,
-                    &ftb,
-                    tb,
-                    rows,
-                    &numbers.names,
-                    sc,
-                )
-                .map_err(|m| {
-                    refuse(
-                        codes::VALIDATION_TIME_BAND_MODEL_FAILED,
-                        "/model",
-                        format!("operator {name} at t = {}: {m}", s.t),
-                    )
-                })?;
-                tm.push(r);
-            }
-            planned
-                .validation
-                .push(json!({"check": "time_band_model", "operator": name, "passed": true}));
-            entry["time_band_model"] = json!(tm);
-        }
+        // No `time_band_model` here: the check of the time-derivative
+        // document is made by planners that differentiate exactly in t
+        // (Julia's ForwardDiff); a planner without that skips it (§8.1, D107).
+        let entry = json!({"band_model": measured});
         per_op.insert(name.clone(), entry);
     }
     report.insert("operators".into(), Value::Object(per_op));

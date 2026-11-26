@@ -60,7 +60,6 @@ pub mod codes {
     pub const VALIDATION_RHS_SUM_FAILED: &str = "validation_rhs_sum_failed";
     pub const VALIDATION_BAND_MODEL_FAILED: &str = "validation_band_model_failed";
     pub const VALIDATION_EMPTY_OPERATOR: &str = "validation_empty_operator";
-    pub const VALIDATION_TIME_BAND_MODEL_FAILED: &str = "validation_time_band_model_failed";
     pub const AUTO_STIFFNESS_READS_FORCING: &str = "auto_stiffness_reads_forcing";
     pub const FORCING_WITHOUT_SCALE: &str = "forcing_without_scale";
     pub const FORCING_RECORDS_INVALID: &str = "forcing_records_invalid";
@@ -126,7 +125,6 @@ pub mod codes {
         VALIDATION_RHS_SUM_FAILED,
         VALIDATION_BAND_MODEL_FAILED,
         VALIDATION_EMPTY_OPERATOR,
-        VALIDATION_TIME_BAND_MODEL_FAILED,
         AUTO_STIFFNESS_READS_FORCING,
         FORCING_WITHOUT_SCALE,
         FORCING_RECORDS_INVALID,

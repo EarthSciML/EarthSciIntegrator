@@ -19,7 +19,7 @@ The chemistry leaf `chem` gives `Rosenbrock23`, `jacobian` `symbolic`, `linsolve
 - **`dt_scope`** (§5.5.3, D97): the resolved `chem` control has `"dt_scope": "cell"` (pointwise, `block_diagonal` storage); the transport leaf's is `"global"`.
 - **Partition** (§7.4): `shards` `{"chem": 4}`; `lanes` `{"chem": 8}`; no `reshard` key (no leaf has `shard` scope).
 - **Derived documents** (§6.4, D102): besides the four `rhs` and `jacobian` documents, `derived/chemistry.time_derivative.esm`, kind `time_derivative`, operator `chemistry`. Its model `JacobianEval` holds one field `J_k` per time band of the chemistry's right-hand-side document, in equation order (the three species, each reading $t$ through the photolysis rate and through `Mini.w`'s blend); no transport time-derivative document (transport does not depend on $t$, and no Rosenbrock leaf advances it).
-- **Validation** (§8.1): entries `rhs_sum`; `chemistry` `band_model`, `non_empty`, `time_band_model`; `transport` `band_model`, `non_empty`, sorted by `(operator, check)`. The chemistry's band-value file carries `time_entries` per sample.
+- **Validation** (§8.1): entries `rhs_sum`; `chemistry` `band_model`, `non_empty`; `transport` `band_model`, `non_empty`, sorted by `(operator, check)`. No `time_band_model` entry: the Julia planner makes that check and reports it in `plan.report.json`, the Rust planner skips it (D107). The chemistry's band-value file carries `time_entries` per sample.
 
 ## shard
 

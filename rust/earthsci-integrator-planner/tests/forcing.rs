@@ -609,8 +609,8 @@ fn forcing_refusals() {
 /// §5.5.3, §6.4, D102: chem reads a two-record forcing blended in time, so
 /// it depends on t. "auto" resolves its stiff pointwise leaf to a Rosenbrock
 /// method, and the plan carries chem's time-derivative document, its
-/// `time_bands` and the `time_band_model` check; a named Rosenbrock method
-/// plans the same way.
+/// `time_bands`, but no `time_band_model` check, which the Rust planner does
+/// not make (§8.1, D107); a named Rosenbrock method plans the same way.
 #[test]
 fn time_dependent_rosenbrock() {
     let (m, r) = inputs();
@@ -625,11 +625,11 @@ fn time_dependent_rosenbrock() {
     );
     assert!(pj["derived"]["derived/chem.time_derivative.esm"].is_object());
     assert!(pj["operators"]["chem"]["structure"]["time_bands"].is_array());
-    assert!(pj["validation"]
+    assert!(!pj["validation"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|v| v["check"] == "time_band_model" && v["operator"] == "chem"));
+        .any(|v| v["check"] == "time_band_model"));
     for alg in ["Rosenbrock23", "Rodas4"] {
         let mut run = r.clone();
         run["schedule"]["sequence"][0]["alg"] = json!(alg);
