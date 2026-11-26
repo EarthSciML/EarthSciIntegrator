@@ -25,9 +25,9 @@ EarthSciASTDiff = "0.7"
 OrdinaryDiffEqSDIRK = "2"
 SciMLBase = "3"
 
-# EarthSciAST: unreleased #781; EarthSciASTDiff: unreleased fork time-band
-# fixes (see ../Project.toml).
+# EarthSciAST: draft #801 on unreleased main; EarthSciASTDiff: unreleased #81
+# (see ../Project.toml).
 [sources]
-EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "4e29e6d857876a6789bed98355dcf3e1dee89579"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "effdb9af6d88f32f8a160af07d5b5ed4a56bb621"}
+EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "f5f24e2a0bfb7ab37124b32345312fb6d056e729"}
+EarthSciASTDiff = {url = "https://github.com/EarthSciML/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "ef2cc07b14c72d5492f55102576abfd50b0210f5"}
 EarthSciIntegrator = {path = ".."}
