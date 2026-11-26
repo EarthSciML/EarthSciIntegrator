@@ -88,7 +88,8 @@ come from the conformance case (spec/toy-problems.md §2). Raises
 """
 function build_run(
         config::AbstractDict; tspan, saveat = nothing, prob::ToyProblem = toy_problem(config["model"]),
-        p::AbstractVector = prob.p, u0::AbstractVector = prob.u0, tstops::AbstractVector = Float64[]
+        p::AbstractVector = prob.p, u0::AbstractVector = prob.u0, tstops::AbstractVector = Float64[],
+        partition::Union{Nothing, AbstractDict} = nothing, threads::Integer = 1, whole_state::Bool = false
     )
     for k in keys(config)
         k in _TOP_KEYS || throw(ConfigError("unknown top-level key '$k'"))
@@ -105,6 +106,29 @@ function build_run(
     ids = [n.id for n in nodes]
     length(unique(ids)) == length(ids) || throw(ConfigError("duplicate node ids in the schedule"))
     leaves = Dict{String, LeafNode}(n.id => n for n in nodes if n isa LeafNode)
+    # spec/partitioning.md §10.2: a scoped leaf's shards, lane capacity and
+    # re-sharding from the plan's partition, by node id; threads are a
+    # run-time option (§4, D99). `whole_state` is the tests' oracle of the
+    # lane programs (§9.3).
+    threads >= 1 || throw(ConfigError("threads = $threads: at least one executor thread"))
+    for l in values(leaves)
+        s = l.scope
+        s === nothing && continue
+        part = partition === nothing ? Dict{String, Any}() : partition
+        s.nshards = max(Int(get(get(part, "shards", Dict()), l.id, 1)), 1)
+        s.capacity = Int(get(get(part, "lanes", Dict()), l.id, DEFAULT_LANES))
+        s.capacity >= 1 || throw(ConfigError("leaf $(l.id): lanes = $(s.capacity)"))
+        r = get(get(part, "reshard", Dict()), l.id, "none")
+        if r == "none"
+            s.reshard_every = nothing
+        else
+            s.kind === :shard || throw(ConfigError("leaf $(l.id): reshard needs dt_scope shard (spec/partitioning.md §6.2)"))
+            s.reshard_every = Int(r["every"])
+            s.reshard_every >= 1 || throw(ConfigError("leaf $(l.id): reshard every $(s.reshard_every)"))
+        end
+        s.threads = Int(threads)
+        s.whole_state = whole_state
+    end
 
     step = get(config, "step", Dict{String, Any}())
     for k in keys(step)
@@ -167,6 +191,11 @@ function build_run(
     sort!(unique!(bound))
     if haskey(config, "adjoint")
         adj = config["adjoint"]
+        for n in nodes
+            n isa LeafNode && n.scope !== nothing && throw(
+                UnsupportedError("leaf $(n.id): the adjoint of a dt_scope cell or shard leaf arrives with M4 (spec/partitioning.md §11)")
+            )
+        end
         # The reverse of a leaf that advances part of the model state carries
         # the other states' cotangents through unchanged, which is exact when
         # no operator of the leaf reads them (spec/operator-interface.md §1).
@@ -419,7 +448,7 @@ function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Fl
     ψ = node.ψ
     qheld = (ψ === nothing || isempty(ψ.held)) ? nothing : held_integral(ψ, u, tb - ta)
     # `bound` is a new node; whether the leaf is the root is the original's.
-    x = _advance!(run, sub, bound, u[S.dofs], ta, tb, node === run.root; qheld)
+    x = _advance!(run, sub, bound, u[S.dofs], ta, tb, node === run.root; qheld, model = u)
     for i in (n0 + 1):length(run.outputs)
         t, xi = run.outputs[i]
         run.outputs[i] = (t, _scatter(S, u, xi))
@@ -429,13 +458,33 @@ end
 
 function _advance!(
         run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64, isroot::Bool = node === run.root;
-        qheld = nothing
+        qheld = nothing, model = u
     )
     path = next_path!(ctx, node.id)
     nb = filter(b -> b.second !== :leaf, node.bindings)
     pinv = apply_bindings(_params(run, ctx.mode), nb, 0.0, tb - ta, ctx.Δmacro)
     stops = _stops(run, node, ta, tb, isroot)
     mode = ctx.mode
+    if node.scope !== nothing
+        # spec/partitioning.md §2.3, §2.4: units with their own controllers.
+        mode isa ForwardMode ||
+            throw(UnsupportedError("leaf $(node.id): replaying a dt_scope cell or shard leaf from the tape arrives with M4 (spec/partitioning.md §11)"))
+        out = scoped_forward(
+            node, node.scope, collect(Float64, u), collect(Float64, model), pinv, ta, tb, path, ctx.Δmacro, stops, ctx.k,
+            run.prob.pnames, run.tspan
+        )
+        push!(mode.tape, out.record)
+        if mode.tape === run.tape
+            run.accepted += out.record.accepted
+            run.rejected += out.record.rejected
+            run.nf += out.nf
+            append!(run.outputs, out.interior)
+        end
+        out.record.retcode == "Success" || throw(
+            RunFailure(out.record.retcode, "leaf $(node.id) ($path) ended with $(out.record.retcode) at $(something(out.record.failed_unit, "a unit"))")
+        )
+        return out.u
+    end
     if mode isa ForwardMode
         cs = get!(() -> ControllerState(node.tab.controller), mode.controllers, node.id)
         out = leaf_forward(node, cs, u, pinv, ta, tb, path, ctx.Δmacro, stops)
@@ -549,17 +598,20 @@ function forward!(run::Run)
     run.q = 0.0
     u = copy(run.u0)
     mode = ForwardMode(run.tape, run.controllers)
+    for l in values(run.leaves)
+        l.scope === nothing || reset!(l.scope)
+    end
     try
         for k in 0:(length(run.bounds) - 2)
             ta, tb = run.bounds[k + 1], run.bounds[k + 2]
-            push!(run.checkpoints, Checkpoint(k, ta, copy(u), Dict(id => copy(c) for (id, c) in run.controllers)))
+            push!(run.checkpoints, Checkpoint(k, ta, copy(u), Dict(id => copy(c) for (id, c) in run.controllers), scope_checkpoint(run)))
             ctx = ExecCtx(k, tb - ta, Dict{String, Int}(), mode)
             u = advance!(run, ctx, run.root, u, ta, tb)
             push!(run.tape, MacroRecord(string(k), ta, tb - ta, run.reasons[k + 1]))
             tb in run.output_times && push!(run.outputs, (tb, copy(u)))
         end
         K = length(run.bounds) - 1
-        push!(run.checkpoints, Checkpoint(K, run.bounds[end], copy(u), Dict(id => copy(c) for (id, c) in run.controllers)))
+        push!(run.checkpoints, Checkpoint(K, run.bounds[end], copy(u), Dict(id => copy(c) for (id, c) in run.controllers), scope_checkpoint(run)))
         run.retcode = "Success"
     catch e
         e isa RunFailure || rethrow()
@@ -572,6 +624,31 @@ function forward!(run::Run)
 end
 
 """
+A checkpoint's part for the scoped leaves (spec/partitioning.md §11): per
+leaf id, [`scope_saved`](@ref): each unit's controller state and, under
+`shard`, the composition and the re-sharding signal summed so far.
+"""
+function scope_checkpoint(run::Run)
+    out = Dict{String, Any}()
+    for (id, l) in run.leaves
+        s = l.scope
+        s === nothing && continue
+        out[id] = scope_saved(s)
+    end
+    return out
+end
+
+"""A rerun or replay from the tape: refused for a run with a scoped leaf, whose tape holds no steps (M4, spec/partitioning.md §11)."""
+function check_unscoped(run::Run)
+    for (id, l) in run.leaves
+        l.scope === nothing || throw(
+            UnsupportedError("leaf $id: rerunning or replaying a dt_scope cell or shard leaf arrives with M4 (spec/partitioning.md §11)")
+        )
+    end
+    return nothing
+end
+
+"""
     rerun_macro(run, k) -> (u, tape)
 
 Re-run macro step `k` forward from its checkpoint with the controllers on
@@ -579,6 +656,7 @@ Re-run macro step `k` forward from its checkpoint with the controllers on
 the original step sequence and end state bitwise (spec/adjoint.md §7.4).
 """
 function rerun_macro(run::Run, k::Integer)
+    check_unscoped(run)
     cp = run.checkpoints[k + 1]
     ctrls = Dict(id => copy(c) for (id, c) in cp.controllers)
     tape = Tape()
@@ -597,6 +675,7 @@ using the tape's step sequences and masks (spec/tape.md §3). The tape's macro
 record `k` must have the run's boundaries, `t` and `dt` bitwise.
 """
 function replay_macro(run::Run, k::Integer, u, p; tape::Tape = run.tape, trace = nothing, visit = nothing, qacc = nothing)
+    check_unscoped(run)
     ta, tb = run.bounds[k + 1], run.bounds[k + 2]
     tape_record(tape, "macro:$k", MacroRecord, ta, tb)
     ctx = ExecCtx(k, tb - ta, Dict{String, Int}(), ReplayMode(tape, p, trace, visit, qacc))

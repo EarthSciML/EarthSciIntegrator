@@ -20,7 +20,7 @@
 //! (the leaf's `no_reuse`).
 
 use earthsci_ast::esio_provider::{providers_from_document_with, DocumentProviderOptions};
-use earthsci_ast::provider::{CadenceProvider, ForcingBuffer, NativeField, RefreshExecutor};
+use earthsci_ast::provider::{DataProvider, ForcingBuffer, RefreshExecutor};
 use earthsci_ast::{forcing_from_sample, ForcingSlot};
 use earthsci_integrator_planner::numeric::Forcing;
 use std::cell::{Cell, RefCell};
@@ -332,7 +332,7 @@ impl ModelData {
         names: &BTreeMap<String, PlanForcing>,
         tspan: (f64, f64),
         opts: &DataOptions,
-    ) -> Result<HashMap<String, Box<dyn CadenceProvider>>, String> {
+    ) -> Result<HashMap<String, Box<dyn DataProvider>>, String> {
         if names.is_empty() {
             return Ok(HashMap::new());
         }
@@ -349,7 +349,7 @@ impl ModelData {
             },
         )
         .map_err(|e| format!("EarthSciAST providers_from_document: {}", e.0))?;
-        let mut out: HashMap<String, Box<dyn CadenceProvider>> = HashMap::new();
+        let mut out: HashMap<String, Box<dyn DataProvider>> = HashMap::new();
         for (key, p) in built {
             if names.contains_key(&key) {
                 out.insert(key, Box::new(p));
@@ -392,8 +392,7 @@ impl ModelData {
                         read[name].source
                     )
                 })?;
-                let sample = HashMap::from([(name.clone(), NativeField::new(a.clone()))]);
-                let b: Arc<[f64]> = forcing_from_sample(&sample, slot)
+                let b: Arc<[f64]> = forcing_from_sample(a, slot)
                     .map_err(|e| format!("the data-fed parameter {name} at t = {t}: {e}"))?;
                 out.insert(name.clone(), b);
             }

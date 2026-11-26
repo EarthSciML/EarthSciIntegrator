@@ -36,6 +36,8 @@ The flattened model as the passes read it.
 - `observed_defs`: each observed's defining right-hand side.
 - `observed_rhs`: every right-hand side defining each observed, a bare,
   indexed or `faq` left-hand side alike ([`defined_observed`](@ref)).
+- `operators`: the merged operator registry its references resolve against
+  ([`OperatorRefs`](@ref)); expressions keep their references (§4 step 5).
 """
 struct PlanModel
     file::EarthSciAST.EsmFile
@@ -59,6 +61,9 @@ struct PlanModel
     # terms are known ([`mark_used_forcing!`](@ref)).
     forcing::OrderedDict{String, ForcingInfo}
     used_forcing::Set{String}
+    # The merged operator registry the flattened model's references resolve
+    # against, with what is read of each definition (operator_refs.jl).
+    operators::OperatorRefs
 end
 
 """The data source `name` of the loaded document, or `nothing`."""
@@ -206,7 +211,7 @@ function plan_model(inp::PlanInputs)
         inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
         collect(keys(flat.observed_variables)), shapes, sizes, Set(keys(flat.lifted_shapes)), state_eqs,
         observed_defs, observed_definitions(flat), reaction_system_paths(inp.file),
-        forcing_info(inp.file, flat), Set{String}()
+        forcing_info(inp.file, flat), Set{String}(), OperatorRefs(flat.template_registry)
     )
 end
 

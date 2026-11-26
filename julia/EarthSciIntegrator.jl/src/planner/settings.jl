@@ -46,7 +46,10 @@ end
 spec/plan.md §7.4 (D77): `ranks` and `tiles` (default `[1, 1]`), checked
 against the horizontal axes; `halo` per horizontal axis, the largest stencil
 radius in either direction, absent without horizontal axes; `shards` per
-pointwise or column `leaf` node by node id (a `coupled` node gets none). A
+pointwise or column `leaf` node by node id (a `coupled` node gets none);
+`lanes` (by node id, for such a leaf whose own `partition` gives it) and
+`reshard` (by node id, for a leaf whose `dt_scope` is `shard`, `"none"` when
+not given), each absent when empty (D104). A
 `partition.shards` entry whose key is a `coupled` node's id, or an operator a
 `coupled` node names, is `run_config_invalid` at `/partition/shards/<key>`,
 checked in code-point order of the key before the rest of `shards`.
@@ -91,6 +94,8 @@ function resolve_partition(ctx, root::SNode)
         )
     end
     shards = Dict{String, Any}()
+    lanes = Dict{String, Any}()
+    reshard = Dict{String, Any}()
     for n in allnodes(root)
         n.kind == "leaf" || continue
         names = leaf_ops(n)
@@ -114,8 +119,17 @@ function resolve_partition(ctx, root::SNode)
             isempty(entries) ? 1 : entries[1][2]
         end
         shards[n.id] = v == "auto" ? 1 : Int(v)
+        # D104: the lane capacity a leaf gives, and the re-sharding of a leaf
+        # whose dt_scope is shard ("none" when not given). Only a given
+        # dt_scope can be shard (§5.5.3).
+        haskey(lp, "lanes") && (lanes[n.id] = Int(lp["lanes"]))
+        if get(get(n.spec, "control", Dict{String, Any}()), "dt_scope", "auto") == "shard"
+            reshard[n.id] = get(lp, "reshard", "none")
+        end
     end
     out["shards"] = shards
+    isempty(lanes) || (out["lanes"] = lanes)
+    isempty(reshard) || (out["reshard"] = reshard)
     return out
 end
 

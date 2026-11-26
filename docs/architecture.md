@@ -195,7 +195,7 @@ The `.esm` gets `"solver": {"external": "reseact.run.json"}` (U1). The run confi
 
 ### 4.4 Examples (illustrative)
 
-**reseact, the prototype re-hosted (M3).** Use `"dt_scope": "global"` to reproduce the prototype, and `"cell"` (the default, D17) for speed.
+**reseact, the prototype re-hosted (M3).** `"dt_scope": "global"` gives the M3 reference trajectory, and `"cell"` (the default for pointwise leaves, D17, D97) the fast run whose time is gated (D96).
 
 ```json
 {
@@ -343,6 +343,8 @@ W is kept structured and never assembled dense:
 
 ## 7. Partitioning and execution (D6, D10, D11)
 
+Specified for shared memory (M3) in [`../spec/partitioning.md`](../spec/partitioning.md).
+
 ### 7.1 Decomposition
 
 Horizontal only, so columns stay whole:
@@ -392,6 +394,8 @@ Threads need a reentrant RHS in **both** languages (U4). Julia's `f!` is not ree
   - Prefetch hides refresh only up to the compute time per epoch, so decode cost has to come down first.
 
 ### 7.6 Dynamic partitioning as stiffness changes
+
+*The normative rules are in [`../spec/partitioning.md`](../spec/partitioning.md) (D97–D104); this section keeps the design reasoning.*
 
 Yes. Partitions can change during a run. What may change, and on what signal, depends on whether the change can alter results:
 
@@ -608,6 +612,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U16 | EarthSciAST | `solver.time_span`, the run interval a document asks for (D60); released in v0.4.0 | M2 |
 | U17 | EarthSciASTDiff | Time-derivative bands (∂f/∂t) specified and golden-gated, for Rosenbrock's `f_t` on time-dependent operators; done on `main` (EarthSciASTDiff#13), released in 0.1.0 (commit 743d140) | M3 |
 | U18 | EarthSciAST | Variable bounds `lb` and `ub` (a number or a reference to another variable) on any variable, in the spec, the schema and every binding, validated and carried through flatten; esm 2.1.0, EarthSciAST#706 (D95) | M4b |
+| U19 | EarthSciAST | A time per lane in lane programs (`RhsProgram::lanes` in Rust, `lanes` in Julia): lanes integrating under `dt_scope: cell` are at different times (D98) | M3 (performance only; correct without it) |
 
 **Prerequisites the drafts uncovered:**
 - **esm 1.3.0.** U01 and U14 ship in esm 1.3.0. reseact (esm 1.0.0), eqice and EqWeFiC (1.0.0/1.1.0) must move to 1.3.0 before they can use `solver.external` or an f32 choice.
@@ -626,7 +631,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | M0 | Spec skeleton: combinator semantics, run-config and plan schemas, the adjoint math per family. Repo scaffold and CI. | Schemas validate the three §4.4 examples |
 | M1 | Core in both languages: ERK/SSP, Rosenbrock, SDIRK; PI control; `leaf`/`sequence`/`strang`/`subcycle`/`map`; batched block LU; tape; method adjoints. Julia on the SciMLBase interfaces (D33) with Krylov.jl and NonlinearSolve.jl (D32). | Conformance tiers 2–3 on toy problems, including the `ReverseDiffAdjoint` oracle per family |
 | M2 | Planner v1: provenance, locality, DOF sets, band models, strategy rules, plan goldens; data-fed parameters planned and supplied, with every esm data-source feature through EarthSciAST and EarthSciIO providers and forcing epochs on one rank (D87) | Tier 1 on reseact-shaped fixtures; the M2 end-to-end cases, the data cases `data_decay`, `data_monthly` and `data_points` included (spec/toy-problems.md §4) |
-| M3 | reseact forward, shared memory: shards, lane pools (per-cell dt), dynamic re-sharding, epochs at reseact's scale (forcing slices per lane; the epoch mechanism itself is M2's, D87) | Matches the prototype's native reference trajectory (`dt_scope: global`) **at no more than the prototype's native-reference wall time**; `dt_scope: cell` bitwise invariant to shard and thread count |
+| M3 | reseact forward, shared memory: shards, lane pools (per-cell dt), dynamic re-sharding, epochs at reseact's scale (forcing slices per lane; the epoch mechanism itself is M2's, D87); time-derivative documents for Rosenbrock leaves (D102); specified in [`../spec/partitioning.md`](../spec/partitioning.md) | 24 h of CONUS reseact with the prototype's schedule and methods: the Rust run agrees with the Julia reference run (`dt_scope: global`) by the `cross_language` rule, and each implementation's **solve time** with `dt_scope: cell` is **at most 2,182 s**, the prototype's recorded native solve time (8 threads, same node type; build time reported, not gated); `dt_scope: cell` bitwise invariant to shard and thread count. Agreement with the prototype itself is reported, not gated (D96) |
 | M4 | reseact adjoint: params, then u0, gridded emissions, forcing (needs U7, U8, U9 and, in Rust, U12); forward sensitivities with dt tangents in Julia (D36) | Agreement with the prototype's 48 h gradient to ≤1e-9 relative (D16); exact dot-product (adjoint against the frozen-tape forward-sensitivity tangent, D40; Julia, while Rust is gated by finite differences and agreement with Julia, D44) and replay |
 | M4b | eqice on shared memory (D37): `solve` nodes (Newton–Krylov, Picard, PTC), IMEX columns, PISM limits, maps; needs U6 and U9's `column_block` | Test F (31×31×61) against the C++ dumps |
 | M5 | MPI: ranks, halo exchange, deterministic reductions, distributed I/O; multi-rank conformance in CI | reseact at 2×2.5° and 0.25° |

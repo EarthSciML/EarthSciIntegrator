@@ -406,11 +406,12 @@ fn build_leaf<T: Scalar>(
             "leaf {id}: frozen tendencies are not implemented at M1"
         )));
     }
-    if l.partition.is_some() {
-        return Err(Error::Unimplemented(format!(
-            "leaf {id}: partition is not implemented at M1 (single shard)"
-        )));
-    }
+    // The structure before dense_lu stores it dense: a scoped leaf's cells.
+    let cells_structure = Structure::common(
+        ops.iter()
+            .map(|o| o.structure_over(&dofs, pb.n).unwrap_or(Structure::Dense))
+            .collect::<Vec<_>>(),
+    );
     // jacobian and linsolve are accepted and unused by explicit methods.
     let rosenbrock = matches!(method, LeafMethod::Ros(..));
 
@@ -525,6 +526,29 @@ fn build_leaf<T: Scalar>(
         )));
     }
 
+    let scope = scope_plan(
+        l,
+        id,
+        &ScopeInputs {
+            ops: &ops,
+            dofs: &dofs,
+            cells: cells_structure,
+            dense: structure == Structure::Dense,
+            alg: &alg,
+            method: &method,
+            dt_mode,
+            tol: &tol,
+            controller: &controller,
+            dt0,
+            dtmin,
+            dtmax,
+            maxiters: ctl.maxiters,
+            domain: &domain,
+            imex_implicit: &imex_implicit,
+            binds: &binds,
+            needs,
+        },
+    )?;
     Ok(LeafSpec {
         id: id.to_string(),
         ops,
@@ -547,7 +571,172 @@ fn build_leaf<T: Scalar>(
         imex_implicit,
         work: Default::default(),
         bound_work: Default::default(),
+        scope,
+        unit: None,
     })
+}
+
+/// What [`scope_plan`] reads from a leaf being built.
+struct ScopeInputs<'a, T: Scalar> {
+    ops: &'a [Arc<dyn crate::operator::Operator<T>>],
+    dofs: &'a [usize],
+    cells: Structure,
+    dense: bool,
+    alg: &'a str,
+    method: &'a LeafMethod,
+    dt_mode: DtMode,
+    tol: &'a Tolerances,
+    controller: &'a Option<Controller>,
+    dt0: Option<f64>,
+    dtmin: f64,
+    dtmax: Option<f64>,
+    maxiters: Option<u64>,
+    domain: &'a Option<DomainSpec>,
+    imex_implicit: &'a [bool],
+    binds: &'a [(usize, BindKind)],
+    needs: Needs,
+}
+
+/// A leaf's `dt_scope` `cell` or `shard` (spec/partitioning.md §2): the
+/// plan of its units, or `None` for `global`. The leaf's partition gives
+/// its shards, lane capacity and re-sharding (§10).
+fn scope_plan<T: Scalar>(
+    l: &LeafNode,
+    id: &str,
+    x: &ScopeInputs<'_, T>,
+) -> Result<Option<Arc<crate::scope::ScopePlan<T>>>, Error> {
+    use crate::scope::{ScopeKind, ScopePlan, Template, UnitSource};
+    let scope = l.control.as_ref().and_then(|c| c.dt_scope.as_deref());
+    let part = l.partition.as_ref();
+    let num = |k: &str| {
+        part.and_then(|p| p.get(k))
+            .and_then(serde_json::Value::as_u64)
+    };
+    let reshard = part
+        .and_then(|p| p.get("reshard"))
+        .filter(|r| r.as_str() != Some("none"))
+        .map(|r| {
+            r.get("every")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|&k| k >= 1)
+                .ok_or_else(|| Error::Config(format!("leaf {id}: partition.reshard {r}")))
+        })
+        .transpose()?;
+    let kind = match scope {
+        Some("cell") => ScopeKind::Cell,
+        Some("shard") => ScopeKind::Shard,
+        _ => {
+            if reshard.is_some() {
+                return Err(Error::Config(format!(
+                    "leaf {id}: partition.reshard needs dt_scope \"shard\" (spec/partitioning.md §6.2)"
+                )));
+            }
+            return Ok(None);
+        }
+    };
+    if reshard.is_some() && kind != ScopeKind::Shard {
+        return Err(Error::Config(format!(
+            "leaf {id}: partition.reshard needs dt_scope \"shard\" (spec/partitioning.md §6.2)"
+        )));
+    }
+    let Structure::BlockDiagonal { ncells, n } = x.cells else {
+        return Err(Error::Config(format!(
+            "leaf {id}: dt_scope {scope:?} needs a leaf of pointwise operators over cells \
+             (block_diagonal storage; spec/partitioning.md §2.1)"
+        )));
+    };
+    if x.needs.adjoint {
+        return Err(Error::Unimplemented(format!(
+            "leaf {id}: the adjoint of a dt_scope {scope:?} leaf arrives with M4 (spec/partitioning.md §11)"
+        )));
+    }
+    if x.binds.iter().any(|b| b.1 == BindKind::Leaf) {
+        return Err(Error::Config(format!(
+            "leaf {id}: dt_scope {scope:?} with a bind_dt \"leaf\" parameter (spec/partitioning.md §2.1)"
+        )));
+    }
+    // Per-species tolerances and domain: equal over a species' cells.
+    let mut abstol = Vec::with_capacity(n);
+    for i in 0..n {
+        let a = x.tol.abstol[i * ncells];
+        if (0..ncells).any(|c| x.tol.abstol[i * ncells + c].to_bits() != a.to_bits()) {
+            return Err(Error::Config(format!(
+                "leaf {id}: dt_scope {scope:?} needs abstol equal over each species' cells"
+            )));
+        }
+        abstol.push(a);
+    }
+    let domain = match x.domain {
+        None => None,
+        Some(d) => {
+            let mut species = Vec::new();
+            for i in 0..n {
+                let listed = (0..ncells)
+                    .filter(|c| d.dofs.binary_search(&(i * ncells + c)).is_ok())
+                    .count();
+                if listed == ncells {
+                    species.push(i);
+                } else if listed != 0 {
+                    return Err(Error::Config(format!(
+                        "leaf {id}: dt_scope {scope:?} needs domain.nonnegative to list whole species"
+                    )));
+                }
+            }
+            Some((species, d.clip, d.check_stages))
+        }
+    };
+    let nshards = num("shards").unwrap_or(1) as usize;
+    // Under `cell` the lanes are a lane pool's (spec/partitioning.md §3.2;
+    // 8 when the plan gives none); under `shard` a shard's cells are
+    // evaluated `lanes` at a time.
+    let capacity = match kind {
+        ScopeKind::Cell => num("lanes").map_or(8, |l| l as usize).min(ncells),
+        ScopeKind::Shard => {
+            let largest = ncells.div_ceil(nshards.max(1));
+            num("lanes").map_or(largest, |l| l as usize).min(largest)
+        }
+    }
+    .max(1);
+    let species: Vec<usize> = (0..n).map(|i| x.dofs[i * ncells]).collect();
+    let mut sources = Vec::with_capacity(x.ops.len());
+    for o in x.ops {
+        let planned = o
+            .as_any()
+            .and_then(|a| a.downcast_ref::<crate::planned::PlannedOperator>());
+        sources.push(match planned {
+            Some(p) => UnitSource::Lanes(Arc::new(
+                crate::lanes::LaneOps::new(p, &species, capacity)
+                    .map_err(|e| Error::Config(format!("leaf {id}: {e}")))?,
+            )),
+            None => UnitSource::Whole,
+        });
+    }
+    let template = Template {
+        alg: x.alg.to_string(),
+        method: x.method.clone(),
+        dt_mode: x.dt_mode,
+        abstol,
+        reltol: x.tol.reltol,
+        controller: x.controller.clone(),
+        dt0: x.dt0,
+        dtmin: x.dtmin,
+        dtmax: x.dtmax,
+        maxiters: x.maxiters,
+        domain,
+        imex_implicit: x.imex_implicit.to_vec(),
+        dense: x.dense,
+        ops: x.ops.to_vec(),
+        sources,
+    };
+    Ok(Some(Arc::new(ScopePlan::new(
+        kind,
+        ncells,
+        n,
+        nshards,
+        reshard.map(|k| k as usize),
+        capacity,
+        template,
+    ))))
 }
 
 /// The structure of a leaf's state vector (operator-interface.md §2, §8.3)
@@ -758,12 +947,8 @@ fn control<T: Scalar>(c: &Control, id: &str, pb: &ToyProblem<T>) -> Result<Contr
         Some(o) => return Err(Error::Config(format!("leaf {id}: controller {o:?}"))),
     };
     match c.dt_scope.as_deref() {
-        None | Some("auto") | Some("global") => {}
-        Some(o) => {
-            return Err(Error::Unimplemented(format!(
-                "leaf {id}: dt_scope {o:?} arrives at M3; M1 runs dt_scope global"
-            )))
-        }
+        None | Some("auto") | Some("global") | Some("cell") | Some("shard") => {}
+        Some(o) => return Err(Error::Config(format!("leaf {id}: dt_scope {o:?}"))),
     }
     let dur = |v: &Option<serde_json::Value>| v.as_ref().map(parse_duration).transpose();
     Ok((
@@ -917,6 +1102,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     replay,
                     record_stages: self.adj.is_some(),
                     tight_newton: self.tight_newton,
+                    macro_step: self.macro_index,
                 };
                 let out = leaf.invoke(u, &mut self.persist[*idx], &call)?;
                 self.rhs_calls += out.rhs_calls;
@@ -931,8 +1117,23 @@ impl<'a, T: Scalar> Exec<'a, T> {
                     rejected: replayed_rejected.unwrap_or(out.rejected),
                     retcode: out.retcode,
                     clips: out.clips.clone(),
+                    cells: match &out.units {
+                        Some(crate::leaf::UnitOutcome::Cells(c)) => Some(c.clone()),
+                        _ => None,
+                    },
+                    shards: match &out.units {
+                        Some(crate::leaf::UnitOutcome::Shards(s)) => Some(s.clone()),
+                        _ => None,
+                    },
                 });
                 if out.retcode != Retcode::Success {
+                    // Under `dt_scope` `cell` or `shard`, the unit that failed
+                    // and why its operators did (spec/partitioning.md §2.3).
+                    let unit = out
+                        .failure
+                        .as_ref()
+                        .map(|f| format!(", at {f}"))
+                        .unwrap_or_default();
                     // Why an operator's evaluation failed, when one did.
                     let faults: String = leaf
                         .ops
@@ -940,7 +1141,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                         .filter_map(|o| o.fault().map(|f| format!("; operator {}: {f}", o.name())))
                         .collect();
                     return Err(Error::Run(format!(
-                        "leaf {} ({}) returned {:?} at {path}{faults}",
+                        "leaf {} ({}) returned {:?} at {path}{unit}{faults}",
                         leaf.id, leaf.alg, out.retcode
                     )));
                 }
@@ -1435,6 +1636,47 @@ impl<T: Scalar> RunSpec<T> {
             wrt_u0,
             wrt_p,
         })
+    }
+
+    /// The number of executor threads a `dt_scope` `cell` or `shard` leaf
+    /// integrates its units on (spec/partitioning.md §4, D99): a run-time
+    /// option, which changes no result. Default 1.
+    pub fn set_threads(&self, threads: usize) {
+        for l in &self.schedule.leaves {
+            if let Some(sc) = &l.scope {
+                sc.threads
+                    .store(threads.max(1), std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Tests only: make a `dt_scope` `cell` or `shard` leaf panic in the
+    /// executor lane that takes unit `unit`, or, with `in_serve`, in its lane
+    /// pool while serving an evaluation of cell `unit`.
+    #[doc(hidden)]
+    pub fn set_test_panic(&self, unit: Option<usize>, in_serve: bool) {
+        for l in &self.schedule.leaves {
+            if let Some(sc) = &l.scope {
+                sc.test_panic_unit.store(
+                    unit.unwrap_or(usize::MAX),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                sc.test_panic_in_serve
+                    .store(in_serve, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Tests only: evaluate the units of `dt_scope` `cell` and `shard`
+    /// leaves over the whole model state instead of through lane programs,
+    /// the oracle of spec/partitioning.md §9.3.
+    pub fn set_whole_state_units(&self, whole: bool) {
+        for l in &self.schedule.leaves {
+            if let Some(sc) = &l.scope {
+                sc.whole_state
+                    .store(whole, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
 
     /// The initial state in `T`.

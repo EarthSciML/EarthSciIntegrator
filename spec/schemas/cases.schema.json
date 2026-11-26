@@ -92,6 +92,43 @@
             "rtol": {"$ref": "#/$defs/rtol"},
             "rtol_steps_differ": {"$ref": "#/$defs/rtol"}
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["check", "variants"],
+          "properties": {
+            "check": {"const": "invariance"},
+            "variants": {
+              "description": "Runs compared bit for bit with the first (spec/partitioning.md §9.3). Each overrides every pointwise or column leaf's partition shards and lanes, and the run-time thread count.",
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "shards": {"type": "integer", "minimum": 1},
+                  "lanes": {"type": "integer", "minimum": 1},
+                  "threads": {"type": "integer", "minimum": 1}
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["check", "against", "rtol"],
+          "properties": {
+            "check": {"const": "scope_agreement"},
+            "against": {
+              "description": "The case, differing only in dt_scope, whose result this one must agree with (spec/partitioning.md §9.3).",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "rtol": {"$ref": "#/$defs/rtol"}
+          }
         }
       ]
     }

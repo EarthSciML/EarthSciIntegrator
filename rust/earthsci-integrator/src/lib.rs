@@ -17,11 +17,14 @@ pub mod adjoint;
 pub mod config;
 pub mod conformance;
 pub mod conformance_m2;
+pub mod conformance_m3;
 pub mod forcing;
+pub mod lanes;
 pub mod leaf;
 pub mod operator;
 pub mod planned;
 pub mod schedule;
+pub mod scope;
 pub mod tape;
 pub mod toy;
 

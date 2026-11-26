@@ -19,7 +19,9 @@ pub mod codes {
     pub const UNSUPPORTED_SPLIT_EXPLICIT: &str = "unsupported_split_explicit";
     pub const UNSUPPORTED_CROSSING_UPDATE: &str = "unsupported_crossing_update";
     pub const UNSUPPORTED_DT_SCOPE: &str = "unsupported_dt_scope";
-    pub const UNSUPPORTED_TIME_DERIVATIVE: &str = "unsupported_time_derivative";
+    pub const DT_SCOPE_NOT_LOCAL: &str = "dt_scope_not_local";
+    pub const DT_SCOPE_BIND_DT: &str = "dt_scope_bind_dt";
+    pub const RESHARD_WITHOUT_SHARD_SCOPE: &str = "reshard_without_shard_scope";
     pub const AXES_UNRESOLVED: &str = "axes_unresolved";
     pub const NAME_UNRESOLVED: &str = "name_unresolved";
     pub const NAME_WRONG_KIND: &str = "name_wrong_kind";
@@ -83,7 +85,9 @@ pub mod codes {
         UNSUPPORTED_SPLIT_EXPLICIT,
         UNSUPPORTED_CROSSING_UPDATE,
         UNSUPPORTED_DT_SCOPE,
-        UNSUPPORTED_TIME_DERIVATIVE,
+        DT_SCOPE_NOT_LOCAL,
+        DT_SCOPE_BIND_DT,
+        RESHARD_WITHOUT_SHARD_SCOPE,
         AXES_UNRESOLVED,
         NAME_UNRESOLVED,
         NAME_WRONG_KIND,

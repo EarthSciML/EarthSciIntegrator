@@ -140,7 +140,7 @@
     },
     "derivedKind": {
       "enum": [
-        "rhs", "jacobian", "frozen_jacobian", "vjp", "second_order", "param_jacobian", "forcing_jacobian",
+        "rhs", "jacobian", "time_derivative", "frozen_jacobian", "vjp", "second_order", "param_jacobian", "forcing_jacobian",
         "residual", "map", "limit", "condition"
       ]
     },
@@ -234,6 +234,11 @@
         "class": {"enum": ["block_diagonal", "banded", "general", "empty"]},
         "linear_in_u": {"type": "boolean"},
         "depends_on_t": {"type": "boolean"},
+        "time_bands": {
+          "description": "Time band positions in field order: band k is J_k of the time-derivative document (spec/plan.md §6.4; EarthSciASTDiff serialize_band without coef, col \"t\").",
+          "type": "array",
+          "items": {"type": "object", "required": ["row", "col", "rows", "row_idx", "col_idx"]}
+        },
         "bands": {
           "description": "Band positions in field order: band k is J_k of the Jacobian document (EarthSciASTDiff serialize_band without coef).",
           "type": "array",
@@ -326,6 +331,18 @@
           "type": "object",
           "propertyNames": {"$ref": "run-config.schema.json#/$defs/nodeKey"},
           "additionalProperties": {"type": "integer", "minimum": 1}
+        },
+        "lanes": {
+          "description": "Lane capacity by node id, for the pointwise or column leaves whose partition gives lanes (spec/partitioning.md §10.2).",
+          "type": "object",
+          "propertyNames": {"$ref": "run-config.schema.json#/$defs/nodeKey"},
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        },
+        "reshard": {
+          "description": "Re-sharding by node id, for every leaf whose resolved dt_scope is shard (spec/partitioning.md §6.2, §10.2).",
+          "type": "object",
+          "propertyNames": {"$ref": "run-config.schema.json#/$defs/nodeKey"},
+          "additionalProperties": {"$ref": "run-config.schema.json#/$defs/leafPartition/properties/reshard"}
         },
         "output_shard": {
           "description": "The output stores' shard length per axis; rank block boundaries fall on its multiples (U12).",

@@ -111,6 +111,7 @@ include("planner/refusal.jl")
 include("planner/schema.jl")
 include("planner/bands.jl")
 include("planner/inputs.jl")
+include("planner/operator_refs.jl")
 include("planner/model.jl")
 include("planner/terms.jl")
 include("planner/passes.jl")
@@ -128,6 +129,7 @@ include("planner/planner.jl")
 # plan's derived documents, run by the schedule interpreter above.
 include("forcing_runtime.jl")
 include("plan_runtime.jl")
+include("scope.jl")
 
 """
     odefunction(ops::OperatorSum; inplace=true)

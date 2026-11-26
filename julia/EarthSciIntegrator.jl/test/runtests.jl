@@ -410,4 +410,5 @@ const FIXTURES = joinpath(@__DIR__, "..", "..", "..", "tests", "conformance", "r
     include("planner_fixtures.jl")
     include("m2.jl")
     include("m2_data.jl")
+    include("m3.jl")
 end

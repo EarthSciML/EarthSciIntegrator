@@ -4,7 +4,7 @@
 # planner.jl.
 
 using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config_schema, classify_bands, reduce_offset,
-    raw_offsets, Axes
+    raw_offsets, Axes, argument_band
 
 @isdefined(REPO) || include("paths.jl")
 
@@ -240,6 +240,35 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
         shapes = Dict("Reaction.A" => ["cell"], "Reaction.B" => ["cell"])
         @test classify_bands(adv[2:5], shapes, Axes(["cell"], nothing), Dict("cell" => 64)) == (:stencil, Dict("cell" => (1, 0)))
         @test classify_bands(adv[[1, 6, 7, 8]], shapes, Axes(["cell"], nothing), Dict("cell" => 64)) == (:pointwise, nothing)
+    end
+
+    @testset "face sets and argument bands (§5.2.3, D105)" begin
+        sizes = Dict("lon" => 6, "lat" => 3, "lev" => 4, "lev_nodes" => 5, "src" => 9)
+        shapes = Dict(
+            "m" => ["lon", "lat", "lev"], "Mz" => ["lon", "lat", "lev_nodes"], "F" => ["src"],
+            "G" => ["src", "lev"], "s" => String[]
+        )
+        ax = Axes(["lon", "lat"], "lev", Dict("lev_nodes" => "lev"))
+        noax = Axes(["lon", "lat"], "lev")
+        ijk = Union{String, Int}["i", "j", "k"]
+        r3 = [(1, 6), (1, 3), (1, 4)]
+        up = Dict{String, Any}("op" => "+", "args" => Any["k", 1])
+        mz(arg) = (b = BandEntry("m", "Mz", r3, ijk, Any["i", "j", up]); arg ? argument_band(b, "m") : b)
+        # A declared face set pairs with its cell axis: face k + 1 from cell k is offset +1, column.
+        @test classify_bands([mz(true)], shapes, ax, sizes) == (:column, nothing)
+        @test classify_bands([mz(false)], shapes, ax, sizes) == (:column, nothing)
+        # Undeclared, lev_nodes is an other axis: covered by an ordinary band (global),
+        # nothing for an argument band (read whole).
+        @test classify_bands([mz(false)], shapes, noax, sizes)[1] === :global
+        @test classify_bands([mz(true)], shapes, noax, sizes) == (:pointwise, nothing)
+        # An argument band's dimensions on other axes reach nothing; the others still do.
+        F = argument_band(BandEntry("m", "F", r3, ijk, Any[Dict{String, Any}("op" => "+", "args" => Any["i", "j"])]), "m")
+        @test classify_bands([F], shapes, ax, sizes) == (:pointwise, nothing)
+        G = argument_band(BandEntry("m", "G", r3, ijk, Any["i", up]), "m")
+        @test classify_bands([G], shapes, ax, sizes) == (:column, nothing)
+        # A scalar row reading an argument on an axis is global, on other axes only nothing.
+        @test classify_bands([argument_band(BandEntry("s", "Mz", Tuple{Int, Int}[], Union{String, Int}[], Any[1, 1, 1]), "s")], shapes, ax, sizes)[1] === :global
+        @test classify_bands([argument_band(BandEntry("s", "F", Tuple{Int, Int}[], Union{String, Int}[], Any[1]), "s")], shapes, ax, sizes) == (:pointwise, nothing)
     end
 
     @testset "class and radius (§5.2.4)" begin

@@ -5,7 +5,10 @@ Compares the Julia and Rust result files (spec/toy-problems.md §3) of every
 case in cases.json that has a `cross_language` check, and their tapes
 (spec/tape.md §5) by path and count.
 
-Usage: python tests/conformance/m1/compare_results.py JULIA_DIR RUST_DIR [--require-both]
+Usage: python tests/conformance/m1/compare_results.py JULIA_DIR RUST_DIR [--require-both] [--cases CASES_JSON]
+
+--cases names another cases file (default: this directory's cases.json), such
+as tests/conformance/m3/cases.json.
 
 A case for which neither implementation wrote a result is skipped (its methods
 are not implemented yet), and a case only one of them wrote is reported; with
@@ -193,6 +196,12 @@ def main():
         action="store_true",
         help="fail a case that either implementation did not run",
     )
+    ap.add_argument(
+        "--cases",
+        type=Path,
+        default=HERE / "cases.json",
+        help="the cases file whose cross_language checks to run (default: M1's)",
+    )
     args = ap.parse_args()
     # A suite that wrote no result files uploads no artifact, so CI's
     # download leaves the directory absent; say so rather than skip every case.
@@ -204,7 +213,7 @@ def main():
     if absent:
         print(f"no result files from {' or '.join(absent)}: did that test job run?")
         return 1
-    cases = json.loads((HERE / "cases.json").read_text())["cases"]
+    cases = json.loads(args.cases.read_text())["cases"]
     counts = {"pass": 0, "fail": 0, "skipped": 0, "one-sided": 0}
     failed = False
     for case in cases:

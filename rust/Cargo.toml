@@ -20,3 +20,20 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 [workspace.dependencies]
 earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.2.0" }
 earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.2.0" }
+
+# Unreleased dependencies, pinned by git revision until they are released.
+# EarthSciAST: draft EarthSciAST#801 (m3-gate-lane-and-ic-fixes, f5f24e2a0)
+# on upstream main, which carries #781 (a time per lane, U19), #780 (an array
+# faq read at the lane's own cell) and #784 (nested reference calls), none of
+# them in a release after 0.15.0. #801 seeds the initial state from a primed
+# provider's record and builds lane programs over a makearray region that
+# covers part of a lane set (a surface-only coefficient).
+# EarthSciASTDiff: the fork branch time-derivative-named-steps (4d953b4), on
+# upstream main at the merge of EarthSciASTDiff#81 (ef2cc07, time bands hold
+# data fixed). It writes each time-dependent observed's derivative in t once
+# as a named companion observed, which shrinks reseact's chemistry
+# time-derivative document from 68.8 MB to 1.7 MB; no upstream pull request
+# yet. Drop both pins when the releases are out (spec/plan.md §0.2).
+[patch.crates-io]
+earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "f5f24e2a0bfb7ab37124b32345312fb6d056e729" }
+earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "4d953b448aee744139effbf3e4aaef4871f3bd81" }

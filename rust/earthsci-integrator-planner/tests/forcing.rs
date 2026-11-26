@@ -606,37 +606,34 @@ fn forcing_refusals() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// §5.5.3, D94: chem reads a two-record forcing blended in time, so it
-/// depends on t. "auto" resolves its stiff pointwise leaf to TRBDF2, not a
-/// Rosenbrock method; a Rosenbrock method the run config names is refused at
-/// the leaf's alg.
+/// §5.5.3, §6.4, D102: chem reads a two-record forcing blended in time, so
+/// it depends on t. "auto" resolves its stiff pointwise leaf to a Rosenbrock
+/// method, and the plan carries chem's time-derivative document, its
+/// `time_bands`, but no `time_band_model` check, which the Rust planner does
+/// not make (§8.1, D107); a named Rosenbrock method plans the same way.
 #[test]
 fn time_dependent_rosenbrock() {
     let (m, r) = inputs();
     let p = plan_of("chem-auto", &m, &r).unwrap();
-    assert_eq!(
-        p.plan_json()["operators"]["chem"]["structure"]["depends_on_t"],
-        true
-    );
+    let pj = p.plan_json();
+    assert_eq!(pj["operators"]["chem"]["structure"]["depends_on_t"], true);
     let chem = &p.resolved_schedule["sequence"][0];
-    assert_eq!(
-        (&chem["alg"], &chem["linsolve"]),
-        (
-            &json!("TRBDF2"),
-            &json!({"block_lu": {"pivot": true, "refine": 0}})
-        )
+    assert!(
+        matches!(chem["alg"].as_str(), Some("Rosenbrock23" | "Rodas4")),
+        "{}",
+        chem["alg"]
     );
+    assert!(pj["derived"]["derived/chem.time_derivative.esm"].is_object());
+    assert!(pj["operators"]["chem"]["structure"]["time_bands"].is_array());
+    assert!(!pj["validation"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["check"] == "time_band_model"));
     for alg in ["Rosenbrock23", "Rodas4"] {
         let mut run = r.clone();
         run["schedule"]["sequence"][0]["alg"] = json!(alg);
-        assert_eq!(
-            refused(&format!("chem-{alg}"), &m, &run),
-            (
-                "unsupported_time_derivative".to_string(),
-                "/schedule/sequence/0/alg".to_string()
-            ),
-            "{alg}"
-        );
+        assert!(plan_of(&format!("chem-{alg}"), &m, &run).is_ok(), "{alg}");
     }
 }
 

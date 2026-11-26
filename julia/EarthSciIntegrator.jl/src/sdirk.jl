@@ -354,7 +354,7 @@ function sdirk_step(m::SDIRKMethod, ctx::ImplicitContext, u, p, t, h, adaptive::
                 bt == 0 && continue
                 e === nothing ? (e = convert(eltype(u1), bt) .* st.z[i]) : _addto!(e, bt, st.z[i])
             end
-            E = e === nothing ? 0.0 : error_norm(lu_solve(st.F, e .* st.σ), u, u1, ctx.tol)
+            E = e === nothing ? 0.0 : estimate_norm(lu_solve(st.F, e .* st.σ), u, u1, ctx.tol)
         elseif est === :divided_difference
             # OrdinaryDiffEqSDIRK `src/generic_imex_perform_step.jl:2401-2420`, in its
             # arithmetic: dt1 = h(t + h - t_{n-1}), dt2 = (t - t_{n-1})(t + h - t_{n-1}),
@@ -368,7 +368,7 @@ function sdirk_step(m::SDIRKMethod, ctx::ImplicitContext, u, p, t, h, adaptive::
                 dt2 = (t - tprev) * ((t + h) - tprev)
                 rr = something(m.tab.divided_difference) * h^2
                 e = [rr * abs((u1[j] - u[j]) / dt1 - (u[j] - uprev2[j]) / dt2) for j in eachindex(u1)]
-                E = error_norm(e, u, u1, ctx.tol)
+                E = estimate_norm(e, u, u1, ctx.tol)
             end
         else
             throw(ConfigError("method $(m.tab.name) has no error estimate; give the leaf a dt (D52)"))

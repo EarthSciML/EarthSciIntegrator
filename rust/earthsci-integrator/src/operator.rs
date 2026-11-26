@@ -175,6 +175,12 @@ pub trait Operator<T: Scalar>: Send + Sync {
     fn fault(&self) -> Option<String> {
         None
     }
+    /// The operator as `Any`, for a runtime that evaluates operators it built
+    /// itself in another way (spec/partitioning.md §3: a plan's operators
+    /// over lists of cells). `None` for every other operator.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 
     /// `out += f_k(u, p, t)`.
     fn rhs(&self, out: &mut [T], u: &[T], p: &[f64], t: f64);

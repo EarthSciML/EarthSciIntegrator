@@ -1,0 +1,16 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "dt_scope cell on a leaf with a bind_dt leaf parameter, which cannot hold several step sizes at once (spec/partitioning.md §2.1, D97).",
+  "model": "../../../toys/robertson.esm",
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "Rodas4",
+    "bind_dt": {
+      "Kinetics.k1": "leaf"
+    },
+    "control": {
+      "dt0": 0.0001,
+      "dt_scope": "cell"
+    }
+  }
+}

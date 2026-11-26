@@ -211,10 +211,13 @@ end
             jac!(ref, Jr2, u2[dofs], toy.p, t)
             @test isapprox(J2.A[dofs, dofs], Jr2.A; rtol = 1.0e-12, atol = 1.0e-12 * maximum(abs, Jr2.A))
             @test isapprox(vjp_u!(op, zeros(N), u, pp.prob.p, t, w), J.A' * w; rtol = 1.0e-12)
-            # §8.3: the calls planned operators do not provide at M2.
-            for call in (:ft, :vjp_p, :hess_u, :hess_p, :ft_vjp_u, :ft_vjp_p)
+            # §8.3: the calls planned operators do not provide at M2 or M3;
+            # ft (D102) only when the operator does not depend on t (zero) or
+            # its plan gives it a time-derivative document.
+            for call in (:vjp_p, :hess_u, :hess_p, :ft_vjp_u, :ft_vjp_p)
                 @test !EarthSciIntegrator.provides(op, call)
             end
+            @test EarthSciIntegrator.provides(op, :ft) == (!op.depends_on_t || op.time !== nothing)
         end
         if haskey(pp.prob.operators, "photochemistry")
             # Pointwise with a block plan, over arrays of one shape: block_diagonal.

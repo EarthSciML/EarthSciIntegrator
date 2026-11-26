@@ -119,13 +119,20 @@
     },
 
     "axes": {
-      "description": "The roles of the model's index sets (spec/run-config.md §6.1, D67): one or two horizontal axes, in the order partition.ranks and partition.tiles divide them, and at most one vertical axis. Defaults: no vertical axis; every index set that shapes a state, other than the vertical one, horizontal.",
+      "description": "The roles of the model's index sets (spec/run-config.md §6.1, D67): one or two horizontal axes, in the order partition.ranks and partition.tiles divide them, and at most one vertical axis. Defaults: no vertical axis; every index set that shapes a state, other than the vertical one, horizontal; no face sets.",
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
         "horizontal": {"type": "array", "items": {"$ref": "#/$defs/identifier"}, "minItems": 1, "maxItems": 2, "uniqueItems": true},
-        "vertical": {"$ref": "#/$defs/identifier"}
+        "vertical": {"$ref": "#/$defs/identifier"},
+        "faces": {
+          "description": "Face index sets, each mapped to the horizontal or vertical axis it staggers off: cell i owns face i, its low face, and a face set has one element more than its axis (spec/plan.md §5.2.1, §5.2.3; D105).",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"$ref": "#/$defs/identifier"},
+          "additionalProperties": {"$ref": "#/$defs/identifier"}
+        }
       }
     },
 
@@ -488,7 +495,10 @@
         "dtmin": {"$ref": "#/$defs/duration"},
         "dtmax": {"$ref": "#/$defs/duration"},
         "controller": {"enum": ["auto", "PI", "I", "PID"]},
-        "dt_scope": {"enum": ["auto", "global", "shard", "cell"]},
+        "dt_scope": {
+          "description": "Which DOFs share one step-size controller (spec/partitioning.md §2): the leaf, each shard or each cell. auto or omitted: cell for a pointwise leaf with block_diagonal storage, global otherwise (D17, D97).",
+          "enum": ["auto", "global", "shard", "cell"]
+        },
         "maxiters": {"type": "integer", "minimum": 1}
       }
     },
@@ -614,7 +624,18 @@
       "additionalProperties": false,
       "properties": {
         "shards": {"oneOf": [{"type": "integer", "minimum": 1}, {"$ref": "#/$defs/auto"}]},
-        "shard_size": {"type": "integer", "minimum": 1}
+        "shard_size": {"type": "integer", "minimum": 1},
+        "lanes": {
+          "description": "Lane capacity of the leaf's lane pools (spec/partitioning.md §3, §10.1). Omitted: the runtime chooses. Changes no result.",
+          "type": "integer", "minimum": 1
+        },
+        "reshard": {
+          "description": "Re-sharding under dt_scope shard (spec/partitioning.md §6.2): none (the default), or re-compose the shards every k macro steps.",
+          "oneOf": [
+            {"const": "none"},
+            {"type": "object", "additionalProperties": false, "required": ["every"], "properties": {"every": {"type": "integer", "minimum": 1}}}
+          ]
+        }
       }
     },
     "grid2": {

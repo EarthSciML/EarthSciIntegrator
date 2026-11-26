@@ -59,6 +59,9 @@ pub struct Structure {
     pub column: Option<(String, i64, i64)>,
     /// Stencil operators: the footprint, sorted.
     pub footprint: Option<Vec<Vec<i64>>>,
+    /// The time band list (spec/plan.md §6.4), for an operator with a
+    /// time-derivative document; band `k` is that document's `J_k`.
+    pub time_bands: Option<Vec<JacEntry>>,
 }
 
 /// One band as `serialize_band` writes it, without `coef` (§5.4).
@@ -141,7 +144,7 @@ pub fn structure(
         .terms
         .iter()
         .flat_map(|&i| &term_bands[i])
-        .map(|b| band_reach(b, &info.shapes, &info.index_sets, axes))
+        .map(|b| band_reach(b, &info.array_shapes, &info.index_sets, axes))
         .collect();
 
     let column = match (&op.locality.class, &axes.vertical) {
@@ -198,6 +201,7 @@ pub fn structure(
         block,
         column,
         footprint,
+        time_bands: None,
     })
 }
 
@@ -220,6 +224,12 @@ impl Structure {
         }
         if let Some(f) = &self.footprint {
             out.insert("stencil".into(), json!({"footprint": f}));
+        }
+        if let Some(tb) = &self.time_bands {
+            out.insert(
+                "time_bands".into(),
+                Value::Array(tb.iter().map(band_json).collect()),
+            );
         }
         Value::Object(out)
     }
@@ -254,6 +264,7 @@ mod tests {
             block: None,
             column: Some(("lev".into(), 1, 2)),
             footprint: Some(vec![vec![-1, 0], vec![0, 0]]),
+            time_bands: None,
         };
         assert_eq!(
             s.to_json(),

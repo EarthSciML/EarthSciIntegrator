@@ -105,6 +105,10 @@ pub struct At<'a> {
     pub sample: &'a Sample,
     pub base: &'a [f64],
     pub names: &'a [String],
+    /// `S_r`, each row's summand magnitude at the sampled state, the sum of
+    /// the absolute values of its terms (§8.2, D106): the scale of the
+    /// rounding floor. `None` takes `max(|f_r^+|, |f_r^-|)` instead (tests).
+    pub scale: Option<&'a [f64]>,
 }
 
 /// `band_model` at one sampled state (§8.1, §8.2, Rust): the band
@@ -123,9 +127,10 @@ pub fn band_model(
         sample: s,
         base,
         names,
+        scale,
     } = *at;
     let eval = |v: &[f64]| f.eval(dofs, v, s.t, &s.forcing);
-    band_model_with(&eval, &s.u, base, names, jb, pattern, rows)
+    band_model_with(&eval, &s.u, base, names, jb, pattern, rows, scale)
 }
 
 /// The divisors of the step at which §8.2's kink fallback takes central,
@@ -140,6 +145,7 @@ type Entry = ((usize, usize), f64);
 
 /// [`band_model`] with the right-hand side as a function of the state
 /// alone (`f(v)` in canonical order), at the sampled state `u`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn band_model_with(
     f: &Rhs,
     u: &[f64],
@@ -148,7 +154,14 @@ pub(crate) fn band_model_with(
     jb: &Sparse,
     pattern: &Sparse,
     rows: &[bool],
+    scale: Option<&[f64]>,
 ) -> Result<BandModelReport, String> {
+    // The scale of row r's rounding floor (§8.2, D106): S_r when given,
+    // else the larger magnitude of the two values differenced.
+    let floor_scale = |r: usize, a: f64, b: f64| match scale {
+        Some(s) => s[r],
+        None => a.abs().max(b.abs()),
+    };
     let n = u.len();
     // Steps: h_n = ε^(1/3) max(|u_n|, |b_n|) / d; the step taken is the
     // exact distance (u_n + h_n) − u_n. `d` is 1 for the check and 10, 100
@@ -201,7 +214,7 @@ pub(crate) fn band_model_with(
                     fpm.insert((r, c), (fp[r], fm[r]));
                 }
                 None => {
-                    let big_f = fp[r].abs().max(fm[r].abs());
+                    let big_f = floor_scale(r, fp[r], fm[r]);
                     let d = ((fp[r] - fm[r]) / 2.0).abs();
                     let floor = 1e3 * EPS * big_f;
                     if d > floor {
@@ -233,7 +246,7 @@ pub(crate) fn band_model_with(
     let mut failing: BTreeMap<usize, Vec<Entry>> = BTreeMap::new();
     for (&(r, c), &(p, mm)) in &fpm {
         let vi = ji(r, c);
-        let big_f = p.abs().max(mm.abs());
+        let big_f = floor_scale(r, p, mm);
         let vb = jb.get(&(r, c)).copied().unwrap_or(0.0);
         let tau = 1e-6 * m[&r] + 1e3 * EPS * big_f / step[c];
         let d = (vb - vi).abs();
@@ -269,7 +282,7 @@ pub(crate) fn band_model_with(
                 let (r, c) = entries[i].0;
                 let h = st[c];
                 let vb = jb.get(&(r, c)).copied().unwrap_or(0.0);
-                let tau = |a: f64, b: f64| 1e-6 * m[&r] + 1e3 * EPS * a.abs().max(b.abs()) / h;
+                let tau = |a: f64, b: f64| 1e-6 * m[&r] + 1e3 * EPS * floor_scale(r, a, b) / h;
                 // (value, τ) of the central, forward and backward
                 // differences, tried in that order.
                 let diffs = [
@@ -339,7 +352,7 @@ mod tests {
     ) -> Result<BandModelReport, String> {
         let names: Vec<String> = (0..u.len()).map(|i| format!("x[{}]", i + 1)).collect();
         let f = |v: &[f64]| Ok(f(v));
-        band_model_with(&f, u, u, &names, jb, jb, &vec![true; u.len()])
+        band_model_with(&f, u, u, &names, jb, jb, &vec![true; u.len()], None)
     }
 
     /// The step `band_model` takes at a component of magnitude 1.
@@ -430,7 +443,7 @@ mod tests {
             let names = vec!["x[1]".to_string(), "x[2]".to_string()];
             let jb = sparse(&[((0, 0), 1.0), ((1, 1), 3.0)]);
             let u = [1.0, 2.0];
-            band_model_with(&f, &u, &u, &names, &jb, &jb, &[true, true]).unwrap();
+            band_model_with(&f, &u, &u, &names, &jb, &jb, &[true, true], None).unwrap();
             n.get()
         };
         // One colour: the check's own pair.

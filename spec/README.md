@@ -13,13 +13,14 @@ One spec, implemented natively in Julia ([`../julia/EarthSciIntegrator.jl`](../j
 | [`methods.md`](methods.md) | Methods and controllers: the method catalogue, forward step forms, error estimates and norms, step-size control, first step, return codes | M1 draft |
 | [`tableaus/`](tableaus/) | Method coefficients and controller constants as data, extracted from OrdinaryDiffEq (D54). The Julia package and the Rust solvers crate read copies in their own `data/` (a released package cannot reach `spec/`); refresh them with `tools/sync-package-data.sh` | M1 |
 | [`operator-interface.md`](operator-interface.md) | What a leaf calls on an operator: right-hand side, derivative products, Jacobian storage, maps; operators a plan supplies | M1 draft, M2 §8 |
+| [`partitioning.md`](partitioning.md) | Partitioning and executors in shared memory: `dt_scope`, lane pools, executors, ordered reductions, shards and re-sharding, forcing at scale, tiles for stencil leaves, invariance and its fixtures | M3 draft |
 | [`tape.md`](tape.md) | The tape, replay, checkpoints, and a serialized form for tests | M1 draft |
 | [`toy-problems.md`](toy-problems.md) | The hand-written toy problems, the M1 conformance cases and checks, and result files; their `.esm` versions and the M2 end-to-end cases | M1 draft, M2 §4 |
 | [`schemas/run-config.schema.json`](schemas/run-config.schema.json) | JSON Schema (2020-12) for run configs | 0.1.0 |
 | [`schemas/plan.schema.json`](schemas/plan.schema.json) | JSON Schema (2020-12) for `plan.json` | 0.1.0, M2 |
 | [`schemas/tableau.schema.json`](schemas/tableau.schema.json), [`schemas/cases.schema.json`](schemas/cases.schema.json), [`schemas/result.schema.json`](schemas/result.schema.json), [`schemas/planner-errors.schema.json`](schemas/planner-errors.schema.json) | Coefficient tables, conformance cases, result files, and the refusal-code list | 0.1.0 |
 
-Chapters still to come: linear and nonlinear solvers beyond what methods.md states (M1 batched block LU; Krylov and `solve` nodes at M4b), events and callbacks (with the M1 implementations), partitioning and executors (M3).
+Chapters still to come: linear and nonlinear solvers beyond what methods.md states (M1 batched block LU; Krylov and `solve` nodes at M4b), events and callbacks (with the M1 implementations), and partitioning across ranks (M5; shared memory is [`partitioning.md`](partitioning.md)).
 
 ## Upstream versions
 

@@ -5,6 +5,7 @@
 
 use crate::derived::JACOBIAN_MODEL;
 use crate::error::{codes, refuse, PlanError, Result};
+use crate::operator_refs::OperatorRefs;
 use crate::runconfig::RunConfig;
 use earthsci_ast::{EsmFile, Expr, FlattenedSystem};
 use indexmap::IndexMap;
@@ -31,8 +32,17 @@ pub struct ModelInfo {
     /// Each state's index sets (its declared shape, or for a lifted state
     /// the shape `flatten` records, §6.1.3); empty for a scalar.
     pub shapes: BTreeMap<String, Vec<String>>,
+    /// Every array variable's index sets: the states' as in `shapes`, and
+    /// the declared shape of every parameter and observed that has a
+    /// non-empty one. Pass 2's locality reads it, an argument band's column
+    /// being a parameter or observed (spec/plan.md §5.2.2, D105).
+    pub array_shapes: BTreeMap<String, Vec<String>>,
     /// Observed definitions: observed name → its right-hand side.
     pub observed_defs: BTreeMap<String, Expr>,
+    /// The merged operator registry the flattened model's references
+    /// resolve against, with what is read of each definition
+    /// (operator_refs.rs); expressions keep their references (§4 step 5).
+    pub operators: OperatorRefs,
     /// The derived documents' `domain` ([`crate::derived::domain_json`] of
     /// the flattened model's), built once; `None` when they have none.
     pub domain: Option<Value>,
@@ -266,14 +276,11 @@ pub fn ic_reads(flat: &FlattenedSystem) -> BTreeSet<String> {
     out
 }
 
-/// Every string value in a serialized expression (object keys excluded).
+/// Every string value in a serialized expression that may read a name
+/// (object keys excluded, and an operator reference's `name`, which names a
+/// definition: [`crate::operator_refs::for_each_read_string`]).
 pub(crate) fn collect_strings(v: &Value, f: &mut impl FnMut(&str)) {
-    match v {
-        Value::String(s) => f(s),
-        Value::Array(a) => a.iter().for_each(|x| collect_strings(x, f)),
-        Value::Object(m) => m.values().for_each(|x| collect_strings(x, f)),
-        _ => {}
-    }
+    crate::operator_refs::for_each_read_string(v, f)
 }
 
 /// The `ranges` of a lifted equation's `faq` in a derived document
@@ -397,11 +404,14 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
     // Step 4.
     check_external(rc, &file, &path)?;
 
-    // Step 5. EarthSciAST's Rust `load_path` has already expanded expression
-    // templates and lowered `enum` nodes; esm 2.0.0 has no `table_lookup`
-    // (EarthSciAST 0.11 refuses it at load as a removed op).
+    // Step 5. EarthSciAST's Rust `load_path` has lowered `enum` nodes; esm
+    // 2.0.0 has no `table_lookup` (EarthSciAST 0.11 refuses it at load as a
+    // removed op). Operator references are kept, never expanded: they
+    // resolve against the merged registry `flatten` carries
+    // (operator_refs.rs).
     let flat = earthsci_ast::flatten(&file)
         .map_err(|e| refuse(codes::MODEL_FLATTEN_FAILED, "/model", e.to_string()))?;
+    let operators = OperatorRefs::new(&flat.template_registry);
 
     // Step 6.
     let scope = |code, m: String| Err(refuse(code, "/model", m));
@@ -559,11 +569,32 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         index_sets,
         states: states.into_iter().collect(),
         shapes: BTreeMap::new(),
+        array_shapes: BTreeMap::new(),
         observed_defs,
+        operators,
         domain: None,
         data_fed,
         used: BTreeSet::new(),
     };
+    // Every reference resolves, through every body it reaches, against the
+    // merged registry (esm-spec §9.6.4 rule 7), so the derived documents'
+    // `operators` blocks (§6.1.5) can always be written.
+    let mut roots = Vec::new();
+    for e in info
+        .flat
+        .equations
+        .iter()
+        .flat_map(|eq| [&eq.lhs, &eq.rhs])
+        .chain(info.flat.field_ics.iter().map(|(_, e)| e))
+    {
+        crate::operator_refs::referenced_definitions(
+            &serde_json::to_value(e).unwrap_or(Value::Null),
+            &mut roots,
+        );
+    }
+    info.operators
+        .reachable_definitions(&roots)
+        .map_err(PlanError::Internal)?;
     if let Some(d) = &info.flat.domain {
         info.domain = crate::derived::domain_json(d)?;
     }
@@ -575,6 +606,20 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
             .unwrap_or_default();
         info.shapes.insert(s, declared);
     }
+    let declared = |v: &earthsci_ast::ModelVariable| v.shape.clone().filter(|s| !s.is_empty());
+    let mut arrays: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (n, v) in info
+        .flat
+        .parameters
+        .iter()
+        .chain(info.flat.observed_variables.iter())
+    {
+        if let Some(s) = declared(v) {
+            arrays.insert(n.clone(), s);
+        }
+    }
+    arrays.extend(info.shapes.iter().map(|(k, v)| (k.clone(), v.clone())));
+    info.array_shapes = arrays;
     check_shapes(&info)?;
     Ok(info)
 }

@@ -108,39 +108,10 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
         is_leaflike(n) && get(n.spec, "alg", "auto") == "auto" || continue
         check_rosenbrock_precision(n, _resolved_alg(schedule, n.id), precision[n.id], psources[n.id])
     end
-    check_time_derivative(ctx, root, schedule)
-    # §6: derived documents, then §8 validation.
-    derived = derived_and_validation(backend, ctx)
+    # §6: derived documents (§6.4's time-derivative documents for the
+    # operators Rosenbrock leaves advance), then §8 validation.
+    derived = derived_and_validation(backend, ctx, schedule)
     return PlanDraft(ctx, stiff, schedule, step, partition, precision, derived)
-end
-
-"""
-    check_time_derivative(ctx, root, schedule)
-
-§5.5.3, D94: a leaf whose method, given or resolved, is a Rosenbrock method
-needs `ft` from every operator that depends on t, which a plan's operators do
-not provide until U17 (spec/operator-interface.md §8.3), so it is refused,
-`unsupported_time_derivative`. Leaves in tree order, operators in the leaf's
-order; refused at the leaf's `alg`. `"auto"` resolves such a leaf to TRBDF2
-(`resolve_leaf`), so only a given method is refused; the pointer at the leaf
-for a resolved one is a guard.
-"""
-function check_time_derivative(ctx, root::SNode, schedule)
-    for n in allnodes(root)
-        is_leaflike(n) || continue
-        alg = _resolved_alg(schedule, n.id)
-        TABLEAUS[alg].family === :rosenbrock || continue
-        i = findfirst(o -> op_depends_on_t(ctx, o), leaf_ops(n))
-        i === nothing && continue
-        op = leaf_ops(n)[i]
-        given = get(n.spec, "alg", "auto") != "auto"
-        at, how = given ? (nptr(n, "alg"), "") : (nptr(n), ", which the planner chose for alg \"auto\",")
-        refuse(
-            "unsupported_time_derivative", at,
-            "leaf $(n.id): operator $op depends on t, so $alg$how needs its time derivative ft, which a plan's operators do not provide at M2 (U17); name a method that is not a Rosenbrock method, such as TRBDF2"
-        )
-    end
-    return
 end
 
 """
@@ -268,7 +239,7 @@ function write_plan(d::PlanDraft, dir::AbstractString; bandvalues::Bool = false)
     for (path, bytes) in derived_files(b)
         write(joinpath(dir, path), bytes)
     end
-    write(joinpath(dir, "plan.report.json"), EarthSciASTDiff.stable_json(plan_report(b)))
+    write(joinpath(dir, "plan.report.json"), EarthSciASTDiff.stable_json(plan_report(b, d.ctx)))
     if bandvalues
         mkpath(joinpath(dir, "validation"))
         for (o, v) in b.bandvalues
@@ -279,7 +250,7 @@ function write_plan(d::PlanDraft, dir::AbstractString; bandvalues::Bool = false)
 end
 
 """`plan.report.json` (§1): the planner, the upstream versions it was built with, and the measured errors behind the validation checks. Its format is not specified."""
-function plan_report(b::DiffBackend)
+function plan_report(b::DiffBackend, ctx)
     vers(m) = string(pkgversion(m))
     return Dict{String, Any}(
         "planner" => Dict{String, Any}("name" => "EarthSciIntegrator.jl", "version" => vers(@__MODULE__)),
@@ -287,6 +258,8 @@ function plan_report(b::DiffBackend)
             "EarthSciAST" => vers(EarthSciAST), "EarthSciASTDiff" => vers(EarthSciASTDiff),
             "ForwardDiff" => vers(ForwardDiff)
         ),
-        "measured" => b.report
+        "measured" => b.report,
+        # §5.2.1: the same list, in the same order, in every planner's report.
+        "warnings" => face_set_warnings(ctx.model, ctx.axes)
     )
 end

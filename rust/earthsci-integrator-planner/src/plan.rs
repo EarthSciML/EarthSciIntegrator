@@ -42,6 +42,19 @@ pub struct Documents {
     pub rhs: Vec<u8>,
     /// `<op>.jacobian.esm`'s bytes.
     pub jacobian: Vec<u8>,
+    /// `<op>.time_derivative.esm`'s bytes, when §6.4 emits one.
+    pub time_derivative: Option<Vec<u8>>,
+}
+
+impl Documents {
+    /// Each document by kind, in the order they are written.
+    pub fn kinds(&self) -> Vec<(&'static str, &Vec<u8>)> {
+        let mut out = vec![("rhs", &self.rhs), ("jacobian", &self.jacobian)];
+        if let Some(t) = &self.time_derivative {
+            out.push(("time_derivative", t));
+        }
+        out
+    }
 }
 
 /// Everything the planner computes for a run config.
@@ -270,6 +283,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let mut info = model::read(&rc)?;
     // §4 step 8: the axes, then the time.
     let axes = axes::resolve(&rc, &info)?;
+    // §5.2.1: the report's `likely_face_set` warnings (D105).
+    let warnings = axes::face_set_warnings(&info, &axes);
     let interval = time::resolve(&rc, &info, options.time.as_ref())?;
 
     // Pass 1: terms.
@@ -282,7 +297,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
 
     // Each term's locality, before selection, which reads it (§4 "Order of
     // refusals" item 2, D81).
-    let bands = match bands.term_bands(&info, &terms) {
+    let source = bands;
+    let mut bands = match source.term_bands(&info, &terms) {
         Ok(Some(b)) => b,
         Ok(None) => {
             return Err(PlanError::NotYetImplemented(
@@ -296,9 +312,23 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             }));
         }
     };
+    // §5.2.2: each term's band list, then its argument bands (D105).
+    match source.argument_bands(&info, &axes, &terms) {
+        Ok(arg) => {
+            for (b, a) in bands.iter_mut().zip(arg) {
+                b.extend(a);
+            }
+        }
+        Err(e) => {
+            let all: Vec<&Term> = terms.iter().collect();
+            return Err(band_source_error(e, &all, |m| {
+                refuse(codes::BAND_MODEL_FAILED, "/model", m)
+            }));
+        }
+    }
     let term_localities: Vec<Locality> = bands
         .iter()
-        .map(|b| locality::classify(b, &info.shapes, &info.index_sets, &axes))
+        .map(|b| locality::classify(b, &info.array_shapes, &info.index_sets, &axes))
         .collect();
 
     // Pass 1 selection, then pass 2 per operator; pass 3 is in `select`.
@@ -365,7 +395,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         // means the two modes disagree. The column bandwidth and the
         // footprint read the terms' structure-only bands themselves (§5.4).
         let full: Vec<BandEntry> = band_list.iter().map(astdiff::band_entry).collect();
-        let full = locality::classify(&full, &info.shapes, &info.index_sets, &axes);
+        let full = locality::classify(&full, &info.array_shapes, &info.index_sets, &axes);
         if locality::operator_locality([&op.locality, &full], &axes) != op.locality {
             return Err(internal(format!(
                 "operator {name}: its full band list implies locality {full:?}, wider than {:?} from its terms' structure-only entries (spec/plan.md §5.2.2: the full mode's points are a subset of the structure-only mode's)",
@@ -391,6 +421,11 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
 
     // §7.1–§7.6 checks.
     let root = schedule::tree(&rc, &info, &ops);
+    let blocks: BTreeSet<String> = structures
+        .iter()
+        .filter(|(_, st)| st.block.is_some())
+        .map(|(n, _)| n.clone())
+        .collect();
     schedule::check(
         &root,
         &CheckContext {
@@ -398,6 +433,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             info: &info,
             ops: &ops,
             interval,
+            blocks: &blocks,
         },
     )?;
     let step = settings::step(&rc, &info)?;
@@ -513,6 +549,29 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     // methods it resolved (§4 "Order of refusals" item 6).
     planned.resolved_schedule = planned.resolve_schedule(Some(&planned.facts))?;
 
+    // §6.4 (D102): a time-derivative document for every operator that
+    // depends on t and that a Rosenbrock leaf advances.
+    let mut time_docs: BTreeMap<String, (Value, Vec<earthsci_astdiff::JacEntry>)> = BTreeMap::new();
+    for name in planned.rosenbrock_time_operators() {
+        let failed = |m: String| {
+            refuse(
+                codes::BAND_MODEL_FAILED,
+                "/model",
+                format!("operator {name}'s time bands: {m}"),
+            )
+        };
+        let view = astdiff::FlatView::of_document(rhs_docs[&name].clone()).map_err(failed)?;
+        let sv = view
+            .sysview()
+            .map_err(|e| failed(astdiff::astdiff_message(e)))?;
+        let tb = astdiff::time_bands(&sv).map_err(|e| failed(astdiff::astdiff_message(e)))?;
+        let doc = derived::jacobian_document(&sv, &tb)?;
+        if let Some(st) = planned.structures.get_mut(&name) {
+            st.time_bands = Some(tb.clone());
+        }
+        time_docs.insert(name, (doc, tb));
+    }
+
     // Pass 6: the derived documents.
     for (name, doc) in &rhs_docs {
         planned.documents.insert(
@@ -520,6 +579,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             Documents {
                 rhs: derived::to_bytes(doc),
                 jacobian: derived::to_bytes(&jac_docs[name]),
+                time_derivative: time_docs.get(name).map(|(d, _)| derived::to_bytes(d)),
             },
         );
     }
@@ -560,13 +620,30 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         let (base, samples) = numbers.states.as_ref().expect("set above");
         let on = &numbers.ops[name];
         let rhs = &numbers.rhs[name];
+        // S_r, the floor's scale (§8.2, D106): the operator's terms one by
+        // one, from the probe document of its terms.
+        let op_terms: Vec<Term> = op.terms.iter().map(|&i| planned.terms[i].clone()).collect();
+        let vars: Vec<&str> = op_terms.iter().map(|t| t.variable.as_str()).collect();
+        let terms_prog = Program::new(
+            &derived::probe_document(&info, &op_terms),
+            (interval.start, interval.end),
+            &numbers.dofs,
+        )
+        .map_err(internal)?;
+        let scales: Vec<Vec<f64>> = samples
+            .iter()
+            .map(|s| terms_prog.summand_magnitudes(&numbers.dofs, &vars, &s.u, s.t, &s.forcing))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(internal)?;
+        drop(terms_prog);
         let mut measured = Vec::new();
-        for (s, jb) in samples.iter().zip(&on.jb) {
+        for ((s, jb), sc) in samples.iter().zip(&on.jb).zip(&scales) {
             let at = validation::At {
                 dofs: &numbers.dofs,
                 sample: s,
                 base,
                 names: &numbers.names,
+                scale: Some(sc),
             };
             let r = validation::band_model(rhs, &at, jb, &on.pattern, &on.rows).map_err(|m| {
                 refuse(
@@ -583,7 +660,11 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         planned
             .validation
             .push(json!({"check": "non_empty", "operator": name, "passed": true}));
-        per_op.insert(name.clone(), json!({"band_model": measured}));
+        // No `time_band_model` here: the check of the time-derivative
+        // document is made by planners that differentiate exactly in t
+        // (Julia's ForwardDiff); a planner without that skips it (§8.1, D107).
+        let entry = json!({"band_model": measured});
+        per_op.insert(name.clone(), entry);
     }
     report.insert("operators".into(), Value::Object(per_op));
     report.insert("gershgorin".into(), Value::Object(gershgorin_report));
@@ -598,6 +679,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             "earthsci-astdiff": env!("ESI_EARTHSCI_ASTDIFF_VERSION"),
         },
         "validation": Value::Object(report),
+        // §5.2.1: the same list, in the same order, in every planner's report.
+        "warnings": warnings,
     });
     Ok(planned)
 }
@@ -758,6 +841,7 @@ impl Planned {
             uniform_shapes,
             block_vars,
             depends_on_t: names.iter().any(|o| self.structures[o].depends_on_t),
+            coupled: matches!(&n.kind, Kind::Leaf { coupled: true, .. }),
         }
     }
 
@@ -787,52 +871,48 @@ impl Planned {
             &self.schedule,
             &algs,
         )?;
-        self.check_time_derivative(&algs)?;
         schedule::write(&self.schedule, &self.model, &self.operators, &strategy)
     }
 
-    /// §5.5.3, D94: a leaf whose method, given or resolved, is a Rosenbrock
-    /// method needs `ft` from every operator that depends on t, which a plan's
-    /// operators do not provide until U17 (spec/operator-interface.md §8.3).
-    /// Leaves in tree order, operators in the leaf's order; refused at the
-    /// leaf's `alg`. `"auto"` resolves such a leaf to TRBDF2
-    /// ([`strategy::resolve_leaf`]), so only a given method is refused; the
-    /// pointer at the leaf for a resolved one is a guard.
-    fn check_time_derivative(&self, algs: &BTreeMap<String, String>) -> Result<()> {
-        for n in self.schedule.leaves() {
-            let alg = &algs[n.id()];
-            if !matches!(strategy::family(alg), Some(Family::Rosenbrock)) {
-                continue;
+    /// The operators §6.4 gives a time-derivative document: those whose
+    /// `structure.depends_on_t` is true that a leaf whose resolved method is
+    /// a Rosenbrock method advances, in code-point order (D102).
+    pub fn rosenbrock_time_operators(&self) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        fn walk(v: &Value, out: &mut Vec<(String, Vec<String>)>) {
+            match v {
+                Value::Object(o) => {
+                    if let (Some(alg), Some(ops)) =
+                        (o.get("alg").and_then(Value::as_str), o.get("leaf"))
+                    {
+                        let names = match ops {
+                            Value::String(s) => vec![s.clone()],
+                            Value::Array(a) => a
+                                .iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect(),
+                            _ => vec![],
+                        };
+                        out.push((alg.to_string(), names));
+                    }
+                    o.values().for_each(|x| walk(x, out));
+                }
+                Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                _ => {}
             }
-            let Kind::Leaf { ops, .. } = &n.kind else {
-                continue;
-            };
-            let Some(op) = ops.iter().find(|o| self.structures[*o].depends_on_t) else {
-                continue;
-            };
-            let given = n
-                .value
-                .get("alg")
-                .and_then(Value::as_str)
-                .is_some_and(|a| a != "auto");
-            let (at, how) = if given {
-                (n.key_ptr("alg"), "")
-            } else {
-                (
-                    n.pointer.clone(),
-                    ", which the planner chose for alg \"auto\",",
-                )
-            };
-            return Err(refuse(
-                codes::UNSUPPORTED_TIME_DERIVATIVE,
-                at,
-                format!(
-                    "leaf {}: operator {op} depends on t, so {alg}{how} needs its time derivative ft, which a plan's operators do not provide at M2 (U17); name a method that is not a Rosenbrock method, such as TRBDF2",
-                    n.id()
-                ),
-            ));
         }
-        Ok(())
+        let mut leaves = Vec::new();
+        walk(&self.resolved_schedule, &mut leaves);
+        for (alg, ops) in leaves {
+            if matches!(strategy::family(&alg), Some(Family::Rosenbrock)) {
+                for o in ops {
+                    if self.structures.get(&o).is_some_and(|s| s.depends_on_t) {
+                        out.insert(o);
+                    }
+                }
+            }
+        }
+        out.into_iter().collect()
     }
 
     /// The canonical DOF order of the flattened model (§4).
@@ -876,6 +956,46 @@ impl Planned {
         Ok(out)
     }
 
+    /// The planner's `f_t` of operator `op` from its time-derivative
+    /// document at `(u, t)` with forcing `forcing`, by row element name, for
+    /// every row a time band writes (the cells of its `rows` region): the
+    /// rows a band-value file's `time_entries` list (§8.1, §8.2). Empty for an
+    /// operator without a time-derivative document.
+    pub fn time_derivative_at(
+        &self,
+        op: &str,
+        u: &[f64],
+        t: f64,
+        forcing: &numeric::Forcing,
+    ) -> Result<BTreeMap<String, f64>> {
+        let docs = self
+            .documents
+            .get(op)
+            .ok_or_else(|| internal(format!("no operator {op}")))?;
+        let (Some(bytes), Some(tb)) = (&docs.time_derivative, &self.structures[op].time_bands)
+        else {
+            return Ok(BTreeMap::new());
+        };
+        let doc: Value = serde_json::from_slice(bytes).map_err(internal)?;
+        let dofs = self.dofs();
+        let prog = Program::new(&doc, (self.interval.start, self.interval.end), &dofs)
+            .map_err(internal)?;
+        let ft = numeric::time_derivative(&prog, &dofs, tb, u, t, forcing).map_err(internal)?;
+        let names = dofs.element_names();
+        let mut out = BTreeMap::new();
+        for en in tb {
+            let mut rows = Vec::new();
+            numeric::band_points(en, &mut |cell, _, _| rows.push(cell.to_vec()))
+                .map_err(internal)?;
+            for cell in rows {
+                if let Some(r) = dofs.dof(&en.u, &cell) {
+                    out.insert(names[r].clone(), ft[r]);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// The path of a derived document relative to the plan directory.
     pub fn derived_path(op: &str, kind: &str) -> String {
         format!("derived/{op}.{kind}.esm")
@@ -886,7 +1006,7 @@ impl Planned {
     pub fn derived_json(&self) -> Value {
         let mut out = Map::new();
         for (op, d) in &self.documents {
-            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+            for (kind, bytes) in d.kinds() {
                 out.insert(
                     Self::derived_path(op, kind),
                     json!({"kind": kind, "operator": op, "sha256": settings::sha256_hex(bytes)}),
@@ -949,7 +1069,7 @@ impl Planned {
         std::fs::create_dir_all(dir.join("derived")).map_err(io)?;
         std::fs::write(dir.join("plan.json"), self.plan_bytes()?).map_err(io)?;
         for (op, d) in &self.documents {
-            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+            for (kind, bytes) in d.kinds() {
                 std::fs::write(dir.join(Self::derived_path(op, kind)), bytes).map_err(io)?;
             }
         }
