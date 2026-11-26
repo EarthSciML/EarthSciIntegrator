@@ -3,7 +3,11 @@ title: "Traceable per-operator StableHLO: RHS, tile, lane and band-model fragmen
 description: "Extend EarthSciAST.jl's direct StableHLO emitter so an external integrator can get, for one operator and one tile or lane capacity, a pure traceable fragment that emits StableHLO into the integrator's own Reactant trace — inside its @trace while loop — with every input explicit: state, read-only state, a dense parameter vector, time, forcing buffers and, for lanes, the cell indices that define shard composition. Forcing refreshes and re-sharding never recompile. Adds Float32, deterministic folds, observed-output (band-model) fragments, and trace hygiene the integrator can rely on."
 ---
 
-Status: draft (proposed by EarthSciIntegrator, 2026-10-13)
+Status: merged upstream in EarthSciAST#775 (closes #544), released in EarthSciAST v0.15.0. Still open after the merge:
+- The emitter placed each template body at every use and re-emitted the operator at every fragment call (open question 2 below). EarthSciAST branch `xla/called-functions` emits both as called functions (`calls = :functions`).
+- §6 approach A (manual SPMD) was not exercised upstream: the four-device test runs one program per device (approach B). An M5g spike ran approach A on four virtual CPU devices (see open question 1).
+
+(Proposed by EarthSciIntegrator, 2026-10-13.)
 Target: `EarthSciAST.jl` `EarthSciASTReactantExt` (`ext/reactant_direct/`), plus a public IR entry in the package. Answers API_SPEC §8 item 23's open items (1), (2) and (4). Julia only: Rust's `tape/xla_emit.rs` is out of scope until after v1 (D15). No schema change.
 Needed by: EarthSciIntegrator milestone M5g (Julia XLA GPU path).
 Integrator refs: architecture.md §7.2, §7.6, §7.8, §8, §10, §13 (U13), §14 (M5g), §15 risk 7; decisions D4, D10, D15, D18, D28, decisions.md §4

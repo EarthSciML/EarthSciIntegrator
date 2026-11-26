@@ -3,7 +3,7 @@ title: "Integrating a Float32 document: what the declaration governs, and what t
 description: "Replace the blanket refusal to time-integrate a `domain.element_type: \"Float32\"` document with a contract. The declaration governs every document value (right-hand side, observeds, events, and the state itself); the integrator owns its clock, step size, norms, tolerances and linear algebra, and reports their precision. Rust's in-crate solver integrates Float32 documents on a binary32 diffsol; an external integrator may keep an f64 clock and f64 norms. No schema change."
 ---
 
-Status: draft (proposed by EarthSciIntegrator, 2026-10-13)
+Status: merged upstream in EarthSciAST#773 (fixes #542), released in EarthSciAST v0.15.0. Rust integrates a Float32 document on binary32 state; Julia native Float32 execution (PREC-11-A) is still a separate step. (Proposed by EarthSciIntegrator, 2026-10-13.)
 Target: EarthSciAST — esm-spec §11.3.1 (new §11.3.2), CONFORMANCE_SPEC §5.18.2 clause 3 and a new §5.18.5, `earthsci-ast-rs` (`solve`, `init`, and the public RHS entry of U4); refusal fixes in Julia and Python. Behavioural only: no schema change and no format version bump.
 Needed by: EarthSciIntegrator milestone M7 (EqWeFiC single column in f32). Julia also needs its evaluation rules (R1, R4) for M5g's mixed configuration (D28). reseact declares no `element_type`, so the choice of f32 there is U14's, not this RFC's.
 Integrator refs: architecture.md §4.4 (EqWeFiC example), §7.8, §8, §13 (U5); decisions D1, D13, D18, D28, D29; U14

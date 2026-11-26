@@ -42,6 +42,6 @@ These are the changes EarthSciIntegrator needs in sibling repos. Each draft foll
 
 **Cross-cutting prerequisites** (architecture §13):
 - esm 1.3.0 for the three model repos.
-- EarthSciAST's unmerged `fix/f59-mounted-leaf-precision` branch (for U14).
+- EarthSciAST's `fix/f59-mounted-leaf-precision` branch (for U14), now on `main`.
 - A spec clarification permitting batched recurrence positions (for U15).
 - The EarthSciASTDiff Rust/Python catch-up (U10 step W0).

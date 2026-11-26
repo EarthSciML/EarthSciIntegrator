@@ -443,6 +443,8 @@ Yes, and the design already allows it.
 
   There are two ways to get XLA halos (U13 §6):
   - **A. Manual SPMD (preferred).** Each device runs its tile fragment (U3/U13), and the integrator emits `collective_permute` between stages inside an `sdy.manual_computation` region. Reactant 0.2.291 has raw MLIR builders for both ops but no high-level wrapper, so this needs a spike.
+    - A spike on 2026-11-26 (Reactant 0.2.309, four virtual CPU devices, a 1-D periodic diffusion stencil with SSP-RK2) built the region and the halo `collective_permute`s with the raw builders, inside one traced `while` loop, plus one `all_reduce` for the norm. It works. The state agreed bitwise with the single-device program and across reruns. Per step: 79 µs against 16 µs on one device at 4,096 cells, where the four exchanges per step dominate; 155 against 221 µs at 65,536 cells; 552 against 8,544 µs at about a million cells. One program per device per stage with halos through the host (the fallback) cost 273, 915 and 5,674 µs. Compile took about 3 s in every form.
+    - The global norm's `all_reduce` sums the per-device partial sums in XLA's order, so it differed from the single-device norm by about 1e-16. A fixed tree (D10) needs an `all_gather` of the partial sums and a fixed-order sum, and the per-device partial sums must use the same tree as the whole-domain one.
   - **B. Automatic.** Emit one N-D tensor per variable, sharded on lon/lat, with stencil reads as static slices, and let the partitioner insert the halos. This reopens the slice compile-time problem, and it rewrites the emitter's value model.
 
   The fallback if A fails is one program per device per stage, which breaks "one program per leaf step" for stencil leaves only. Norms and Krylov dot products use all-reduce in fixed-tree form. Across nodes, MPI exchanges halos on the host.
@@ -594,7 +596,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U2 | EarthSciAST | Per-term provenance (`equation_contributions`) carried through flatten | M2 |
 | U3 | EarthSciAST | Range-restricted, DOF-subset RHS over a tile or a lane list, with halo reads and global indices (Julia `f!`; Rust slab tape); released in v0.5.0 | M3 (tiles, lanes), M5 (MPI) |
 | U4 | EarthSciAST | Reentrant, thread-safe RHS entry point: Rust `RhsProgram` (`Send + Sync`); Julia `f!` without global forcing state; released in v0.5.0 (`rhs_program` in both) | M3 |
-| U5 | EarthSciAST | Honour declared Float32 in integration: Rust (stop refusing), Julia (honour `element_type`), and the Rust XLA emitter | M5g, M7 |
+| U5 | EarthSciAST | Honour declared Float32 in integration: Rust (stop refusing), Julia (honour `element_type`), and the Rust XLA emitter; merged (EarthSciAST#773), released in v0.15.0, Julia native Float32 still pending | M5g, M7 |
 | U6 | EarthSciAST | Strip mode for events, parameter updates and algebraic equations, plus standalone kernels for residuals, conditions, affects, limits and maps | M4b |
 | U7 | EarthSciASTDiff | ∂f/∂(forcing buffer) bands, and array parameters as real columns; released in 0.2.0 (EarthSciASTDiff#28) | M4 |
 | U8 | EarthSciASTDiff | Second-order bands for Rosenbrock adjoints (`∇_u`, `∇_p`, `∇_F` of `μᵀJw`; `∂f_t/∂u`); released in 0.2.0 (EarthSciASTDiff#29) | M4 (Rust; Julia can use the D38 fallback) |
@@ -602,8 +604,8 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U10 | EarthSciASTDiff | Production-rate Rust assembly, after a catch-up step: Rust and Python lagged EarthSciAST (`aggregate`→`faq`, removed `VariableType`), so Rust did not compile against it and Python returned empty bands (both by reading, 2026-10-14); merged on `main` (EarthSciASTDiff#5, #8, #10, #12), released in 0.1.0 (commit 743d140) | M3 |
 | U11 | EarthSciIO | Async prefetch (forward/reverse) and per-rank name-keyed windows | M5 |
 | U12 | EarthSciIO | Rust streaming writer, multi-rank region writes, indexed time mode, f32/int types | M4 (Rust gradient sinks), M5 |
-| U13 | EarthSciAST (Julia) | Traceable per-operator StableHLO fragments (`operator_ir`, `emit_fragment`), f32 emission, fixed-order folds | M5g |
-| U14 | EarthSciAST | Numerical vs semantic precision: an omitted `element_type` is unspecified, so the run config may choose (D29) | M5g, M7 |
+| U13 | EarthSciAST (Julia) | Traceable per-operator StableHLO fragments (`operator_ir`, `emit_fragment`), f32 emission, fixed-order folds; merged (EarthSciAST#775), released in v0.15.0 | M5g |
+| U14 | EarthSciAST | Numerical vs semantic precision: an omitted `element_type` is unspecified, so the run config may choose (D29); merged (EarthSciAST#774), released in v0.15.0 | M5g, M7 |
 | U15 | EarthSciAST (Julia) | Execute recurrences in the native compiler and the StableHLO emitter | M7 |
 | U16 | EarthSciAST | `solver.time_span`, the run interval a document asks for (D60); released in v0.4.0 | M2 |
 | U17 | EarthSciASTDiff | Time-derivative bands (∂f/∂t) specified and golden-gated, for Rosenbrock's `f_t` on time-dependent operators; done on `main` (EarthSciASTDiff#13), released in 0.1.0 (commit 743d140) | M3 |
@@ -611,7 +613,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 
 **Prerequisites the drafts uncovered:**
 - **esm 1.3.0.** U01 and U14 ship in esm 1.3.0. reseact (esm 1.0.0), eqice and EqWeFiC (1.0.0/1.1.0) must move to 1.3.0 before they can use `solver.external` or an f32 choice.
-- **An unmerged branch.** U14 builds on EarthSciAST's unmerged `fix/f59-mounted-leaf-precision` branch. On `main`, Julia's and Go's `ModelVariable` have no `element_type` field, so per-variable declarations are dropped on load (found by reading).
+- **A branch U14 built on.** U14 built on EarthSciAST's `fix/f59-mounted-leaf-precision` branch, which is now on `main`: Julia's and Go's `ModelVariable` carry `element_type`.
 - **A spec clarification for U15.** esm-spec §4.3.1.1 point 4 forbids vectorized or kernel-merged recurrence evaluation. U15 needs the clarification that cells sharing a recurrence position are independent and may be batched, for the Julia native path and any GPU path.
 
 **Bugs found while drafting, to file upstream:**
