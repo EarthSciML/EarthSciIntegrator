@@ -1,0 +1,54 @@
+{
+  "A": [
+    [0.0, 0.0, 0.0, 0.0],
+    [0.4358665215, 0.4358665215, 0.0, 0.0],
+    [0.490563388419108, 0.073570090080892, 0.4358665215, 0.0],
+    [0.308809969973036, 1.490563388254106, -1.235239879727145, 0.4358665215]
+  ],
+  "b": [0.308809969973036, 1.490563388254106, -1.235239879727145, 0.4358665215],
+  "btilde": [0.181753418446072, -1.416993298173214, 1.671106401227145, -0.4358665215],
+  "c": [0.0, 0.871733043, 1.0, 1.0],
+  "c_ordinarydiffeq": [0.0, 0.4358665215, 1.0, 1.0],
+  "controller": {
+    "beta1": 0.23333333333333334,
+    "beta2": 0.13333333333333333,
+    "failfactor": 2,
+    "gamma": 0.9,
+    "pid_accept_safety": 0.81,
+    "pid_beta3": 0,
+    "qmax": 10,
+    "qmax_first_step": 10000,
+    "qmin": 0.2,
+    "qoldinit": 0.0001,
+    "qsteady_max": 1.2,
+    "qsteady_min": 1,
+    "source": {
+      "file": "src/alg_utils.jl",
+      "line": 776,
+      "note": "beta1_default, beta2_default, gamma_default, qmin_default, qmax_default, qsteady_*_default, qmax_first_step_default and failfactor_default for this algorithm; qoldinit and the PID constants from src/integrators/controllers.jl (PIController, PIDController).",
+      "package": "OrdinaryDiffEqCore",
+      "version": "4.19.0"
+    }
+  },
+  "embedded_order": 2,
+  "error_estimate": "embedded_smoothed",
+  "explicit_first_stage": true,
+  "family": "sdirk",
+  "first_same_as_last": false,
+  "form": "sdirk",
+  "name": "Kvaerno3",
+  "notes": [
+    "OrdinaryDiffEq sets the stage times c to [0.0, 0.4358665215, 1.0, 1.0]; this table uses the row sums of A, which the method's order conditions assume (spec/methods.md §5.4, D55)."
+  ],
+  "order": 3,
+  "ordinarydiffeq_algorithm": "Kvaerno3",
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "src/imex_tableaus.jl",
+    "line": 1206,
+    "package": "OrdinaryDiffEqSDIRK",
+    "version": "2.9.8"
+  },
+  "stages": 4,
+  "stiffly_accurate": true
+}

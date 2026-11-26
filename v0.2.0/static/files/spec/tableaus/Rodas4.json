@@ -1,0 +1,61 @@
+{
+  "A": [
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [1.544, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [0.9466785280815826, 0.2557011698983284, 0.0, 0.0, 0.0, 0.0],
+    [3.314825187068521, 2.896124015972201, 0.9986419139977817, 0.0, 0.0, 0.0],
+    [1.221224509226641, 6.019134481288629, 12.53708332932087, -0.687886036105895, 0.0, 0.0],
+    [1.221224509226641, 6.019134481288629, 12.53708332932087, -0.687886036105895, 1.0, 0.0]
+  ],
+  "C": [
+    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [-5.6688, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [-2.430093356833875, -0.2063599157091915, 0.0, 0.0, 0.0, 0.0],
+    [-0.1073529058151375, -9.594562251023355, -20.47028614809616, 0.0, 0.0, 0.0],
+    [7.496443313967647, -10.24680431464352, -33.99990352819905, 11.7089089320616, 0.0, 0.0],
+    [8.083246795921522, -7.981132988064893, -31.52159432874371, 16.31930543123136, -6.058818238834054, 0.0]
+  ],
+  "b": [1.221224509226641, 6.019134481288629, 12.53708332932087, -0.687886036105895, 1.0, 1.0],
+  "btilde": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+  "c": [0.0, 0.386, 0.21, 0.63, 1.0, 1.0],
+  "controller": {
+    "beta1": 0.175,
+    "beta2": 0.1,
+    "failfactor": 2,
+    "gamma": 0.9,
+    "pid_accept_safety": 0.81,
+    "pid_beta3": 0,
+    "qmax": 10,
+    "qmax_first_step": 10000,
+    "qmin": 0.2,
+    "qoldinit": 0.0001,
+    "qsteady_max": 1.2,
+    "qsteady_min": 1,
+    "source": {
+      "file": "src/alg_utils.jl",
+      "line": 776,
+      "note": "beta1_default, beta2_default, gamma_default, qmin_default, qmax_default, qsteady_*_default, qmax_first_step_default and failfactor_default for this algorithm; qoldinit and the PID constants from src/integrators/controllers.jl (PIController, PIDController).",
+      "package": "OrdinaryDiffEqCore",
+      "version": "4.19.0"
+    }
+  },
+  "d": [0.25, -0.1043, 0.1035, -0.0362, 0.0, 0.0],
+  "embedded_order": 3,
+  "error_estimate": "embedded",
+  "family": "rosenbrock",
+  "first_same_as_last": false,
+  "form": "rosenbrock_transformed",
+  "gamma": 0.25,
+  "name": "Rodas4",
+  "order": 4,
+  "ordinarydiffeq_algorithm": "Rodas4",
+  "schema": "https://earthsciml.org/schemas/esm-integrator/0.1.0/tableau.schema.json",
+  "source": {
+    "file": "src/rosenbrock_tableaus.jl",
+    "line": 106,
+    "package": "OrdinaryDiffEqRosenbrockTableaus",
+    "version": "2.4.2"
+  },
+  "stages": 6,
+  "stiffly_accurate": true
+}
