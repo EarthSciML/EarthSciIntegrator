@@ -28,17 +28,16 @@ SHA = "0.7, 1"
 SciMLBase = "2, 3"
 julia = "1.10"
 
-# M3's lane programs need a time per lane (EarthSciAST#781), merged upstream
-# after the 0.15.0 release, and Julia's build of reseact needs draft
-# EarthSciAST#784 (nested reference calls): pinned at the fork's test branch
-# nested-refs-on-main-781 (4e29e6d), #781's merge commit with #784's fix
-# (41bfc1363) merged in. Time-derivative
-# documents need EarthSciASTDiff's time-band fixes on top of 0.7.0 (an
-# elementwise observed read at a cell, data held fixed, an operand left
-# unfollowed still read at the cell): unreleased work on the fork's
-# time-bands-data-fixed branch, with no upstream pull request yet, pinned at
-# effdb9a, the commit the Rust runtime pins. Replace both with the releases
+# M3's lane programs need a time per lane (EarthSciAST#781) and Julia's build
+# of reseact needs nested reference calls (EarthSciAST#784), both merged
+# upstream after the 0.15.0 release; the gate's lane builds need draft
+# EarthSciAST#801 on top of them (a makearray region covering part of a lane
+# set; an ic that reads a scalar observed of t). Pinned at #801's branch
+# m3-gate-lane-and-ic-fixes (f5f24e2a0). Time-derivative documents need
+# EarthSciASTDiff#81 (time bands hold data fixed, read an elementwise observed
+# at a cell), merged upstream after 0.7.0: pinned at its merge commit
+# (ef2cc07), the commit the Rust runtime pins. Replace both with the releases
 # that carry them.
 [sources]
-EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "4e29e6d857876a6789bed98355dcf3e1dee89579"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "effdb9af6d88f32f8a160af07d5b5ed4a56bb621"}
+EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "f5f24e2a0bfb7ab37124b32345312fb6d056e729"}
+EarthSciASTDiff = {url = "https://github.com/EarthSciML/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "ef2cc07b14c72d5492f55102576abfd50b0210f5"}
