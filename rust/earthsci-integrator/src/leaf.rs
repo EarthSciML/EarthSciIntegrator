@@ -216,6 +216,9 @@ pub struct LeafSpec<T: Scalar> {
     /// The model-state buffers of [`Bound`], kept across invocations, one
     /// per invocation in flight.
     pub bound_work: Mutex<Vec<BoundWork<T>>>,
+    /// An index-1 DAE's algebraic rows and consistent initialization
+    /// (spec/methods.md §14), else `None`.
+    pub dae: Option<crate::algebraic::DaeSpec<T>>,
 }
 
 /// A leaf's step workspace: the method's, and the stored
@@ -845,14 +848,20 @@ impl<T: Scalar> LeafSpec<T> {
             _ => LeafWork {
                 m: match &self.method {
                     LeafMethod::Erk(m) => MethodWork::Erk(m.workspace(n)),
-                    LeafMethod::Ros(m, ls) => MethodWork::Ros(Box::new(
-                        m.workspace(n, self.structure, *ls)
-                            .map_err(|e| Error::Config(format!("leaf {}: {e}", self.id)))?,
-                    )),
-                    LeafMethod::Imp(m, ls) => MethodWork::Imp(Box::new(
-                        m.workspace(n, self.structure, *ls)
-                            .map_err(|e| Error::Config(format!("leaf {}: {e}", self.id)))?,
-                    )),
+                    LeafMethod::Ros(m, ls) => MethodWork::Ros(Box::new({
+                        let mut w = m
+                            .workspace(n, self.structure, *ls)
+                            .map_err(|e| Error::Config(format!("leaf {}: {e}", self.id)))?;
+                        w.mass = self.dae.as_ref().map(|d| d.mass.clone());
+                        w
+                    })),
+                    LeafMethod::Imp(m, ls) => MethodWork::Imp(Box::new({
+                        let mut w = m
+                            .workspace(n, self.structure, *ls)
+                            .map_err(|e| Error::Config(format!("leaf {}: {e}", self.id)))?;
+                        w.mass = self.dae.as_ref().map(|d| d.mass.clone());
+                        w
+                    })),
                 },
                 fsal: vec![T::zero(); n],
             },
