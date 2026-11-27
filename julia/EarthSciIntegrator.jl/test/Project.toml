@@ -20,13 +20,10 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [compat]
-EarthSciAST = "0.14"
-EarthSciASTDiff = "0.6.2"
+EarthSciAST = "0.15"
+EarthSciASTDiff = "0.7"
 OrdinaryDiffEqSDIRK = "2"
 SciMLBase = "3"
 
-# Planner stage C: EarthSciAST main after 0.14.0 (see ../Project.toml).
 [sources]
-EarthSciAST = {url = "https://github.com/EarthSciML/EarthSciAST.git", subdir = "pkg/EarthSciAST.jl", rev = "48edb585cf880c35636b325cdee91cc49b4400a3"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "9021c78bb3962da194219a03e72e7d2391ca5da0"}
 EarthSciIntegrator = {path = ".."}
