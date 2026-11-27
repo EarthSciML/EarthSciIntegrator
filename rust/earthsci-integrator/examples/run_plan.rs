@@ -24,9 +24,17 @@ fn main() {
     let spec = RunSpec::<f64>::with_problem(lp.problem, &lp.run_config, lp.tspan, None)
         .unwrap_or_else(|e| panic!("run spec: {e}"));
     let tl = t0.elapsed().as_secs_f64();
-    let run = spec
-        .forward(&spec.u0(), &spec.problem.p)
-        .unwrap_or_else(|e| panic!("forward: {e}"));
+    let run = match spec.forward(&spec.u0(), &spec.problem.p) {
+        Ok(r) => r,
+        Err(e) => {
+            for op in &spec.problem.operators {
+                if let Some(f) = op.fault() {
+                    eprintln!("operator {}: {f}", op.name());
+                }
+            }
+            panic!("forward: {e}")
+        }
+    };
     let u = &run.outputs.last().unwrap().1;
     for v in &vars {
         let x: Vec<f64> = dofs[v].iter().map(|&j| u[j]).collect();

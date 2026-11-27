@@ -304,7 +304,13 @@ const PLAN_FILES = String[]
         # Derived documents (§6, §7.7): one rhs and one jacobian per operator, hashed as written.
         # An algebraic operator's first document is its residual document (§6.4).
         first_kind(o) = p["operators"][o]["kind"] == "algebraic" ? "residual" : "rhs"
-        @test sort!(collect(keys(p["derived"]))) == sort!(["derived/$o.$k.esm" for o in ops for k in (first_kind(o), "jacobian")])
+        # A solving node that names observeds adds the frozen documents (§6.5):
+        # a frozen residual document, and with `frozen_bands` (picard) a frozen
+        # Jacobian document.
+        frozen_kinds(o) = haskey(p["operators"][o], "frozen_bands") ? ("frozen_residual", "frozen_jacobian") :
+            haskey(p["derived"], "derived/$o.frozen_residual.esm") ? ("frozen_residual",) : ()
+        @test sort!(collect(keys(p["derived"]))) ==
+            sort!(["derived/$o.$k.esm" for o in ops for k in (first_kind(o), "jacobian", frozen_kinds(o)...)])
         for (path, x) in p["derived"]
             bytes = read(joinpath(dir, path))
             @test x["sha256"] == bytes2hex(EarthSciIntegrator.sha256(bytes))
@@ -312,13 +318,14 @@ const PLAN_FILES = String[]
             @test EarthSciASTDiff.stable_json(doc) == String(bytes)
             # §2.2: no `const` value written as an integral float.
             @test isempty(integral_float_consts(doc))
-            if x["kind"] in ("rhs", "residual")
+            if x["kind"] in ("rhs", "residual", "frozen_residual")
                 @test doc["esm"] == "1.3.0" && doc["metadata"] == Dict("name" => x["operator"])
             else
                 # EarthSciASTDiff's evaluation document, as it writes it (§6.2).
                 @test doc["esm"] == "1.1.0" && doc["metadata"] == Dict("name" => "JacobianEval")
                 @test !occursin("\"op\":\"ic\"", String(copy(bytes)))
-                nb = length(p["operators"][x["operator"]]["structure"]["bands"])
+                entry = p["operators"][x["operator"]]
+                nb = length(x["kind"] == "frozen_jacobian" ? entry["frozen_bands"] : entry["structure"]["bands"])
                 # The band fields, plus the observeds subtree sharing hoists
                 # (`Jcse<n>`, esm-jacobian-spec §8.1; D90).
                 jvars = collect(keys(doc["models"]["JacobianEval"]["variables"]))

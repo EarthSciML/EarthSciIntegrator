@@ -820,9 +820,19 @@ function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDoc
     points = NTuple{3, Int}[(fields[k][f], row, col) for (k, f, row, col) in band_points(L, bands)]
     return PlannedOperator(
         String(name), w, planned_structure(entry, L), Bool(st["depends_on_t"]), Bool(st["linear_in_u"]), r, j, points,
-        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block"), nothing, EpochSetRef(), EpochSetRef()
+        BandCache(), L, _blockable(entry), nothing, EpochSetRef(), EpochSetRef()
     )
 end
+
+"""
+Whether a planned operator's leaf storage can be block diagonal, one
+element per state per cell: pointwise, with a `block` of class
+`block_diagonal`. A `cell_block` structure keeps elements along other axes
+inside a cell's block (D123); a solve takes its blocks from the plan
+instead ([`solve_blocks`](@ref)).
+"""
+_blockable(entry) = entry["locality"]["class"] == "pointwise" && haskey(entry["structure"], "block") &&
+    entry["structure"]["class"] == "block_diagonal"
 
 """
 The structure of a planned operator: the structure a leaf of this operator
@@ -835,7 +845,7 @@ takes its structure from all of its state variables ([`bind_planned_leaf`](@ref)
 """
 function planned_structure(entry, L::DofLayout)
     st = entry["structure"]
-    entry["locality"]["class"] == "pointwise" && haskey(st, "block") || return DenseStructure()
+    _blockable(entry) || return DenseStructure()
     return block_structure(L, unique(String.(entry["writes"])))
 end
 

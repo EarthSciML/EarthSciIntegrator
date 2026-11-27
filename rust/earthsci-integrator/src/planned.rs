@@ -1315,8 +1315,12 @@ fn build_operator(
     // arrays of one shape (ncells the cells of that shape) or all scalars
     // (ncells = 1), with n the number of states. A leaf's own structure
     // looks at its own states only (structure_over, §8.3).
-    let blockable =
-        entry["locality"]["class"].as_str() == Some("pointwise") && st.get("block").is_some();
+    // A cell_block structure keeps elements along other axes inside a cell's
+    // block, which this storage (one element per state per cell) cannot
+    // hold; a solve takes its blocks from the plan instead (solve_blocks).
+    let blockable = entry["locality"]["class"].as_str() == Some("pointwise")
+        && st.get("block").is_some()
+        && st["class"].as_str() == Some("block_diagonal");
     let structure = match ncells {
         Some(ncells) if blockable => {
             if let Some((_, r, c)) = points.iter().find(|(_, r, c)| r % ncells != c % ncells) {

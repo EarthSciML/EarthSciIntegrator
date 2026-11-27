@@ -349,6 +349,9 @@ function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l,
             b[held] .= 0.0
             s = _linsolve(A, inv(δ), held, b, B, m.pivot)
             s === nothing && return z, false, k
+            # A step that is not finite (a NaN or infinite Jacobian entry)
+            # fails the attempt (§15.7).
+            all(isfinite, s) || return z, false, k
             znew = _proj(z .+ ω .* s, l, h)
             gnew = G(znew)
             rnew = _R(znew, gnew, l, h)
@@ -362,6 +365,7 @@ function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l,
             held = BitVector([(z[i] + g[i] <= l[i] || z[i] + g[i] >= h[i]) for i in eachindex(z)])
             s = _linsolve(A, 0.0, held, -r, B, m.pivot)
             s === nothing && return z, false, k
+            all(isfinite, s) || return z, false, k
             s .*= ω
             α = 1.0
             if m.linesearch === :backtracking

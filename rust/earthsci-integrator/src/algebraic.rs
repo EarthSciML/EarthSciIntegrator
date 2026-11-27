@@ -538,6 +538,11 @@ fn attempt<T: Scalar>(
                 let Some(s) = linsolve(&a, 1.0 / delta, &held, &b, bl)? else {
                     return Ok((z, false, k));
                 };
+                // A step that is not finite (a NaN or infinite Jacobian entry)
+                // fails the attempt (§15.7).
+                if !s.iter().all(|x| x.is_finite()) {
+                    return Ok((z, false, k));
+                }
                 let zt: Vec<f64> = (0..nz).map(|i| z[i] + omega * s[i]).collect();
                 let znew = proj(&zt, l, h);
                 let gnew = r.g(&znew, p);
@@ -562,6 +567,9 @@ fn attempt<T: Scalar>(
                 let Some(mut s) = linsolve(&a, 0.0, &held, &b, bl)? else {
                     return Ok((z, false, k));
                 };
+                if !s.iter().all(|x| x.is_finite()) {
+                    return Ok((z, false, k));
+                }
                 s.iter_mut().for_each(|x| *x *= omega);
                 let mut alpha = 1.0;
                 if m.backtracking {
