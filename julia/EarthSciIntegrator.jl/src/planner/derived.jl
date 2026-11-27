@@ -74,9 +74,19 @@ end
 function variable_object(m::PlanModel, name::AbstractString, v)
     d = Dict{String, Any}("type" => is_param(m, name) ? "parameter" : "unknown")
     haskey(m.shapes, name) && (d["shape"] = Any[m.shapes[name]...])
-    v.default === nothing || (d["default"] = v.default)
+    v.default === nothing || (d["default"] = nested_default(v.default))
     return d
 end
+
+"""
+An array `default` as nested lists, outermost index first (§6.1.1): a
+`Matrix` `A` is written `[[A[1,1], A[1,2], …], [A[2,1], …], …]`, as the source
+document nests it. EarthSciAST holds a multi-dimensional inline default as a
+Julia array, which serializes as one flat list; a scalar or a vector is
+written as it is.
+"""
+nested_default(x) = x
+nested_default(x::AbstractArray) = ndims(x) <= 1 ? x : Any[nested_default(selectdim(x, 1, i)) for i in axes(x, 1)]
 
 """The model of component path `path` in the tree `models`, created (with its parents) when missing."""
 function component_model!(models::AbstractDict, path::AbstractString)
