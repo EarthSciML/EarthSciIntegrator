@@ -101,14 +101,17 @@ fn box_lcp() {
 
 #[test]
 fn phase_joint() {
-    let (run, lp) = run_case("toy_phase_joint", "ptc");
-    // s column-major over cell × salt; cell 1 saturates salt 1 (§1.9).
-    assert!(close(
-        &at_end(&run, &lp, "Phase.s"),
-        &[1.0, 0.0, 0.0, 0.0],
-        1e-11
-    ));
-    assert!(close(&at_end(&run, &lp, "Phase.w"), &[1.0, 0.75], 1e-11));
+    // `per_cell` names cell the only horizontal axis (salt inside the cell, D123).
+    for case in ["ptc", "per_cell"] {
+        let (run, lp) = run_case("toy_phase_joint", case);
+        // s column-major over cell × salt; cell 1 saturates salt 1 (§1.9).
+        assert!(close(
+            &at_end(&run, &lp, "Phase.s"),
+            &[1.0, 0.0, 0.0, 0.0],
+            1e-11
+        ));
+        assert!(close(&at_end(&run, &lp, "Phase.w"), &[1.0, 0.75], 1e-11));
+    }
 }
 
 #[test]
