@@ -78,6 +78,45 @@ fn cubic_roots() {
     }
 }
 
+/// The blocks a plan's structure gives a solve (spec/plan.md §5.4).
+#[test]
+fn solve_blocks() {
+    for (fixture, case, op, want) in [
+        (
+            "toy_cubic_roots",
+            "newton",
+            "cubic",
+            vec![vec![0], vec![1], vec![2], vec![3]],
+        ),
+        // One 3 × 3 block per cell: s[c, 1], s[c, 2], w[c] (positions among
+        // the unknowns s then w, column-major).
+        (
+            "toy_phase_joint",
+            "per_cell",
+            "phase",
+            vec![vec![0, 2, 4], vec![1, 3, 5]],
+        ),
+    ] {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("algebraic_runtime")
+            .join(format!("{fixture}__{case}__blocks"));
+        let _ = std::fs::remove_dir_all(&dir);
+        plan(
+            &fixtures().join(fixture).join(format!("{case}.run.json")),
+            &Options::default(),
+            &AstDiffBands,
+        )
+        .and_then(|p| p.write(&dir))
+        .unwrap();
+        let lp = load_plan::<f64>(&dir).unwrap();
+        assert_eq!(
+            lp.problem.algebraic[op].blocks,
+            Some(want),
+            "{fixture}/{case}"
+        );
+    }
+}
+
 #[test]
 fn picard_roots() {
     // The roots of z + z³ = c, c = i/4 (spec/toy-problems.md §1.11).

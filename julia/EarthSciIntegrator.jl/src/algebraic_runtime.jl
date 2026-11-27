@@ -8,8 +8,10 @@
 What the runtime knows of an algebraic operator beyond its documents: its
 unknowns' DOFs (canonical order) and, per DOF, its lower and upper bound
 sources (spec/plan.md §5.9.7): `(:const, v)` or `(:param, i)` (index into the
-parameter vector), `nothing` for an unbounded side; and its frozen
-documents (`FrozenDocs`), when the plan has them.
+parameter vector), `nothing` for an unbounded side; its frozen documents
+(`FrozenDocs`), when the plan has them; and its blocks, when the plan gives
+its structure a `block` (spec/plan.md §5.4): per cell, the positions among
+the unknowns of the block's elements in the block's order.
 """
 struct AlgebraicInfo
     dofs::Vector{Int}
@@ -17,8 +19,10 @@ struct AlgebraicInfo
     lower::Vector{Any}
     upper::Vector{Any}
     frozen::Any                      # FrozenDocs or nothing
+    blocks::Union{Nothing, Vector{Vector{Int}}}
 end
-AlgebraicInfo(dofs, names, lower, upper) = AlgebraicInfo(dofs, names, lower, upper, nothing)
+AlgebraicInfo(dofs, names, lower, upper) = AlgebraicInfo(dofs, names, lower, upper, nothing, nothing)
+AlgebraicInfo(dofs, names, lower, upper, frozen) = AlgebraicInfo(dofs, names, lower, upper, frozen, nothing)
 
 """
     FrozenDocs
@@ -62,10 +66,10 @@ function frozen_jacobian(F::FrozenDocs, x, nz, p, t)
     for (ds, v) in zip(F.fdofs, frozen_values(F, x, p, t))
         uf[ds] = v
     end
-    A = zeros(nz, nz)
+    A = Dict{Tuple{Int, Int}, Float64}()
     evaluate(F.jac, uf, p, t) do du
         for (s, r, c) in F.points
-            A[r, c] += du[s]
+            A[(r, c)] = get(A, (r, c), 0.0) + du[s]
         end
     end
     return A
@@ -156,6 +160,7 @@ struct SolveMethod
     maxiter::Int
     recover::Vector{Any}
     pivot::Bool
+    block::Bool                      # linsolve block_lu or sparse_block_lu: one LU per block of the plan's structure
 end
 
 function SolveMethod(m::AbstractDict, id)
@@ -171,12 +176,15 @@ function SolveMethod(m::AbstractDict, id)
         rc = findfirst(==(o), frozen)
     end
     ls = get(m, "linsolve", Dict{String, Any}("dense_lu" => Dict{String, Any}()))
+    # block_lu and sparse_block_lu factor each block of the plan's structure
+    # on its own; within a block both factor densely here.
+    block = ls isa AbstractDict && (haskey(ls, "block_lu") || haskey(ls, "sparse_block_lu"))
     pivot = ls isa AbstractDict && haskey(ls, "block_lu") ? Bool(get(ls["block_lu"], "pivot", true)) : true
     p = get(m, "ptc", Dict{String, Any}())
     return SolveMethod(
         kind, Float64(get(p, "dt0", 1.0e-3)), Float64(get(p, "growth", 2.0)),
         Symbol(get(m, "linesearch", "none")), Float64(get(conv, "residual", Inf)), rc,
-        Float64(get(conv, "tol", 0.0)), Int(get(m, "maxiter", 100)), collect(Any, get(m, "recover", Any[])), pivot
+        Float64(get(conv, "tol", 0.0)), Int(get(m, "maxiter", 100)), collect(Any, get(m, "recover", Any[])), pivot, block
     )
 end
 
@@ -202,15 +210,87 @@ function residual_at(ops, dofs, u, z, p, t)
     return out[dofs]
 end
 
-"""`G_z`, dense over the unknowns."""
+"""
+Jacobian storage that keeps the entries whose row and column are both
+unknowns, by their positions among the unknowns (`pos`, model DOF to
+position), so a solve never forms a matrix over the model state.
+"""
+struct EntryJacobian <: JacobianStorage
+    pos::Dict{Int, Int}
+    A::Dict{Tuple{Int, Int}, Float64}
+end
+@inline function addentry!(S::EntryJacobian, i::Integer, j::Integer, v)
+    pi, pj = get(S.pos, i, 0), get(S.pos, j, 0)
+    (pi > 0 && pj > 0) && (S.A[(pi, pj)] = get(S.A, (pi, pj), 0.0) + v)
+    return S
+end
+
+"""`G_z` over the unknowns, as entries `(row, col) => value` by position."""
 function residual_jacobian(ops, dofs, u, z, p, t)
     x = copy(u)
     x[dofs] = z
-    J = DenseJacobian{Float64}(length(u))
+    J = EntryJacobian(Dict(d => i for (i, d) in enumerate(dofs)), Dict{Tuple{Int, Int}, Float64}())
     for op in ops
         jac!(op, J, x, p, t)
     end
-    return J.A[dofs, dofs]
+    return J.A
+end
+
+"""
+The blocks of a solve's linear systems (spec/methods.md §15.3): with
+`block_lu`, the plan's blocks (`info.blocks`), else one block of every
+unknown. Each block is a list of positions among the unknowns, `of[i]` the
+block and place of position `i`.
+"""
+struct SolveBlocks
+    blocks::Vector{Vector{Int}}
+    of::Vector{Tuple{Int, Int}}
+end
+function SolveBlocks(info::AlgebraicInfo, m::SolveMethod)
+    nz = length(info.dofs)
+    blocks = if m.block
+        info.blocks === nothing && throw(
+            UnsupportedError("solve: a block linsolve, but the operator's plan entry gives no block structure (spec/plan.md §5.4)")
+        )
+        info.blocks
+    else
+        [collect(1:nz)]
+    end
+    of = fill((0, 0), nz)
+    for (k, P) in enumerate(blocks), (i, q) in enumerate(P)
+        of[q] = (k, i)
+    end
+    any(==((0, 0)), of) && throw(ConfigError("solve: the plan's blocks do not cover every unknown"))
+    return SolveBlocks(blocks, of)
+end
+
+"""
+Solve `(σI − A) x = b`, with the rows `held` replaced by the identity's,
+block by block: one LU per block (spec/methods.md §15.3, §15.4). `nothing`
+when a block is singular.
+"""
+function _linsolve(A::AbstractDict, σ, held, b, B::SolveBlocks, pivot::Bool)
+    Ms = [zeros(length(P), length(P)) for P in B.blocks]
+    for ((r, c), v) in A
+        (kr, ir), (kc, ic) = B.of[r], B.of[c]
+        kr == kc || throw(ConfigError("solve: the Jacobian couples unknowns $r and $c of two blocks of the plan's block structure"))
+        Ms[kr][ir, ic] -= v
+    end
+    x = zeros(length(b))
+    for (k, P) in enumerate(B.blocks)
+        M = Ms[k]
+        for (i, q) in enumerate(P)
+            M[i, i] += σ
+            if held[q]
+                M[i, :] .= 0.0
+                M[i, i] = 1.0
+            end
+        end
+        F = lu_factor(M, pivot)
+        issuccess_lu(F) || return nothing
+        x[P] = lu_solve(F, b[P])
+    end
+    return x
 end
 
 _mid(l, x, h) = min(max(x, l), h)
@@ -218,11 +298,6 @@ _proj(z, l, h) = Float64[_mid(l[i], z[i], h[i]) for i in eachindex(z)]
 _R(z, G, l, h) = Float64[z[i] - _mid(l[i], z[i] + G[i], h[i]) for i in eachindex(z)]
 _ninf(v) = isempty(v) ? 0.0 : maximum(abs, v)
 
-function _linsolve(A::Matrix{Float64}, b::Vector{Float64}, pivot::Bool)
-    F = lu_factor(copy(A), pivot)
-    issuccess_lu(F) || return nothing
-    return lu_solve(F, b)
-end
 
 """The model state `u` with the unknowns `dofs` set to `z`."""
 function _with_z(u, dofs, z)
@@ -262,23 +337,17 @@ function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l,
     isfinite(n) || return z, false, 0
     m.relchange == 0 && n <= m.tol && return z, true, 0
     o = m.relchange == 0 ? nothing : O(z)
+    B = SolveBlocks(info, m)
     δ = m.dt0
     for k in 1:m.maxiter
         A = m.kind === :picard ? frozen_jacobian(F, _with_z(u, dofs, z), length(z), p, t) :
             residual_jacobian(ops, dofs, u, z, p, t)
         if m.kind === :ptc
-            M = -A
+            # A component held at a bound by an outward rate does not move (§15.4).
+            held = BitVector([(z[i] <= l[i] && g[i] <= 0) || (z[i] >= h[i] && g[i] >= 0) for i in eachindex(z)])
             b = copy(g)
-            for i in eachindex(z)
-                M[i, i] += inv(δ)
-                # A component held at a bound by an outward rate does not move (§15.4).
-                if (z[i] <= l[i] && g[i] <= 0) || (z[i] >= h[i] && g[i] >= 0)
-                    M[i, :] .= 0.0
-                    M[i, i] = 1.0
-                    b[i] = 0.0
-                end
-            end
-            s = _linsolve(M, b, m.pivot)
+            b[held] .= 0.0
+            s = _linsolve(A, inv(δ), held, b, B, m.pivot)
             s === nothing && return z, false, k
             znew = _proj(z .+ ω .* s, l, h)
             gnew = G(znew)
@@ -290,15 +359,8 @@ function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l,
         else
             # The generalized Jacobian of R (§15.3): an identity row where
             # `mid` takes a bound, else -G_z's row.
-            D = -A
-            for i in eachindex(z)
-                x = z[i] + g[i]
-                if x <= l[i] || x >= h[i]
-                    D[i, :] .= 0.0
-                    D[i, i] = 1.0
-                end
-            end
-            s = _linsolve(D, -r, m.pivot)
+            held = BitVector([(z[i] + g[i] <= l[i] || z[i] + g[i] >= h[i]) for i in eachindex(z)])
+            s = _linsolve(A, 0.0, held, -r, B, m.pivot)
             s === nothing && return z, false, k
             s .*= ω
             α = 1.0
@@ -520,8 +582,9 @@ function dae_info(spec::AbstractDict, prob::ToyProblem, id, names, leafstate)
     any(i -> any(!isnothing, i.lower) || any(!isnothing, i.upper), infos) &&
         throw(ConfigError("coupled node $id: a bounded unknown in a DAE is not specified (unsupported_dae_bounds)"))
     # One algebraic operator's frozen documents serve a picard or rel_change
-    # initialization (spec/plan.md §6.5).
-    info = AlgebraicInfo(dofs, znames, Any[nothing for _ in dofs], Any[nothing for _ in dofs], length(infos) == 1 ? only(infos).frozen : nothing)
+    # initialization (spec/plan.md §6.5), and its blocks a block_lu one.
+    one = length(infos) == 1
+    info = AlgebraicInfo(dofs, znames, Any[nothing for _ in dofs], Any[nothing for _ in dofs], one ? only(infos).frozen : nothing, one ? only(infos).blocks : nothing)
     model_dofs = leafstate === nothing ? collect(1:prob.N) : leafstate.dofs
     zset = Set(dofs)
     mass = BitVector([d in zset for d in model_dofs])

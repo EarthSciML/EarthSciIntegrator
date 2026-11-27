@@ -25,6 +25,8 @@ _solve_record(run) = only(r for r in run.tape.records if r isa AR.SolveRecord)
         @test run.outputs[end][1] == 1.0
         @test _end(run, pp, "Cubic.z") ≈ [0.6823278038280193, 1.0, 1.2134116627622296, 1.378796700129551] atol = 1.0e-11
         @test isempty(_solve_record(run).active)
+        # block_diagonal: one 1 × 1 block per cell.
+        @test pp.prob.algebraic["cubic"].blocks == [[1], [2], [3], [4]]
     end
     @testset "box_lcp $case" for case in ("newton", "ptc")
         run, pp = _run_case("toy_box_lcp", case)
@@ -40,6 +42,9 @@ _solve_record(run) = only(r for r in run.tape.records if r isa AR.SolveRecord)
         # s column-major over cell × salt; cell 1 saturates salt 1 (§1.9).
         @test _end(run, pp, "Phase.s") ≈ [1.0, 0.0, 0.0, 0.0] atol = 1.0e-11
         @test _end(run, pp, "Phase.w") ≈ [1.0, 0.75] atol = 1.0e-11
+        # per_cell's block_lu factors one 3 × 3 block per cell: s[c, 1],
+        # s[c, 2], w[c] (positions among the unknowns s then w, column-major).
+        case == "per_cell" && @test pp.prob.algebraic["phase"].blocks == [[1, 3, 5], [2, 4, 6]]
     end
     @testset "picard_roots $case" for (case, tol) in (("picard", 1.0e-12), ("rel_change", 1.0e-11), ("newton_rel_change", 1.0e-11))
         run, pp = _run_case("toy_picard_roots", case)

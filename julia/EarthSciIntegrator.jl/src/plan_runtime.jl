@@ -648,9 +648,9 @@ function plan_problem(
         first_kind(n) == "residual" || continue
         docjson = JSON.parsefile(joinpath(dir, "derived/$n.residual.esm"))
         info = algebraic_info(n, plan["operators"][n], L, pnames, docjson)
-        if haskey(plan["derived"], "derived/$n.frozen_residual.esm")
-            info = AlgebraicInfo(info.dofs, info.names, info.lower, info.upper, frozen_docs(n, plan["operators"][n], L, pnames, doc, info.dofs))
-        end
+        fz = haskey(plan["derived"], "derived/$n.frozen_residual.esm") ?
+            frozen_docs(n, plan["operators"][n], L, pnames, doc, info.dofs) : nothing
+        info = AlgebraicInfo(info.dofs, info.names, info.lower, info.upper, fz, solve_blocks(n, plan["operators"][n], L, docjson, info))
         algebraic[n] = info
     end
     variables = Pair{String, Vector{Int}}[
@@ -662,6 +662,68 @@ function plan_problem(
         Function[], nothing, false, algebraic
     )
     return PlanProblem(prob, plan, L, F)
+end
+
+"""The index sets of variable `name` as declared in a derived document's JSON (`[]` for a scalar)."""
+function declared_shape(doc, name::AbstractString, opname)
+    segs = split(name, '.')
+    node = get(doc["models"], segs[1], nothing)
+    for x in segs[2:(end - 1)]
+        node === nothing && break
+        node = get(get(node, "subsystems", Dict()), x, nothing)
+    end
+    v = node === nothing ? nothing : get(get(node, "variables", Dict()), segs[end], nothing)
+    v === nothing && throw(ConfigError("operator '$opname': its residual document does not declare $name"))
+    return String[String(x) for x in get(v, "shape", Any[])]
+end
+
+"""
+The blocks of algebraic operator `name`'s unknowns (`info`), from its
+structure's `block` (spec/plan.md §5.4), else `nothing`: per cell, the
+positions among the unknowns of the block's elements, in the block's order.
+A `cell_block` plan lists its elements (a variable and its indices along the
+axes inside the cell) and its cell axes; a `block_diagonal` plan has one
+element per variable, in its `ordering` of `vars`, and every axis is a cell
+axis. Elements of variables the operator only reads are left out. Blocks
+are in column-major order of their cells.
+"""
+function solve_blocks(name, entry, L::DofLayout, docjson, info)
+    st = entry["structure"]
+    haskey(st, "block") || return nothing
+    blk = st["block"]
+    cellaxes, elems = if haskey(blk, "elements")
+        String.(blk["cell_axes"]), Tuple{String, Vector{Int}}[(String(e[1]), Int.(e[2])) for e in blk["elements"]]
+    else
+        vars = String.(blk["vars"])
+        nothing, Tuple{String, Vector{Int}}[(vars[o], Int[]) for o in blk["ordering"]]
+    end
+    # The block's elements also hold the variables the operator only reads;
+    # the solve's blocks are its unknowns', in the block's order.
+    filter!(e -> e[1] in info.names, elems)
+    at = Dict(e => i for (i, e) in enumerate(elems))
+    bad(msg) = throw(ConfigError("operator '$name': its block structure: $msg"))
+    groups = Dict{Vector{Int}, Vector{Int}}()
+    k = 0
+    for z in unique(info.names)
+        shape = declared_shape(docjson, z, name)
+        cd = cellaxes === nothing ? collect(eachindex(shape)) : Int[
+            something(findfirst(==(a), shape), 0) for a in cellaxes
+        ]
+        any(==(0), cd) && bad("$z does not span every cell axis $(cellaxes)")
+        inner = setdiff(eachindex(shape), cd)
+        for c in cells(L.extents[z])
+            k += 1
+            e = get(at, (z, c[inner]), 0)
+            e == 0 && bad("$z$(c) is no element of a block")
+            g = get!(() -> zeros(Int, length(elems)), groups, c[cd])
+            g[e] == 0 || bad("two unknowns are element $e of one block")
+            g[e] = k
+        end
+    end
+    k == length(info.dofs) || bad("the unknowns are not those of the plan entry")
+    out = Vector{Int}[groups[key] for key in sort!(collect(keys(groups)); by = reverse)]
+    any(g -> any(==(0), g), out) && bad("a cell lacks an element of its block")
+    return out
 end
 
 """

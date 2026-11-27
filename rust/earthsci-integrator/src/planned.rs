@@ -396,6 +396,34 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
             }
         }
     }
+    fn jac_entries(
+        &self,
+        dofs: &[usize],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        f: &mut dyn FnMut(usize, usize, T),
+    ) {
+        let at = |&(k, r, c): &(usize, usize, usize)| {
+            Some((
+                k,
+                dofs.binary_search(&r).ok()?,
+                dofs.binary_search(&c).ok()?,
+            ))
+        };
+        let done = self.jacobian.eval(u, p, t, |du| {
+            for (k, a, b) in self.points.iter().filter_map(at) {
+                f(a, b, T::from_f64(du[k]));
+            }
+        });
+        if let Err(e) = done {
+            self.record("Jacobian", e);
+            for (_, a, b) in self.points.iter().filter_map(at) {
+                f(a, b, T::from_f64(f64::NAN));
+            }
+        }
+    }
+
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
         // A block_diagonal operator's points stay inside their cell (checked
         // when it was built), so either storage takes every point.
@@ -738,6 +766,7 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
             lower: vec![],
             upper: vec![],
             frozen: None,
+            blocks: None,
         };
         for z in entry["writes"]
             .as_array()
@@ -783,6 +812,8 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
             )?;
             info.frozen = Some(crate::algebraic::Frozen(Arc::new(f)));
         }
+        info.blocks = solve_blocks(&b.name, entry, &m.dofs, &doc, &info.names)
+            .map_err(|e| refuse(&b.name, &b.rhs_path, format!("its block structure: {e}")))?;
         algebraic.insert(b.name.clone(), info);
     }
     for b in built {
@@ -1072,7 +1103,7 @@ impl crate::algebraic::FrozenEval for PlannedFrozen {
         self.jac.is_some()
     }
 
-    fn jacobian(&self, x: &[f64], nz: usize, p: &[f64], t: f64) -> Result<Vec<f64>, String> {
+    fn jacobian(&self, x: &[f64], p: &[f64], t: f64) -> Result<crate::algebraic::Entries, String> {
         let jac = self.jac.as_ref().ok_or("no frozen Jacobian document")?;
         let mut uf = self.state(x);
         for (ds, v) in self.fdofs.iter().zip(self.values(x, p, t)?) {
@@ -1081,13 +1112,143 @@ impl crate::algebraic::FrozenEval for PlannedFrozen {
             }
         }
         jac.eval(&uf, p, t, |du| {
-            let mut a = vec![0.0; nz * nz];
+            let mut a = crate::algebraic::Entries::new();
             for &(s, r, c) in &self.points {
-                a[c * nz + r] += du[s];
+                *a.entry((r, c)).or_insert(0.0) += du[s];
             }
             a
         })
     }
+}
+
+/// The index sets of variable `name` as declared in a derived document.
+fn declared_shape(doc: &Value, name: &str) -> Result<Vec<String>, String> {
+    let segs: Vec<&str> = name.split('.').collect();
+    let mut node = &doc["models"][segs[0]];
+    for s in &segs[1..segs.len() - 1] {
+        node = &node["subsystems"][*s];
+    }
+    let v = &node["variables"][segs[segs.len() - 1]];
+    if v.is_null() {
+        return Err(format!("the residual document does not declare {name}"));
+    }
+    Ok(v["shape"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|x| x.as_str().map(str::to_string))
+        .collect())
+}
+
+/// The blocks of an algebraic operator's unknowns (`names`, the unknown
+/// variable of each position), from its structure's `block` (spec/plan.md
+/// §5.4), else `None`: per cell, the positions among the unknowns of the
+/// block's elements, in the block's order. A `cell_block` plan lists its
+/// elements (a variable and its indices along the axes inside the cell)
+/// and its cell axes; a `block_diagonal` plan has one element per
+/// variable, in its `ordering` of `vars`, and every axis is a cell axis.
+/// Elements of variables the operator only reads are left out. Blocks are
+/// in column-major order of their cells.
+fn solve_blocks(
+    name: &str,
+    entry: &Value,
+    dofs: &Dofs,
+    doc: &Value,
+    names: &[String],
+) -> Result<Option<Vec<Vec<usize>>>, String> {
+    let _ = name;
+    let blk = &entry["structure"]["block"];
+    if blk.is_null() {
+        return Ok(None);
+    }
+    let strs = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect()
+    };
+    let ints = |v: &Value| -> Vec<i64> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_i64)
+            .collect()
+    };
+    type Elements = Vec<(String, Vec<i64>)>;
+    let (cell_axes, elems): (Option<Vec<String>>, Elements) =
+        if let Some(es) = blk["elements"].as_array() {
+            (
+                Some(strs(&blk["cell_axes"])),
+                es.iter()
+                    .map(|e| (e[0].as_str().unwrap_or_default().to_string(), ints(&e[1])))
+                    .collect(),
+            )
+        } else {
+            let vars = strs(&blk["vars"]);
+            let ord = ints(&blk["ordering"]);
+            (
+                None,
+                ord.iter()
+                    .map(|&o| (vars[(o - 1) as usize].clone(), vec![]))
+                    .collect(),
+            )
+        };
+    // The block's elements also hold the variables the operator only reads;
+    // the solve's blocks are its unknowns', in the block's order.
+    let elems: Vec<(String, Vec<i64>)> =
+        elems.into_iter().filter(|e| names.contains(&e.0)).collect();
+    let at: BTreeMap<&(String, Vec<i64>), usize> =
+        elems.iter().enumerate().map(|(i, e)| (e, i)).collect();
+    let mut groups: BTreeMap<Vec<i64>, Vec<usize>> = BTreeMap::new();
+    let mut k = 0usize;
+    let mut seen: Vec<&String> = vec![];
+    for z in names {
+        if seen.contains(&z) {
+            continue;
+        }
+        seen.push(z);
+        let shape = declared_shape(doc, z)?;
+        let cd: Vec<usize> = match &cell_axes {
+            None => (0..shape.len()).collect(),
+            Some(ax) => ax
+                .iter()
+                .map(|a| {
+                    shape
+                        .iter()
+                        .position(|s| s == a)
+                        .ok_or_else(|| format!("{z} does not span the cell axis {a}"))
+                })
+                .collect::<Result<_, _>>()?,
+        };
+        let inner: Vec<usize> = (0..shape.len()).filter(|d| !cd.contains(d)).collect();
+        let ext = &dofs.states[z].1;
+        let ranges: Vec<(i64, i64)> = ext.iter().map(|&n| (1, n as i64)).collect();
+        for c in earthsci_integrator_planner::numeric::cells(&ranges) {
+            let key: (String, Vec<i64>) = (z.clone(), inner.iter().map(|&d| c[d]).collect());
+            let e = *at
+                .get(&key)
+                .ok_or_else(|| format!("{z}{c:?} is no element of a block"))?;
+            // Keyed by the cell's indices reversed: column-major order.
+            let cell: Vec<i64> = cd.iter().rev().map(|&d| c[d]).collect();
+            let g = groups
+                .entry(cell)
+                .or_insert_with(|| vec![usize::MAX; elems.len()]);
+            if g[e] != usize::MAX {
+                return Err(format!("two unknowns are element {} of one block", e + 1));
+            }
+            g[e] = k;
+            k += 1;
+        }
+    }
+    if k != names.len() {
+        return Err("the unknowns are not those of the plan entry".into());
+    }
+    let out: Vec<Vec<usize>> = groups.into_values().collect();
+    if out.iter().any(|g| g.contains(&usize::MAX)) {
+        return Err("a cell lacks an element of its block".into());
+    }
+    Ok(Some(out))
 }
 
 /// One operator from its plan entry and documents (§8.2, §8.3). `ncells` is

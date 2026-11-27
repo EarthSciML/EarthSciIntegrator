@@ -6,9 +6,12 @@
 use crate::operator::Operator;
 use crate::tape::ActiveSet;
 use crate::{Error, Scalar};
-use earthsci_integrator_solvers::linalg::{DenseLu, MatrixStorage, Structure};
+use earthsci_integrator_solvers::linalg::DenseLu;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+/// A Jacobian over a solve's unknowns: `(row, column)` positions to values.
+pub type Entries = BTreeMap<(usize, usize), f64>;
 use std::sync::Arc;
 
 /// Where a bound's value comes from (spec/plan.md §5.9.7).
@@ -27,8 +30,8 @@ pub trait FrozenEval: Send + Sync {
     /// Whether the frozen Jacobian document is loaded (a `picard` node).
     fn has_jacobian(&self) -> bool;
     /// The Jacobian over the `nz` unknowns with the frozen observeds held at
-    /// their values at `x` (spec/methods.md §15.5), dense, column-major.
-    fn jacobian(&self, x: &[f64], nz: usize, p: &[f64], t: f64) -> Result<Vec<f64>, String>;
+    /// their values at `x` (spec/methods.md §15.5), by position.
+    fn jacobian(&self, x: &[f64], p: &[f64], t: f64) -> Result<Entries, String>;
 }
 
 /// The frozen documents of an algebraic operator, when the plan has them.
@@ -51,6 +54,10 @@ pub struct AlgebraicInfo {
     pub lower: Vec<Option<Bound>>,
     pub upper: Vec<Option<Bound>>,
     pub frozen: Option<Frozen>,
+    /// The blocks, when the plan gives the structure a `block` (spec/plan.md
+    /// §5.4): per cell, the positions among the unknowns of the block's
+    /// elements, in the block's order.
+    pub blocks: Option<Vec<Vec<usize>>>,
 }
 
 impl AlgebraicInfo {
@@ -82,6 +89,10 @@ impl AlgebraicInfo {
             upper: vec![],
             frozen: match infos {
                 [one] => one.frozen.clone(),
+                _ => None,
+            },
+            blocks: match infos {
+                [one] => one.blocks.clone(),
                 _ => None,
             },
         };
@@ -170,6 +181,9 @@ pub struct SolveMethod {
     pub rel_tol: f64,
     pub maxiter: usize,
     pub recover: Vec<Recover>,
+    /// `linsolve` `block_lu` or `sparse_block_lu`: one LU per block of the
+    /// plan's structure (dense within a block).
+    pub block: bool,
 }
 
 impl SolveMethod {
@@ -241,6 +255,9 @@ impl SolveMethod {
                     .unwrap_or(f64::INFINITY),
             },
             rel_change,
+            block: m
+                .get("linsolve")
+                .is_some_and(|l| l.get("block_lu").is_some() || l.get("sparse_block_lu").is_some()),
             rel_tol: conv
                 .and_then(|c| c.get("tol"))
                 .and_then(Value::as_f64)
@@ -260,6 +277,7 @@ impl SolveMethod {
             tol: 1e-10,
             rel_change: None,
             rel_tol: 0.0,
+            block: false,
             maxiter: 100,
             recover: vec![],
         }
@@ -316,20 +334,14 @@ impl<T: Scalar> Residual<'_, T> {
         self.dofs.iter().map(|&d| out[d].to_f64()).collect()
     }
 
-    /// `G_z`, dense over the unknowns, column-major.
-    pub fn gz(&self, z: &[f64], p: &[f64]) -> Vec<f64> {
+    /// `G_z` over the unknowns, by position (the unknowns' DOFs ascending).
+    pub fn gz(&self, z: &[f64], p: &[f64]) -> Entries {
         let x = self.state(z);
-        let n = x.len();
-        let mut jac = MatrixStorage::<T>::zeros(Structure::Dense, n);
+        let mut a = Entries::new();
         for op in self.ops {
-            op.jac(&mut jac, &x, p, self.t);
-        }
-        let m = self.dofs.len();
-        let mut a = vec![0.0; m * m];
-        for (c, &dc) in self.dofs.iter().enumerate() {
-            for (r, &dr) in self.dofs.iter().enumerate() {
-                a[c * m + r] = jac.get(dr, dc).to_f64();
-            }
+            op.jac_entries(self.dofs, &x, p, self.t, &mut |r, c, v| {
+                *a.entry((r, c)).or_insert(0.0) += v.to_f64();
+            });
         }
         a
     }
@@ -356,16 +368,91 @@ fn ninf(v: &[f64]) -> f64 {
     v.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
-/// Solves `A x = b` (column-major `A`) with partial pivoting; `None` when singular.
-fn linsolve(a: &[f64], b: &[f64]) -> Option<Vec<f64>> {
-    let n = b.len();
-    let mut lu = DenseLu::<f64>::new(n);
-    if !lu.factor(a) {
-        return None;
+/// The blocks of a solve's linear systems (spec/methods.md §15.3): with a
+/// block linsolve the plan's blocks, else one block of every unknown;
+/// `of[i]` is the block and place of position `i`.
+struct Blocks<'a> {
+    blocks: std::borrow::Cow<'a, [Vec<usize>]>,
+    of: Vec<(usize, usize)>,
+}
+
+impl<'a> Blocks<'a> {
+    fn new(info: &'a AlgebraicInfo, m: &SolveMethod) -> Result<Blocks<'a>, Error> {
+        let nz = info.dofs.len();
+        let blocks: std::borrow::Cow<'a, [Vec<usize>]> = if m.block {
+            match &info.blocks {
+                Some(b) => std::borrow::Cow::Borrowed(b.as_slice()),
+                None => {
+                    return Err(Error::Unimplemented(
+                        "solve: a block linsolve, but the operator's plan entry gives no block structure (spec/plan.md §5.4)".into(),
+                    ))
+                }
+            }
+        } else {
+            std::borrow::Cow::Owned(vec![(0..nz).collect()])
+        };
+        let mut of = vec![(usize::MAX, 0); nz];
+        for (k, b) in blocks.iter().enumerate() {
+            for (i, &q) in b.iter().enumerate() {
+                of[q] = (k, i);
+            }
+        }
+        if of.iter().any(|x| x.0 == usize::MAX) {
+            return Err(Error::Config(
+                "solve: the plan's blocks do not cover every unknown".into(),
+            ));
+        }
+        Ok(Blocks { blocks, of })
     }
-    let mut x = b.to_vec();
-    lu.solve(&mut x);
-    Some(x)
+}
+
+/// Solves `(σI − A) x = b` with the rows `held` replaced by the identity's,
+/// one LU per block (partial pivoting); `None` when a block is singular.
+fn linsolve(
+    a: &Entries,
+    sigma: f64,
+    held: &[bool],
+    b: &[f64],
+    bl: &Blocks<'_>,
+) -> Result<Option<Vec<f64>>, Error> {
+    let mut ms: Vec<Vec<f64>> = bl
+        .blocks
+        .iter()
+        .map(|p| vec![0.0; p.len() * p.len()])
+        .collect();
+    for (&(r, c), &v) in a {
+        let ((kr, ir), (kc, ic)) = (bl.of[r], bl.of[c]);
+        if kr != kc {
+            return Err(Error::Config(format!(
+                "solve: the Jacobian couples unknowns {r} and {c} of two blocks of the plan's block structure"
+            )));
+        }
+        let n = bl.blocks[kr].len();
+        ms[kr][ic * n + ir] -= v;
+    }
+    let mut x = vec![0.0; b.len()];
+    for (blk, mm) in bl.blocks.iter().zip(ms.iter_mut()) {
+        let n = blk.len();
+        for (i, &q) in blk.iter().enumerate() {
+            mm[i * n + i] += sigma;
+            if held[q] {
+                for c in 0..n {
+                    mm[c * n + i] = 0.0;
+                }
+                mm[i * n + i] = 1.0;
+            }
+        }
+        let mut lu = DenseLu::<f64>::new(n);
+        if !lu.factor(mm) {
+            return Ok(None);
+        }
+        let mut xb: Vec<f64> = blk.iter().map(|&q| b[q]).collect();
+        lu.solve(&mut xb);
+        for (&q, v) in blk.iter().zip(xb) {
+            x[q] = v;
+        }
+    }
+    Ok(Some(x))
 }
 
 /// The frozen documents a picard method or `converged.rel_change` needs
@@ -405,6 +492,7 @@ fn rel_met(o: &[f64], prev: &[f64], tol: f64) -> bool {
 fn attempt<T: Scalar>(
     r: &Residual<'_, T>,
     fz: Option<&dyn FrozenEval>,
+    bl: &Blocks<'_>,
     z0: &[f64],
     p: &[f64],
     m: &SolveMethod,
@@ -436,28 +524,18 @@ fn attempt<T: Scalar>(
     let mut delta = m.dt0;
     for k in 1..=m.maxiter {
         let a = match (m.kind, fz) {
-            (MethodKind::Picard, Some(f)) => {
-                f.jacobian(&r.state_f64(&z), nz, p, r.t).map_err(fail)?
-            }
+            (MethodKind::Picard, Some(f)) => f.jacobian(&r.state_f64(&z), p, r.t).map_err(fail)?,
             _ => r.gz(&z, p),
         };
         match m.kind {
             MethodKind::Ptc => {
                 // (δ⁻¹I − G_z) s = G; a component held at a bound by an
                 // outward rate does not move (§15.4).
-                let mut mm: Vec<f64> = a.iter().map(|x| -x).collect();
-                let mut b = g.clone();
-                for i in 0..nz {
-                    mm[i * nz + i] += 1.0 / delta;
-                    if (z[i] <= l[i] && g[i] <= 0.0) || (z[i] >= h[i] && g[i] >= 0.0) {
-                        for c in 0..nz {
-                            mm[c * nz + i] = 0.0;
-                        }
-                        mm[i * nz + i] = 1.0;
-                        b[i] = 0.0;
-                    }
-                }
-                let Some(s) = linsolve(&mm, &b) else {
+                let held: Vec<bool> = (0..nz)
+                    .map(|i| (z[i] <= l[i] && g[i] <= 0.0) || (z[i] >= h[i] && g[i] >= 0.0))
+                    .collect();
+                let b: Vec<f64> = (0..nz).map(|i| if held[i] { 0.0 } else { g[i] }).collect();
+                let Some(s) = linsolve(&a, 1.0 / delta, &held, &b, bl)? else {
                     return Ok((z, false, k));
                 };
                 let zt: Vec<f64> = (0..nz).map(|i| z[i] + omega * s[i]).collect();
@@ -477,18 +555,11 @@ fn attempt<T: Scalar>(
             }
             MethodKind::Newton | MethodKind::Picard => {
                 // The generalized Jacobian of R (§15.3).
-                let mut d: Vec<f64> = a.iter().map(|x| -x).collect();
-                for i in 0..nz {
-                    let x = z[i] + g[i];
-                    if x <= l[i] || x >= h[i] {
-                        for c in 0..nz {
-                            d[c * nz + i] = 0.0;
-                        }
-                        d[i * nz + i] = 1.0;
-                    }
-                }
+                let held: Vec<bool> = (0..nz)
+                    .map(|i| z[i] + g[i] <= l[i] || z[i] + g[i] >= h[i])
+                    .collect();
                 let b: Vec<f64> = rr.iter().map(|x| -x).collect();
-                let Some(mut s) = linsolve(&d, &b) else {
+                let Some(mut s) = linsolve(&a, 0.0, &held, &b, bl)? else {
                     return Ok((z, false, k));
                 };
                 s.iter_mut().for_each(|x| *x *= omega);
@@ -555,8 +626,9 @@ pub fn run_solve<T: Scalar>(
         )));
     }
     let fz = frozen_of(info, m)?;
+    let bl = Blocks::new(info, m)?;
     let mut actions = Vec::new();
-    let (mut z, mut ok, mut it) = attempt(r, fz, warm, p, m, &l, &h, 1.0)?;
+    let (mut z, mut ok, mut it) = attempt(r, fz, &bl, warm, p, m, &l, &h, 1.0)?;
     let mut pp = p.to_vec();
     for a in &m.recover {
         if ok {
@@ -565,7 +637,7 @@ pub fn run_solve<T: Scalar>(
         match a {
             Recover::Underrelax(w) => {
                 actions.push("underrelax".to_string());
-                (z, ok, it) = attempt(r, fz, warm, &pp, m, &l, &h, *w)?;
+                (z, ok, it) = attempt(r, fz, &bl, warm, &pp, m, &l, &h, *w)?;
             }
             Recover::ScaleParam { param, by, max } => {
                 let i = pnames.iter().position(|x| x == param).ok_or_else(|| {
@@ -579,12 +651,12 @@ pub fn run_solve<T: Scalar>(
                     }
                     pp[i] *= by;
                     actions.push("scale_param".to_string());
-                    (z, ok, it) = attempt(r, fz, warm, &pp, m, &l, &h, 1.0)?;
+                    (z, ok, it) = attempt(r, fz, &bl, warm, &pp, m, &l, &h, 1.0)?;
                 }
             }
             Recover::RevertWarmStart => {
                 actions.push("revert_warm_start".to_string());
-                (z, ok, it) = attempt(r, fz, initial, &pp, m, &l, &h, 1.0)?;
+                (z, ok, it) = attempt(r, fz, &bl, initial, &pp, m, &l, &h, 1.0)?;
             }
         }
     }

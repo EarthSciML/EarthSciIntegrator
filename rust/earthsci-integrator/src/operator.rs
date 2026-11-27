@@ -192,6 +192,32 @@ pub trait Operator<T: Scalar>: Send + Sync {
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
         unimplemented!("{}: jac", self.name())
     }
+    /// Each nonzero entry of `J_k(u)` whose row and column are both among
+    /// `dofs` (ascending), handed to `f` as `(row position, column
+    /// position, value)`, positions into `dofs`; `u` is the model state. A
+    /// solve's Jacobian over its unknowns (spec/methods.md §15) is made of
+    /// these, so it never forms a matrix over the model state when the
+    /// operator knows its entries (a plan's, §8). The default fills a dense
+    /// model-sized matrix with [`jac`](Operator::jac).
+    fn jac_entries(
+        &self,
+        dofs: &[usize],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        f: &mut dyn FnMut(usize, usize, T),
+    ) {
+        let mut m = MatrixStorage::<T>::zeros(Structure::Dense, u.len());
+        self.jac(&mut m, u, p, t);
+        for (b, &c) in dofs.iter().enumerate() {
+            for (a, &r) in dofs.iter().enumerate() {
+                let v = m.get(r, c);
+                if v != T::zero() {
+                    f(a, b, v);
+                }
+            }
+        }
+    }
     /// `J_k(u)` at a leaf's rows and columns, added into the leaf's storage
     /// over its state vector (§4, §8.3): leaf index `i` is model DOF
     /// `dofs[i]` (ascending), and `u` is the model state. Entries in columns
