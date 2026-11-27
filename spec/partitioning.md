@@ -197,7 +197,7 @@ Planner fixture `reseact_mini` (spec/plan.md §9) covers the plan keys of §10 a
 
 The M3 gate (D96) compares the Julia and Rust runs of reseact at the gate's tolerances: transport `SSPRK43` with `reltol` $10^{-4}$, `abstol` $10^{-6}$; chemistry `Rosenbrock23` with `reltol` $10^{-4}$, `abstol` $10^{-9}$. Where the two runs take the same steps they must agree to $10^{-9}$ relative (the `cross_language` check). Where their step sequences differ, which a rounding difference in an error estimate is enough to cause, they are judged against a **truth run** instead, not against each other:
 
-- **Truth.** Julia on the same plan's model, schedule and step, with every leaf's tolerances tightened by $10^{4}$: chemistry `reltol` $10^{-8}$, `abstol` $10^{-13}$; transport `reltol` $10^{-8}$, `abstol` $10^{-10}$.
+- **Truth.** Julia on the same plan's model, schedule and step, with every leaf's tolerances $10^{3}$ times tighter than the gate's: chemistry `reltol` $10^{-7}$, `abstol` $10^{-12}$; transport `reltol` $10^{-7}$, `abstol` $10^{-9}$.
 - **Error of a run.** For each species, at every output time and cell, the difference $|x - x^st|$ between the run's value $x$ and the truth's $x^st$, measured two ways: relative to the value, $|x - x^st| / |x^st|$, and in the leaf's weighted error norm at the gate's tolerances, $|x - x^st| / (\mathrm{abstol} + \mathrm{reltol}\,\max(|x|, |x^st|))$. A species' error is the worst over output times and cells.
 - **Pass.** For every species, Rust's error in the weighted norm is at most twice Julia's (both runs at the gate's tolerances). Both measures are reported per species for both runtimes.
 
