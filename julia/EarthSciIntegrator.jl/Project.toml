@@ -36,10 +36,10 @@ julia = "1.10"
 # m3-gate-lane-and-ic-fixes (f5f24e2a0). Time-derivative documents need
 # EarthSciASTDiff#81 (time bands hold data fixed, read an elementwise observed
 # at a cell), merged upstream after 0.7.0, and the fork branch
-# time-derivative-named-steps on it (each time-dependent observed's derivative
+# named-steps on it (each time-dependent observed's derivative
 # in t written once as a named companion; no upstream pull request yet):
-# pinned at 4d953b4, the commit the Rust runtime pins. Replace both with the
+# pinned at b9cc4af, the commit the Rust runtime pins. Replace both with the
 # releases that carry them.
 [sources]
 EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "f5f24e2a0bfb7ab37124b32345312fb6d056e729"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "4d953b448aee744139effbf3e4aaef4871f3bd81"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "b9cc4afc85386e0d5db7f009f5f6723b7a1d081b"}

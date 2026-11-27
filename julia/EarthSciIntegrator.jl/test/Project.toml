@@ -26,8 +26,8 @@ OrdinaryDiffEqSDIRK = "2"
 SciMLBase = "3"
 
 # EarthSciAST: draft #801 on unreleased main; EarthSciASTDiff: the fork branch
-# time-derivative-named-steps on unreleased #81 (see ../Project.toml).
+# named-steps on unreleased #81 (see ../Project.toml).
 [sources]
 EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "f5f24e2a0bfb7ab37124b32345312fb6d056e729"}
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "4d953b448aee744139effbf3e4aaef4871f3bd81"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "b9cc4afc85386e0d5db7f009f5f6723b7a1d081b"}
 EarthSciIntegrator = {path = ".."}
