@@ -102,7 +102,17 @@ pub fn structure(
     }
     // The operator's terms' structure-only bands, not `bands` (§5.4).
     let pattern: Vec<&BandEntry> = op.terms.iter().flat_map(|&i| &term_bands[i]).collect();
-    structure_from(info, axes, op.locality.class, &names, in_terms, &pattern, sv, bands, state_dependent)
+    structure_from(
+        info,
+        axes,
+        op.locality.class,
+        &names,
+        in_terms,
+        &pattern,
+        sv,
+        bands,
+        state_dependent,
+    )
 }
 
 /// An algebraic operator's structure (§6.4): from its residual document's
@@ -128,7 +138,17 @@ pub fn algebraic_structure(
     }
     let pattern: Vec<BandEntry> = bands.iter().map(crate::astdiff::band_entry).collect();
     let pattern: Vec<&BandEntry> = pattern.iter().collect();
-    structure_from(info, axes, op.locality.class, &names, reads, &pattern, sv, bands, state_dependent)
+    structure_from(
+        info,
+        axes,
+        op.locality.class,
+        &names,
+        reads,
+        &pattern,
+        sv,
+        bands,
+        state_dependent,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

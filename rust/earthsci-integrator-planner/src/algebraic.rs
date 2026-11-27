@@ -87,7 +87,12 @@ fn side_extents(info: &ModelInfo, e: &Value) -> Result<Vec<i64>> {
             match op {
                 "faq" => {
                     let mut out = Vec::new();
-                    for o in m.get("output_idx").and_then(Value::as_array).into_iter().flatten() {
+                    for o in m
+                        .get("output_idx")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
                         if let Some(o) = o.as_str() {
                             out.push(range_size(info, &m["ranges"][o])?);
                         }
@@ -102,7 +107,12 @@ fn side_extents(info: &ModelInfo, e: &Value) -> Result<Vec<i64>> {
                     .map(|r| r[1].as_i64().unwrap_or(0) - r[0].as_i64().unwrap_or(0) + 1)
                     .collect()),
                 _ => {
-                    for a in m.get("args").and_then(Value::as_array).into_iter().flatten() {
+                    for a in m
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
                         let x = side_extents(info, a)?;
                         if !x.is_empty() {
                             return Ok(x);
@@ -123,7 +133,12 @@ pub fn var_extents(info: &ModelInfo, x: &str) -> Vec<i64> {
         .get(x)
         .cloned()
         .or_else(|| info.flat.parameters.get(x).and_then(|v| v.shape.clone()))
-        .or_else(|| info.flat.observed_variables.get(x).and_then(|v| v.shape.clone()))
+        .or_else(|| {
+            info.flat
+                .observed_variables
+                .get(x)
+                .and_then(|v| v.shape.clone())
+        })
         .unwrap_or_default();
     shape.iter().map(|s| info.index_sets[s]).collect()
 }
@@ -146,7 +161,10 @@ pub fn residuals(info: &ModelInfo) -> Result<Vec<Residual>> {
                 refuse(
                     codes::TERM_ORIGIN_UNKNOWN,
                     "/model",
-                    format!("algebraic equation {} of the flattened model has no origin", i + 1),
+                    format!(
+                        "algebraic equation {} of the flattened model has no origin",
+                        i + 1
+                    ),
                 )
             })?;
         let (prefix, component) = match origin {
@@ -213,10 +231,20 @@ fn rename(x: &Value, ren: &BTreeMap<String, String>) -> Value {
         Value::Object(m) => {
             let mut ren = ren.clone();
             if m.get("op").and_then(Value::as_str) == Some("faq") {
-                for k in m.get("ranges").and_then(Value::as_object).into_iter().flat_map(|r| r.keys()) {
+                for k in m
+                    .get("ranges")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|r| r.keys())
+                {
                     ren.remove(k);
                 }
-                for o in m.get("output_idx").and_then(Value::as_array).into_iter().flatten() {
+                for o in m
+                    .get("output_idx")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     if let Some(o) = o.as_str() {
                         ren.remove(o);
                     }
@@ -261,7 +289,11 @@ pub fn residual_rhs(info: &ModelInfo, r: &Residual, shape: &[String], at: &str) 
             _ => {}
         }
         if side.get("op").and_then(Value::as_str) == Some("faq") {
-            let o: Vec<&Value> = side["output_idx"].as_array().into_iter().flatten().collect();
+            let o: Vec<&Value> = side["output_idx"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .collect();
             if o.len() != names.len() || o.iter().any(|x| !x.is_string()) {
                 return Err(refuse(
                     codes::UNSUPPORTED_SOLVE_PAIRING,
@@ -289,10 +321,15 @@ pub fn residual_rhs(info: &ModelInfo, r: &Residual, shape: &[String], at: &str) 
                 return Err(refuse(
                     codes::UNSUPPORTED_SOLVE_PAIRING,
                     at,
-                    format!("residual {}: a filtered reducing faq side (spec/plan.md §6.4)", r.id),
+                    format!(
+                        "residual {}: a filtered reducing faq side (spec/plan.md §6.4)",
+                        r.id
+                    ),
                 ));
             }
-            return Ok(json!({"op": "faq", "args": [], "output_idx": [], "ranges": rest, "expr": body}));
+            return Ok(
+                json!({"op": "faq", "args": [], "output_idx": [], "ranges": rest, "expr": body}),
+            );
         }
         if side_extents(info, side)?.is_empty() {
             return Ok(side.clone());
@@ -318,7 +355,9 @@ pub fn residual_rhs(info: &ModelInfo, r: &Residual, shape: &[String], at: &str) 
 // Solving nodes (§5.9.2) and the schedule's algebraic checks (rules 18, 19)
 
 /// The stiffly accurate methods a DAE may use (spec/run-config.md §4.3).
-pub const DAE_METHODS: [&str; 6] = ["Rodas3", "Rodas4", "Rodas5P", "TRBDF2", "Kvaerno3", "Kvaerno4"];
+pub const DAE_METHODS: [&str; 6] = [
+    "Rodas3", "Rodas4", "Rodas5P", "TRBDF2", "Kvaerno3", "Kvaerno4",
+];
 
 pub fn is_algebraic(ops: &BTreeMap<String, Operator>, o: &str) -> bool {
     ops.get(o).is_some_and(|op| !op.residuals.is_empty())
@@ -329,21 +368,32 @@ pub fn is_algebraic(ops: &BTreeMap<String, Operator>, o: &str) -> bool {
 pub fn is_solving(n: &Node, ops: &BTreeMap<String, Operator>) -> bool {
     match &n.kind {
         Kind::Solve => true,
-        Kind::Leaf { ops: names, coupled: true } => names.iter().any(|o| is_algebraic(ops, o)),
+        Kind::Leaf {
+            ops: names,
+            coupled: true,
+        } => names.iter().any(|o| is_algebraic(ops, o)),
         _ => false,
     }
 }
 
 /// The operator a `solve` node names.
 pub fn solve_op(n: &Node) -> String {
-    n.value.get("solve").and_then(Value::as_str).unwrap_or_default().to_string()
+    n.value
+        .get("solve")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The algebraic operators a solving node names, in its order.
 pub fn node_algebraic_ops(n: &Node, ops: &BTreeMap<String, Operator>) -> Vec<String> {
     match &n.kind {
         Kind::Solve => vec![solve_op(n)],
-        Kind::Leaf { ops: names, .. } => names.iter().filter(|o| is_algebraic(ops, o)).cloned().collect(),
+        Kind::Leaf { ops: names, .. } => names
+            .iter()
+            .filter(|o| is_algebraic(ops, o))
+            .cloned()
+            .collect(),
         _ => vec![],
     }
 }
@@ -379,10 +429,16 @@ pub fn node_unknowns(n: &Node, ops: &BTreeMap<String, Operator>, info: &ModelInf
 /// The method objects of a solving node with their keys.
 fn node_methods(n: &Node) -> Vec<(&Value, &'static str)> {
     match &n.kind {
-        Kind::Solve => n.value.get("method").map(|m| vec![(m, "method")]).unwrap_or_default(),
-        Kind::Leaf { coupled: true, .. } => {
-            n.value.get("initialize").map(|m| vec![(m, "initialize")]).unwrap_or_default()
-        }
+        Kind::Solve => n
+            .value
+            .get("method")
+            .map(|m| vec![(m, "method")])
+            .unwrap_or_default(),
+        Kind::Leaf { coupled: true, .. } => n
+            .value
+            .get("initialize")
+            .map(|m| vec![(m, "initialize")])
+            .unwrap_or_default(),
         _ => vec![],
     }
 }
@@ -402,17 +458,29 @@ fn bound_name(b: &Option<earthsci_ast::VariableBound>) -> Option<String> {
 
 fn need_observed(info: &ModelInfo, name: &str, at: String, what: &str) -> Result<()> {
     if !info.is_name(name) {
-        return Err(refuse(codes::NAME_UNRESOLVED, at, format!("{what} {name} is not a name of the flattened model")));
+        return Err(refuse(
+            codes::NAME_UNRESOLVED,
+            at,
+            format!("{what} {name} is not a name of the flattened model"),
+        ));
     }
     if !info.is_observed(name) {
-        return Err(refuse(codes::NAME_WRONG_KIND, at, format!("{what} {name} is not an observed")));
+        return Err(refuse(
+            codes::NAME_WRONG_KIND,
+            at,
+            format!("{what} {name} is not an observed"),
+        ));
     }
     Ok(())
 }
 
 /// Rule 19 in spec/plan.md §7.1's order, then rule 2 on the names a solve
 /// method gives and rule 18's checks that need no derivative.
-pub fn check_schedule(root: &Node, ops: &BTreeMap<String, Operator>, info: &ModelInfo) -> Result<()> {
+pub fn check_schedule(
+    root: &Node,
+    ops: &BTreeMap<String, Operator>,
+    info: &ModelInfo,
+) -> Result<()> {
     let nodes = root.preorder();
     for n in &nodes {
         match &n.kind {
@@ -426,7 +494,10 @@ pub fn check_schedule(root: &Node, ops: &BTreeMap<String, Operator>, info: &Mode
                     ));
                 }
             }
-            Kind::Leaf { ops: names, coupled: false } => {
+            Kind::Leaf {
+                ops: names,
+                coupled: false,
+            } => {
                 for (i, o) in names.iter().enumerate() {
                     if is_algebraic(ops, o) {
                         return Err(refuse(
@@ -447,13 +518,19 @@ pub fn check_schedule(root: &Node, ops: &BTreeMap<String, Operator>, info: &Mode
         for (i, z) in written_unknowns(n).iter().enumerate() {
             let at = ptr(&n.key_ptr("unknowns"), i);
             if !info.is_name(z) {
-                return Err(refuse(codes::NAME_UNRESOLVED, at, format!("solve unknown {z} is not a name of the flattened model")));
+                return Err(refuse(
+                    codes::NAME_UNRESOLVED,
+                    at,
+                    format!("solve unknown {z} is not a name of the flattened model"),
+                ));
             }
             if !info.solved.contains(z) {
                 return Err(refuse(
                     codes::NAME_WRONG_KIND,
                     at,
-                    format!("solve unknown {z} is not an algebraic unknown an algebraic equation reads"),
+                    format!(
+                        "solve unknown {z} is not an algebraic unknown an algebraic equation reads"
+                    ),
                 ));
             }
         }
@@ -468,7 +545,10 @@ pub fn check_schedule(root: &Node, ops: &BTreeMap<String, Operator>, info: &Mode
                 return Err(refuse(
                     codes::ALGEBRAIC_UNKNOWN_SOLVED_TWICE,
                     n.pointer.clone(),
-                    format!("algebraic unknown {z} is solved by node {first} and by node {}", n.id()),
+                    format!(
+                        "algebraic unknown {z} is solved by node {first} and by node {}",
+                        n.id()
+                    ),
                 ));
             }
             solver.insert(z, n.id().to_string());
@@ -497,10 +577,16 @@ pub fn check_schedule(root: &Node, ops: &BTreeMap<String, Operator>, info: &Mode
             return Err(refuse(
                 codes::DAE_METHOD_INVALID,
                 n.key_ptr("imex"),
-                format!("coupled node {} is an index-1 DAE; imex is not specified for it", n.id()),
+                format!(
+                    "coupled node {} is an index-1 DAE; imex is not specified for it",
+                    n.id()
+                ),
             ));
         }
-        if let Some(z) = node_unknowns(n, ops, info).iter().find(|z| is_bounded(info, z)) {
+        if let Some(z) = node_unknowns(n, ops, info)
+            .iter()
+            .find(|z| is_bounded(info, z))
+        {
             return Err(refuse(
                 codes::UNSUPPORTED_DAE_BOUNDS,
                 n.pointer.clone(),
@@ -528,13 +614,21 @@ pub fn check_schedule(root: &Node, ops: &BTreeMap<String, Operator>, info: &Mode
     }
     for n in &nodes {
         for (meth, key) in node_methods(n) {
-            if let Some(fr) = meth.get("picard").and_then(|p| p.get("freeze")).and_then(Value::as_array) {
+            if let Some(fr) = meth
+                .get("picard")
+                .and_then(|p| p.get("freeze"))
+                .and_then(Value::as_array)
+            {
                 for (i, o) in fr.iter().enumerate() {
                     let at = ptr(&ptr(&ptr(&n.key_ptr(key), "picard"), "freeze"), i);
                     need_observed(info, o.as_str().unwrap_or_default(), at, "frozen observed")?;
                 }
             }
-            if let Some(o) = meth.get("converged").and_then(|c| c.get("rel_change")).and_then(Value::as_str) {
+            if let Some(o) = meth
+                .get("converged")
+                .and_then(|c| c.get("rel_change"))
+                .and_then(Value::as_str)
+            {
                 let at = ptr(&ptr(&n.key_ptr(key), "converged"), "rel_change");
                 need_observed(info, o, at, "rel_change observed")?;
             }
@@ -548,7 +642,12 @@ pub fn check_schedule(root: &Node, ops: &BTreeMap<String, Operator>, info: &Mode
         if !zs.iter().any(|z| is_bounded(info, z)) {
             continue;
         }
-        if n.value.get("method").and_then(|m| m.get("converged")).and_then(|c| c.get("rel_change")).is_some() {
+        if n.value
+            .get("method")
+            .and_then(|m| m.get("converged"))
+            .and_then(|c| c.get("rel_change"))
+            .is_some()
+        {
             return Err(refuse(
                 codes::SOLVE_BOUNDS_INVALID,
                 ptr(&ptr(&n.key_ptr("method"), "converged"), "rel_change"),
@@ -636,8 +735,16 @@ fn block_flow(rcap: &[i64], zcap: &[i64], edges: &[Vec<usize>]) -> i64 {
 
 fn check_singular(info: &ModelInfo, sn: &SolvingNode) -> Result<()> {
     let at = sn.node.pointer.clone();
-    let rcap: Vec<i64> = sn.residuals.iter().map(|r| r.extents.iter().product()).collect();
-    let zcap: Vec<i64> = sn.unknowns.iter().map(|z| var_extents(info, z).iter().product()).collect();
+    let rcap: Vec<i64> = sn
+        .residuals
+        .iter()
+        .map(|r| r.extents.iter().product())
+        .collect();
+    let zcap: Vec<i64> = sn
+        .unknowns
+        .iter()
+        .map(|z| var_extents(info, z).iter().product())
+        .collect();
     let (ne, nz): (i64, i64) = (rcap.iter().sum(), zcap.iter().sum());
     if ne != nz {
         return Err(refuse(
@@ -649,7 +756,11 @@ fn check_singular(info: &ModelInfo, sn: &SolvingNode) -> Result<()> {
     let edges: Vec<Vec<usize>> = sn
         .residuals
         .iter()
-        .map(|r| (0..sn.unknowns.len()).filter(|&j| r.reads.contains(&sn.unknowns[j])).collect())
+        .map(|r| {
+            (0..sn.unknowns.len())
+                .filter(|&j| r.reads.contains(&sn.unknowns[j]))
+                .collect()
+        })
         .collect();
     let f = block_flow(&rcap, &zcap, &edges);
     if f < nz {
@@ -667,8 +778,11 @@ pub fn diagonal_box(b: &BandEntry) -> Option<Vec<(i64, i64)>> {
     if b.row_idx.len() != b.col_idx.len() || b.rows.len() != b.row_idx.len() {
         return None;
     }
-    let contracted: BTreeMap<&str, (i64, i64)> =
-        b.contracted.iter().map(|(n, lo, hi)| (n.as_str(), (*lo, *hi))).collect();
+    let contracted: BTreeMap<&str, (i64, i64)> = b
+        .contracted
+        .iter()
+        .map(|(n, lo, hi)| (n.as_str(), (*lo, *hi)))
+        .collect();
     let mut out = Vec::new();
     for d in 0..b.rows.len() {
         let (mut lo, mut hi) = b.rows[d];
@@ -719,13 +833,18 @@ pub fn covers_block(boxes: &[Vec<(i64, i64)>], ext: &[i64]) -> bool {
                 c.insert(b[d].0);
                 c.insert(b[d].1 + 1);
             }
-            c.into_iter().filter(|&x| 1 <= x && x <= ext[d] + 1).collect()
+            c.into_iter()
+                .filter(|&x| 1 <= x && x <= ext[d] + 1)
+                .collect()
         })
         .collect();
     let mut idx = vec![0usize; dims];
     loop {
         let p: Vec<i64> = (0..dims).map(|d| cuts[d][idx[d]]).collect();
-        if !boxes.iter().any(|b| (0..dims).all(|d| b[d].0 <= p[d] && p[d] <= b[d].1)) {
+        if !boxes
+            .iter()
+            .any(|b| (0..dims).all(|d| b[d].0 <= p[d] && p[d] <= b[d].1))
+        {
             return false;
         }
         // Next cell, first dimension fastest.
@@ -755,7 +874,9 @@ fn diagonal_pairs(info: &ModelInfo, sn: &SolvingNode) -> Result<Vec<Vec<usize>>>
     let mut probe: Vec<(usize, String)> = Vec::new();
     for (k, r) in sn.residuals.iter().enumerate() {
         let c: Vec<usize> = (0..sn.unknowns.len())
-            .filter(|&j| r.reads.contains(&sn.unknowns[j]) && var_extents(info, &sn.unknowns[j]) == r.extents)
+            .filter(|&j| {
+                r.reads.contains(&sn.unknowns[j]) && var_extents(info, &sn.unknowns[j]) == r.extents
+            })
             .collect();
         if let Some(&j) = c.first() {
             probe.push((k + 1, sn.unknowns[j].clone()));
@@ -777,14 +898,25 @@ fn diagonal_pairs(info: &ModelInfo, sn: &SolvingNode) -> Result<Vec<Vec<usize>>>
         if !shape.is_empty() {
             decl.insert("shape".into(), json!(shape));
         }
-        extra.push((residual_probe_state(*k), Value::Object(decl), residual_rhs(info, r, &shape, &at)?));
+        extra.push((
+            residual_probe_state(*k),
+            Value::Object(decl),
+            residual_rhs(info, r, &shape, &at)?,
+        ));
         refs.extend(r.refs.iter().cloned());
     }
     let doc = crate::derived::residual_probe_document(info, &extra, &refs);
     let entries = crate::astdiff::document_structure(doc).map_err(|m| {
-        refuse(codes::BAND_MODEL_FAILED, "/model", format!("the residuals of node {}: {m}", sn.node.id()))
+        refuse(
+            codes::BAND_MODEL_FAILED,
+            "/model",
+            format!("the residuals of node {}: {m}", sn.node.id()),
+        )
     })?;
-    let bands: Vec<BandEntry> = entries.iter().map(crate::astdiff::structure_entry).collect();
+    let bands: Vec<BandEntry> = entries
+        .iter()
+        .map(crate::astdiff::structure_entry)
+        .collect();
     for (k, _) in &probe {
         let row = residual_probe_state(*k);
         for &j in &cand[k - 1] {
@@ -805,7 +937,8 @@ fn canonical_pairing(sn: &SolvingNode, diag: &[Vec<usize>]) -> Option<Vec<usize>
     let order: Vec<Vec<usize>> = (0..sn.residuals.len())
         .map(|k| {
             let own = sn.residuals[k].owner.as_deref();
-            let mine = |j: &usize| own.is_some_and(|o| crate::terms::component_of(&sn.unknowns[*j]) == o);
+            let mine =
+                |j: &usize| own.is_some_and(|o| crate::terms::component_of(&sn.unknowns[*j]) == o);
             let mut a: Vec<usize> = diag[k].iter().copied().filter(|j| mine(j)).collect();
             let mut b: Vec<usize> = diag[k].iter().copied().filter(|j| !mine(j)).collect();
             a.sort_by(|x, y| sn.unknowns[*x].cmp(&sn.unknowns[*y]));
@@ -815,7 +948,12 @@ fn canonical_pairing(sn: &SolvingNode, diag: &[Vec<usize>]) -> Option<Vec<usize>
         })
         .collect();
     let mut partner: Vec<Option<usize>> = vec![None; sn.unknowns.len()];
-    fn augment(k: usize, order: &[Vec<usize>], partner: &mut Vec<Option<usize>>, seen: &mut BTreeSet<usize>) -> bool {
+    fn augment(
+        k: usize,
+        order: &[Vec<usize>],
+        partner: &mut Vec<Option<usize>>,
+        seen: &mut BTreeSet<usize>,
+    ) -> bool {
         for &j in &order[k] {
             if !seen.insert(j) {
                 continue;
@@ -853,14 +991,23 @@ fn alternating_cycle(sn: &SolvingNode, diag: &[Vec<usize>], pair: &[usize]) -> O
     }
     let succ = |v: usize| -> Vec<usize> {
         if v < nr {
-            diag[v].iter().filter(|&&j| j != pair[v]).map(|&j| nr + j).collect()
+            diag[v]
+                .iter()
+                .filter(|&&j| j != pair[v])
+                .map(|&j| nr + j)
+                .collect()
         } else {
             vec![partner[v - nr]]
         }
     };
     let mut state = vec![0u8; nr + sn.unknowns.len()];
     let mut stack: Vec<usize> = Vec::new();
-    fn dfs(v: usize, succ: &dyn Fn(usize) -> Vec<usize>, state: &mut Vec<u8>, stack: &mut Vec<usize>) -> Option<Vec<usize>> {
+    fn dfs(
+        v: usize,
+        succ: &dyn Fn(usize) -> Vec<usize>,
+        state: &mut Vec<u8>,
+        stack: &mut Vec<usize>,
+    ) -> Option<Vec<usize>> {
         state[v] = 1;
         stack.push(v);
         for w in succ(v) {
@@ -902,10 +1049,19 @@ pub fn pair_node(info: &ModelInfo, sn: &SolvingNode) -> Result<Vec<String>> {
     })?;
     if let Some(cyc) = alternating_cycle(sn, &diag, &pair) {
         let nr = sn.residuals.len();
-        if cyc.iter().any(|&v| v >= nr && is_bounded(info, &sn.unknowns[v - nr])) {
+        if cyc
+            .iter()
+            .any(|&v| v >= nr && is_bounded(info, &sn.unknowns[v - nr]))
+        {
             let blocks: Vec<&str> = cyc
                 .iter()
-                .map(|&v| if v < nr { sn.residuals[v].id.as_str() } else { sn.unknowns[v - nr].as_str() })
+                .map(|&v| {
+                    if v < nr {
+                        sn.residuals[v].id.as_str()
+                    } else {
+                        sn.unknowns[v - nr].as_str()
+                    }
+                })
                 .collect();
             return Err(refuse(
                 codes::SOLVE_PAIRING_AMBIGUOUS,
@@ -940,17 +1096,30 @@ pub fn resolve_method(meth: &Value, linsolve: Value) -> Value {
     } else if let Some(p) = meth.get("picard") {
         out.insert("picard".into(), json!({"freeze": p["freeze"]}));
     } else {
-        out.insert("newton".into(), meth.get("newton").cloned().unwrap_or_else(|| json!({})));
+        out.insert(
+            "newton".into(),
+            meth.get("newton").cloned().unwrap_or_else(|| json!({})),
+        );
     }
     out.insert("linsolve".into(), linsolve);
     if meth.get("ptc").is_none() {
-        out.insert("linesearch".into(), meth.get("linesearch").cloned().unwrap_or_else(|| json!("none")));
+        out.insert(
+            "linesearch".into(),
+            meth.get("linesearch")
+                .cloned()
+                .unwrap_or_else(|| json!("none")),
+        );
     }
     out.insert(
         "converged".into(),
-        meth.get("converged").cloned().unwrap_or_else(|| json!({"residual": 1.0e-10})),
+        meth.get("converged")
+            .cloned()
+            .unwrap_or_else(|| json!({"residual": 1.0e-10})),
     );
-    out.insert("maxiter".into(), meth.get("maxiter").cloned().unwrap_or_else(|| json!(100)));
+    out.insert(
+        "maxiter".into(),
+        meth.get("maxiter").cloned().unwrap_or_else(|| json!(100)),
+    );
     if let Some(r) = meth.get("recover") {
         out.insert("recover".into(), r.clone());
     }

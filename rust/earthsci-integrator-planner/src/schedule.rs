@@ -1067,10 +1067,9 @@ pub fn write(
     // A resolved `solve` node, or a DAE's `initialize`, by node id
     // (spec/plan.md §7.1), resolved by the caller.
     if matches!(n.kind, Kind::Solve) {
-        return algebraic
-            .get(n.id())
-            .cloned()
-            .ok_or_else(|| crate::error::PlanError::Internal(format!("solve node {} is not resolved", n.id())));
+        return algebraic.get(n.id()).cloned().ok_or_else(|| {
+            crate::error::PlanError::Internal(format!("solve node {} is not resolved", n.id()))
+        });
     }
     let mut out = Map::new();
     out.insert("id".into(), json!(n.id()));
@@ -1230,7 +1229,10 @@ pub fn write(
             out.insert(key.into(), Value::Array(list?));
         }
         Kind::Subcycle(child) => {
-            out.insert("subcycle".into(), write(child, info, ops, strategy, algebraic)?);
+            out.insert(
+                "subcycle".into(),
+                write(child, info, ops, strategy, algebraic)?,
+            );
             if let Some(k) = n.value.get("n") {
                 out.insert("n".into(), k.clone());
             }
@@ -1244,7 +1246,10 @@ pub fn write(
             }
         }
         Kind::Every(child) => {
-            out.insert("every".into(), write(child, info, ops, strategy, algebraic)?);
+            out.insert(
+                "every".into(),
+                write(child, info, ops, strategy, algebraic)?,
+            );
             out.insert(
                 "period".into(),
                 dur(&n.value["period"], n.key_ptr("period"))?,

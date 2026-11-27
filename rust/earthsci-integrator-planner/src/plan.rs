@@ -396,7 +396,9 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     }
 
     // §7.1–§7.6 checks.
-    if rc.at("/schedule").and_then(Value::as_str) == Some("auto") && ops.values().any(Operator::is_algebraic) {
+    if rc.at("/schedule").and_then(Value::as_str) == Some("auto")
+        && ops.values().any(Operator::is_algebraic)
+    {
         return Err(refuse(
             codes::AUTO_STRATEGY_UNAVAILABLE,
             "/schedule",
@@ -423,7 +425,10 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         let sn = crate::algebraic::SolvingNode {
             node: n,
             ops: names.clone(),
-            residuals: names.iter().flat_map(|o| ops[o].residuals.clone()).collect(),
+            residuals: names
+                .iter()
+                .flat_map(|o| ops[o].residuals.clone())
+                .collect(),
             unknowns: crate::algebraic::node_unknowns(n, &ops, &info),
         };
         let pairing = crate::algebraic::pair_node(&info, &sn)?;
@@ -434,17 +439,34 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             i += k;
         }
     }
-    let algebraic_names: Vec<String> = ops.values().filter(|o| o.is_algebraic()).map(|o| o.name.clone()).collect();
+    let algebraic_names: Vec<String> = ops
+        .values()
+        .filter(|o| o.is_algebraic())
+        .map(|o| o.name.clone())
+        .collect();
     for name in &algebraic_names {
         if ops[name].pairing.is_empty() {
             continue;
         }
-        let at = if ops[name].is_default { "/schedule".to_string() } else { crate::error::ptr("/operators", name) };
+        let at = if ops[name].is_default {
+            "/schedule".to_string()
+        } else {
+            crate::error::ptr("/operators", name)
+        };
         let doc = derived::residual_document(&info, name, &ops[name], &at)?;
-        let band_model_failed = |m: String| refuse(codes::BAND_MODEL_FAILED, "/model", format!("operator {name}: {m}"));
+        let band_model_failed = |m: String| {
+            refuse(
+                codes::BAND_MODEL_FAILED,
+                "/model",
+                format!("operator {name}: {m}"),
+            )
+        };
         let view = astdiff::FlatView::of_document(doc.clone()).map_err(band_model_failed)?;
-        let sv = view.sysview().map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
-        let band_list = astdiff::bands(&sv).map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let sv = view
+            .sysview()
+            .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let band_list =
+            astdiff::bands(&sv).map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
         let full: Vec<BandEntry> = band_list.iter().map(astdiff::band_entry).collect();
         let loc = locality::classify(&full, &info.shapes, &info.index_sets, &axes);
         {
@@ -459,7 +481,14 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             op.reads = info.close_over_observeds(&refs).into_iter().collect();
             op.forcing = info.forcing_among(&op.reads);
         }
-        let st = structure::algebraic_structure(&info, &axes, &ops[name], &sv, band_list, &state_dependent)?;
+        let st = structure::algebraic_structure(
+            &info,
+            &axes,
+            &ops[name],
+            &sv,
+            band_list,
+            &state_dependent,
+        )?;
         jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         rhs_docs.insert(name.clone(), doc);
         structures.insert(name.clone(), st);
@@ -470,11 +499,22 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         if !matches!(n.kind, Kind::Solve) {
             continue;
         }
-        let written: Vec<String> = n.value.get("unknowns").and_then(Value::as_array).into_iter().flatten()
-            .filter_map(Value::as_str).map(str::to_string).collect();
+        let written: Vec<String> = n
+            .value
+            .get("unknowns")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
         let o = crate::algebraic::solve_op(n);
         let op = &ops[&o];
-        if !op.pairing.iter().any(|z| crate::algebraic::is_bounded(&info, z)) {
+        if !op
+            .pairing
+            .iter()
+            .any(|z| crate::algebraic::is_bounded(&info, z))
+        {
             continue;
         }
         numbers.op(&o, op, &structures[&o], &jac_docs[&o])?;
@@ -486,7 +526,9 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 if !crate::algebraic::is_bounded(&info, z) {
                     continue;
                 }
-                let Some((first, ext)) = numbers.dofs.states.get(z) else { continue };
+                let Some((first, ext)) = numbers.dofs.states.get(z) else {
+                    continue;
+                };
                 let len: usize = ext.iter().product();
                 for d in *first..*first + len {
                     let v = jb.get(&(d, d)).copied().unwrap_or(0.0);
@@ -624,7 +666,11 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             Documents {
                 rhs: derived::to_bytes(doc),
                 jacobian: derived::to_bytes(&jac_docs[name]),
-                rhs_kind: if planned.operators[name].is_algebraic() { "residual" } else { "rhs" },
+                rhs_kind: if planned.operators[name].is_algebraic() {
+                    "residual"
+                } else {
+                    "rhs"
+                },
             },
         );
     }
@@ -814,7 +860,10 @@ impl Planned {
             if !op.forcing.is_empty() {
                 out.insert("forcing".into(), json!(op.forcing));
             }
-            let rs: Vec<Value> = op.residuals.iter().zip(&op.pairing)
+            let rs: Vec<Value> = op
+                .residuals
+                .iter()
+                .zip(&op.pairing)
                 .map(|(r, z)| json!({"id": r.id, "origin": r.origin, "unknown": z}))
                 .collect();
             out.insert("residuals".into(), Value::Array(rs));
@@ -921,7 +970,13 @@ impl Planned {
         )?;
         self.check_time_derivative(&algs)?;
         let algebraic = self.resolved_algebraic()?;
-        schedule::write(&self.schedule, &self.model, &self.operators, &strategy, &algebraic)
+        schedule::write(
+            &self.schedule,
+            &self.model,
+            &self.operators,
+            &strategy,
+            &algebraic,
+        )
     }
 
     /// The resolved `solve` nodes and DAE `initialize` methods (§7.1), by
@@ -935,7 +990,13 @@ impl Planned {
             let o = crate::algebraic::node_algebraic_ops(n, &self.operators)[0].clone();
             let (meth, solve) = match &n.kind {
                 Kind::Solve => (n.value["method"].clone(), true),
-                _ => (n.value.get("initialize").cloned().unwrap_or_else(crate::algebraic::default_initialize), false),
+                _ => (
+                    n.value
+                        .get("initialize")
+                        .cloned()
+                        .unwrap_or_else(crate::algebraic::default_initialize),
+                    false,
+                ),
             };
             let ls = match meth.get("linsolve").filter(|v| v.as_str() != Some("auto")) {
                 Some(g) => strategy::linsolve_object(g),
@@ -955,8 +1016,13 @@ impl Planned {
             };
             let resolved = crate::algebraic::resolve_method(&meth, ls);
             if solve {
-                let mut unknowns: Vec<String> = n.value["unknowns"].as_array().into_iter().flatten()
-                    .filter_map(Value::as_str).map(str::to_string).collect();
+                let mut unknowns: Vec<String> = n.value["unknowns"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
                 unknowns.sort();
                 out.insert(n.id().to_string(), json!({
                     "id": n.id(), "solve": o, "unknowns": unknowns,

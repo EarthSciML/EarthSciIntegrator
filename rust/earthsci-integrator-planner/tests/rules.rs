@@ -238,7 +238,10 @@ fn step_limits() {
     rc["schedule"] = solve;
     assert_eq!(
         refused("limits-after-solve", None, rc),
-        (codes::UNSUPPORTED_MAP_OPERATOR, "/schedule/sequence/0".into())
+        (
+            codes::UNSUPPORTED_MAP_OPERATOR,
+            "/schedule/sequence/0".into()
+        )
     );
     assert_eq!(
         refused(

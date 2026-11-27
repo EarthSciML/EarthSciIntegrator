@@ -242,10 +242,16 @@ pub fn select(
             return Err(refuse(
                 codes::TERM_SELECTED_TWICE,
                 ptr("/operators", first),
-                format!("algebraic equation {} is selected by both {first} and {second}", r.id),
+                format!(
+                    "algebraic equation {} is selected by both {first} and {second}",
+                    r.id
+                ),
             ));
         }
-        let name = matched.first().map_or("default_algebraic", |n| *n).to_string();
+        let name = matched
+            .first()
+            .map_or("default_algebraic", |n| *n)
+            .to_string();
         rassigned.entry(name).or_default().push(r.clone());
     }
     for s in &selectors {
