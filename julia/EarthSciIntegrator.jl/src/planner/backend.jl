@@ -523,7 +523,10 @@ end
 """`true` when the operator's right-hand-side document references `t` in a state equation or in the definition of an observed it keeps (§5.4)."""
 function depends_on_t(m::PlanModel, op::PlanOperator)
     any(t -> "t" in EarthSciAST.free_variables(t.expr), op.terms) && return true
-    for o in live_observeds(m, reduce(vcat, (t.refs for t in op.terms); init = String[])), r in get(m.observed_rhs, o, ASTExpr[])
+    # An algebraic operator's residuals are its document's state equations (§6.4).
+    any(r -> "t" in EarthSciAST.free_variables(r.lhs) || "t" in EarthSciAST.free_variables(r.rhs), op.residuals) && return true
+    refs = vcat(reduce(vcat, (t.refs for t in op.terms); init = String[]), reduce(vcat, (r.refs for r in op.residuals); init = String[]))
+    for o in live_observeds(m, refs), r in get(m.observed_rhs, o, ASTExpr[])
         "t" in EarthSciAST.free_variables(r) && return true
     end
     return false

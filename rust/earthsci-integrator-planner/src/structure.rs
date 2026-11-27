@@ -94,6 +94,55 @@ pub fn structure(
     bands: Vec<JacEntry>,
     state_dependent: &BTreeSet<String>,
 ) -> Result<Structure> {
+    let mut names = BTreeSet::new();
+    let mut in_terms = false;
+    for &i in &op.terms {
+        names.extend(terms[i].names.iter().cloned());
+        in_terms |= reads_t(earthsci_ast::free_variables(&terms[i].expr));
+    }
+    // The operator's terms' structure-only bands, not `bands` (§5.4).
+    let pattern: Vec<&BandEntry> = op.terms.iter().flat_map(|&i| &term_bands[i]).collect();
+    structure_from(info, axes, op.locality.class, &names, in_terms, &pattern, sv, bands, state_dependent)
+}
+
+/// An algebraic operator's structure (§6.4): from its residual document's
+/// bands, which are also its pattern; it depends on `t` when a residual or
+/// an observed it keeps reads `t`.
+#[allow(clippy::too_many_arguments)]
+pub fn algebraic_structure(
+    info: &ModelInfo,
+    axes: &Axes,
+    op: &Operator,
+    sv: &SysView,
+    bands: Vec<JacEntry>,
+    state_dependent: &BTreeSet<String>,
+) -> Result<Structure> {
+    let mut names = BTreeSet::new();
+    let mut reads = false;
+    for r in &op.residuals {
+        names.extend(r.refs.iter().cloned());
+        let mut found = false;
+        crate::model::collect_strings(&r.lhs, &mut |s| found |= s == "t");
+        crate::model::collect_strings(&r.rhs, &mut |s| found |= s == "t");
+        reads |= found;
+    }
+    let pattern: Vec<BandEntry> = bands.iter().map(crate::astdiff::band_entry).collect();
+    let pattern: Vec<&BandEntry> = pattern.iter().collect();
+    structure_from(info, axes, op.locality.class, &names, reads, &pattern, sv, bands, state_dependent)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn structure_from(
+    info: &ModelInfo,
+    axes: &Axes,
+    locality: Class,
+    names: &BTreeSet<String>,
+    in_terms: bool,
+    pattern: &[&BandEntry],
+    sv: &SysView,
+    bands: Vec<JacEntry>,
+    state_dependent: &BTreeSet<String>,
+) -> Result<Structure> {
     let ctx = earthsci_astdiff::ctx_of(sv)
         .map_err(|e| PlanError::Internal(format!("ctx_of: {}", e.0)))?;
     let class = earthsci_astdiff::detect_structure(&bands, &ctx).to_string();
@@ -108,13 +157,7 @@ pub fn structure(
 
     // depends_on_t: `t` in a state equation of the document (the operator's
     // terms) or in the definition of an observed it keeps.
-    let mut names = BTreeSet::new();
-    let mut in_terms = false;
-    for &i in &op.terms {
-        names.extend(terms[i].names.iter().cloned());
-        in_terms |= reads_t(earthsci_ast::free_variables(&terms[i].expr));
-    }
-    let live = crate::derived::live_observeds(info, &names);
+    let live = crate::derived::live_observeds(info, names);
     let depends_on_t = in_terms
         || live.iter().any(|o| {
             info.observed_defs
@@ -122,7 +165,7 @@ pub fn structure(
                 .is_some_and(|d| reads_t(earthsci_ast::free_variables(d)))
         });
 
-    let block = if op.locality.class == Class::Pointwise && class == "block_diagonal" {
+    let block = if locality == Class::Pointwise && class == "block_diagonal" {
         let plan = earthsci_astdiff::plan_factorization(&bands, sv, &ctx, Some(&class))
             .map_err(|e| PlanError::Internal(format!("plan_factorization: {}", e.0)))?
             .ok_or_else(|| {
@@ -136,15 +179,12 @@ pub fn structure(
         None
     };
 
-    // The operator's terms' structure-only bands, not `bands` (§5.4).
-    let reaches: Vec<_> = op
-        .terms
+    let reaches: Vec<_> = pattern
         .iter()
-        .flat_map(|&i| &term_bands[i])
         .map(|b| band_reach(b, &info.shapes, &info.index_sets, axes))
         .collect();
 
-    let column = match (&op.locality.class, &axes.vertical) {
+    let column = match (&locality, &axes.vertical) {
         (Class::Column, Some(v)) => {
             let nv = info.index_sets[v];
             let (mut kl, mut ku) = (0i64, 0i64);
@@ -163,7 +203,7 @@ pub fn structure(
         _ => None,
     };
 
-    let footprint = (op.locality.class == Class::Stencil).then(|| {
+    let footprint = (locality == Class::Stencil).then(|| {
         let mut out: BTreeSet<Vec<i64>> = BTreeSet::new();
         for r in &reaches {
             // One integer per horizontal axis; a band with several offsets on

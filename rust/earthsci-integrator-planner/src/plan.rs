@@ -42,6 +42,9 @@ pub struct Documents {
     pub rhs: Vec<u8>,
     /// `<op>.jacobian.esm`'s bytes.
     pub jacobian: Vec<u8>,
+    /// The first document's kind: `rhs`, or `residual` for an algebraic
+    /// operator (§6.4).
+    pub rhs_kind: &'static str,
 }
 
 /// Everything the planner computes for a run config.
@@ -322,6 +325,9 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let mut structures = BTreeMap::new();
     let state_dependent = info.state_dependent();
     for (name, op) in &ops {
+        if op.is_algebraic() {
+            continue;
+        }
         let ts: Vec<&Term> = op.terms.iter().map(|&i| &terms[i]).collect();
         let doc = derived::rhs_document(&info, name, &ts);
         let band_model_failed = |m: String| {
@@ -390,6 +396,13 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     }
 
     // §7.1–§7.6 checks.
+    if rc.at("/schedule").and_then(Value::as_str) == Some("auto") && ops.values().any(Operator::is_algebraic) {
+        return Err(refuse(
+            codes::AUTO_STRATEGY_UNAVAILABLE,
+            "/schedule",
+            "the model has algebraic equations; the \"auto\" schedule has no solve node or DAE (name one, spec/run-config.md §4.3, §4.10)",
+        ));
+    }
     let root = schedule::tree(&rc, &info, &ops);
     schedule::check(
         &root,
@@ -400,6 +413,95 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             interval,
         },
     )?;
+    // §5.9: each solving node's pairing, in tree order, then each algebraic
+    // operator's passes 2–4 on its residual document, in code-point order.
+    for n in root.preorder() {
+        if !crate::algebraic::is_solving(n, &ops) {
+            continue;
+        }
+        let names = crate::algebraic::node_algebraic_ops(n, &ops);
+        let sn = crate::algebraic::SolvingNode {
+            node: n,
+            ops: names.clone(),
+            residuals: names.iter().flat_map(|o| ops[o].residuals.clone()).collect(),
+            unknowns: crate::algebraic::node_unknowns(n, &ops, &info),
+        };
+        let pairing = crate::algebraic::pair_node(&info, &sn)?;
+        let mut i = 0;
+        for o in &names {
+            let k = ops[o].residuals.len();
+            ops.get_mut(o).expect("named").pairing = pairing[i..i + k].to_vec();
+            i += k;
+        }
+    }
+    let algebraic_names: Vec<String> = ops.values().filter(|o| o.is_algebraic()).map(|o| o.name.clone()).collect();
+    for name in &algebraic_names {
+        if ops[name].pairing.is_empty() {
+            continue;
+        }
+        let at = if ops[name].is_default { "/schedule".to_string() } else { crate::error::ptr("/operators", name) };
+        let doc = derived::residual_document(&info, name, &ops[name], &at)?;
+        let band_model_failed = |m: String| refuse(codes::BAND_MODEL_FAILED, "/model", format!("operator {name}: {m}"));
+        let view = astdiff::FlatView::of_document(doc.clone()).map_err(band_model_failed)?;
+        let sv = view.sysview().map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let band_list = astdiff::bands(&sv).map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let full: Vec<BandEntry> = band_list.iter().map(astdiff::band_entry).collect();
+        let loc = locality::classify(&full, &info.shapes, &info.index_sets, &axes);
+        {
+            let op = ops.get_mut(name).expect("named");
+            op.locality = locality::operator_locality([&loc], &axes);
+            let writes: BTreeSet<String> = op.pairing.iter().cloned().collect();
+            op.writes = writes.into_iter().collect();
+            let mut refs = BTreeSet::new();
+            for r in &op.residuals {
+                refs.extend(r.refs.iter().cloned());
+            }
+            op.reads = info.close_over_observeds(&refs).into_iter().collect();
+            op.forcing = info.forcing_among(&op.reads);
+        }
+        let st = structure::algebraic_structure(&info, &axes, &ops[name], &sv, band_list, &state_dependent)?;
+        jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
+        rhs_docs.insert(name.clone(), doc);
+        structures.insert(name.clone(), st);
+    }
+    // Rule 18's sign check (§5.9.7), at the sampled states.
+    let mut numbers = Numbers::new(&info, interval, &rhs_docs);
+    for n in root.preorder() {
+        if !matches!(n.kind, Kind::Solve) {
+            continue;
+        }
+        let written: Vec<String> = n.value.get("unknowns").and_then(Value::as_array).into_iter().flatten()
+            .filter_map(Value::as_str).map(str::to_string).collect();
+        let o = crate::algebraic::solve_op(n);
+        let op = &ops[&o];
+        if !op.pairing.iter().any(|z| crate::algebraic::is_bounded(&info, z)) {
+            continue;
+        }
+        numbers.op(&o, op, &structures[&o], &jac_docs[&o])?;
+        numbers.states()?;
+        let (_, samples) = numbers.states.as_ref().expect("set above");
+        let on = &numbers.ops[&o];
+        for (s, jb) in samples.iter().zip(&on.jb) {
+            for z in &op.pairing {
+                if !crate::algebraic::is_bounded(&info, z) {
+                    continue;
+                }
+                let Some((first, ext)) = numbers.dofs.states.get(z) else { continue };
+                let len: usize = ext.iter().product();
+                for d in *first..*first + len {
+                    let v = jb.get(&(d, d)).copied().unwrap_or(0.0);
+                    if v > 0.0 {
+                        let i = written.iter().position(|w| w == z).unwrap_or(0);
+                        return Err(refuse(
+                            codes::SOLVE_BOUNDS_SIGN,
+                            crate::error::ptr(&n.key_ptr("unknowns"), i),
+                            format!("the residual paired with {} has the positive diagonal derivative {v} at t = {}; the residual of lhs ~ rhs is rhs - lhs, the pseudo-time rate of its unknown (spec/run-config.md §4.10)", numbers.names[d], s.t),
+                        ));
+                    }
+                }
+            }
+        }
+    }
     let step = settings::step(&rc, &info)?;
     let partition = settings::partition(&rc, &info, &axes, &ops, &root)?;
     // §7.5's classical-Rosenbrock check runs here for the methods the run
@@ -423,11 +525,13 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         .solver
         .as_ref()
         .and_then(|s| s.stiffness.as_deref());
-    let mut numbers = Numbers::new(&info, interval, &rhs_docs);
     let mut stiffness = BTreeMap::new();
     let mut gershgorin_report = Map::new();
     let mut facts = StructureFacts::default();
     for (name, op) in &ops {
+        if op.is_algebraic() {
+            continue; // an algebraic operator has no stiffness (§5.5.2)
+        }
         let leaf = root
             .leaves()
             .into_iter()
@@ -520,6 +624,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             Documents {
                 rhs: derived::to_bytes(doc),
                 jacobian: derived::to_bytes(&jac_docs[name]),
+                rhs_kind: if planned.operators[name].is_algebraic() { "residual" } else { "rhs" },
             },
         );
     }
@@ -544,7 +649,12 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             .terms
             .iter()
             .any(|&i| planned.terms[i].names.iter().any(|n| info.is_state(n)));
-        if op.terms.is_empty() || (reads_state && planned.structures[name].bands.is_empty()) {
+        let empty = if op.is_algebraic() {
+            planned.structures[name].bands.is_empty()
+        } else {
+            op.terms.is_empty() || (reads_state && planned.structures[name].bands.is_empty())
+        };
+        if empty {
             return Err(refuse(
                 codes::VALIDATION_EMPTY_OPERATOR,
                 "/model",
@@ -696,6 +806,21 @@ impl Planned {
     pub fn operator_json(&self, name: &str) -> Value {
         let op = &self.operators[name];
         let mut out = Map::new();
+        if op.is_algebraic() {
+            out.insert("kind".into(), json!("algebraic"));
+            out.insert("locality".into(), self.locality_json(op));
+            out.insert("writes".into(), json!(op.writes));
+            out.insert("reads".into(), json!(op.reads));
+            if !op.forcing.is_empty() {
+                out.insert("forcing".into(), json!(op.forcing));
+            }
+            let rs: Vec<Value> = op.residuals.iter().zip(&op.pairing)
+                .map(|(r, z)| json!({"id": r.id, "origin": r.origin, "unknown": z}))
+                .collect();
+            out.insert("residuals".into(), Value::Array(rs));
+            out.insert("structure".into(), self.structures[name].to_json());
+            return Value::Object(out);
+        }
         out.insert("kind".into(), json!("rhs"));
         out.insert("locality".into(), self.locality_json(op));
         out.insert("writes".into(), json!(op.writes));
@@ -763,8 +888,15 @@ impl Planned {
 
     /// A leaf's resolved method (§5.5.3).
     pub fn leaf_strategy(&self, n: &Node, facts: Option<&StructureFacts>) -> Result<LeafStrategy> {
+        let mut value = n.value.clone();
+        // A DAE's "auto" method is Rodas4 (spec/run-config.md §4.3).
+        if crate::algebraic::is_solving(n, &self.operators)
+            && value.get("alg").and_then(Value::as_str).unwrap_or("auto") == "auto"
+        {
+            value.insert("alg".into(), json!("Rodas4"));
+        }
         strategy::resolve_leaf(
-            &Value::Object(n.value.clone()),
+            &Value::Object(value),
             &self.leaf_facts(n, facts),
             &n.pointer,
         )
@@ -788,7 +920,54 @@ impl Planned {
             &algs,
         )?;
         self.check_time_derivative(&algs)?;
-        schedule::write(&self.schedule, &self.model, &self.operators, &strategy)
+        let algebraic = self.resolved_algebraic()?;
+        schedule::write(&self.schedule, &self.model, &self.operators, &strategy, &algebraic)
+    }
+
+    /// The resolved `solve` nodes and DAE `initialize` methods (§7.1), by
+    /// node id.
+    fn resolved_algebraic(&self) -> Result<BTreeMap<String, Value>> {
+        let mut out = BTreeMap::new();
+        for n in self.schedule.preorder() {
+            if !crate::algebraic::is_solving(n, &self.operators) {
+                continue;
+            }
+            let o = crate::algebraic::node_algebraic_ops(n, &self.operators)[0].clone();
+            let (meth, solve) = match &n.kind {
+                Kind::Solve => (n.value["method"].clone(), true),
+                _ => (n.value.get("initialize").cloned().unwrap_or_else(crate::algebraic::default_initialize), false),
+            };
+            let ls = match meth.get("linsolve").filter(|v| v.as_str() != Some("auto")) {
+                Some(g) => strategy::linsolve_object(g),
+                None => {
+                    let st = &self.structures[&o];
+                    match (&self.operators[&o].locality.class, &st.block) {
+                        (Class::Pointwise, Some(b)) if st.class == "block_diagonal" => {
+                            if b.vars.len() <= 16 {
+                                json!({"block_lu": {"pivot": true, "refine": 0}})
+                            } else {
+                                json!({"sparse_block_lu": {"refine": 0}})
+                            }
+                        }
+                        _ => json!({"dense_lu": {}}),
+                    }
+                }
+            };
+            let resolved = crate::algebraic::resolve_method(&meth, ls);
+            if solve {
+                let mut unknowns: Vec<String> = n.value["unknowns"].as_array().into_iter().flatten()
+                    .filter_map(Value::as_str).map(str::to_string).collect();
+                unknowns.sort();
+                out.insert(n.id().to_string(), json!({
+                    "id": n.id(), "solve": o, "unknowns": unknowns,
+                    "warm_start": n.value.get("warm_start").cloned().unwrap_or_else(|| json!("previous")),
+                    "method": resolved,
+                }));
+            } else {
+                out.insert(n.id().to_string(), resolved);
+            }
+        }
+        Ok(out)
     }
 
     /// §5.5.3, D94: a leaf whose method, given or resolved, is a Rosenbrock
@@ -886,7 +1065,7 @@ impl Planned {
     pub fn derived_json(&self) -> Value {
         let mut out = Map::new();
         for (op, d) in &self.documents {
-            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+            for (kind, bytes) in [(d.rhs_kind, &d.rhs), ("jacobian", &d.jacobian)] {
                 out.insert(
                     Self::derived_path(op, kind),
                     json!({"kind": kind, "operator": op, "sha256": settings::sha256_hex(bytes)}),
@@ -949,7 +1128,7 @@ impl Planned {
         std::fs::create_dir_all(dir.join("derived")).map_err(io)?;
         std::fs::write(dir.join("plan.json"), self.plan_bytes()?).map_err(io)?;
         for (op, d) in &self.documents {
-            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+            for (kind, bytes) in [(d.rhs_kind, &d.rhs), ("jacobian", &d.jacobian)] {
                 std::fs::write(dir.join(Self::derived_path(op, kind)), bytes).map_err(io)?;
             }
         }

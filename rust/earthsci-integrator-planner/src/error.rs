@@ -8,14 +8,12 @@ pub mod codes {
     pub const MODEL_LOAD_FAILED: &str = "model_load_failed";
     pub const SOLVER_EXTERNAL_MISMATCH: &str = "solver_external_mismatch";
     pub const MODEL_FLATTEN_FAILED: &str = "model_flatten_failed";
-    pub const UNSUPPORTED_ALGEBRAIC_EQUATION: &str = "unsupported_algebraic_equation";
     pub const UNSUPPORTED_EVENT: &str = "unsupported_event";
     pub const UNSUPPORTED_PARAMETER_UPDATE: &str = "unsupported_parameter_update";
     pub const UNSUPPORTED_FORCING: &str = "unsupported_forcing";
     pub const UNSUPPORTED_INDEX_SET: &str = "unsupported_index_set";
     pub const UNSUPPORTED_MAP_OPERATOR: &str = "unsupported_map_operator";
     pub const UNSUPPORTED_STEP_LIMIT: &str = "unsupported_step_limit";
-    pub const UNSUPPORTED_SOLVE_NODE: &str = "unsupported_solve_node";
     pub const UNSUPPORTED_SPLIT_EXPLICIT: &str = "unsupported_split_explicit";
     pub const UNSUPPORTED_CROSSING_UPDATE: &str = "unsupported_crossing_update";
     pub const UNSUPPORTED_DT_SCOPE: &str = "unsupported_dt_scope";
@@ -62,6 +60,18 @@ pub mod codes {
     pub const FORCING_WITHOUT_SCALE: &str = "forcing_without_scale";
     pub const FORCING_RECORDS_INVALID: &str = "forcing_records_invalid";
     pub const FORCING_REFRESH_NOT_HIT: &str = "forcing_refresh_not_hit";
+    pub const SOLVE_BOUNDS_INVALID: &str = "solve_bounds_invalid";
+    pub const SOLVE_BOUNDS_SIGN: &str = "solve_bounds_sign";
+    pub const OPERATOR_MIXES_KINDS: &str = "operator_mixes_kinds";
+    pub const OPERATOR_KIND_MISMATCH: &str = "operator_kind_mismatch";
+    pub const ALGEBRAIC_UNKNOWN_UNSOLVED: &str = "algebraic_unknown_unsolved";
+    pub const ALGEBRAIC_UNKNOWN_SOLVED_TWICE: &str = "algebraic_unknown_solved_twice";
+    pub const SOLVE_STRUCTURALLY_SINGULAR: &str = "solve_structurally_singular";
+    pub const SOLVE_PAIRING_AMBIGUOUS: &str = "solve_pairing_ambiguous";
+    pub const DAE_METHOD_INVALID: &str = "dae_method_invalid";
+    pub const UNSUPPORTED_SOLVE_PAIRING: &str = "unsupported_solve_pairing";
+    pub const UNSUPPORTED_DAE_BOUNDS: &str = "unsupported_dae_bounds";
+    pub const UNSUPPORTED_SOLVE_OPTION: &str = "unsupported_solve_option";
 
     /// Every code above, for the test that checks them against
     /// spec/planner-errors.json.
@@ -72,14 +82,12 @@ pub mod codes {
         MODEL_LOAD_FAILED,
         SOLVER_EXTERNAL_MISMATCH,
         MODEL_FLATTEN_FAILED,
-        UNSUPPORTED_ALGEBRAIC_EQUATION,
         UNSUPPORTED_EVENT,
         UNSUPPORTED_PARAMETER_UPDATE,
         UNSUPPORTED_FORCING,
         UNSUPPORTED_INDEX_SET,
         UNSUPPORTED_MAP_OPERATOR,
         UNSUPPORTED_STEP_LIMIT,
-        UNSUPPORTED_SOLVE_NODE,
         UNSUPPORTED_SPLIT_EXPLICIT,
         UNSUPPORTED_CROSSING_UPDATE,
         UNSUPPORTED_DT_SCOPE,
@@ -125,6 +133,18 @@ pub mod codes {
         FORCING_WITHOUT_SCALE,
         FORCING_RECORDS_INVALID,
         FORCING_REFRESH_NOT_HIT,
+        SOLVE_BOUNDS_INVALID,
+        SOLVE_BOUNDS_SIGN,
+        OPERATOR_MIXES_KINDS,
+        OPERATOR_KIND_MISMATCH,
+        ALGEBRAIC_UNKNOWN_UNSOLVED,
+        ALGEBRAIC_UNKNOWN_SOLVED_TWICE,
+        SOLVE_STRUCTURALLY_SINGULAR,
+        SOLVE_PAIRING_AMBIGUOUS,
+        DAE_METHOD_INVALID,
+        UNSUPPORTED_SOLVE_PAIRING,
+        UNSUPPORTED_DAE_BOUNDS,
+        UNSUPPORTED_SOLVE_OPTION,
     ];
 }
 

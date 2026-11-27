@@ -37,6 +37,12 @@ const CASES: &[(&str, &str)] = &[
     ("unnamed_lift", "auto"),
     ("toy_photostationary_cells", "kvaerno4"),
     ("toy_robertson", "rodas4"),
+    ("toy_box_lcp", "newton"),
+    ("toy_box_lcp", "ptc"),
+    ("toy_cubic_roots", "newton"),
+    ("toy_cubic_roots", "ptc"),
+    ("toy_phase_joint", "ptc"),
+    ("toy_robertson_dae", "rodas4"),
 ];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.
@@ -355,7 +361,7 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
     files.sort();
     let mut ours: Vec<String> = Vec::new();
     for (op, d) in &p.documents {
-        for (kind, bytes) in [("jacobian", &d.jacobian), ("rhs", &d.rhs)] {
+        for (kind, bytes) in [("jacobian", &d.jacobian), (d.rhs_kind, &d.rhs)] {
             let name = format!("{op}.{kind}.esm");
             let want = std::fs::read(golden.join("derived").join(&name))
                 .unwrap_or_else(|e| panic!("{fixture}/{case}: golden derived/{name}: {e}"));

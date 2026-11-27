@@ -132,6 +132,13 @@ pub fn rhs_sum(info: &ModelInfo, docs: &[(&str, &FlattenedSystem)]) -> Result<us
         lifted.insert(x, l);
         output_idx.insert(x, if l { faq_output_idx(&eq.rhs) } else { None });
     }
+    // §6.1.2: a solved unknown has the zero right-hand side in every
+    // right-hand-side document (D121).
+    for z in &info.solved {
+        want.insert(z.as_str(), vec![]);
+        lifted.insert(z.as_str(), false);
+        output_idx.insert(z.as_str(), None);
+    }
     let observeds = observed_forms(flat, &obs);
     let ics = ic_forms(flat);
     let declared_params: BTreeSet<&str> = flat

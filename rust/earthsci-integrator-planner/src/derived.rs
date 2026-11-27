@@ -206,6 +206,7 @@ fn tree(
     live: &BTreeSet<String>,
     forcing: &BTreeSet<String>,
     rhs: &dyn Fn(usize, &str) -> Value,
+    zrhs: &BTreeMap<String, Value>,
 ) -> Tree {
     let flat = &info.flat;
     let mut tree = Tree::default();
@@ -247,6 +248,14 @@ fn tree(
                 json!({"lhs": expr_json(&eq.lhs), "rhs": expr_json(&eq.rhs)}),
             );
         }
+    }
+    // §6.1.2: each solved unknown's state equation, after the flattened
+    // model's equations and before the `ic` equations, in code-point order:
+    // its residual in its solving operator's residual document (§6.4), zero
+    // elsewhere.
+    for z in &info.solved {
+        let r = zrhs.get(z).cloned().unwrap_or_else(|| zero(info, z));
+        tree.push(z, json!({"lhs": d_of(z), "rhs": r}));
     }
     for (x, e) in &flat.field_ics {
         tree.push(x, ic_equation(x, e));
@@ -412,7 +421,7 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: bool) -> 
         };
         state_rhs(info, i, x, ts)
     };
-    let mut tree = tree(info, &live, &forcing, &rhs);
+    let mut tree = tree(info, &live, &forcing, &rhs, &BTreeMap::new());
     if probe {
         for (k, t) in terms.iter().enumerate() {
             let x = probe_state(k);
@@ -721,4 +730,46 @@ mod tests {
         assert_eq!(v["c"]["default"], json!(0.0));
         assert_eq!(v["k"]["default"], Value::Null);
     }
+}
+
+/// The document of no terms whose solved unknowns' equations are `zrhs`
+/// (zero for the others), with the new `JacobianEval` states `extra`
+/// (`(name, declaration, right-hand side)`), keeping the observeds that
+/// `refs` reach: §6.4's residual document, or §5.9.4's residual probe.
+fn solved_document(
+    info: &ModelInfo,
+    name: &str,
+    zrhs: &BTreeMap<String, Value>,
+    extra: &[(String, Value, Value)],
+    refs: &BTreeSet<String>,
+) -> Value {
+    let live = live_observeds(info, refs);
+    let forcing = forcing_of(info, refs);
+    let rhs = |i: usize, x: &str| state_rhs(info, i, x, &[]);
+    let mut tree = tree(info, &live, &forcing, &rhs, zrhs);
+    for (x, decl, r) in extra {
+        tree.declare(x, decl.clone());
+        tree.push(x, json!({"lhs": d_of(x), "rhs": r}));
+    }
+    let mut models = tree.to_json();
+    info.operators
+        .attach_operators(&mut models)
+        .expect("every reference resolves against the merged registry");
+    document(info, name, models, data_sources_stub(info, &forcing))
+}
+
+/// §6.4: the residual document of algebraic operator `op`.
+pub fn residual_document(info: &ModelInfo, name: &str, op: &crate::operators::Operator, at: &str) -> Result<Value> {
+    let mut zrhs = BTreeMap::new();
+    let mut refs = BTreeSet::new();
+    for (r, z) in op.residuals.iter().zip(&op.pairing) {
+        zrhs.insert(z.clone(), crate::algebraic::residual_rhs(info, r, &info.shapes[z], at)?);
+        refs.extend(r.refs.iter().cloned());
+    }
+    Ok(solved_document(info, name, &zrhs, &[], &refs))
+}
+
+/// §5.9.4: the residual probe with the states `extra`.
+pub fn residual_probe_document(info: &ModelInfo, extra: &[(String, Value, Value)], refs: &BTreeSet<String>) -> Value {
+    solved_document(info, "probe", &BTreeMap::new(), extra, refs)
 }

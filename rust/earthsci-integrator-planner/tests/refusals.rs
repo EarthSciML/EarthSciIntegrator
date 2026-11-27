@@ -15,7 +15,6 @@ use std::collections::BTreeSet;
 const BEFORE_BANDS: &[&str] = &[
     "toy-model",
     "solver-external-mismatch",
-    "algebraic-equation",
     "discrete-event",
     "schedule-update",
     "reserved-component-name",

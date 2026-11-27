@@ -148,7 +148,7 @@ fn int_lit(e: &Expr) -> Option<i64> {
 /// exactly in 64-bit signed integers. An expression whose value, or any of
 /// whose sub-expressions' values, overflows is not one. A float literal is
 /// never one, even when integral.
-fn int_const(e: &Expr) -> Option<i64> {
+pub(crate) fn int_const(e: &Expr) -> Option<i64> {
     if let Some(k) = int_lit(e) {
         return Some(k);
     }

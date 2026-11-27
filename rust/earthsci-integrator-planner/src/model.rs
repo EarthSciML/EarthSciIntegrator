@@ -49,6 +49,13 @@ pub struct ModelInfo {
     /// term belongs to some operator, so this is the union of the
     /// operators' `forcing` (§5.3) and the `ic` equations' data-fed reads.
     pub used: BTreeSet<String>,
+    /// The flattened model's algebraic equations (spec/plan.md §5.9.1), in
+    /// flattened equation order.
+    pub residuals: Vec<crate::algebraic::Residual>,
+    /// The solved unknowns (§4): the algebraic unknowns some algebraic
+    /// equation reads, directly or through observeds. They are among
+    /// `states`.
+    pub solved: BTreeSet<String>,
 }
 
 /// A data-fed parameter (spec/plan.md §4.1): what the plan's `forcing`
@@ -410,12 +417,6 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
 
     // Step 6.
     let scope = |code, m: String| Err(refuse(code, "/model", m));
-    if let Some(name) = flat.algebraic_variables.keys().next() {
-        return scope(
-            codes::UNSUPPORTED_ALGEBRAIC_EQUATION,
-            format!("the flattened model has the algebraic unknown {name}; algebraic operators arrive at M4b"),
-        );
-    }
     if !flat.continuous_events.is_empty() || !flat.discrete_events.is_empty() {
         return scope(
             codes::UNSUPPORTED_EVENT,
@@ -569,7 +570,17 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         domain: None,
         data_fed,
         used: BTreeSet::new(),
+        residuals: Vec::new(),
+        solved: BTreeSet::new(),
     };
+    // §4: the solved unknowns are states of the plan (D121).
+    info.solved = crate::algebraic::solved_unknowns(&info);
+    for z in info.solved.clone() {
+        if !info.states.contains(&z) {
+            info.states.push(z);
+        }
+    }
+    info.states.sort();
     // Every reference resolves, through every body it reaches, against the
     // merged registry (esm-spec §9.6.4 rule 7), so the derived documents'
     // `operators` blocks (§6.1.5) can always be written.
@@ -601,6 +612,7 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         info.shapes.insert(s, declared);
     }
     check_shapes(&info)?;
+    info.residuals = crate::algebraic::residuals(&info)?;
     Ok(info)
 }
 

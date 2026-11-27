@@ -232,13 +232,13 @@ fn rule_2_names() {
 #[test]
 fn step_limits() {
     let solve = json!({"sequence": [
-        {"solve": "kinetics", "unknowns": ["Kinetics.y2"], "method": {"newton": {}}},
+        {"map": "kinetics"},
         {"leaf": "kinetics", "alg": "Rodas4"}]});
     let mut rc = rob(json!({"step": {"limits": ["Kinetics.y1"]}}), json!({}));
     rc["schedule"] = solve;
     assert_eq!(
         refused("limits-after-solve", None, rc),
-        (codes::UNSUPPORTED_SOLVE_NODE, "/schedule/sequence/0".into())
+        (codes::UNSUPPORTED_MAP_OPERATOR, "/schedule/sequence/0".into())
     );
     assert_eq!(
         refused(
