@@ -37,6 +37,7 @@ const CASES: &[(&str, &str)] = &[
     ("unnamed_lift", "auto"),
     ("toy_photostationary_cells", "kvaerno4"),
     ("toy_robertson", "rodas4"),
+    ("nested_default", "auto"),
 ];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.

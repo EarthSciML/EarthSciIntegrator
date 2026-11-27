@@ -1,0 +1,18 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "A pointwise linear decay whose rates come from 2-D and 3-D inline defaults.",
+  "model": "model.esm",
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "leaf": "default_pointwise",
+    "alg": "Rodas4",
+    "jacobian": "symbolic",
+    "linsolve": "dense_lu",
+    "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10
+    }
+  }
+}
