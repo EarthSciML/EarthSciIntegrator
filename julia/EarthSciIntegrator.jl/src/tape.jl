@@ -145,6 +145,12 @@ function read_tape(io::IO)
             push!(tape, SubcycleRecord(d["path"], _f(d["t"]), _f(d["dt"]), Int(d["n"])))
         elseif node == "macro"
             push!(tape, MacroRecord(d["path"], _f(d["t"]), _f(d["dt"]), d["reason"]))
+        elseif node == "solve"
+            active = Dict{String, NTuple{3, Vector{Int}}}(
+                String(z) => (Int.(get(a, "lower", Int[])), Int.(get(a, "upper", Int[])), Int.(get(a, "degenerate", Int[])))
+                    for (z, a) in get(d, "active", Dict{String, Any}())
+            )
+            push!(tape, SolveRecord(d["path"], _f(d["t"]), _f(d["dt"]), Float64.(d["z"]), Int(d["iterations"]), String.(d["recover"]), active))
         else
             error("unknown tape node kind '$node'")
         end

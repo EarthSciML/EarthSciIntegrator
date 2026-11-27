@@ -59,8 +59,11 @@ For tests and debugging, an implementation can write its tape as JSON Lines, one
 ```json
 {"path": "0/root.0", "node": "leaf", "t": 0, "dt": 0.025, "steps": [[0, 0.0125], [0.0125, 0.0125]], "accepted": 2, "rejected": 0, "retcode": "Success"}
 {"path": "0/root.1", "node": "map", "t": 0, "dt": 0.025, "mask": []}
+{"path": "0/root.2", "node": "solve", "t": 0, "dt": 0.025, "z": [0.25, 0.0], "iterations": 1, "recover": [], "active": {"Box.z": {"lower": [1], "upper": [0]}}}
 {"path": "0", "node": "macro", "t": 0, "dt": 0.025, "reason": "step.dt"}
 ```
+
+- A `solve` record carries the converged unknowns `z` in the plan's DOF order, the iterations of the attempt that converged, the `recover` actions taken in order, and `active` (§2), each bound's element indices 0-based within the unknown.
 
 - Numbers are written in shortest round-trip form, so a tape read back is bitwise the tape written. JSON numbers cannot hold NaN or infinities, so these are written as the strings `"NaN"`, `"Infinity"` and `"-Infinity"`; `"NaN"` reads back as the canonical quiet NaN.
 - The macro-step record follows the invocations of its step.

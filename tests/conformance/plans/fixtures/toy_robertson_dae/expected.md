@@ -15,3 +15,15 @@ spec/toy-problems.md §1.10: a `coupled` node with a term operator (`kinetics`, 
 ```
 
 **Derived.** conservation.jacobian.esm, conservation.residual.esm, kinetics.jacobian.esm, kinetics.rhs.esm
+
+## trbdf2
+
+As `rodas4`, with `alg` `TRBDF2`, a stiffly accurate ESDIRK method of spec/run-config.md §4.3; the operators, structure and derived documents are the same.
+
+## kvaerno4
+
+As `rodas4`, with `alg` `Kvaerno4`, a stiffly accurate ESDIRK method of spec/run-config.md §4.3; the operators, structure and derived documents are the same.
+
+## inconsistent
+
+As `rodas4` on `tests/conformance/toys/robertson_dae_inconsistent.esm`, whose `y3` starts at 0.5, an inconsistent value. The plan is `rodas4`'s with the other model and that `default`; the runtime's consistent initialization (spec/methods.md §14.4) returns `y3 = 0` before the first step.

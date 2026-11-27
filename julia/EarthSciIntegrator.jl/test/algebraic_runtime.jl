@@ -1,0 +1,54 @@
+# The runtime of algebraic equations on the toy problems with exact answers
+# (spec/toy-problems.md §1.7–§1.10; spec/methods.md §14, §15).
+
+using EarthSciIntegrator
+using Test
+@isdefined(REPO) || include("paths.jl")
+
+const AR = EarthSciIntegrator
+
+"""Plan the fixture case, run it forward, and return the run and its problem."""
+function _run_case(fixture, case)
+    out = mktempdir()
+    AR.write_plan(AR.plan(joinpath(PFIX, fixture, "$case.run.json")), out)
+    run, pp = AR.build_plan_run(out)
+    AR.forward!(run)
+    return run, pp
+end
+
+_end(run, pp, v) = run.outputs[end][2][AR.layout_dofs(pp, [v])]
+_solve_record(run) = only(r for r in run.tape.records if r isa AR.SolveRecord)
+
+@testset "algebraic runtime" begin
+    @testset "cubic_roots $case" for case in ("newton", "ptc")
+        run, pp = _run_case("toy_cubic_roots", case)
+        @test run.outputs[end][1] == 1.0
+        @test _end(run, pp, "Cubic.z") ≈ [0.6823278038280193, 1.0, 1.2134116627622296, 1.378796700129551] atol = 1.0e-11
+        @test isempty(_solve_record(run).active)
+    end
+    @testset "box_lcp $case" for case in ("newton", "ptc")
+        run, pp = _run_case("toy_box_lcp", case)
+        # Both bounds active: z₁ at its referenced upper bound, z₂ at 0 (§1.8).
+        @test _end(run, pp, "Box.z") == [0.25, 0.0]
+        @test _solve_record(run).active == Dict("Box.z" => ([1], [0], Int[]))
+        # The tape's JSON Lines form reads back the same record (spec/tape.md §5).
+        r2 = AR.read_tape(AR.tape_string(run.tape))
+        @test only(r for r in r2.records if r isa AR.SolveRecord).active == _solve_record(run).active
+    end
+    @testset "phase_joint ptc" begin
+        run, pp = _run_case("toy_phase_joint", "ptc")
+        # s column-major over cell × salt; cell 1 saturates salt 1 (§1.9).
+        @test _end(run, pp, "Phase.s") ≈ [1.0, 0.0, 0.0, 0.0] atol = 1.0e-11
+        @test _end(run, pp, "Phase.w") ≈ [1.0, 0.75] atol = 1.0e-11
+    end
+    @testset "robertson_dae $case" for (case, rtol) in (("rodas4", 1.0e-8), ("kvaerno4", 1.0e-6), ("trbdf2", 1.0e-4), ("inconsistent", 1.0e-8))
+        ode, opp = _run_case("toy_robertson", "rodas4")
+        run, pp = _run_case("toy_robertson_dae", case)
+        @test run.outputs[end][1] == 40.0
+        y = [_end(run, pp, "Rober.y1")[1], _end(run, pp, "Rober.y2")[1], _end(run, pp, "Rober.y3")[1]]
+        @test isapprox(y[1], _end(ode, opp, "Kinetics.y1")[1]; rtol)
+        @test isapprox(y[2], _end(ode, opp, "Kinetics.y2")[1]; rtol)
+        # The algebraic equation holds exactly at the step ends (stiffly accurate methods).
+        @test abs(1 - sum(y)) <= 1.0e-14
+    end
+end

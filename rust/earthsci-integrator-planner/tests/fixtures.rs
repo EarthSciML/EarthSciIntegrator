@@ -43,6 +43,9 @@ const CASES: &[(&str, &str)] = &[
     ("toy_cubic_roots", "ptc"),
     ("toy_phase_joint", "ptc"),
     ("toy_robertson_dae", "rodas4"),
+    ("toy_robertson_dae", "trbdf2"),
+    ("toy_robertson_dae", "kvaerno4"),
+    ("toy_robertson_dae", "inconsistent"),
 ];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.

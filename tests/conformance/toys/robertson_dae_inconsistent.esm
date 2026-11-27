@@ -1,0 +1,138 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "robertson_dae_inconsistent",
+    "description": "spec/toy-problems.md \u00a71.10 with the inconsistent start y3 = 0.5: consistent initialization must return y3 = 0 before the first step."
+  },
+  "models": {
+    "Rober": {
+      "variables": {
+        "y1": {
+          "type": "unknown",
+          "default": 1.0
+        },
+        "y2": {
+          "type": "unknown",
+          "default": 0.0
+        },
+        "y3": {
+          "type": "unknown",
+          "default": 0.5
+        },
+        "k1": {
+          "type": "parameter",
+          "default": 0.04
+        },
+        "k2": {
+          "type": "parameter",
+          "default": 30000000.0
+        },
+        "k3": {
+          "type": "parameter",
+          "default": 10000.0
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "y1"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  -1,
+                  "k1",
+                  "y1"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "k3",
+                  "y2",
+                  "y3"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "y2"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "-",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      "k1",
+                      "y1"
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "k3",
+                      "y2",
+                      "y3"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "k2",
+                  {
+                    "op": "^",
+                    "args": [
+                      "y2",
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  "y1",
+                  "y2"
+                ]
+              },
+              "y3"
+            ]
+          },
+          "rhs": 1.0
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 40
+    }
+  }
+}

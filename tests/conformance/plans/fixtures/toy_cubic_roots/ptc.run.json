@@ -1,6 +1,6 @@
 {
   "esm_integrator": "0.1.0",
-  "description": "spec/toy-problems.md \u00a71.7 by pseudo-transient continuation, every option defaulted.",
+  "description": "spec/toy-problems.md \u00a71.7 by pseudo-transient continuation, every option but the first pseudo-time step defaulted.",
   "model": "../../../toys/cubic_roots.esm",
   "operators": {
     "cubic": {
@@ -18,7 +18,9 @@
       "Cubic.z"
     ],
     "method": {
-      "ptc": {}
+      "ptc": {
+        "dt0": 0.5
+      }
     },
     "warm_start": "initial"
   }

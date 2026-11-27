@@ -130,6 +130,7 @@ include("planner/planner.jl")
 # plan's derived documents, run by the schedule interpreter above.
 include("forcing_runtime.jl")
 include("plan_runtime.jl")
+include("algebraic_runtime.jl")
 
 """
     odefunction(ops::OperatorSum; inplace=true)

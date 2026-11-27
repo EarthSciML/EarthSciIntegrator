@@ -479,7 +479,7 @@ end
 
 """Operator names a resolved schedule node and its descendants advance (`leaf`, `coupled` and `frozen` entries)."""
 function schedule_operators(node, acc = String[])
-    for k in ("leaf", "coupled")
+    for k in ("leaf", "coupled", "solve")
         haskey(node, k) && append!(acc, node[k] isa AbstractString ? [node[k]] : node[k])
     end
     for f in get(node, "frozen", Any[])
@@ -573,7 +573,10 @@ function plan_problem(
         d = get!(() -> build_plan_document(path, op, tspan), cache, (h, tspan))
         return _with(d; path)
     end
-    built = Dict{String, Tuple{PlanDocument, PlanDocument}}(n => (doc(n, "rhs"), doc(n, "jacobian")) for n in names)
+    # An algebraic operator's first document is its residual document
+    # (spec/plan.md §6.4), evaluated as a right-hand side.
+    first_kind(n) = get(plan["operators"][n], "kind", "rhs") == "algebraic" ? "residual" : "rhs"
+    built = Dict{String, Tuple{PlanDocument, PlanDocument}}(n => (doc(n, first_kind(n)), doc(n, "jacobian")) for n in names)
     # The layout comes from the first operator's right-hand side; every other
     # document must declare the same states (§8.2). The parameters are the
     # model's: every scalar parameter any of the documents reads, at its
@@ -640,13 +643,19 @@ function plan_problem(
     if mflat !== nothing && ic_reads(mflat, Set(keys(plan["forcing"])))
         u0 = data_initial_state(mfile, F, tspan, L)
     end
+    algebraic = Dict{String, Any}()
+    for n in names
+        first_kind(n) == "residual" || continue
+        docjson = JSON.parsefile(joinpath(dir, "derived/$n.residual.esm"))
+        algebraic[n] = algebraic_info(n, plan["operators"][n], L, pnames, docjson)
+    end
     variables = Pair{String, Vector{Int}}[
         x => collect((L.offset[x] + 1):(L.offset[x] + prod(L.extents[x]; init = 1))) for x in sort!(collect(keys(L.offset)))
     ]
     name = String(get(get(plan["inputs"], "model", Dict()), "path", "plan"))
     prob = ToyProblem(
         name, length(L.names), u0, p, pnames, tspan, ops, Dict{String, AbstractMapOperator}(), variables,
-        Function[], nothing, false
+        Function[], nothing, false, algebraic
     )
     return PlanProblem(prob, plan, L, F)
 end
