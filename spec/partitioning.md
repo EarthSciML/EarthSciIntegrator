@@ -193,6 +193,16 @@ Each runtime's own tests also check rule 4 of §3.1 on `reseact_mini`'s planned 
 
 Planner fixture `reseact_mini` (spec/plan.md §9) covers the plan keys of §10 and the time-derivative document (spec/plan.md §6.4). Refusal fixtures: `dt-scope-stencil` (`dt_scope: cell` on the transport leaf; `dt_scope_not_local`), `dt-scope-bind-dt` (`cell` on a leaf with a `bind_dt: "leaf"` parameter; `dt_scope_bind_dt`), `dt-scope-column` (`cell` on a column leaf; `unsupported_dt_scope`). Goldens are written by the Julia planner (spec/plan.md §9).
 
+### 9.5 The M3 gate's agreement when step sequences differ (D108)
+
+The M3 gate (D96) compares the Julia and Rust runs of reseact at the gate's tolerances: transport `SSPRK43` with `reltol` $10^{-4}$, `abstol` $10^{-6}$; chemistry `Rosenbrock23` with `reltol` $10^{-4}$, `abstol` $10^{-9}$. Where the two runs take the same steps they must agree to $10^{-9}$ relative (the `cross_language` check). Where their step sequences differ, which a rounding difference in an error estimate is enough to cause, they are judged against a **truth run** instead, not against each other:
+
+- **Truth.** Julia on the same plan's model, schedule and step, with every leaf's tolerances tightened by $10^{4}$: chemistry `reltol` $10^{-8}$, `abstol` $10^{-13}$; transport `reltol` $10^{-8}$, `abstol` $10^{-10}$.
+- **Error of a run.** For each species, at every output time and cell, the difference $|x - x^st|$ between the run's value $x$ and the truth's $x^st$, measured two ways: relative to the value, $|x - x^st| / |x^st|$, and in the leaf's weighted error norm at the gate's tolerances, $|x - x^st| / (\mathrm{abstol} + \mathrm{reltol}\,\max(|x|, |x^st|))$. A species' error is the worst over output times and cells.
+- **Pass.** For every species, Rust's error in the weighted norm is at most twice Julia's (both runs at the gate's tolerances). Both measures are reported per species for both runtimes.
+
+The criterion was chosen by the user (2026-11-27) after the like-for-like comparison showed the two runtimes' step sequences diverging from a $1.6\times10^{-13}$ relative difference in one step size, with OH at a sunrise cell differing by 2.5 % of its value while every other species stayed within $10^{-4}$ of its largest value.
+
 ## 10. Run-config and plan keys (D104)
 
 ### 10.1 Run config
