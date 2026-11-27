@@ -195,6 +195,8 @@ function operator_json(m::PlanModel, op::PlanOperator, stiff)
         )
         f = forcing_among(m, op.reads)
         isempty(f) || (d["forcing"] = f)
+        bj = bounds_json(m, op)
+        bj === nothing || (d["bounds"] = bj)
         return d
     end
     d = Dict{String, Any}(

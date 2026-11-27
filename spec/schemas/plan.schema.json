@@ -191,6 +191,20 @@
             }
           }
         },
+        "bounds": {
+          "description": "An algebraic operator's bounded unknowns (spec/plan.md §5.9.7, D95): per unknown its lb and ub, each a number or a parameter name.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": false,
+            "properties": {
+              "lb": {"oneOf": [{"type": "number"}, {"$ref": "run-config.schema.json#/$defs/qualifiedName"}]},
+              "ub": {"oneOf": [{"type": "number"}, {"$ref": "run-config.schema.json#/$defs/qualifiedName"}]}
+            }
+          }
+        },
         "terms": {
           "description": "The operator's terms (spec/plan.md §5.1), in flattened-equation order, then contribution, then summand.",
           "type": "array",

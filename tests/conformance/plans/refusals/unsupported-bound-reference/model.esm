@@ -1,0 +1,154 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "box_lcp_observed_bound",
+    "description": "spec/toy-problems.md \u00a71.8 with the upper bound an observed (zcap = 2 zmax) that reads no unknown: only number and parameter bounds are planned at this version (spec/plan.md \u00a75.9.7)."
+  },
+  "index_sets": {
+    "k": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "z": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "default": 0.0,
+          "lb": 0,
+          "ub": "zcap"
+        },
+        "zmax": {
+          "type": "parameter",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            0.25,
+            10.0
+          ]
+        },
+        "b": {
+          "type": "parameter",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            1.0,
+            -2.0
+          ]
+        },
+        "zcap": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "description": "an observed cap, twice zmax"
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "faq",
+                  "output_idx": [],
+                  "args": [],
+                  "ranges": {
+                    "j": {
+                      "from": "k"
+                    }
+                  },
+                  "expr": {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": "==",
+                            "args": [
+                              "i",
+                              "j"
+                            ]
+                          },
+                          2.0,
+                          1.0
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "z",
+                          "j"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          },
+          "rhs": 0.0
+        },
+        {
+          "lhs": "zcap",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                2,
+                {
+                  "op": "index",
+                  "args": [
+                    "zmax",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

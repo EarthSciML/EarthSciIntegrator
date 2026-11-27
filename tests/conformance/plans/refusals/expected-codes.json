@@ -195,6 +195,10 @@
     "code": "tstop_off_fixed_step",
     "at": "/step/hit_multiples"
   },
+  "unsupported-bound-reference": {
+    "code": "unsupported_bound_reference",
+    "at": "/schedule/unknowns/0"
+  },
   "unsupported-dae-bounds": {
     "code": "unsupported_dae_bounds",
     "at": "/schedule"

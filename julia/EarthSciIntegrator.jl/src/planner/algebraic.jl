@@ -639,7 +639,34 @@ function check_algebraic_schedule(ctx, nodes)
             end
         end
     end
+    # §5.9.7: a bound is a number or a parameter at this version.
+    for n in nodes
+        n.kind == "solve" || continue
+        for (i, z) in enumerate(n.spec["unknowns"])
+            v = m.flat.state_variables[String(z)]
+            for bnd in (v.lb, v.ub)
+                bnd isa AbstractString || continue
+                is_param(m, String(bnd)) || refuse(
+                    "unsupported_bound_reference", nptr(n, "unknowns", i - 1),
+                    "the bound $bnd of $z is a $(something(name_kind(m, String(bnd)), "name")); a bound that refers to a state or an observed is a later addition (spec/plan.md §5.9.7)"
+                )
+            end
+        end
+    end
     return nothing
+end
+
+"""The plan's `bounds` of an algebraic operator (§5.9.7): per bounded paired unknown its `lb` and `ub`; `nothing` when none is bounded."""
+function bounds_json(m::PlanModel, op)
+    out = Dict{String, Any}()
+    for z in unique(op.pairing)
+        v = m.flat.state_variables[z]
+        b = Dict{String, Any}()
+        v.lb === nothing || (b["lb"] = v.lb)
+        v.ub === nothing || (b["ub"] = v.ub)
+        isempty(b) || (out[z] = b)
+    end
+    return isempty(out) ? nothing : out
 end
 
 # ---------------------------------------------------------------------------

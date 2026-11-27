@@ -668,6 +668,24 @@ pub fn check_schedule(
             }
         }
     }
+    // §5.9.7: a bound is a number or a parameter at this version.
+    for n in &nodes {
+        if !matches!(n.kind, Kind::Solve) {
+            continue;
+        }
+        for (i, z) in written_unknowns(n).iter().enumerate() {
+            let v = &info.flat.state_variables[z];
+            for b in [bound_name(&v.lb), bound_name(&v.ub)].into_iter().flatten() {
+                if !info.is_parameter(&b) {
+                    return Err(refuse(
+                        codes::UNSUPPORTED_BOUND_REFERENCE,
+                        ptr(&n.key_ptr("unknowns"), i),
+                        format!("the bound {b} of {z} is not a parameter; a bound that refers to a state or an observed is a later addition (spec/plan.md §5.9.7)"),
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1124,4 +1142,23 @@ pub fn resolve_method(meth: &Value, linsolve: Value) -> Value {
         out.insert("recover".into(), r.clone());
     }
     Value::Object(out)
+}
+
+/// The plan's `bounds` of an algebraic operator (§5.9.7): per bounded paired
+/// unknown its `lb` and `ub`; `None` when none is bounded.
+pub fn bounds_json(info: &ModelInfo, op: &Operator) -> Option<Value> {
+    let mut out = Map::new();
+    for z in op.pairing.iter().collect::<BTreeSet<_>>() {
+        let v = &info.flat.state_variables[z];
+        let mut b = Map::new();
+        for (k, x) in [("lb", &v.lb), ("ub", &v.ub)] {
+            if let Some(x) = x {
+                b.insert(k.into(), serde_json::to_value(x).unwrap_or(Value::Null));
+            }
+        }
+        if !b.is_empty() {
+            out.insert(z.clone(), Value::Object(b));
+        }
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
 }

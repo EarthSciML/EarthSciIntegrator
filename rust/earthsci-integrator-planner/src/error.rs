@@ -72,6 +72,7 @@ pub mod codes {
     pub const UNSUPPORTED_SOLVE_PAIRING: &str = "unsupported_solve_pairing";
     pub const UNSUPPORTED_DAE_BOUNDS: &str = "unsupported_dae_bounds";
     pub const UNSUPPORTED_SOLVE_OPTION: &str = "unsupported_solve_option";
+    pub const UNSUPPORTED_BOUND_REFERENCE: &str = "unsupported_bound_reference";
 
     /// Every code above, for the test that checks them against
     /// spec/planner-errors.json.
@@ -145,6 +146,7 @@ pub mod codes {
         UNSUPPORTED_SOLVE_PAIRING,
         UNSUPPORTED_DAE_BOUNDS,
         UNSUPPORTED_SOLVE_OPTION,
+        UNSUPPORTED_BOUND_REFERENCE,
     ];
 }
 

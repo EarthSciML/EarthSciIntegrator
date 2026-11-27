@@ -867,6 +867,9 @@ impl Planned {
                 .map(|(r, z)| json!({"id": r.id, "origin": r.origin, "unknown": z}))
                 .collect();
             out.insert("residuals".into(), Value::Array(rs));
+            if let Some(b) = crate::algebraic::bounds_json(&self.model, op) {
+                out.insert("bounds".into(), b);
+            }
             out.insert("structure".into(), self.structures[name].to_json());
             return Value::Object(out);
         }
