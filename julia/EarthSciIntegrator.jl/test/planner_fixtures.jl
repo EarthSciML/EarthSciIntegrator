@@ -302,7 +302,9 @@ const PLAN_FILES = String[]
             end
         end
         # Derived documents (§6, §7.7): one rhs and one jacobian per operator, hashed as written.
-        @test sort!(collect(keys(p["derived"]))) == sort!(["derived/$o.$k.esm" for o in ops for k in ("rhs", "jacobian")])
+        # An algebraic operator's first document is its residual document (§6.4).
+        first_kind(o) = p["operators"][o]["kind"] == "algebraic" ? "residual" : "rhs"
+        @test sort!(collect(keys(p["derived"]))) == sort!(["derived/$o.$k.esm" for o in ops for k in (first_kind(o), "jacobian")])
         for (path, x) in p["derived"]
             bytes = read(joinpath(dir, path))
             @test x["sha256"] == bytes2hex(EarthSciIntegrator.sha256(bytes))
@@ -310,7 +312,7 @@ const PLAN_FILES = String[]
             @test EarthSciASTDiff.stable_json(doc) == String(bytes)
             # §2.2: no `const` value written as an integral float.
             @test isempty(integral_float_consts(doc))
-            if x["kind"] == "rhs"
+            if x["kind"] in ("rhs", "residual")
                 @test doc["esm"] == "1.3.0" && doc["metadata"] == Dict("name" => x["operator"])
             else
                 # EarthSciASTDiff's evaluation document, as it writes it (§6.2).
