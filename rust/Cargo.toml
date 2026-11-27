@@ -21,8 +21,9 @@ repository = "https://github.com/EarthSciML/EarthSciIntegrator"
 earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = "0.2.0" }
 earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.2.0" }
 
-# TEMPORARY: EarthSciASTDiff is pinned to EarthSciML/EarthSciASTDiff#86 (per-cell
-# blocks over caller-named cell axes; a column of another rank is never
-# diagonal), fork branch cell-axes-blocks, until it merges and is released.
+# TEMPORARY: EarthSciASTDiff is pinned to the integration branch
+# ctessum-claude integ-named-steps-cellblocks: the named-steps stack
+# (EarthSciASTDiff #82, #83, #84, #85) merged with #86 (per-cell blocks over
+# caller-named cell axes), until they merge and are released.
 [patch.crates-io]
-earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "f9ffc8d6de70c0af5a498afa7f2c6eefa021203a" }
+earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "334ccf263be8a141decb468f28052cd39412ee90" }

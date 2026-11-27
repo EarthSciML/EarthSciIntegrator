@@ -29,7 +29,8 @@ SciMLBase = "2, 3"
 julia = "1.10"
 
 [sources]
-# TEMPORARY: EarthSciASTDiff is pinned to EarthSciML/EarthSciASTDiff#86 (per-cell
-# blocks over caller-named cell axes; a column of another rank is never
-# diagonal), fork branch cell-axes-blocks, until it merges and is released.
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "f9ffc8d6de70c0af5a498afa7f2c6eefa021203a"}
+# TEMPORARY: EarthSciASTDiff is pinned to the integration branch
+# ctessum-claude integ-named-steps-cellblocks: the named-steps stack
+# (EarthSciASTDiff #82, #83, #84, #85) merged with #86 (per-cell blocks over
+# caller-named cell axes), until they merge and are released.
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "334ccf263be8a141decb468f28052cd39412ee90"}
