@@ -180,8 +180,9 @@ using EarthSciIntegrator: BandEntry, ecma_number, jcs, schema_errors, run_config
             [BandEntry("h", "q", [(1, 8), (1, 3)], Union{String, Int}["i", "j"], Any["i", "j", 1])],
             shapes2, ax, sizes
         ) == (:column, nothing)
-        # An "other" axis (neither horizontal nor vertical) covered: global.
-        @test cls(BandEntry("w", "s", [(1, 8), (1, 3), (1, 4), (1, 5)], Union{String, Int}["i", "j", "k", "m"], Any["n"]))[1] === :global
+        # An "other" axis (neither horizontal nor vertical) covered: it lies
+        # inside the cell, so the class is kept (D123, amending D82).
+        @test cls(BandEntry("w", "s", [(1, 8), (1, 3), (1, 4), (1, 5)], Union{String, Int}["i", "j", "k", "m"], Any["n"]))[1] === :pointwise
         @test cls(BandEntry("w", "s", [(1, 8), (1, 3), (1, 4), (1, 5)], Union{String, Int}["i", "j", "k", "m"], Any["m"])) ==
             (:pointwise, nothing)
     end
