@@ -737,6 +737,7 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
             names: vec![],
             lower: vec![],
             upper: vec![],
+            frozen: None,
         };
         for z in entry["writes"]
             .as_array()
@@ -772,6 +773,15 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
                 };
                 dest.extend(src);
             }
+        }
+        // The frozen documents (spec/plan.md §6.5), when the plan has them.
+        if let Some(rp) = docs.get(&(b.name.clone(), "frozen_residual".to_string())) {
+            let jp = docs.get(&(b.name.clone(), "frozen_jacobian".to_string()));
+            let f = PlannedFrozen::load(
+                dir, tspan, &b.name, entry, &m.dofs, &m.params, &forcing, &timeline, &info.dofs,
+                rp, jp,
+            )?;
+            info.frozen = Some(crate::algebraic::Frozen(Arc::new(f)));
         }
         algebraic.insert(b.name.clone(), info);
     }
@@ -907,6 +917,177 @@ fn state_shapes(path: &Path, dofs: &Dofs) -> Result<BTreeMap<String, Vec<String>
             Ok((name.clone(), shape))
         })
         .collect()
+}
+
+/// An algebraic operator's frozen documents (spec/plan.md §6.5), bound to
+/// their own canonical layout: the model's states and the frozen states
+/// `FrozenEval.frozen_m`.
+struct PlannedFrozen {
+    resid: Document,
+    jac: Option<Document>,
+    /// The length of the frozen layout.
+    nf: usize,
+    /// Each model DOF's DOF in the frozen layout.
+    tolf: Vec<usize>,
+    /// Per frozen observed: its frozen state's DOFs in the frozen layout,
+    /// and its slots in the frozen residual document's output.
+    fdofs: Vec<Vec<usize>>,
+    fslots: Vec<Vec<usize>>,
+    /// The frozen Jacobian's band points among the unknowns: (output slot,
+    /// row position, column position).
+    points: Vec<(usize, usize, usize)>,
+}
+
+impl PlannedFrozen {
+    #[allow(clippy::too_many_arguments)]
+    fn load(
+        dir: &Path,
+        tspan: (f64, f64),
+        name: &str,
+        entry: &Value,
+        dofs: &Dofs,
+        params: &[String],
+        forcing: &BTreeMap<String, PlanForcing>,
+        timeline: &Arc<ForcingTimeline>,
+        zdofs: &[usize],
+        rpath: &str,
+        jpath: Option<&String>,
+    ) -> Result<PlannedFrozen, Error> {
+        let (_, rprog) =
+            build_program(&dir.join(rpath), tspan).map_err(|e| refuse(name, rpath, e))?;
+        let lf = program_dofs(&rprog, |_| false);
+        let mut tolf = vec![0usize; dofs.n];
+        for (st, (start, ext)) in &dofs.states {
+            let r = lf.dofs_of(st).ok_or_else(|| {
+                refuse(name, rpath, format!("it does not declare the state {st}"))
+            })?;
+            if lf.states[st].1 != *ext {
+                return Err(refuse(
+                    name,
+                    rpath,
+                    format!("its state {st} has other extents than the model's"),
+                ));
+            }
+            for (k, j) in r.enumerate() {
+                tolf[start + k] = j;
+            }
+        }
+        let resid = Document::new(rprog, &lf, params, forcing, timeline.clone())
+            .map_err(|e| refuse(name, rpath, e))?;
+        let (mut fdofs, mut fslots): (Vec<Vec<usize>>, Vec<Vec<usize>>) = (vec![], vec![]);
+        loop {
+            let x = format!(
+                "{}.frozen_{}",
+                earthsci_integrator_planner::derived::FROZEN_COMPONENT,
+                fdofs.len() + 1
+            );
+            let Some(r) = lf.dofs_of(&x) else { break };
+            let (off, _) = resid
+                .prog
+                .block_range(&x)
+                .ok_or_else(|| refuse(name, rpath, format!("no block {x}")))?;
+            fslots.push(r.clone().map(|j| off + j - r.start).collect());
+            fdofs.push(r.collect());
+        }
+        if lf.n != dofs.n + fdofs.iter().map(Vec::len).sum::<usize>() {
+            return Err(refuse(
+                name,
+                rpath,
+                "it declares states other than the model's and its frozen states",
+            ));
+        }
+        let mut points = vec![];
+        let jac = match jpath {
+            None => None,
+            Some(jp) => {
+                let (_, jprog) =
+                    build_program(&dir.join(jp), tspan).map_err(|e| refuse(name, jp, e))?;
+                let jac = Document::new(jprog, &lf, params, forcing, timeline.clone())
+                    .map_err(|e| refuse(name, jp, e))?;
+                let zpos: HashMap<usize, usize> = zdofs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &d)| (tolf[d], i))
+                    .collect();
+                for (k, b) in entry["frozen_bands"]
+                    .as_array()
+                    .ok_or_else(|| refuse(name, jp, "the plan entry has no frozen_bands"))?
+                    .iter()
+                    .enumerate()
+                {
+                    let field = band_field(k + 1);
+                    let (base, len) = jac
+                        .prog
+                        .block_range(&field)
+                        .ok_or_else(|| refuse(name, jp, format!("it has no {field}")))?;
+                    let mut with_coef = b.clone();
+                    with_coef["coef"] = json!(0);
+                    let en = earthsci_astdiff::parse_band(&with_coef)
+                        .map_err(|e| refuse(name, jp, format!("band {}: {e}", k + 1)))?;
+                    let scatter = band_scatter(&lf, &en, len, &field)
+                        .map_err(|e| refuse(name, jp, format!("band {}: {e}", k + 1)))?;
+                    for (off, r, c) in scatter {
+                        if let (Some(&ri), Some(&ci)) = (zpos.get(&r), zpos.get(&c)) {
+                            points.push((base + off, ri, ci));
+                        }
+                    }
+                }
+                Some(jac)
+            }
+        };
+        Ok(PlannedFrozen {
+            resid,
+            jac,
+            nf: lf.n,
+            tolf,
+            fdofs,
+            fslots,
+            points,
+        })
+    }
+
+    /// The frozen layout's state at the model state `x`, its frozen states
+    /// zero.
+    fn state(&self, x: &[f64]) -> Vec<f64> {
+        let mut uf = vec![0.0; self.nf];
+        for (i, &j) in self.tolf.iter().enumerate() {
+            uf[j] = x[i];
+        }
+        uf
+    }
+}
+
+impl crate::algebraic::FrozenEval for PlannedFrozen {
+    fn values(&self, x: &[f64], p: &[f64], t: f64) -> Result<Vec<Vec<f64>>, String> {
+        let uf = self.state(x);
+        self.resid.eval(&uf, p, t, |du| {
+            self.fslots
+                .iter()
+                .map(|s| s.iter().map(|&k| du[k]).collect())
+                .collect()
+        })
+    }
+
+    fn has_jacobian(&self) -> bool {
+        self.jac.is_some()
+    }
+
+    fn jacobian(&self, x: &[f64], nz: usize, p: &[f64], t: f64) -> Result<Vec<f64>, String> {
+        let jac = self.jac.as_ref().ok_or("no frozen Jacobian document")?;
+        let mut uf = self.state(x);
+        for (ds, v) in self.fdofs.iter().zip(self.values(x, p, t)?) {
+            for (&d, y) in ds.iter().zip(v) {
+                uf[d] = y;
+            }
+        }
+        jac.eval(&uf, p, t, |du| {
+            let mut a = vec![0.0; nz * nz];
+            for &(s, r, c) in &self.points {
+                a[c * nz + r] += du[s];
+            }
+            a
+        })
+    }
 }
 
 /// One operator from its plan entry and documents (§8.2, §8.3). `ncells` is

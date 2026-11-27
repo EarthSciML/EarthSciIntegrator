@@ -32,6 +32,10 @@ pub struct Operator {
     pub residuals: Vec<crate::algebraic::Residual>,
     /// Once its solving node is paired (§5.9.5), each residual's unknown.
     pub pairing: Vec<String>,
+    /// The observeds its solving node names (picard freeze, then
+    /// rel_change; spec/plan.md §6.5) and whether that node is a picard solve.
+    pub frozen: Vec<String>,
+    pub picard: bool,
 }
 
 impl Operator {
@@ -294,6 +298,8 @@ pub fn select(
                 },
                 residuals: rs,
                 pairing: vec![],
+                frozen: vec![],
+                picard: false,
             },
         );
     }
@@ -320,6 +326,8 @@ pub fn select(
                 },
                 residuals: vec![],
                 pairing: vec![],
+                frozen: vec![],
+                picard: false,
             },
         );
     }

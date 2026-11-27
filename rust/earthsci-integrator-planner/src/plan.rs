@@ -45,11 +45,15 @@ pub struct Documents {
     /// The first document's kind: `rhs`, or `residual` for an algebraic
     /// operator (§6.4).
     pub rhs_kind: &'static str,
+    /// An algebraic operator's frozen documents (§6.5): (kind, bytes).
+    pub extra: Vec<(&'static str, Vec<u8>)>,
 }
 
 /// Everything the planner computes for a run config.
 #[derive(Debug, Clone)]
 pub struct Planned {
+    /// A picard operator's frozen Jacobian band list (§6.5), by operator.
+    pub frozen_bands: BTreeMap<String, Vec<Value>>,
     pub run_config: RunConfig,
     pub model: ModelInfo,
     pub axes: Axes,
@@ -432,13 +436,19 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             unknowns: crate::algebraic::node_unknowns(n, &ops, &info),
         };
         let pairing = crate::algebraic::pair_node(&info, &sn)?;
+        let (frozen, picard) = crate::algebraic::node_frozen(n);
         let mut i = 0;
         for o in &names {
             let k = ops[o].residuals.len();
-            ops.get_mut(o).expect("named").pairing = pairing[i..i + k].to_vec();
+            let op = ops.get_mut(o).expect("named");
+            op.pairing = pairing[i..i + k].to_vec();
+            op.frozen = frozen.clone();
+            op.picard = picard;
             i += k;
         }
     }
+    let mut frozen_docs: BTreeMap<String, Vec<(&'static str, Vec<u8>)>> = BTreeMap::new();
+    let mut frozen_bands: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     let algebraic_names: Vec<String> = ops
         .values()
         .filter(|o| o.is_algebraic())
@@ -490,6 +500,66 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             &state_dependent,
         )?;
         jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
+        // §6.5: the frozen documents.
+        let op = &ops[name];
+        if !op.frozen.is_empty() {
+            let mut extra = Vec::new();
+            let mut refs = BTreeSet::new();
+            for (k, o) in op.frozen.iter().enumerate() {
+                extra.push((
+                    crate::algebraic::frozen_state(k + 1),
+                    crate::algebraic::frozen_declaration(&info, o),
+                    crate::algebraic::frozen_rhs(&info, o),
+                ));
+                refs.insert(o.clone());
+            }
+            let mut docs = vec![(
+                "frozen_residual",
+                derived::to_bytes(&derived::frozen_residual_document(
+                    &info, name, &extra, &refs,
+                )),
+            )];
+            if op.picard {
+                let mut fdoc = doc.clone();
+                let ren: BTreeMap<String, String> = op
+                    .frozen
+                    .iter()
+                    .enumerate()
+                    .map(|(k, o)| (o.clone(), crate::algebraic::frozen_state(k + 1)))
+                    .collect();
+                crate::algebraic::rename_refs(&mut fdoc["models"], &ren);
+                let models = fdoc["models"].as_object_mut().expect("models");
+                let jm = models
+                    .entry(derived::FROZEN_COMPONENT.to_string())
+                    .or_insert_with(|| json!({"variables": {}, "equations": []}));
+                for (k, o) in op.frozen.iter().enumerate() {
+                    let x = crate::algebraic::frozen_state(k + 1);
+                    let local = x
+                        .rsplit_once('.')
+                        .map_or(x.as_str(), |(_, v)| v)
+                        .to_string();
+                    jm["variables"][local] = crate::algebraic::frozen_declaration(&info, o);
+                    jm["equations"].as_array_mut().expect("equations").push(
+                        json!({"lhs": {"op": "D", "args": [x], "wrt": "t"}, "rhs": crate::algebraic::frozen_zero(&info, o)}),
+                    );
+                }
+                let fview = astdiff::FlatView::of_document(fdoc).map_err(band_model_failed)?;
+                let fsv = fview
+                    .sysview()
+                    .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+                let fbands = astdiff::bands(&fsv)
+                    .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+                frozen_bands.insert(
+                    name.clone(),
+                    fbands.iter().map(structure::band_json).collect::<Vec<_>>(),
+                );
+                docs.push((
+                    "frozen_jacobian",
+                    derived::to_bytes(&derived::jacobian_document(&fsv, &fbands)?),
+                ));
+            }
+            frozen_docs.insert(name.clone(), docs);
+        }
         rhs_docs.insert(name.clone(), doc);
         structures.insert(name.clone(), st);
     }
@@ -633,6 +703,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let inputs = settings::inputs(&rc, &info);
 
     let mut planned = Planned {
+        frozen_bands: std::mem::take(&mut frozen_bands),
         run_config: rc,
         model: info.clone(),
         axes,
@@ -671,6 +742,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 } else {
                     "rhs"
                 },
+                extra: frozen_docs.remove(name).unwrap_or_default(),
             },
         );
     }
@@ -871,6 +943,9 @@ impl Planned {
                 out.insert("bounds".into(), b);
             }
             out.insert("structure".into(), self.structures[name].to_json());
+            if let Some(fb) = self.frozen_bands.get(name) {
+                out.insert("frozen_bands".into(), Value::Array(fb.clone()));
+            }
             return Value::Object(out);
         }
         out.insert("kind".into(), json!("rhs"));
@@ -1140,7 +1215,10 @@ impl Planned {
     pub fn derived_json(&self) -> Value {
         let mut out = Map::new();
         for (op, d) in &self.documents {
-            for (kind, bytes) in [(d.rhs_kind, &d.rhs), ("jacobian", &d.jacobian)] {
+            let mut docs: Vec<(&str, &Vec<u8>)> =
+                vec![(d.rhs_kind, &d.rhs), ("jacobian", &d.jacobian)];
+            docs.extend(d.extra.iter().map(|(k, b)| (*k, b)));
+            for (kind, bytes) in docs {
                 out.insert(
                     Self::derived_path(op, kind),
                     json!({"kind": kind, "operator": op, "sha256": settings::sha256_hex(bytes)}),
@@ -1203,7 +1281,10 @@ impl Planned {
         std::fs::create_dir_all(dir.join("derived")).map_err(io)?;
         std::fs::write(dir.join("plan.json"), self.plan_bytes()?).map_err(io)?;
         for (op, d) in &self.documents {
-            for (kind, bytes) in [(d.rhs_kind, &d.rhs), ("jacobian", &d.jacobian)] {
+            let mut docs: Vec<(&str, &Vec<u8>)> =
+                vec![(d.rhs_kind, &d.rhs), ("jacobian", &d.jacobian)];
+            docs.extend(d.extra.iter().map(|(k, b)| (*k, b)));
+            for (kind, bytes) in docs {
                 std::fs::write(dir.join(Self::derived_path(op, kind)), bytes).map_err(io)?;
             }
         }

@@ -178,10 +178,16 @@ mutable struct PlanOperator
     kind::Symbol
     residuals::Vector{Any}
     pairing::Vector{String}
+    # The observeds its solving node names (picard freeze, then rel_change;
+    # spec/plan.md §6.5) and whether that node is a picard solve.
+    frozen::Vector{String}
+    picard::Bool
 end
 
 PlanOperator(name, terms, bind_dt, pointer, locality, radius, writes, reads, structure) =
-    PlanOperator(name, terms, bind_dt, pointer, locality, radius, writes, reads, structure, :rhs, Any[], String[])
+    PlanOperator(name, terms, bind_dt, pointer, locality, radius, writes, reads, structure, :rhs, Any[], String[], String[], false)
+PlanOperator(name, terms, bind_dt, pointer, locality, radius, writes, reads, structure, kind, residuals, pairing) =
+    PlanOperator(name, terms, bind_dt, pointer, locality, radius, writes, reads, structure, kind, residuals, pairing, String[], false)
 
 is_algebraic(op::PlanOperator) = op.kind === :algebraic
 

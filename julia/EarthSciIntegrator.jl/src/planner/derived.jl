@@ -124,6 +124,9 @@ clash with them.
 """
 const PROBE_COMPONENT = "JacobianEval"
 
+"""The model of the frozen documents' frozen states (spec/plan.md §6.5), reserved as `JacobianEval` is (§6.1.4)."""
+const FROZEN_COMPONENT = "FrozenEval"
+
 """The probe document's new state for the `k`-th term (§5.2.2)."""
 probe_state(k::Integer) = "$PROBE_COMPONENT.term_$k"
 
@@ -204,8 +207,8 @@ function _rhs_document(
     end
     # §5.9.4: the residual probe's states.
     if !isempty(extra)
-        v = component_model!(models, PROBE_COMPONENT)
         for (x, decl, rhs) in extra
+            v = component_model!(models, component_of(x))
             v["variables"][last_segment(x)] = decl
             push!(v["equations"], Dict{String, Any}("lhs" => Dict{String, Any}("op" => "D", "args" => Any[x], "wrt" => "t"), "rhs" => rhs))
         end

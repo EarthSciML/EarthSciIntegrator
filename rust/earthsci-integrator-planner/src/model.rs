@@ -537,11 +537,14 @@ pub fn read(rc: &RunConfig) -> Result<ModelInfo> {
         .iter()
         .flat_map(|m| m.keys())
         .chain(file.reaction_systems.iter().flat_map(|r| r.keys()));
-    if top_level.into_iter().any(|k| k == JACOBIAN_MODEL) {
-        return scope(
-            codes::RESERVED_COMPONENT_NAME,
-            format!("the model has a top-level component named {JACOBIAN_MODEL}, which the Jacobian document reserves"),
-        );
+    let top_level: Vec<&String> = top_level.collect();
+    for n in [JACOBIAN_MODEL, crate::derived::FROZEN_COMPONENT] {
+        if top_level.iter().any(|k| k.as_str() == n) {
+            return scope(
+                codes::RESERVED_COMPONENT_NAME,
+                format!("the model has a top-level component named {n}, which the derived documents reserve"),
+            );
+        }
     }
 
     let mut states = BTreeSet::new();

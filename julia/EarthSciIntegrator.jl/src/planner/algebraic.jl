@@ -610,12 +610,18 @@ function check_algebraic_schedule(ctx, nodes)
         )
     end
     for n in nodes, (meth, key) in node_methods(n)
+        rd = Set{String}(z for o in node_algebraic_ops(ctx, n) for r in ops[o].residuals for z in r.reads)
+        function frozen_name(o, at, what)
+            need_kind(m, o, :observed, at, what)
+            String(o) in rd || refuse("name_wrong_kind", at, "$what $o is not read by the residuals of node $(n.id) (spec/plan.md §6.5)")
+        end
         if haskey(meth, "picard")
             for (i, o) in enumerate(meth["picard"]["freeze"])
-                need_kind(m, o, :observed, nptr(n, key, "picard", "freeze", i - 1), "frozen observed")
+                frozen_name(o, nptr(n, key, "picard", "freeze", i - 1), "frozen observed")
             end
         end
         conv = get(meth, "converged", Dict{String, Any}())
+        # A rel_change observed need only be an observed (§6.5).
         haskey(conv, "rel_change") && need_kind(m, conv["rel_change"], :observed, nptr(n, key, "converged", "rel_change"), "rel_change observed")
     end
     for n in nodes
@@ -687,11 +693,13 @@ function algebraic_structure!(ctx, root)
         names = node_algebraic_ops(ctx, n)
         sn = SolvingNode(n, names, Residual[r for o in names for r in ctx.ops[o].residuals], node_unknowns(ctx, n), String[])
         pair_node!(b, ctx, sn)
+        frozen, picard = node_frozen(n)
         i = 0
         for o in names
             op = ctx.ops[o]
             op.pairing = sn.pairing[(i + 1):(i + length(op.residuals))]
             i += length(op.residuals)
+            op.frozen, op.picard = frozen, picard
         end
         push!(nodes, sn)
     end
@@ -805,3 +813,85 @@ const DEFAULT_INITIALIZE = Dict{String, Any}(
     "newton" => Dict{String, Any}(), "linesearch" => "backtracking",
     "converged" => Dict{String, Any}("residual" => 1.0e-10), "maxiter" => 100
 )
+
+# ---------------------------------------------------------------------------
+# The frozen documents (spec/plan.md §6.5, D124)
+
+"""The observeds a solving node names (picard freeze in written order, then a rel_change observed not among them) and whether it is a picard solve."""
+function node_frozen(n)
+    meth = n.kind == "solve" ? n.spec["method"] : get(n.spec, "initialize", nothing)
+    meth === nothing && return String[], false
+    out = String[]
+    picard = haskey(meth, "picard")
+    picard && append!(out, String.(meth["picard"]["freeze"]))
+    rc = get(get(meth, "converged", Dict{String, Any}()), "rel_change", nothing)
+    rc === nothing || String(rc) in out || push!(out, String(rc))
+    return out, picard
+end
+
+frozen_state(k::Integer) = "$FROZEN_COMPONENT.frozen_$k"
+
+"""The declaration of a frozen state for observed `o` (§6.5): its shape, `default` 0.0."""
+function frozen_declaration(m::PlanModel, o)
+    d = Dict{String, Any}("type" => "unknown", "default" => 0.0)
+    haskey(m.shapes, o) && (d["shape"] = Any[m.shapes[o]...])
+    return d
+end
+
+"""`D(frozen_k) = O_k`, an array observed read cell by cell (§6.5)."""
+function frozen_rhs(m::PlanModel, o)
+    haskey(m.shapes, o) || return o
+    shape = m.shapes[o]
+    names = cell_names(length(shape))
+    return Dict{String, Any}(
+        "op" => "faq", "args" => Any[], "output_idx" => Any[names...],
+        "ranges" => Dict{String, Any}(names[d] => Dict{String, Any}("from" => shape[d]) for d in eachindex(names)),
+        "expr" => Dict{String, Any}("op" => "index", "args" => Any[o, names...])
+    )
+end
+
+"""Rename every reference to the names of `ren` in the right-hand sides and operator bindings of a document's equations."""
+function _rename_refs!(models::AbstractDict, ren::Dict{String, String})
+    rn(x) = x isa AbstractString ? get(ren, x, x) : x isa AbstractVector ? Any[rn(v) for v in x] :
+        x isa AbstractDict ? Dict{String, Any}(k => (k in ("op", "ranges", "output_idx", "units") ? v : rn(v)) for (k, v) in x) : x
+    for (_, node) in models
+        for eq in get(node, "equations", Any[])
+            eq["rhs"] = rn(eq["rhs"])
+        end
+        haskey(node, "subsystems") && _rename_refs!(node["subsystems"], ren)
+    end
+    return models
+end
+
+"""
+    frozen_documents!(b, ctx, op) -> Vector{(kind, DerivedDocument)}
+
+An algebraic operator's frozen documents (§6.5): the frozen residual
+document when its solving node names observeds, and the frozen Jacobian
+document when that node is a picard solve; its band list is kept for the
+plan entry's `frozen_bands`.
+"""
+function frozen_documents!(b, ctx, op)
+    isempty(op.frozen) && return Any[]
+    haskey(b.frozen, op.name) && return b.frozen[op.name]
+    m = ctx.model
+    extra = Any[(frozen_state(k), frozen_declaration(m, o), frozen_rhs(m, o)) for (k, o) in enumerate(op.frozen)]
+    fr = DerivedDocument(_rhs_document(m, op.name, Term[], false; extra, extra_refs = op.frozen))
+    docs = Any[("frozen_residual", fr)]
+    if op.picard
+        doc = residual_document(m, op.name, op)
+        ren = Dict{String, String}(o => frozen_state(k) for (k, o) in enumerate(op.frozen))
+        _rename_refs!(doc["models"], ren)
+        v = component_model!(doc["models"], FROZEN_COMPONENT)
+        for (k, o) in enumerate(op.frozen)
+            x = frozen_state(k)
+            v["variables"][last_segment(x)] = frozen_declaration(m, o)
+            push!(v["equations"], Dict{String, Any}("lhs" => Dict{String, Any}("op" => "D", "args" => Any[x], "wrt" => "t"), "rhs" => zero_rhs(m, o)))
+        end
+        src = DerivedDocument(doc)
+        entries = document_bands(src.flat, "the frozen Jacobian of operator $(op.name)")
+        b.frozen_bands[op.name] = Dict{String, Any}[band_json(en) for en in entries]
+        push!(docs, ("frozen_jacobian", DerivedDocument(jacobian_document(src.flat, entries; data_sources = src.file.data_sources))))
+    end
+    return b.frozen[op.name] = docs
+end

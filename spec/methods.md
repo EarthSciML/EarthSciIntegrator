@@ -436,7 +436,7 @@ A `solve` node (spec/run-config.md §4.10) finds its unknowns $z$, in the plan's
 
 ### 15.2 Start and convergence
 
-The starting iterate is the current $z$ under `warm_start: previous`, the plan's $u_0$ entries of $z$ under `initial`, projected onto the box: $z_j \leftarrow \min(\max(z_j, l_j), u_j)$. The **residual norm** is $\lVert R(z) \rVert_\infty$, unscaled, over every DOF of $z$; `converged.residual` $\epsilon$ is met when it is $\le \epsilon$. `converged.rel_change` on observed $O$ is met when $\lVert O_k - O_{k-1} \rVert_2 \le \mathrm{tol}\, \lVert O_k \rVert_2$, the norms over $O$'s elements in column-major order (unbounded nodes only, rule 18). The test is made on the starting iterate first, so a converged warm start takes no iteration. A non-finite residual norm is a failure of the attempt (§15.7).
+The starting iterate is the current $z$ under `warm_start: previous`, the plan's $u_0$ entries of $z$ under `initial`, projected onto the box: $z_j \leftarrow \min(\max(z_j, l_j), u_j)$. The **residual norm** is $\lVert R(z) \rVert_\infty$, unscaled, over every DOF of $z$; `converged.residual` $\epsilon$ is met when it is $\le \epsilon$. `converged.rel_change` on observed $O$ is met when $\lVert O_k - O_{k-1} \rVert_2 \le \mathrm{tol}\, \lVert O_k \rVert_2$, the norms over $O$'s elements in column-major order (unbounded nodes only, rule 18), $O_k$ its value at iterate $k$. A `converged` with both keys is met when both are; with `rel_change` alone, the residual norm is not tested. The test is made on the starting iterate first, so a converged warm start takes no iteration; `rel_change` compares an iterate with the one before it, so the starting iterate never meets it. A non-finite residual norm is a failure of the attempt (§15.7).
 
 ### 15.3 `newton`
 
@@ -448,7 +448,7 @@ Pseudo-time steps of the flow $dz/d\tau = G(z)$ (D95): $(\delta_k^{-1} I - G_z)\
 
 ### 15.5 `picard`
 
-As §15.3, with $G_z$ replaced by the Jacobian of the residual with `picard.freeze`'s observeds held constant (the `frozen_jacobian` document, spec/plan.md §1), and $\alpha = 1$ unless `linesearch` is `backtracking`.
+As §15.3, with $G_z$ replaced by the Jacobian of the residual with `picard.freeze`'s observeds held constant at their values at the iterate: the frozen residual document gives the values, which set the frozen states of the frozen Jacobian document, whose bands give the Jacobian (spec/plan.md §6.5). $\alpha = 1$ unless `linesearch` is `backtracking`. `converged.rel_change` reads its observed from the frozen residual document at each iterate (§15.2).
 
 ### 15.6 Options not specified in v1
 

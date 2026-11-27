@@ -8,13 +8,67 @@
 What the runtime knows of an algebraic operator beyond its documents: its
 unknowns' DOFs (canonical order) and, per DOF, its lower and upper bound
 sources (spec/plan.md §5.9.7): `(:const, v)` or `(:param, i)` (index into the
-parameter vector), `nothing` for an unbounded side.
+parameter vector), `nothing` for an unbounded side; and its frozen
+documents (`FrozenDocs`), when the plan has them.
 """
 struct AlgebraicInfo
     dofs::Vector{Int}
     names::Vector{String}            # the unknown variable of each DOF
     lower::Vector{Any}
     upper::Vector{Any}
+    frozen::Any                      # FrozenDocs or nothing
+end
+AlgebraicInfo(dofs, names, lower, upper) = AlgebraicInfo(dofs, names, lower, upper, nothing)
+
+"""
+    FrozenDocs
+
+An algebraic operator's frozen documents (spec/plan.md §6.5): the frozen
+residual document `resid` and, for a `picard` node, the frozen Jacobian
+document `jac` (else `nothing`), both bound to their own layout of `nf`
+DOFs, the model's states and the frozen states `FrozenEval.frozen_m`. `tolf`
+maps each model DOF to its DOF there, `fdofs[m]` lists the DOFs of
+`FrozenEval.frozen_m`, and `points` the frozen Jacobian's band points whose
+row and column are unknowns, as `(slot, row, col)`: the slot of the band
+field in `jac`'s output, and the positions of the row and column among the
+operator's unknowns.
+"""
+struct FrozenDocs
+    resid::Any
+    jac::Any
+    nf::Int
+    tolf::Vector{Int}
+    fdofs::Vector{Vector{Int}}
+    points::Vector{NTuple{3, Int}}
+end
+
+"""The frozen layout's state at the model state `x`, its frozen states zero."""
+function frozen_state_vector(F::FrozenDocs, x)
+    uf = zeros(F.nf)
+    uf[F.tolf] = x
+    return uf
+end
+
+"""The values of the frozen observeds `O_m` at the model state `x` (spec/plan.md §6.5), each column-major."""
+function frozen_values(F::FrozenDocs, x, p, t)
+    return evaluate(F.resid, frozen_state_vector(F, x), p, t) do du
+        [Float64[du[F.resid.perm[k]] for k in ds] for ds in F.fdofs]
+    end
+end
+
+"""The Jacobian over the unknowns with the frozen observeds held at their values at `x` (spec/methods.md §15.5), dense."""
+function frozen_jacobian(F::FrozenDocs, x, nz, p, t)
+    uf = frozen_state_vector(F, x)
+    for (ds, v) in zip(F.fdofs, frozen_values(F, x, p, t))
+        uf[ds] = v
+    end
+    A = zeros(nz, nz)
+    evaluate(F.jac, uf, p, t) do du
+        for (s, r, c) in F.points
+            A[r, c] += du[s]
+        end
+    end
+    return A
 end
 
 """The bounds of `info` at the parameter vector `p`: `(l, u)` with `-Inf`/`Inf` for an unbounded side."""
@@ -96,8 +150,9 @@ struct SolveMethod
     dt0::Float64
     growth::Float64
     linesearch::Symbol
-    tol::Float64
-    relchange::Union{Nothing, String}
+    tol::Float64                     # converged.residual; Inf when only rel_change is given
+    relchange::Int                   # the rel_change observed's m among the frozen observeds (spec/plan.md §6.5); 0 for none
+    rctol::Float64
     maxiter::Int
     recover::Vector{Any}
     pivot::Bool
@@ -105,16 +160,23 @@ end
 
 function SolveMethod(m::AbstractDict, id)
     kind = haskey(m, "ptc") ? :ptc : haskey(m, "picard") ? :picard : :newton
-    kind === :picard && throw(UnsupportedError("solve node $id: picard needs the frozen Jacobian document (spec/plan.md §6.5), which the planner does not emit yet"))
     conv = get(m, "converged", Dict{String, Any}("residual" => 1.0e-10))
-    haskey(conv, "rel_change") && throw(UnsupportedError("solve node $id: converged.rel_change needs an observed's value, which the runtime does not evaluate yet"))
+    # The frozen observeds, in the frozen documents' order (spec/plan.md §6.5):
+    # picard's freeze list, then the rel_change observed if not among them.
+    frozen = kind === :picard ? String.(m["picard"]["freeze"]) : String[]
+    rc = 0
+    if haskey(conv, "rel_change")
+        o = String(conv["rel_change"])
+        o in frozen || push!(frozen, o)
+        rc = findfirst(==(o), frozen)
+    end
     ls = get(m, "linsolve", Dict{String, Any}("dense_lu" => Dict{String, Any}()))
     pivot = ls isa AbstractDict && haskey(ls, "block_lu") ? Bool(get(ls["block_lu"], "pivot", true)) : true
     p = get(m, "ptc", Dict{String, Any}())
     return SolveMethod(
         kind, Float64(get(p, "dt0", 1.0e-3)), Float64(get(p, "growth", 2.0)),
-        Symbol(get(m, "linesearch", "none")), Float64(conv["residual"]), nothing,
-        Int(get(m, "maxiter", 100)), collect(Any, get(m, "recover", Any[])), pivot
+        Symbol(get(m, "linesearch", "none")), Float64(get(conv, "residual", Inf)), rc,
+        Float64(get(conv, "tol", 0.0)), Int(get(m, "maxiter", 100)), collect(Any, get(m, "recover", Any[])), pivot
     )
 end
 
@@ -162,18 +224,48 @@ function _linsolve(A::Matrix{Float64}, b::Vector{Float64}, pivot::Bool)
     return lu_solve(F, b)
 end
 
-"""One attempt of a solve from `z0` (§15.2–§15.5); `ω` the under-relaxation, `p` the parameters (possibly scaled)."""
-function solve_attempt(ops, dofs, u, z0, p, t, m::SolveMethod, l, h, ω)
+"""The model state `u` with the unknowns `dofs` set to `z`."""
+function _with_z(u, dofs, z)
+    x = Float64.(u)
+    x[dofs] = z
+    return x
+end
+
+"""The frozen documents of `info`, which a picard method or `converged.rel_change` needs (spec/plan.md §6.5)."""
+function _frozen(info::AlgebraicInfo, m::SolveMethod)
+    (m.kind === :picard || m.relchange > 0) || return nothing
+    F = info.frozen
+    F === nothing && throw(ConfigError("solve: a picard method or converged.rel_change needs the operator's frozen documents (spec/plan.md §6.5), which the plan does not have"))
+    m.kind === :picard && F.jac === nothing &&
+        throw(ConfigError("solve: a picard method needs the operator's frozen Jacobian document (spec/plan.md §6.5), which the plan does not have"))
+    return F
+end
+
+"""`converged.rel_change` (§15.2): `‖O_k − O_{k-1}‖₂ ≤ tol ‖O_k‖₂`."""
+_rel_met(o, oprev, tol) = sqrt(sum(abs2, o .- oprev)) <= tol * sqrt(sum(abs2, o))
+
+"""
+One attempt of a solve from `z0` (§15.2–§15.5); `ω` the under-relaxation,
+`p` the parameters (possibly scaled). With `converged.rel_change` the
+attempt converges when every criterion given is met; the change is measured
+from the previous iterate, so the starting iterate cannot meet it.
+"""
+function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l, h, ω)
+    dofs = info.dofs
+    F = _frozen(info, m)
     G(z) = residual_at(ops, dofs, u, z, p, t)
+    O(z) = frozen_values(F, _with_z(u, dofs, z), p, t)[m.relchange]
     z = _proj(z0, l, h)
     g = G(z)
     r = _R(z, g, l, h)
     n = _ninf(r)
     isfinite(n) || return z, false, 0
-    n <= m.tol && return z, true, 0
+    m.relchange == 0 && n <= m.tol && return z, true, 0
+    o = m.relchange == 0 ? nothing : O(z)
     δ = m.dt0
     for k in 1:m.maxiter
-        A = residual_jacobian(ops, dofs, u, z, p, t)
+        A = m.kind === :picard ? frozen_jacobian(F, _with_z(u, dofs, z), length(z), p, t) :
+            residual_jacobian(ops, dofs, u, z, p, t)
         if m.kind === :ptc
             M = -A
             b = copy(g)
@@ -228,7 +320,14 @@ function solve_attempt(ops, dofs, u, z0, p, t, m::SolveMethod, l, h, ω)
             n = _ninf(r)
             isfinite(n) || return z, false, k
         end
-        n <= m.tol && return z, true, k
+        if m.relchange == 0
+            n <= m.tol && return z, true, k
+        else
+            onew = O(z)
+            met = n <= m.tol && _rel_met(onew, o, m.rctol)
+            o = onew
+            met && return z, true, k
+        end
     end
     return z, false, m.maxiter
 end
@@ -247,14 +346,14 @@ function run_solve(ops, info::AlgebraicInfo, u, p, t, m::SolveMethod, warm, init
         ConfigError("solve: the lower bound of $(info.names[findfirst(i -> l[i] > h[i], eachindex(l))]) exceeds its upper bound")
     )
     actions = String[]
-    z, ok, it = solve_attempt(ops, info.dofs, u, warm, p, t, m, l, h, 1.0)
+    z, ok, it = solve_attempt(ops, info, u, warm, p, t, m, l, h, 1.0)
     pp = copy(p)
     scaled = Dict{Int, Int}()
     for a in m.recover
         ok && break
         if haskey(a, "underrelax")
             push!(actions, "underrelax")
-            z, ok, it = solve_attempt(ops, info.dofs, u, warm, pp, t, m, l, h, Float64(a["underrelax"]))
+            z, ok, it = solve_attempt(ops, info, u, warm, pp, t, m, l, h, Float64(a["underrelax"]))
         elseif haskey(a, "scale_param")
             i = findfirst(==(String(a["scale_param"])), pnames)
             i === nothing && throw(ConfigError("solve: recover scale_param $(a["scale_param"]) is not a scalar parameter"))
@@ -262,17 +361,17 @@ function run_solve(ops, info::AlgebraicInfo, u, p, t, m::SolveMethod, warm, init
                 ok && break
                 pp[i] *= Float64(a["by"])
                 push!(actions, "scale_param")
-                z, ok, it = solve_attempt(ops, info.dofs, u, warm, pp, t, m, l, h, 1.0)
+                z, ok, it = solve_attempt(ops, info, u, warm, pp, t, m, l, h, 1.0)
             end
         elseif haskey(a, "revert_warm_start") || a == "revert_warm_start"
             push!(actions, "revert_warm_start")
-            z, ok, it = solve_attempt(ops, info.dofs, u, initial, pp, t, m, l, h, 1.0)
+            z, ok, it = solve_attempt(ops, info, u, initial, pp, t, m, l, h, 1.0)
         end
     end
     lower, upper, degenerate = Int[], Int[], Int[]
     if ok
         g = residual_at(ops, info.dofs, u, z, pp, t)
-        ε = m.tol
+        ε = isfinite(m.tol) ? m.tol : 0.0
         for i in eachindex(z)
             (isfinite(l[i]) || isfinite(h[i])) || continue
             atl = isfinite(l[i]) && (z[i] + g[i] <= l[i] || (z[i] - l[i] <= ε && abs(g[i]) <= ε))
@@ -420,7 +519,9 @@ function dae_info(spec::AbstractDict, prob::ToyProblem, id, names, leafstate)
     znames = reduce(vcat, (i.names for i in infos))
     any(i -> any(!isnothing, i.lower) || any(!isnothing, i.upper), infos) &&
         throw(ConfigError("coupled node $id: a bounded unknown in a DAE is not specified (unsupported_dae_bounds)"))
-    info = AlgebraicInfo(dofs, znames, Any[nothing for _ in dofs], Any[nothing for _ in dofs])
+    # One algebraic operator's frozen documents serve a picard or rel_change
+    # initialization (spec/plan.md §6.5).
+    info = AlgebraicInfo(dofs, znames, Any[nothing for _ in dofs], Any[nothing for _ in dofs], length(infos) == 1 ? only(infos).frozen : nothing)
     model_dofs = leafstate === nothing ? collect(1:prob.N) : leafstate.dofs
     zset = Set(dofs)
     mass = BitVector([d in zset for d in model_dofs])

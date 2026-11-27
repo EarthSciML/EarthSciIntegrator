@@ -382,6 +382,10 @@ pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
 /// clash with them.
 pub const PROBE_COMPONENT: &str = JACOBIAN_MODEL;
 
+/// The model of the frozen documents' frozen states (spec/plan.md §6.5),
+/// reserved as `JacobianEval` is (§6.1.4).
+pub const FROZEN_COMPONENT: &str = "FrozenEval";
+
 /// The probe document's new state for the term at position `k` (0-based)
 /// of the slice passed to [`probe_document`]: `JacobianEval.term_<k+1>`.
 pub fn probe_state(k: usize) -> String {
@@ -590,6 +594,17 @@ pub fn residual_document(
         refs.extend(r.refs.iter().cloned());
     }
     Ok(solved_document(info, name, &zrhs, &[], &refs))
+}
+
+/// §6.5: the frozen residual document of operator `name`, with the frozen
+/// states `extra`, keeping the observeds `refs` reach.
+pub fn frozen_residual_document(
+    info: &ModelInfo,
+    name: &str,
+    extra: &[(String, Value, Value)],
+    refs: &BTreeSet<String>,
+) -> Value {
+    solved_document(info, name, &BTreeMap::new(), extra, refs)
 }
 
 /// §5.9.4: the residual probe with the states `extra`.

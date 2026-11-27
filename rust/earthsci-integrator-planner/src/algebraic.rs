@@ -613,6 +613,28 @@ pub fn check_schedule(
         }
     }
     for n in &nodes {
+        // The names the node's residuals read: a frozen observed must be
+        // among them; a rel_change observed need only be an observed
+        // (spec/plan.md §6.5).
+        let rd: BTreeSet<&String> = node_algebraic_ops(n, ops)
+            .iter()
+            .filter_map(|o| ops.get(o))
+            .flat_map(|op| op.residuals.iter().flat_map(|r| r.reads.iter()))
+            .collect();
+        let frozen_name = |o: &str, at: String, what: &str| -> Result<()> {
+            need_observed(info, o, at.clone(), what)?;
+            if !rd.contains(&o.to_string()) {
+                return Err(refuse(
+                    codes::NAME_WRONG_KIND,
+                    at,
+                    format!(
+                        "{what} {o} is not read by the residuals of node {} (spec/plan.md §6.5)",
+                        n.id()
+                    ),
+                ));
+            }
+            Ok(())
+        };
         for (meth, key) in node_methods(n) {
             if let Some(fr) = meth
                 .get("picard")
@@ -621,7 +643,7 @@ pub fn check_schedule(
             {
                 for (i, o) in fr.iter().enumerate() {
                     let at = ptr(&ptr(&ptr(&n.key_ptr(key), "picard"), "freeze"), i);
-                    need_observed(info, o.as_str().unwrap_or_default(), at, "frozen observed")?;
+                    frozen_name(o.as_str().unwrap_or_default(), at, "frozen observed")?;
                 }
             }
             if let Some(o) = meth
@@ -1161,4 +1183,127 @@ pub fn bounds_json(info: &ModelInfo, op: &Operator) -> Option<Value> {
         }
     }
     (!out.is_empty()).then_some(Value::Object(out))
+}
+
+// ---------------------------------------------------------------------------
+// The frozen documents (spec/plan.md §6.5, D124)
+
+/// The observeds a solving node names (picard freeze in written order, then
+/// a rel_change observed not among them) and whether it is a picard solve.
+pub fn node_frozen(n: &Node) -> (Vec<String>, bool) {
+    let meth = match &n.kind {
+        Kind::Solve => n.value.get("method"),
+        _ => n.value.get("initialize"),
+    };
+    let Some(meth) = meth else {
+        return (vec![], false);
+    };
+    let mut out: Vec<String> = Vec::new();
+    let picard = meth.get("picard").is_some();
+    if let Some(fr) = meth
+        .get("picard")
+        .and_then(|p| p.get("freeze"))
+        .and_then(Value::as_array)
+    {
+        out.extend(fr.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    if let Some(rc) = meth
+        .get("converged")
+        .and_then(|c| c.get("rel_change"))
+        .and_then(Value::as_str)
+    {
+        if !out.iter().any(|o| o == rc) {
+            out.push(rc.to_string());
+        }
+    }
+    (out, picard)
+}
+
+/// The probe component's frozen state for the k-th observed (1-based).
+pub fn frozen_state(k: usize) -> String {
+    format!("{}.frozen_{k}", crate::derived::FROZEN_COMPONENT)
+}
+
+/// The shape of observed `o` (empty when it has none).
+fn observed_shape(info: &ModelInfo, o: &str) -> Vec<String> {
+    info.flat
+        .observed_variables
+        .get(o)
+        .and_then(|v| v.shape.clone())
+        .unwrap_or_default()
+}
+
+/// A frozen state's declaration (§6.5): the observed's shape, `default` 0.0.
+pub fn frozen_declaration(info: &ModelInfo, o: &str) -> Value {
+    let mut d = Map::new();
+    d.insert("type".into(), json!("unknown"));
+    d.insert("default".into(), json!(0.0));
+    let shape = observed_shape(info, o);
+    if !shape.is_empty() {
+        d.insert("shape".into(), json!(shape));
+    }
+    Value::Object(d)
+}
+
+/// `D(frozen_k) = O_k`, an array observed read cell by cell (§6.5).
+pub fn frozen_rhs(info: &ModelInfo, o: &str) -> Value {
+    let shape = observed_shape(info, o);
+    if shape.is_empty() {
+        return json!(o);
+    }
+    let names = cell_names(shape.len());
+    let ranges: Map<String, Value> = names
+        .iter()
+        .zip(&shape)
+        .map(|(n, s)| (n.clone(), json!({"from": s})))
+        .collect();
+    let mut args = vec![json!(o)];
+    args.extend(names.iter().map(|x| json!(x)));
+    json!({"op": "faq", "args": [], "output_idx": names, "ranges": ranges, "expr": {"op": "index", "args": args}})
+}
+
+/// The zero right-hand side over observed `o`'s shape.
+pub fn frozen_zero(info: &ModelInfo, o: &str) -> Value {
+    let shape = observed_shape(info, o);
+    if shape.is_empty() {
+        return json!(0.0);
+    }
+    let region: Vec<Value> = shape
+        .iter()
+        .map(|s| json!([1, info.index_sets[s]]))
+        .collect();
+    json!({"op": "makearray", "args": [], "regions": [region], "values": [0.0]})
+}
+
+/// Rename every reference to the names of `ren` in the right-hand sides and
+/// operator bindings of a document's equations (`models`, recursively).
+pub fn rename_refs(models: &mut Value, ren: &BTreeMap<String, String>) {
+    fn rn(x: &Value, ren: &BTreeMap<String, String>) -> Value {
+        match x {
+            Value::String(s) => Value::String(ren.get(s).cloned().unwrap_or_else(|| s.clone())),
+            Value::Array(a) => Value::Array(a.iter().map(|v| rn(v, ren)).collect()),
+            Value::Object(m) => Value::Object(
+                m.iter()
+                    .map(|(k, v)| {
+                        let keep = matches!(k.as_str(), "op" | "ranges" | "output_idx" | "units");
+                        (k.clone(), if keep { v.clone() } else { rn(v, ren) })
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    if let Value::Object(top) = models {
+        for (_, node) in top.iter_mut() {
+            if let Some(Value::Array(eqs)) = node.get_mut("equations") {
+                for eq in eqs.iter_mut() {
+                    let r = rn(&eq["rhs"], ren);
+                    eq["rhs"] = r;
+                }
+            }
+            if let Some(subs) = node.get_mut("subsystems") {
+                rename_refs(subs, ren);
+            }
+        }
+    }
 }

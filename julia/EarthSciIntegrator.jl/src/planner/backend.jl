@@ -142,8 +142,15 @@ mutable struct DiffBackend <: PlanBackend
     forcing::Union{Nothing, Vector{Dict{String, Vector{Float64}}}}
     bandvalues::Dict{String, Any}
     report::Dict{String, Any}
+    # An algebraic operator's frozen documents (spec/plan.md §6.5), by
+    # operator: (kind, document) pairs, and the frozen Jacobian's bands.
+    frozen::Dict{String, Vector{Tuple{String, Any}}}
+    frozen_bands::Dict{String, Vector{Dict{String, Any}}}
 end
-DiffBackend() = DiffBackend(nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}())
+DiffBackend() = DiffBackend(
+    nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}(),
+    Dict{String, Vector{Tuple{String, Any}}}(), Dict{String, Vector{Dict{String, Any}}}()
+)
 
 """Bind `b` to the planning context `ctx`, dropping everything derived from another one."""
 function bind!(b::DiffBackend, ctx)
@@ -153,6 +160,8 @@ function bind!(b::DiffBackend, ctx)
     b.layout = b.u0 = b.samples = b.forcing = nothing
     empty!(b.bandvalues)
     empty!(b.report)
+    empty!(b.frozen)
+    empty!(b.frozen_bands)
     return b
 end
 
@@ -510,9 +519,28 @@ end
 # ---------------------------------------------------------------------------
 # Pass 4: structure (§5.4)
 
-"""`true` when no band coefficient references a state, or an observed whose definition references a state, transitively (§5.4)."""
+"""
+The observed a named intermediate of EarthSciASTDiff stands for
+(`<scope>._du_<observed>_<k>`, likewise `_dp_` and `_df_`; esm-jacobian-spec
+§4.6), else `n` itself.
+"""
+function intermediate_observed(n::AbstractString)
+    i = findlast('.', n)
+    scope, base = i === nothing ? ("", n) : (n[1:i], n[(i + 1):end])
+    (length(base) > 4 && base[1:4] in ("_du_", "_dp_", "_df_")) || return String(n)
+    rest = rstrip(base[5:end], '_')
+    j = findlast('_', rest)
+    (j === nothing || j == 1 || j == length(rest) || !all(isdigit, rest[(j + 1):end])) && return String(n)
+    return scope * rest[1:(j - 1)]
+end
+
+"""
+`true` when no band coefficient references a state, or an observed whose
+definition references a state, transitively (§5.4). A named intermediate
+counts as the observed it stands for.
+"""
 function linear_in_u(m::PlanModel, entries)
-    names = Set{String}(n for en in entries for n in EarthSciAST.free_variables(en.band.coef))
+    names = Set{String}(intermediate_observed(n) for en in entries for n in EarthSciAST.free_variables(en.band.coef))
     any(n -> is_state(m, n), names) && return false
     for o in live_observeds(m, names), r in get(m.observed_rhs, o, ASTExpr[])
         any(n -> is_state(m, n), EarthSciAST.free_variables(r)) && return false
@@ -664,7 +692,9 @@ function derived_and_validation(b::DiffBackend, ctx)
     derived = Dict{String, Any}()
     for o in names
         op = ctx.ops[o]
-        for (kind, d) in ((is_algebraic(op) ? "residual" : "rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op)))
+        docs = Any[(is_algebraic(op) ? "residual" : "rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op))]
+        is_algebraic(op) && append!(docs, frozen_documents!(b, ctx, op))
+        for (kind, d) in docs
             # SHA's `sha256(::String)` re-hashes the whole string for every
             # block (its copy's alias check takes the string's `objectid`), so a
             # document of megabytes takes minutes; a byte vector does not.
@@ -824,6 +854,9 @@ function derived_files(b::DiffBackend)
     for (o, a) in b.ops
         out["derived/$o.$(is_algebraic(b.ctx.ops[o]) ? "residual" : "rhs").esm"] = a.rhs.bytes
         a.jac === nothing || (out["derived/$o.jacobian.esm"] = a.jac.bytes)
+    end
+    for (o, docs) in b.frozen, (kind, d) in docs
+        out["derived/$o.$kind.esm"] = d.bytes
     end
     return out
 end

@@ -152,6 +152,28 @@ pub fn algebraic_structure(
     )
 }
 
+/// The observed a named intermediate of EarthSciASTDiff stands for
+/// (`<scope>._du_<observed>_<k>`, likewise `_dp_` and `_df_`;
+/// esm-jacobian-spec §4.6), else `n` itself.
+pub(crate) fn intermediate_observed(n: &str) -> String {
+    let (scope, base) = match n.rfind('.') {
+        None => ("", n),
+        Some(i) => (&n[..=i], &n[i + 1..]),
+    };
+    if base.len() <= 4 || !matches!(&base[..4], "_du_" | "_dp_" | "_df_") {
+        return n.to_string();
+    }
+    let rest = base[4..].trim_end_matches('_');
+    match rest.rsplit_once('_') {
+        Some((mid, k))
+            if !mid.is_empty() && !k.is_empty() && k.bytes().all(|c| c.is_ascii_digit()) =>
+        {
+            format!("{scope}{mid}")
+        }
+        _ => n.to_string(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn structure_from(
     info: &ModelInfo,
@@ -176,10 +198,11 @@ fn structure_from(
 
     // linear_in_u: no coefficient reads a state, or an observed whose
     // definition reads one, transitively (`state_dependent`).
+    // A named intermediate counts as the observed it stands for.
     let linear_in_u = bands.iter().all(|en| {
         earthsci_ast::free_variables(&en.band.coef)
             .iter()
-            .all(|n| !state_dependent.contains(n))
+            .all(|n| !state_dependent.contains(&intermediate_observed(n)))
     });
 
     // depends_on_t: `t` in a state equation of the document (the operator's

@@ -1,5 +1,5 @@
 # The runtime of algebraic equations on the toy problems with exact answers
-# (spec/toy-problems.md §1.7–§1.10; spec/methods.md §14, §15).
+# (spec/toy-problems.md §1.7–§1.11; spec/methods.md §14, §15).
 
 using EarthSciIntegrator
 using Test
@@ -40,6 +40,15 @@ _solve_record(run) = only(r for r in run.tape.records if r isa AR.SolveRecord)
         # s column-major over cell × salt; cell 1 saturates salt 1 (§1.9).
         @test _end(run, pp, "Phase.s") ≈ [1.0, 0.0, 0.0, 0.0] atol = 1.0e-11
         @test _end(run, pp, "Phase.w") ≈ [1.0, 0.75] atol = 1.0e-11
+    end
+    @testset "picard_roots $case" for (case, tol) in (("picard", 1.0e-12), ("rel_change", 1.0e-11), ("newton_rel_change", 1.0e-11))
+        run, pp = _run_case("toy_picard_roots", case)
+        # The roots of z + z³ = c, c = i/4 (§1.11).
+        @test _end(run, pp, "Picard.z") ≈ [0.2367329038645632, 0.4238537990697833, 0.5673642266809228, 0.6823278038280195] atol = tol
+        # Picard with ν frozen is the fixed point z ← c/ν(z): linear
+        # convergence, at rate 0.64 in the slowest cell; Newton is quadratic.
+        it = _solve_record(run).iterations
+        @test case == "newton_rel_change" ? it <= 8 : 30 <= it <= 100
     end
     @testset "robertson_dae $case" for (case, rtol) in (("rodas4", 1.0e-8), ("kvaerno4", 1.0e-6), ("trbdf2", 1.0e-4), ("inconsistent", 1.0e-8))
         ode, opp = _run_case("toy_robertson", "rodas4")

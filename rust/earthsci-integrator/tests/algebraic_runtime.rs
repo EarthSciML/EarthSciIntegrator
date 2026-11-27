@@ -1,5 +1,5 @@
 //! The runtime of algebraic equations on the toy problems with exact answers
-//! (spec/toy-problems.md §1.7–§1.10; spec/methods.md §14, §15), as
+//! (spec/toy-problems.md §1.7–§1.11; spec/methods.md §14, §15), as
 //! julia/EarthSciIntegrator.jl/test/algebraic_runtime.jl tests them.
 
 use earthsci_integrator::planned::load_plan;
@@ -75,6 +75,36 @@ fn cubic_roots() {
             unreachable!()
         };
         assert!(active.is_empty());
+    }
+}
+
+#[test]
+fn picard_roots() {
+    // The roots of z + z³ = c, c = i/4 (spec/toy-problems.md §1.11).
+    let want = [
+        0.2367329038645632,
+        0.4238537990697833,
+        0.5673642266809228,
+        0.6823278038280195,
+    ];
+    for (case, tol) in [
+        ("picard", 1e-12),
+        ("rel_change", 1e-11),
+        ("newton_rel_change", 1e-11),
+    ] {
+        let (run, lp) = run_case("toy_picard_roots", case);
+        let z = at_end(&run, &lp, "Picard.z");
+        assert!(close(&z, &want, tol), "{case}: {z:?}");
+        let TapeRecord::Solve { iterations, .. } = solve_record(&run.tape) else {
+            unreachable!()
+        };
+        // Picard with ν frozen is the fixed point z ← c/ν(z): linear
+        // convergence, at rate 0.64 in the slowest cell; Newton is quadratic.
+        if case == "newton_rel_change" {
+            assert!(*iterations <= 8, "{case}: {iterations}");
+        } else {
+            assert!((30..=100).contains(iterations), "{case}: {iterations}");
+        }
     }
 }
 

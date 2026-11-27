@@ -647,7 +647,11 @@ function plan_problem(
     for n in names
         first_kind(n) == "residual" || continue
         docjson = JSON.parsefile(joinpath(dir, "derived/$n.residual.esm"))
-        algebraic[n] = algebraic_info(n, plan["operators"][n], L, pnames, docjson)
+        info = algebraic_info(n, plan["operators"][n], L, pnames, docjson)
+        if haskey(plan["derived"], "derived/$n.frozen_residual.esm")
+            info = AlgebraicInfo(info.dofs, info.names, info.lower, info.upper, frozen_docs(n, plan["operators"][n], L, pnames, doc, info.dofs))
+        end
+        algebraic[n] = info
     end
     variables = Pair{String, Vector{Int}}[
         x => collect((L.offset[x] + 1):(L.offset[x] + prod(L.extents[x]; init = 1))) for x in sort!(collect(keys(L.offset)))
@@ -658,6 +662,47 @@ function plan_problem(
         Function[], nothing, false, algebraic
     )
     return PlanProblem(prob, plan, L, F)
+end
+
+"""
+The [`FrozenDocs`](@ref) of algebraic operator `name` (spec/plan.md §6.5): its
+frozen residual document and, when the plan lists it, its frozen Jacobian
+document, built by `doc(name, kind)` (`zdofs` the unknowns' model DOFs, in
+the solve's order) and bound to their own layout, the
+model's states (layout `L`) and the frozen states `FrozenEval.frozen_m`.
+"""
+function frozen_docs(name, entry, L::DofLayout, pnames, doc, zdofs)
+    r = doc(name, "frozen_residual")
+    Lf = canonical_layout(r)
+    r = bind_document(r, Lf, pnames, name)
+    at = Dict(n => i for (i, n) in enumerate(Lf.names))
+    tolf = Int[
+        get(at, n) do
+            throw(ConfigError("operator '$name': derived/$name.frozen_residual.esm does not declare state element $n"))
+        end for n in L.names
+    ]
+    fdofs = Vector{Int}[]
+    while haskey(Lf.offset, "FrozenEval.frozen_$(length(fdofs) + 1)")
+        x = "FrozenEval.frozen_$(length(fdofs) + 1)"
+        push!(fdofs, collect((Lf.offset[x] + 1):(Lf.offset[x] + prod(Lf.extents[x]; init = 1))))
+    end
+    length(Lf.names) == length(L.names) + sum(length, fdofs; init = 0) ||
+        throw(ConfigError("operator '$name': derived/$name.frozen_residual.esm declares states other than the model's and its frozen states"))
+    j, points = nothing, NTuple{3, Int}[]
+    if haskey(entry, "frozen_bands")
+        j = bind_document(doc(name, "frozen_jacobian"), Lf, pnames, name)
+        bands = BandEntry[BandEntry(b) for b in entry["frozen_bands"]]
+        zpos = Dict(tolf[d] => i for (i, d) in enumerate(zdofs))
+        for (k, f, row, col) in band_points(Lf, bands)
+            (haskey(zpos, row) && haskey(zpos, col)) || continue
+            b = bands[k]
+            ext = vcat(Lf.extents[b.row], Int[hi for (_, _, hi) in b.contracted])
+            nm = element_name("JacobianEval.J_$k", cells(ext)[f])
+            haskey(j.slots, nm) || throw(ConfigError("operator '$name': derived/$name.frozen_jacobian.esm has no band field element $nm"))
+            push!(points, (j.slots[nm], zpos[row], zpos[col]))
+        end
+    end
+    return FrozenDocs(r, j, length(Lf.names), tolf, fdofs, points)
 end
 
 _with_forcing(op::PlannedOperator, F) = PlannedOperator(

@@ -141,7 +141,7 @@
     "derivedKind": {
       "enum": [
         "rhs", "jacobian", "frozen_jacobian", "vjp", "second_order", "param_jacobian", "forcing_jacobian",
-        "residual", "map", "limit", "condition"
+        "residual", "frozen_residual", "map", "limit", "condition"
       ]
     },
     "operatorPlan": {
@@ -175,6 +175,11 @@
         "forcing": {
           "description": "The data-fed parameters among reads (spec/plan.md §5.3, D87). Present only when non-empty.",
           "allOf": [{"$ref": "#/$defs/sortedNames"}, {"minItems": 1}]
+        },
+        "frozen_bands": {
+          "description": "The frozen Jacobian document's band list (spec/plan.md §6.5, D124), as structure.bands is written.",
+          "type": "array",
+          "items": {"type": "object"}
         },
         "residuals": {
           "description": "An algebraic operator's residuals (spec/plan.md §5.9.7), in flattened equation order, each with the unknown the canonical pairing gives it (D120).",

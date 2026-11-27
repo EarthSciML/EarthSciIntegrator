@@ -19,8 +19,30 @@ pub enum Bound {
     Param(usize),
 }
 
+/// An algebraic operator's frozen documents (spec/plan.md §6.5), evaluated
+/// at a model state `x`.
+pub trait FrozenEval: Send + Sync {
+    /// The values of the frozen observeds `O_m` at `x`, each column-major.
+    fn values(&self, x: &[f64], p: &[f64], t: f64) -> Result<Vec<Vec<f64>>, String>;
+    /// Whether the frozen Jacobian document is loaded (a `picard` node).
+    fn has_jacobian(&self) -> bool;
+    /// The Jacobian over the `nz` unknowns with the frozen observeds held at
+    /// their values at `x` (spec/methods.md §15.5), dense, column-major.
+    fn jacobian(&self, x: &[f64], nz: usize, p: &[f64], t: f64) -> Result<Vec<f64>, String>;
+}
+
+/// The frozen documents of an algebraic operator, when the plan has them.
+#[derive(Clone)]
+pub struct Frozen(pub Arc<dyn FrozenEval>);
+
+impl std::fmt::Debug for Frozen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Frozen")
+    }
+}
+
 /// An algebraic operator's unknowns (canonical DOFs, ascending by variable
-/// then element) and, per DOF, its bound sources.
+/// then element), per DOF its bound sources, and its frozen documents.
 #[derive(Debug, Clone)]
 pub struct AlgebraicInfo {
     pub dofs: Vec<usize>,
@@ -28,6 +50,7 @@ pub struct AlgebraicInfo {
     pub names: Vec<String>,
     pub lower: Vec<Option<Bound>>,
     pub upper: Vec<Option<Bound>>,
+    pub frozen: Option<Frozen>,
 }
 
 impl AlgebraicInfo {
@@ -49,13 +72,18 @@ impl AlgebraicInfo {
         self.lower.iter().chain(&self.upper).any(Option::is_some)
     }
 
-    /// Concatenates several operators' unknowns (a DAE's).
+    /// Concatenates several operators' unknowns (a DAE's). One operator's
+    /// frozen documents serve a picard or rel_change initialization.
     pub fn concat(infos: &[&AlgebraicInfo]) -> AlgebraicInfo {
         let mut out = AlgebraicInfo {
             dofs: vec![],
             names: vec![],
             lower: vec![],
             upper: vec![],
+            frozen: match infos {
+                [one] => one.frozen.clone(),
+                _ => None,
+            },
         };
         for i in infos {
             out.dofs.extend(&i.dofs);
@@ -116,6 +144,8 @@ pub fn array_default(doc: &Value, name: &str, ext: &[usize]) -> Result<Vec<f64>,
 pub enum MethodKind {
     Newton,
     Ptc,
+    /// Newton's iteration on the frozen Jacobian (§15.5).
+    Picard,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,24 +162,38 @@ pub struct SolveMethod {
     pub dt0: f64,
     pub growth: f64,
     pub backtracking: bool,
+    /// `converged.residual`; infinite when only `rel_change` is given.
     pub tol: f64,
+    /// The `rel_change` observed's position among the frozen observeds
+    /// (spec/plan.md §6.5).
+    pub rel_change: Option<usize>,
+    pub rel_tol: f64,
     pub maxiter: usize,
     pub recover: Vec<Recover>,
 }
 
 impl SolveMethod {
     pub fn from_json(m: &Value, id: &str) -> Result<SolveMethod, Error> {
-        if m.get("picard").is_some() {
-            return Err(Error::Unimplemented(format!(
-                "solve node {id}: picard needs the frozen Jacobian document (spec/plan.md §6.5), which the planner does not emit yet"
-            )));
-        }
+        let _ = id;
         let conv = m.get("converged");
-        if conv.and_then(|c| c.get("rel_change")).is_some() {
-            return Err(Error::Unimplemented(format!(
-                "solve node {id}: converged.rel_change needs an observed's value, which the runtime does not evaluate yet"
-            )));
-        }
+        // The frozen observeds, in the frozen documents' order (spec/plan.md
+        // §6.5): picard's freeze list, then the rel_change observed if not
+        // among them.
+        let mut frozen: Vec<&str> = m["picard"]["freeze"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let rel_change = conv
+            .and_then(|c| c.get("rel_change"))
+            .and_then(Value::as_str)
+            .map(|o| {
+                frozen.iter().position(|x| *x == o).unwrap_or_else(|| {
+                    frozen.push(o);
+                    frozen.len() - 1
+                })
+            });
         let ptc = m.get("ptc");
         let mut recover = Vec::new();
         for a in m
@@ -175,6 +219,8 @@ impl SolveMethod {
         Ok(SolveMethod {
             kind: if ptc.is_some() {
                 MethodKind::Ptc
+            } else if m.get("picard").is_some() {
+                MethodKind::Picard
             } else {
                 MethodKind::Newton
             },
@@ -187,10 +233,18 @@ impl SolveMethod {
                 .and_then(Value::as_f64)
                 .unwrap_or(2.0),
             backtracking: m.get("linesearch").and_then(Value::as_str) == Some("backtracking"),
-            tol: conv
-                .and_then(|c| c.get("residual"))
+            tol: match conv {
+                None => 1e-10,
+                Some(c) => c
+                    .get("residual")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(f64::INFINITY),
+            },
+            rel_change,
+            rel_tol: conv
+                .and_then(|c| c.get("tol"))
                 .and_then(Value::as_f64)
-                .unwrap_or(1e-10),
+                .unwrap_or(0.0),
             maxiter: m.get("maxiter").and_then(Value::as_u64).unwrap_or(100) as usize,
             recover,
         })
@@ -204,6 +258,8 @@ impl SolveMethod {
             growth: 2.0,
             backtracking: true,
             tol: 1e-10,
+            rel_change: None,
+            rel_tol: 0.0,
             maxiter: 100,
             recover: vec![],
         }
@@ -237,6 +293,15 @@ impl<T: Scalar> Residual<'_, T> {
         let mut x: Vec<T> = self.u.iter().map(|&v| T::from_f64(v)).collect();
         for (&d, &v) in self.dofs.iter().zip(z) {
             x[d] = T::from_f64(v);
+        }
+        x
+    }
+
+    /// The model state with the unknowns set to `z`, in f64.
+    fn state_f64(&self, z: &[f64]) -> Vec<f64> {
+        let mut x = self.u.to_vec();
+        for (&d, &v) in self.dofs.iter().zip(z) {
+            x[d] = v;
         }
         x
     }
@@ -303,30 +368,79 @@ fn linsolve(a: &[f64], b: &[f64]) -> Option<Vec<f64>> {
     Some(x)
 }
 
-/// One attempt from `z0` with under-relaxation `omega` (§15.2–§15.4).
+/// The frozen documents a picard method or `converged.rel_change` needs
+/// (spec/plan.md §6.5).
+fn frozen_of<'a>(
+    info: &'a AlgebraicInfo,
+    m: &SolveMethod,
+) -> Result<Option<&'a dyn FrozenEval>, Error> {
+    if m.kind != MethodKind::Picard && m.rel_change.is_none() {
+        return Ok(None);
+    }
+    let Some(Frozen(f)) = &info.frozen else {
+        return Err(Error::Config(
+            "solve: a picard method or converged.rel_change needs the operator's frozen documents (spec/plan.md §6.5), which the plan does not have".into(),
+        ));
+    };
+    if m.kind == MethodKind::Picard && !f.has_jacobian() {
+        return Err(Error::Config(
+            "solve: a picard method needs the operator's frozen Jacobian document (spec/plan.md §6.5), which the plan does not have".into(),
+        ));
+    }
+    Ok(Some(f.as_ref()))
+}
+
+/// `converged.rel_change` (§15.2): `‖O_k − O_{k-1}‖₂ ≤ tol ‖O_k‖₂`.
+fn rel_met(o: &[f64], prev: &[f64], tol: f64) -> bool {
+    let d: f64 = o.iter().zip(prev).map(|(a, b)| (a - b) * (a - b)).sum();
+    let n: f64 = o.iter().map(|a| a * a).sum();
+    d.sqrt() <= tol * n.sqrt()
+}
+
+/// One attempt from `z0` with under-relaxation `omega` (§15.2–§15.5). With
+/// `converged.rel_change` it converges when every criterion given is met;
+/// the change is measured from the previous iterate, so the starting
+/// iterate cannot meet it.
+#[allow(clippy::too_many_arguments)]
 fn attempt<T: Scalar>(
     r: &Residual<'_, T>,
+    fz: Option<&dyn FrozenEval>,
     z0: &[f64],
     p: &[f64],
     m: &SolveMethod,
     l: &[f64],
     h: &[f64],
     omega: f64,
-) -> (Vec<f64>, bool, usize) {
+) -> Result<(Vec<f64>, bool, usize), Error> {
+    let fail = |e: String| Error::Run(format!("solve: the frozen documents: {e}"));
+    let observed = |z: &[f64]| -> Result<Vec<f64>, Error> {
+        let (Some(f), Some(i)) = (fz, m.rel_change) else {
+            return Ok(vec![]);
+        };
+        Ok(f.values(&r.state_f64(z), p, r.t)
+            .map_err(fail)?
+            .swap_remove(i))
+    };
     let nz = z0.len();
     let mut z = proj(z0, l, h);
     let mut g = r.g(&z, p);
     let mut rr = reform(&z, &g, l, h);
     let mut n = ninf(&rr);
     if !n.is_finite() {
-        return (z, false, 0);
+        return Ok((z, false, 0));
     }
-    if n <= m.tol {
-        return (z, true, 0);
+    if m.rel_change.is_none() && n <= m.tol {
+        return Ok((z, true, 0));
     }
+    let mut o = observed(&z)?;
     let mut delta = m.dt0;
     for k in 1..=m.maxiter {
-        let a = r.gz(&z, p);
+        let a = match (m.kind, fz) {
+            (MethodKind::Picard, Some(f)) => {
+                f.jacobian(&r.state_f64(&z), nz, p, r.t).map_err(fail)?
+            }
+            _ => r.gz(&z, p),
+        };
         match m.kind {
             MethodKind::Ptc => {
                 // (δ⁻¹I − G_z) s = G; a component held at a bound by an
@@ -344,7 +458,7 @@ fn attempt<T: Scalar>(
                     }
                 }
                 let Some(s) = linsolve(&mm, &b) else {
-                    return (z, false, k);
+                    return Ok((z, false, k));
                 };
                 let zt: Vec<f64> = (0..nz).map(|i| z[i] + omega * s[i]).collect();
                 let znew = proj(&zt, l, h);
@@ -352,7 +466,7 @@ fn attempt<T: Scalar>(
                 let rnew = reform(&znew, &gnew, l, h);
                 let nnew = ninf(&rnew);
                 if !nnew.is_finite() {
-                    return (z, false, k);
+                    return Ok((z, false, k));
                 }
                 delta *= if nnew == 0.0 {
                     m.growth
@@ -361,7 +475,7 @@ fn attempt<T: Scalar>(
                 };
                 (z, g, rr, n) = (znew, gnew, rnew, nnew);
             }
-            MethodKind::Newton => {
+            MethodKind::Newton | MethodKind::Picard => {
                 // The generalized Jacobian of R (§15.3).
                 let mut d: Vec<f64> = a.iter().map(|x| -x).collect();
                 for i in 0..nz {
@@ -375,7 +489,7 @@ fn attempt<T: Scalar>(
                 }
                 let b: Vec<f64> = rr.iter().map(|x| -x).collect();
                 let Some(mut s) = linsolve(&d, &b) else {
-                    return (z, false, k);
+                    return Ok((z, false, k));
                 };
                 s.iter_mut().for_each(|x| *x *= omega);
                 let mut alpha = 1.0;
@@ -401,15 +515,24 @@ fn attempt<T: Scalar>(
                 rr = reform(&z, &g, l, h);
                 n = ninf(&rr);
                 if !n.is_finite() {
-                    return (z, false, k);
+                    return Ok((z, false, k));
                 }
             }
         }
-        if n <= m.tol {
-            return (z, true, k);
+        if m.rel_change.is_none() {
+            if n <= m.tol {
+                return Ok((z, true, k));
+            }
+        } else {
+            let onew = observed(&z)?;
+            let met = n <= m.tol && rel_met(&onew, &o, m.rel_tol);
+            o = onew;
+            if met {
+                return Ok((z, true, k));
+            }
         }
     }
-    (z, false, m.maxiter)
+    Ok((z, false, m.maxiter))
 }
 
 /// A solve with its `recover` ladder (§15.7) and, at convergence, the
@@ -431,8 +554,9 @@ pub fn run_solve<T: Scalar>(
             info.names[i]
         )));
     }
+    let fz = frozen_of(info, m)?;
     let mut actions = Vec::new();
-    let (mut z, mut ok, mut it) = attempt(r, warm, p, m, &l, &h, 1.0);
+    let (mut z, mut ok, mut it) = attempt(r, fz, warm, p, m, &l, &h, 1.0)?;
     let mut pp = p.to_vec();
     for a in &m.recover {
         if ok {
@@ -441,7 +565,7 @@ pub fn run_solve<T: Scalar>(
         match a {
             Recover::Underrelax(w) => {
                 actions.push("underrelax".to_string());
-                (z, ok, it) = attempt(r, warm, &pp, m, &l, &h, *w);
+                (z, ok, it) = attempt(r, fz, warm, &pp, m, &l, &h, *w)?;
             }
             Recover::ScaleParam { param, by, max } => {
                 let i = pnames.iter().position(|x| x == param).ok_or_else(|| {
@@ -455,19 +579,19 @@ pub fn run_solve<T: Scalar>(
                     }
                     pp[i] *= by;
                     actions.push("scale_param".to_string());
-                    (z, ok, it) = attempt(r, warm, &pp, m, &l, &h, 1.0);
+                    (z, ok, it) = attempt(r, fz, warm, &pp, m, &l, &h, 1.0)?;
                 }
             }
             Recover::RevertWarmStart => {
                 actions.push("revert_warm_start".to_string());
-                (z, ok, it) = attempt(r, initial, &pp, m, &l, &h, 1.0);
+                (z, ok, it) = attempt(r, fz, initial, &pp, m, &l, &h, 1.0)?;
             }
         }
     }
     let (mut lower, mut upper, mut degenerate) = (vec![], vec![], vec![]);
     if ok {
         let g = r.g(&z, &pp);
-        let eps = m.tol;
+        let eps = if m.tol.is_finite() { m.tol } else { 0.0 };
         for i in 0..z.len() {
             if !(l[i].is_finite() || h[i].is_finite()) {
                 continue;
