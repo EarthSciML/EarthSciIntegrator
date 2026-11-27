@@ -782,8 +782,9 @@ function solve_linsolve(ctx, meth, op)
     ls = get(meth, "linsolve", "auto")
     ls == "auto" || return linsolve_object(ls)
     s = op.structure
-    if need_locality(op) === :pointwise && s["class"] == "block_diagonal"
-        return _pointwise_linsolve(length(s["block"]["vars"]))
+    if need_locality(op) === :pointwise && haskey(s, "block")
+        # A cell block's size is its element count (D123).
+        return _pointwise_linsolve(haskey(s["block"], "elements") ? length(s["block"]["elements"]) : length(s["block"]["vars"]))
     end
     return Dict{String, Any}("dense_lu" => Dict{String, Any}())
 end

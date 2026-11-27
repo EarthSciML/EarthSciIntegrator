@@ -4,7 +4,7 @@ spec/toy-problems.md §1.9: two residual blocks of different extents, so the can
 
 ## ptc
 
-**Operator `phase`.** kind `algebraic`; locality `global`; `writes` ['Phase.s', 'Phase.w']; structure class `block_diagonal`; residuals `Phase.residual[1]` paired with `Phase.w`, `Phase.residual[2]` paired with `Phase.s`.
+**Operator `phase`.** kind `algebraic`; locality `global`; `writes` ['Phase.s', 'Phase.w']; structure class `general` (a band whose column has another rank than its row is never diagonal, EarthSciASTDiff#86); residuals `Phase.residual[1]` paired with `Phase.w`, `Phase.residual[2]` paired with `Phase.s`.
 
 **Schedule.**
 
@@ -13,3 +13,7 @@ spec/toy-problems.md §1.9: two residual blocks of different extents, so the can
 ```
 
 **Derived.** phase.jacobian.esm, phase.residual.esm
+
+## per_cell
+
+As `ptc`, with `axes` `{"horizontal": ["cell"]}`, so `salt` lies inside a cell (D123). The sums over salt keep the operator **pointwise**, and its structure is `cell_block`: one block per cell over the cell axis `cell`, holding `Phase.s` at salts 1 and 2 and `Phase.w` (3 × 3), the residual of `w` coupling to both salts and each salt's to `w` (`pattern` and `lu_pattern` `[[1,1],[1,3],[2,2],[2,3],[3,1],[3,2],[3,3]]`). The solve's `linsolve` resolves to `{"block_lu": {"pivot": true, "refine": 0}}`. This is the shape of MESA's per-bin blocks.

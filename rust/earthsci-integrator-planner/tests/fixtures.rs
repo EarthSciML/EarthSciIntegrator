@@ -42,6 +42,7 @@ const CASES: &[(&str, &str)] = &[
     ("toy_cubic_roots", "newton"),
     ("toy_cubic_roots", "ptc"),
     ("toy_phase_joint", "ptc"),
+    ("toy_phase_joint", "per_cell"),
     ("toy_robertson_dae", "rodas4"),
     ("toy_robertson_dae", "trbdf2"),
     ("toy_robertson_dae", "kvaerno4"),

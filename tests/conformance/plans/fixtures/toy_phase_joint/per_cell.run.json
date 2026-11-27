@@ -1,0 +1,38 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "spec/toy-problems.md \u00a71.9 with axes naming cell the only horizontal axis, so salt is inside a cell (D123): the residuals' sums over salt keep the operator pointwise, and its structure is one 3 x 3 cell block per cell (MESA's per-bin blocks).",
+  "model": "../../../toys/phase_joint.esm",
+  "operators": {
+    "phase": {
+      "select": {
+        "components": "Phase"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "solve": "phase",
+    "unknowns": [
+      "Phase.w",
+      "Phase.s"
+    ],
+    "method": {
+      "ptc": {
+        "dt0": 0.1,
+        "growth": 2
+      },
+      "converged": {
+        "residual": 1e-12
+      },
+      "maxiter": 2000
+    },
+    "warm_start": "initial"
+  },
+  "axes": {
+    "horizontal": [
+      "cell"
+    ]
+  }
+}

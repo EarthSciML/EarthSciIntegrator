@@ -265,7 +265,7 @@
       "required": ["class", "linear_in_u", "depends_on_t", "bands"],
       "additionalProperties": false,
       "properties": {
-        "class": {"enum": ["block_diagonal", "banded", "general", "empty"]},
+        "class": {"enum": ["block_diagonal", "cell_block", "banded", "general", "empty"]},
         "linear_in_u": {"type": "boolean"},
         "depends_on_t": {"type": "boolean"},
         "bands": {
@@ -304,7 +304,9 @@
             "vars": {"type": "array", "items": {"$ref": "run-config.schema.json#/$defs/qualifiedName"}, "minItems": 1},
             "ordering": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 1},
             "pattern": {"$ref": "#/$defs/pairs"},
-            "lu_pattern": {"$ref": "#/$defs/pairs"}
+            "lu_pattern": {"$ref": "#/$defs/pairs"},
+            "cell_axes": {"description": "A cell_block plan's cell axes (D123).", "type": "array", "items": {"type": "string"}, "minItems": 1},
+            "elements": {"description": "A cell_block plan's block elements in elimination order: each variable with its indices along the axes inside the cell.", "type": "array", "items": {"type": "array"}}
           }
         },
         "column": {

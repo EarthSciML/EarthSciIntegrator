@@ -316,7 +316,9 @@ pub fn classify(
         }
     }
     let role = |s: &str| axes.role(s);
-    if covers.iter().any(|s| role(s) != Role::Vertical) {
+    // A reach over a horizontal axis is global; over an other axis it stays
+    // inside the cell's block (D123, amending D82).
+    if covers.iter().any(|s| role(s) == Role::Horizontal) {
         global = true;
     }
     let mut radius = BTreeMap::new();
@@ -621,7 +623,7 @@ mod tests {
         }
         let b = q_band([v("i"), v("j"), e(r#"{"op":"index","args":["lvl","k"]}"#)]);
         assert_eq!(class(&[b]).class, Class::Column);
-        // A covered other axis is global.
+        // A covered other axis stays inside the cell's block (D123).
         let b = band(
             "m",
             "m",
@@ -629,7 +631,7 @@ mod tests {
             vec![name("i"), name("s")],
             vec![v("i"), v("t")],
         );
-        assert_eq!(class(&[b]).class, Class::Global);
+        assert_eq!(class(&[b]).class, Class::Pointwise);
     }
 
     #[test]

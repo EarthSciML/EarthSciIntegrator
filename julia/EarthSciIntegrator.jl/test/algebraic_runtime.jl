@@ -35,8 +35,8 @@ _solve_record(run) = only(r for r in run.tape.records if r isa AR.SolveRecord)
         r2 = AR.read_tape(AR.tape_string(run.tape))
         @test only(r for r in r2.records if r isa AR.SolveRecord).active == _solve_record(run).active
     end
-    @testset "phase_joint ptc" begin
-        run, pp = _run_case("toy_phase_joint", "ptc")
+    @testset "phase_joint $case" for case in ("ptc", "per_cell")
+        run, pp = _run_case("toy_phase_joint", case)
         # s column-major over cell × salt; cell 1 saturates salt 1 (§1.9).
         @test _end(run, pp, "Phase.s") ≈ [1.0, 0.0, 0.0, 0.0] atol = 1.0e-11
         @test _end(run, pp, "Phase.w") ≈ [1.0, 0.75] atol = 1.0e-11

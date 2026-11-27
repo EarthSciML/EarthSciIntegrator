@@ -204,7 +204,7 @@ Then, for both:
 
 ### 6.1 Axes
 
-`axes: {"horizontal": [h_1, h_2], "vertical": v}` names the roles of the model's index sets (D67). Locality analysis (architecture §3.2 pass 2) reads offsets on the vertical axis as column reach and offsets on horizontal axes as stencil reach; `ranks` and `tiles` divide `h_1` by their first entry and `h_2` by their second. Defaults: no vertical axis, and every index set that shapes a state variable, other than the vertical one, horizontal in the model's `index_sets` order. A model without a vertical axis has no column operators. The planner refuses an index set that does not exist, one named twice, or more than two horizontal axes after defaults (spec/plan.md §5.2.1).
+`axes: {"horizontal": [h_1, h_2], "vertical": v}` names the roles of the model's index sets (D67). Locality analysis (architecture §3.2 pass 2) reads offsets on the vertical axis as column reach and offsets on horizontal axes as stencil reach; an index set a state uses that `axes` names neither horizontal nor vertical lies inside a cell, and a coupling along it, an offset or a sum over the whole axis, keeps the class (D123; MOSAIC's salts inside a size bin); `ranks` and `tiles` divide `h_1` by their first entry and `h_2` by their second. Defaults: no vertical axis, and every index set that shapes a state variable, other than the vertical one, horizontal in the model's `index_sets` order. A model without a vertical axis has no column operators. The planner refuses an index set that does not exist, one named twice, or more than two horizontal axes after defaults (spec/plan.md §5.2.1).
 
 ### 6.2 Decomposition
 

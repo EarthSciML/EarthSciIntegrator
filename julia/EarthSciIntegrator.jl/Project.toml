@@ -27,3 +27,9 @@ OrderedCollections = "1, 2"
 SHA = "0.7, 1"
 SciMLBase = "2, 3"
 julia = "1.10"
+
+[sources]
+# TEMPORARY: EarthSciASTDiff is pinned to EarthSciML/EarthSciASTDiff#86 (per-cell
+# blocks over caller-named cell axes; a column of another rank is never
+# diagonal), fork branch cell-axes-blocks, until it merges and is released.
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "f9ffc8d6de70c0af5a498afa7f2c6eefa021203a"}

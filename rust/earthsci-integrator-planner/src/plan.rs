@@ -1006,8 +1006,14 @@ impl Planned {
                 None => {
                     let st = &self.structures[&o];
                     match (&self.operators[&o].locality.class, &st.block) {
-                        (Class::Pointwise, Some(b)) if st.class == "block_diagonal" => {
-                            if b.vars.len() <= 16 {
+                        (Class::Pointwise, Some(b)) => {
+                            // A cell block's size is its element count (D123).
+                            let size = b
+                                .json
+                                .get("elements")
+                                .and_then(Value::as_array)
+                                .map_or(b.vars.len(), Vec::len);
+                            if size <= 16 {
                                 json!({"block_lu": {"pivot": true, "refine": 0}})
                             } else {
                                 json!({"sparse_block_lu": {"refine": 0}})

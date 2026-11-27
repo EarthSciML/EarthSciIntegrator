@@ -589,7 +589,9 @@ end
 function operator_structure(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
     m, axes = ctx.model, ctx.axes
-    cls = EarthSciASTDiff.detect_structure(a.entries, a.sv)
+    # The cells are the run config's horizontal and vertical axes (§5.4, D123).
+    cax = cell_axes(axes)
+    cls = EarthSciASTDiff.detect_structure(a.entries, a.sv; cell_axes = cax)
     s = Dict{String, Any}(
         "class" => String(cls),
         "linear_in_u" => linear_in_u(m, a.entries),
@@ -607,12 +609,16 @@ function operator_structure(b::DiffBackend, ctx, op::PlanOperator)
     # The footprint and the bandwidth read the pattern the locality and radius
     # were read from: the operator's terms' band lists (§5.2.2, §5.4).
     pattern() = is_algebraic(op) ? a.bands : BandEntry[x for t in op.terms for x in something(t.bands, BandEntry[])]
-    if loc === :pointwise && cls === :block_diagonal
-        p = EarthSciASTDiff.serialize_plan(EarthSciASTDiff.plan_factorization(a.entries, a.sv; structure = cls))
+    if loc === :pointwise && cls in (:block_diagonal, :cell_block)
+        p = EarthSciASTDiff.serialize_plan(EarthSciASTDiff.plan_factorization(a.entries, a.sv; structure = cls, cell_axes = cax))
         s["block"] = Dict{String, Any}(
             "vars" => Any[p["block_vars"]...], "ordering" => Any[p["ordering"]...],
             "pattern" => p["pattern"], "lu_pattern" => p["lu_pattern"]
         )
+        if cls === :cell_block
+            s["block"]["cell_axes"] = p["cell_axes"]
+            s["block"]["elements"] = p["elements"]
+        end
     elseif loc === :column
         kl, ku = column_bandwidth(pattern(), m, axes)
         s["column"] = Dict{String, Any}("axis" => axes.vertical, "kl" => kl, "ku" => ku)
@@ -822,3 +828,10 @@ function derived_files(b::DiffBackend)
     return out
 end
 derived_files(::PlanBackend) = nothing
+
+"""The cell axes the structure reads (§5.4, D123): the horizontal axes in order, then the vertical one; `nothing` when there are none."""
+function cell_axes(axes::Axes)
+    c = String[axes.horizontal...]
+    axes.vertical === nothing || push!(c, axes.vertical)
+    return isempty(c) ? nothing : c
+end

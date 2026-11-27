@@ -236,7 +236,9 @@ function classify_bands(bands::AbstractVector{BandEntry}, shapes, axes::Axes, si
             append!(get!(offs, X, Int[]), os)
         end
     end
-    any(X -> axis_role(axes, X) !== :vertical, covers) && (isglobal = true)
+    # A reach over a horizontal axis is global; over an other axis it stays
+    # inside the cell's block (D123, amending D82).
+    any(X -> axis_role(axes, X) === :horizontal, covers) && (isglobal = true)
     radius = Dict{String, Tuple{Int, Int}}()
     for X in axes.horizontal
         os = get(offs, X, Int[])

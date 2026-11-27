@@ -27,7 +27,8 @@ pub struct Block {
 /// `block_vars` renamed `vars`. `None` when it is not a block LU.
 fn block_of(mut plan: Value) -> Option<Block> {
     let m = plan.as_object_mut()?;
-    if m.remove("type")? != "block_diagonal_lu" {
+    let ty = m.remove("type")?;
+    if ty != "block_diagonal_lu" && ty != "cell_block_lu" {
         return None;
     }
     let vars = m.remove("block_vars")?;
@@ -165,7 +166,13 @@ fn structure_from(
 ) -> Result<Structure> {
     let ctx = earthsci_astdiff::ctx_of(sv)
         .map_err(|e| PlanError::Internal(format!("ctx_of: {}", e.0)))?;
-    let class = earthsci_astdiff::detect_structure(&bands, &ctx).to_string();
+    // The cells are the run config's horizontal and vertical axes (§5.4, D123).
+    let mut cax: Vec<String> = axes.horizontal.clone();
+    cax.extend(axes.vertical.iter().cloned());
+    let cell_axes = (!cax.is_empty()).then_some(cax.as_slice());
+    let class = earthsci_astdiff::detect_structure_with(&bands, sv, &ctx, None, cell_axes)
+        .map_err(|e| PlanError::Internal(format!("detect_structure: {}", e.0)))?
+        .to_string();
 
     // linear_in_u: no coefficient reads a state, or an observed whose
     // definition reads one, transitively (`state_dependent`).
@@ -185,19 +192,27 @@ fn structure_from(
                 .is_some_and(|d| reads_t(earthsci_ast::free_variables(d)))
         });
 
-    let block = if locality == Class::Pointwise && class == "block_diagonal" {
-        let plan = earthsci_astdiff::plan_factorization(&bands, sv, &ctx, Some(&class))
+    let block =
+        if locality == Class::Pointwise && (class == "block_diagonal" || class == "cell_block") {
+            let plan = earthsci_astdiff::plan_factorization_with(
+                &bands,
+                sv,
+                &ctx,
+                Some(&class),
+                None,
+                cell_axes,
+            )
             .map_err(|e| PlanError::Internal(format!("plan_factorization: {}", e.0)))?
             .ok_or_else(|| {
                 PlanError::Internal("plan_factorization gave no block_diagonal plan".into())
             })?;
-        let plan = earthsci_astdiff::serialize_plan(&plan);
-        Some(block_of(plan.clone()).ok_or_else(|| {
-            PlanError::Internal(format!("serialize_plan gave no block LU: {plan}"))
-        })?)
-    } else {
-        None
-    };
+            let plan = earthsci_astdiff::serialize_plan(&plan);
+            Some(block_of(plan.clone()).ok_or_else(|| {
+                PlanError::Internal(format!("serialize_plan gave no block LU: {plan}"))
+            })?)
+        } else {
+            None
+        };
 
     let reaches: Vec<_> = pattern
         .iter()
