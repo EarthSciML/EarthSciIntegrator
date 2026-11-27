@@ -47,6 +47,7 @@ const CASES: &[(&str, &str)] = &[
     ("toy_robertson_dae", "trbdf2"),
     ("toy_robertson_dae", "kvaerno4"),
     ("toy_robertson_dae", "inconsistent"),
+    ("nested_default", "auto"),
 ];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.
