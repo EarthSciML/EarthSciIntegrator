@@ -704,7 +704,7 @@ dependencies = [
 [[package]]
 name = "earthsci-astdiff"
 version = "0.7.0"
-source = "git+https://github.com/ctessum-claude/EarthSciASTDiff.git?rev=627c6f7f077c8ad3c8511356b9557a48fe98718c#627c6f7f077c8ad3c8511356b9557a48fe98718c"
+source = "git+https://github.com/ctessum-claude/EarthSciASTDiff.git?rev=98e14b44b84d8f82faeab981188661f9b94ea9a6#98e14b44b84d8f82faeab981188661f9b94ea9a6"
 dependencies = [
  "earthsci-ast",
  "indexmap",
