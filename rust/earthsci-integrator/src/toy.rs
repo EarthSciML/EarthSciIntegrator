@@ -34,6 +34,9 @@ pub struct ToyProblem<T: Scalar> {
     pub maps: Vec<Arc<dyn MapOperator<T>>>,
     /// Linear invariants `Σ_j w_j u_j`, as `(DOF, weight)` lists.
     pub invariants: Vec<Vec<(usize, f64)>>,
+    /// The algebraic operators' unknowns and bounds, by operator name
+    /// (a plan's, spec/plan.md §5.9.7); empty for the hand-written toys.
+    pub algebraic: std::collections::BTreeMap<String, crate::algebraic::AlgebraicInfo>,
 }
 
 impl<T: Scalar> ToyProblem<T> {
@@ -65,6 +68,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             operators: vec![Arc::new(Decay)],
             maps: vec![],
             invariants: vec![],
+            algebraic: Default::default(),
         },
         "van_der_pol/nonstiff" | "van_der_pol/stiff" => {
             let stiff = name.ends_with("stiff") && !name.ends_with("nonstiff");
@@ -80,6 +84,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
                 operators: vec![Arc::new(Oscillator)],
                 maps: vec![],
                 invariants: vec![],
+                algebraic: Default::default(),
             }
         }
         "robertson" => ToyProblem {
@@ -94,6 +99,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             operators: vec![Arc::new(Kinetics)],
             maps: vec![],
             invariants: vec![vec![(0, 1.0), (1, 1.0), (2, 1.0)]],
+            algebraic: Default::default(),
         },
         "photostationary_cells" => {
             let nc = PHOTO_NCELLS;
@@ -127,6 +133,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
                 operators: vec![Arc::new(Photochemistry)],
                 maps: vec![],
                 invariants,
+                algebraic: Default::default(),
             }
         }
         "advection_reaction" => {
@@ -156,6 +163,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
                 operators: vec![Arc::new(Transport), Arc::new(Reaction)],
                 maps: vec![],
                 invariants: vec![(0..2 * nc).map(|j| (j, 1.0)).collect()],
+                algebraic: Default::default(),
             }
         }
         "source_decay_map" => ToyProblem {
@@ -170,6 +178,7 @@ pub fn toy_problem<T: Scalar>(model: &str) -> Result<ToyProblem<T>, Error> {
             operators: vec![Arc::new(Source)],
             maps: vec![Arc::new(DecayMap)],
             invariants: vec![],
+            algebraic: Default::default(),
         },
         _ => {
             return Err(Error::Config(format!(

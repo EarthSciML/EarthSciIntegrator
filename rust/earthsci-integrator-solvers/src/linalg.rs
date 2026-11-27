@@ -144,13 +144,30 @@ impl<T: Scalar> MatrixStorage<T> {
     /// `σ = 1/(hγ)`, the exact negation of OrdinaryDiffEq's stored
     /// `W = J − I/(hγ)` (OrdinaryDiffEqDifferentiation `calc_W`).
     pub fn shifted_negation(&mut self, jac: &MatrixStorage<T>, sigma: T) {
+        self.shifted_negation_masked(jac, sigma, None)
+    }
+
+    /// [`Self::shifted_negation`] with a mass mask (an index-1 DAE,
+    /// spec/methods.md §14): `σM − J`, whose diagonal entry on an algebraic
+    /// row (`mass[i]` true) is `−J_ii`.
+    pub fn shifted_negation_masked(
+        &mut self,
+        jac: &MatrixStorage<T>,
+        sigma: T,
+        mass: Option<&[bool]>,
+    ) {
+        let alg = |i: usize| mass.is_some_and(|m| m[i]);
         match (self, jac) {
             (MatrixStorage::Dense { n, data }, MatrixStorage::Dense { n: n2, data: j }) => {
                 assert_eq!(n, n2);
                 for col in 0..*n {
                     for row in 0..*n {
                         let k = col * *n + row;
-                        data[k] = if row == col { sigma - j[k] } else { -j[k] };
+                        data[k] = if row == col && !alg(row) {
+                            sigma - j[k]
+                        } else {
+                            -j[k]
+                        };
                     }
                 }
             }
@@ -168,7 +185,7 @@ impl<T: Scalar> MatrixStorage<T> {
                     for jj in 0..*n {
                         let base = (i * *n + jj) * nc;
                         for c in 0..nc {
-                            data[base + c] = if i == jj {
+                            data[base + c] = if i == jj && !alg(i * nc + c) {
                                 sigma - j[base + c]
                             } else {
                                 -j[base + c]

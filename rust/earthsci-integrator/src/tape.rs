@@ -3,7 +3,7 @@
 use crate::Scalar;
 use earthsci_integrator_solvers::controller::ControllerState;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A leaf's return code (spec/methods.md §12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +72,35 @@ pub enum TapeRecord {
         /// The reason for the macro step's size (spec/run-config.md §5).
         reason: String,
     },
+    /// A `solve` invocation (spec/tape.md §2, §5): the converged unknowns in
+    /// the plan's DOF order, the iterations of the attempt that converged,
+    /// the `recover` actions taken, and the active set per bounded unknown.
+    Solve {
+        path: String,
+        #[serde(with = "num")]
+        t: f64,
+        #[serde(with = "num")]
+        dt: f64,
+        z: Vec<f64>,
+        iterations: usize,
+        recover: Vec<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        active: BTreeMap<String, ActiveSet>,
+    },
+}
+
+/// One bounded unknown's active set (spec/tape.md §2): element indices,
+/// 0-based within the unknown, at the lower and the upper bound, and the
+/// degenerate ones among them; an empty list is omitted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActiveSet {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lower: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upper: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub degenerate: Vec<usize>,
 }
 
 impl TapeRecord {
@@ -81,7 +110,8 @@ impl TapeRecord {
             TapeRecord::Leaf { path, .. }
             | TapeRecord::Subcycle { path, .. }
             | TapeRecord::Map { path, .. }
-            | TapeRecord::Macro { path, .. } => path,
+            | TapeRecord::Macro { path, .. }
+            | TapeRecord::Solve { path, .. } => path,
         }
     }
 
@@ -158,6 +188,35 @@ impl TapeRecord {
                     reason: reason2,
                 },
             ) => path == path2 && b(t, t2) && b(dt, dt2) && reason == reason2,
+            (
+                R::Solve {
+                    path,
+                    t,
+                    dt,
+                    z,
+                    iterations,
+                    recover,
+                    active,
+                },
+                R::Solve {
+                    path: path2,
+                    t: t2,
+                    dt: dt2,
+                    z: z2,
+                    iterations: iterations2,
+                    recover: recover2,
+                    active: active2,
+                },
+            ) => {
+                path == path2
+                    && b(t, t2)
+                    && b(dt, dt2)
+                    && z.len() == z2.len()
+                    && z.iter().zip(z2).all(|(x, y)| b(x, y))
+                    && iterations == iterations2
+                    && recover == recover2
+                    && active == active2
+            }
             _ => false,
         }
     }

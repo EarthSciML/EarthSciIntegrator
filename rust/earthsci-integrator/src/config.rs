@@ -135,6 +135,9 @@ pub struct LeafNode {
     pub partition: Option<Value>,
     #[serde(default)]
     pub bind_dt: Option<BTreeMap<String, String>>,
+    /// A DAE's consistent-initialization method (spec/run-config.md §4.3).
+    #[serde(default)]
+    pub initialize: Option<Value>,
 }
 
 /// One operator name or a list.
@@ -210,6 +213,11 @@ pub enum Node {
         id: Option<String>,
         op: String,
     },
+    /// A `solve` node (spec/run-config.md §4.10), as written.
+    Solve {
+        id: Option<String>,
+        spec: Value,
+    },
 }
 
 #[derive(Deserialize)]
@@ -276,9 +284,14 @@ impl Node {
                 let l: LeafNode = serde_json::from_value(v.clone()).map_err(de)?;
                 Ok(Node::Leaf(Box::new(l)))
             }
-            "coupled" => Err(Error::Unimplemented(
-                "coupled nodes (run-config §4.3) are not implemented at M1".into(),
-            )),
+            "coupled" => {
+                let l: LeafNode = serde_json::from_value(v.clone()).map_err(de)?;
+                Ok(Node::Leaf(Box::new(l)))
+            }
+            "solve" => Ok(Node::Solve {
+                id: obj.get("id").and_then(Value::as_str).map(str::to_string),
+                spec: v.clone(),
+            }),
             "sequence" | "strang" => {
                 let s: SeqNode = serde_json::from_value(v.clone()).map_err(de)?;
                 let is_seq = s.sequence.is_some();

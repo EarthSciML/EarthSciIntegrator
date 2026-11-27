@@ -514,9 +514,8 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
     }
     for (name, role) in &names {
         let what = match role {
-            Role::Term => continue,
+            Role::Term | Role::Algebraic => continue,
             Role::Map => "a map node",
-            Role::Algebraic => "a solve node",
         };
         return Err(Error::Unimplemented(format!(
             "operator {name}: the schedule runs it from {what}, which a plan's operators do not \
@@ -566,18 +565,25 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
                 "plan.json: the schedule names {name}, which has no operators entry"
             )));
         }
-        if entry["kind"].as_str() != Some("rhs") {
-            return Err(cfg(format!(
-                "operator {name}: the schedule uses it as a term operator, but its kind is {}",
-                entry["kind"]
-            )));
-        }
+        // An algebraic operator's first document is its residual document
+        // (spec/plan.md §6.4), evaluated as a right-hand side; a `solve` node
+        // or a `coupled` node advances it.
+        let first = match entry["kind"].as_str() {
+            Some("rhs") => "rhs",
+            Some("algebraic") => "residual",
+            _ => {
+                return Err(cfg(format!(
+                    "operator {name}: its kind {} is not one a plan's runtime runs",
+                    entry["kind"]
+                )))
+            }
+        };
         let path_of = |kind: &str| -> Result<String, Error> {
             docs.get(&(name.clone(), kind.to_string()))
                 .cloned()
                 .ok_or_else(|| cfg(format!("operator {name}: the plan has no {kind} document")))
         };
-        let (rhs_path, jac_path) = (path_of("rhs")?, path_of("jacobian")?);
+        let (rhs_path, jac_path) = (path_of(first)?, path_of("jacobian")?);
         let (rhs_prob, rhs_prog) =
             build_program(&dir.join(&rhs_path), tspan).map_err(|e| refuse(name, &rhs_path, e))?;
         let (_, jac_prog) =
@@ -714,6 +720,61 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
     };
 
     let mut operators: Vec<Arc<dyn Operator<T>>> = Vec::new();
+    // Each algebraic operator's unknowns and bounds (spec/plan.md §5.9.7).
+    let mut algebraic = BTreeMap::new();
+    for b in &built {
+        let entry = &plan["operators"][&b.name];
+        if entry["kind"].as_str() != Some("algebraic") {
+            continue;
+        }
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(&b.rhs_path))
+                .map_err(|e| refuse(&b.name, &b.rhs_path, e))?,
+        )
+        .map_err(|e| refuse(&b.name, &b.rhs_path, e))?;
+        let mut info = crate::algebraic::AlgebraicInfo {
+            dofs: vec![],
+            names: vec![],
+            lower: vec![],
+            upper: vec![],
+        };
+        for z in entry["writes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let r = m
+                .dofs
+                .dofs_of(z)
+                .ok_or_else(|| refuse(&b.name, &b.rhs_path, format!("no state {z}")))?;
+            let ext: Vec<usize> = m.dofs.states[z].1.clone();
+            let n = r.len();
+            info.dofs.extend(r);
+            info.names.extend(std::iter::repeat_n(z.to_string(), n));
+            let bnds = &entry["bounds"][z];
+            for (key, dest) in [("lb", &mut info.lower), ("ub", &mut info.upper)] {
+                let v = &bnds[key];
+                let src: Vec<Option<crate::algebraic::Bound>> = if v.is_null() {
+                    vec![None; n]
+                } else if let Some(x) = v.as_f64() {
+                    vec![Some(crate::algebraic::Bound::Const(x)); n]
+                } else {
+                    let pn = v.as_str().unwrap_or_default();
+                    match m.params.iter().position(|x| x == pn) {
+                        Some(i) => vec![Some(crate::algebraic::Bound::Param(i)); n],
+                        None => crate::algebraic::array_default(&doc, pn, &ext)
+                            .map_err(|e| refuse(&b.name, &b.rhs_path, e))?
+                            .into_iter()
+                            .map(|x| Some(crate::algebraic::Bound::Const(x)))
+                            .collect(),
+                    }
+                };
+                dest.extend(src);
+            }
+        }
+        algebraic.insert(b.name.clone(), info);
+    }
     for b in built {
         let (name, rhs_path, jac_path) = (&b.name, &b.rhs_path, &b.jac_path);
         let entry = &plan["operators"][name];
@@ -763,6 +824,7 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
         operators,
         maps: vec![],
         invariants: vec![],
+        algebraic,
     };
 
     // The run config of the resolved schedule and step (spec/plan.md §7.1,
