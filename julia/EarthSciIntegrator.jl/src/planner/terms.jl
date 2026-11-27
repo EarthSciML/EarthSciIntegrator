@@ -172,6 +172,35 @@ mutable struct PlanOperator
     writes::Vector{String}
     reads::Vector{String}
     structure::Any                      # pass 4 (§5.4); `nothing` while pending
+    # :rhs, or :algebraic for an operator of algebraic equations (§5.9.1),
+    # whose residuals (in flattened equation order) and, once its solving
+    # node is paired (§5.9.5), the unknown of each residual.
+    kind::Symbol
+    residuals::Vector{Any}
+    pairing::Vector{String}
+end
+
+PlanOperator(name, terms, bind_dt, pointer, locality, radius, writes, reads, structure) =
+    PlanOperator(name, terms, bind_dt, pointer, locality, radius, writes, reads, structure, :rhs, Any[], String[])
+
+is_algebraic(op::PlanOperator) = op.kind === :algebraic
+
+"""
+    residual_matches(m, sel, r) -> Bool
+
+spec/run-config.md §3.1 for an algebraic equation: `components` covers its
+owner, `variables` lists a name it reads, `terms` lists its id, and a
+`locality` key never matches.
+"""
+function residual_matches(sel::AbstractDict, r)
+    haskey(sel, "locality") && return false
+    if haskey(sel, "components")
+        r.owner === nothing && return false
+        any(C -> covers(C, r.owner), _as_list(sel["components"])) || return false
+    end
+    haskey(sel, "variables") && (any(v -> v in r.reads, _as_list(sel["variables"])) || return false)
+    haskey(sel, "terms") && (r.id in _as_list(sel["terms"]) || return false)
+    return true
 end
 
 is_default_operator(op::PlanOperator) = startswith(op.name, "default_")
@@ -208,7 +237,7 @@ function select_operators(m::PlanModel, terms::Vector{Term}, config::AbstractDic
                 jptr("/operators", n, "select", "variables", i - 1)
             k = name_kind(m, v)
             k === nothing && refuse("name_unresolved", at, "selector variable $v is not a name of the flattened model")
-            k === :state || refuse("name_wrong_kind", at, "selector variable $v is a $k, not a state")
+            k === :state || refuse("name_wrong_kind", at, "selector variable $v is a $k, not a state or solved unknown")
         end
     end
     uses_components = any(n -> haskey(opdefs[n]["select"], "components"), names)
@@ -234,13 +263,40 @@ function select_operators(m::PlanModel, terms::Vector{Term}, config::AbstractDic
             push!(get!(assigned, "default_" * String(need_locality(t)), Term[]), t)
         end
     end
+    # §5.9.1: algebraic equations, matched as spec/run-config.md §3.1 says;
+    # unmatched ones go to `default_algebraic`.
+    rassigned = Dict{String, Vector{Any}}()
+    for r in m.residuals
+        matched = [n for n in names if residual_matches(opdefs[n]["select"], r)]
+        if length(matched) >= 2
+            refuse(
+                "term_selected_twice", jptr("/operators", matched[1]),
+                "algebraic equation $(r.id) is matched by operators $(matched[1]) and $(matched[2])"
+            )
+        end
+        push!(get!(rassigned, isempty(matched) ? "default_algebraic" : matched[1], Any[]), r)
+    end
     for n in names
-        haskey(assigned, n) || refuse(
+        (haskey(assigned, n) || haskey(rassigned, n)) || refuse(
             "selector_matches_nothing", jptr("/operators", n, "select"),
             "operator $n's selector matches no term"
         )
     end
+    for n in names
+        haskey(assigned, n) && haskey(rassigned, n) && refuse(
+            "operator_mixes_kinds", jptr("/operators", n),
+            "operator $n's selector matches both right-hand-side terms and algebraic equations (spec/plan.md §5.9.1)"
+        )
+    end
     ops = Dict{String, PlanOperator}()
+    for (n, rs) in rassigned
+        def = get(opdefs, n, nothing)
+        bind = def === nothing ? nothing : get(def, "bind_dt", nothing)
+        ops[n] = PlanOperator(
+            n, Term[], bind, def === nothing ? "" : jptr("/operators", n), nothing, nothing,
+            String[], String[], nothing, :algebraic, rs, String[]
+        )
+    end
     for (n, ts) in assigned
         def = get(opdefs, n, nothing)
         bind = def === nothing ? nothing : get(def, "bind_dt", nothing)

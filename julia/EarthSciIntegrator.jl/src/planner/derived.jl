@@ -131,13 +131,17 @@ they reach are carried as in every derived document (§6.1.5).
 """
 probe_document(m::PlanModel, terms::AbstractVector) = _rhs_document(m, "probe", terms, true)
 
-function _rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector, probe::Bool)
+function _rhs_document(
+        m::PlanModel, name::AbstractString, terms::AbstractVector, probe::Bool;
+        zrhs::AbstractDict = Dict{String, Any}(), extra::AbstractVector = Any[], extra_refs::AbstractVector = String[]
+    )
     flat = m.flat
-    live = live_observeds(m, reduce(vcat, (t.refs for t in terms); init = String[]))
+    refs_all = vcat(reduce(vcat, (t.refs for t in terms); init = String[]), extra_refs)
+    live = live_observeds(m, refs_all)
     models = Dict{String, Any}()
     # §6.3: the data-fed parameters this document's terms read, directly or
     # through live observeds, are its forcing slots.
-    fed = forcing_among(m, observed_closure(m, reduce(vcat, (t.refs for t in terms); init = String[])))
+    fed = forcing_among(m, observed_closure(m, refs_all))
     for dict in (flat.state_variables, flat.parameters, flat.observed_variables), (vname, v) in dict
         (is_state(m, vname) || is_param(m, vname) || vname in live) || continue
         is_forcing(m, vname) && !(vname in m.used_forcing) && continue        # unused: not declared
@@ -178,6 +182,22 @@ function _rhs_document(m::PlanModel, name::AbstractString, terms::AbstractVector
                 y == t.variable || continue
                 push!(v["equations"], Dict{String, Any}("lhs" => Dict{String, Any}("op" => "ic", "args" => Any[x]), "rhs" => _ser(e)))
             end
+        end
+    end
+    # §6.1.2: each solved unknown's state equation, after the flattened
+    # model's equations and before the `ic` equations, in code-point order:
+    # its residual in its solving operator's residual document (§6.4), zero
+    # elsewhere.
+    for z in m.solved
+        lhs = Dict{String, Any}("op" => "D", "args" => Any[z], "wrt" => "t")
+        push!(component_model!(models, component_of(z))["equations"], Dict{String, Any}("lhs" => lhs, "rhs" => get(zrhs, z, zero_rhs(m, z))))
+    end
+    # §5.9.4: the residual probe's states.
+    if !isempty(extra)
+        v = component_model!(models, PROBE_COMPONENT)
+        for (x, decl, rhs) in extra
+            v["variables"][last_segment(x)] = decl
+            push!(v["equations"], Dict{String, Any}("lhs" => Dict{String, Any}("op" => "D", "args" => Any[x], "wrt" => "t"), "rhs" => rhs))
         end
     end
     for (x, e) in flat.field_ics
@@ -362,3 +382,35 @@ end
 
 """The bytes of a derived document: EarthSciASTDiff's `stable_json` (§2.2)."""
 document_bytes(doc::AbstractDict) = EarthSciASTDiff.stable_json(doc)
+
+"""
+    residual_document(m, name, op) -> Dict
+
+§6.4: the residual document of algebraic operator `op`: §6.1's document with
+no terms, each unknown paired with a residual of `op` (`op.pairing`) given
+that residual, written cell by cell, as its state equation.
+"""
+function residual_document(m::PlanModel, name::AbstractString, op)
+    zrhs = Dict{String, Any}()
+    for (r, z) in zip(op.residuals, op.pairing)
+        zrhs[z] = residual_rhs(m, r, get(m.shapes, z, String[]), op.pointer == "" ? "/schedule" : op.pointer)
+    end
+    return _rhs_document(m, name, Term[], false; zrhs, extra_refs = reduce(vcat, (r.refs for r in op.residuals); init = String[]))
+end
+
+"""
+    residual_probe_document(m, residuals, shapes, at) -> Dict
+
+§5.9.4's probe: §6.1's document with no terms, and residual `k` (of
+`residuals`, `(k, r)` pairs) as the right-hand side of a new state
+`JacobianEval.res_k` declared with `shapes[k]` and `default` 0.0.
+"""
+function residual_probe_document(m::PlanModel, residuals, shapes, at)
+    extra = Any[]
+    for ((k, r), shape) in zip(residuals, shapes)
+        decl = Dict{String, Any}("type" => "unknown", "default" => 0.0)
+        isempty(shape) || (decl["shape"] = Any[shape...])
+        push!(extra, (residual_probe_state(k), decl, residual_rhs(m, r, shape, at)))
+    end
+    return _rhs_document(m, "probe", Term[], false; extra, extra_refs = reduce(vcat, (r.refs for (_, r) in residuals); init = String[]))
+end

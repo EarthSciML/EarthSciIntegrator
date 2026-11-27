@@ -392,7 +392,7 @@ end
 function artifacts!(b::DiffBackend, ctx, op::PlanOperator)
     bind!(b, ctx)
     haskey(b.ops, op.name) && return b.ops[op.name]
-    d = DerivedDocument(rhs_document(ctx.model, op.name, op.terms))
+    d = DerivedDocument(is_algebraic(op) ? residual_document(ctx.model, op.name, op) : rhs_document(ctx.model, op.name, op.terms))
     entries = try
         document_bands(d.flat, "operator $(op.name)")
     catch e
@@ -593,11 +593,17 @@ function operator_structure(b::DiffBackend, ctx, op::PlanOperator)
         "depends_on_t" => depends_on_t(m, op),
         "bands" => Any[a.band_dicts...]
     )
+    if is_algebraic(op)
+        # §6.4: an algebraic operator's class and radius from its residual
+        # document's bands, which are also its pattern.
+        op.locality, op.radius = classify_bands(a.bands, m.shapes, axes, m.sizes)
+        op.locality === :stencil && (op.radius = Dict{String, Tuple{Int, Int}}(X => get(op.radius, X, (0, 0)) for X in axes.horizontal))
+    end
     loc = need_locality(op)
-    check_full_locality(op, a.bands, m, axes)
+    is_algebraic(op) || check_full_locality(op, a.bands, m, axes)
     # The footprint and the bandwidth read the pattern the locality and radius
     # were read from: the operator's terms' band lists (§5.2.2, §5.4).
-    pattern() = BandEntry[x for t in op.terms for x in something(t.bands, BandEntry[])]
+    pattern() = is_algebraic(op) ? a.bands : BandEntry[x for t in op.terms for x in something(t.bands, BandEntry[])]
     if loc === :pointwise && cls === :block_diagonal
         p = EarthSciASTDiff.serialize_plan(EarthSciASTDiff.plan_factorization(a.entries, a.sv; structure = cls))
         s["block"] = Dict{String, Any}(
@@ -649,7 +655,7 @@ function derived_and_validation(b::DiffBackend, ctx)
     derived = Dict{String, Any}()
     for o in names
         op = ctx.ops[o]
-        for (kind, d) in (("rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op)))
+        for (kind, d) in ((is_algebraic(op) ? "residual" : "rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op)))
             # SHA's `sha256(::String)` re-hashes the whole string for every
             # block (its copy's alias check takes the string's `objectid`), so a
             # document of megabytes takes minutes; a byte vector does not.
@@ -661,7 +667,7 @@ function derived_and_validation(b::DiffBackend, ctx)
     # §8.1, in the order validation lists the checks; the first failure refuses.
     # `rhs_sum` is structural: it builds and evaluates nothing (D91).
     b.report["rhs_sum"] = Dict{String, Any}(
-        "summands" => rhs_sum_check(m, [(o, b.ops[o].rhs.flat) for o in names])
+        "summands" => rhs_sum_check(m, [(o, b.ops[o].rhs.flat) for o in names if !is_algebraic(ctx.ops[o])])
     )
     validation = Any[Dict{String, Any}("check" => "rhs_sum", "passed" => true)]
     for o in names
@@ -778,6 +784,10 @@ end
 
 """§8.1 `non_empty`: the operator has a term, and a band when any of its terms references a state."""
 function non_empty_check(b::DiffBackend, ctx, op::PlanOperator)
+    if is_algebraic(op)
+        isempty(b.ops[op.name].entries) && refuse("validation_empty_operator", "/model", "algebraic operator $(op.name) has no band")
+        return
+    end
     isempty(op.terms) && refuse("validation_empty_operator", "/model", "operator $(op.name) has no term")
     reads_state = any(t -> any(n -> is_state(ctx.model, n), t.refs), op.terms)
     reads_state && isempty(b.ops[op.name].entries) && refuse(
@@ -803,7 +813,7 @@ end
 function derived_files(b::DiffBackend)
     out = Dict{String, String}()
     for (o, a) in b.ops
-        out["derived/$o.rhs.esm"] = a.rhs.bytes
+        out["derived/$o.$(is_algebraic(b.ctx.ops[o]) ? "residual" : "rhs").esm"] = a.rhs.bytes
         a.jac === nothing || (out["derived/$o.jacobian.esm"] = a.jac.bytes)
     end
     return out

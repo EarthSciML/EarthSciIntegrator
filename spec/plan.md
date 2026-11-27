@@ -112,8 +112,7 @@ The planner runs these steps in order and stops at the first refusal. A refusal 
 2. each term's locality (§5.2.2–§5.2.4 applied to the term; `band_model_failed`), since selection reads it;
 3. selection (§5.1.3), with its refusals in the order §5.1.3 gives;
 4. each operator's class and radius (§5.2.4), pass 3 (§5.3), the scale of the used data-fed parameters (§4.1; `forcing_without_scale`) and pass 4 (§5.4; `band_model_failed`), each pass taking the operators in code-point order of their names;
-5. the schedule (§7.1), the step (§7.3), the partition (§7.4), the precision (§7.5) and the adjoint (§7.6);
-   then the algebraic structure (§5.9): for each `solve` and `coupled` node with algebraic operators, in tree order, its singularity test, pairing and uniqueness, then each algebraic operator's class, pass 3 and pass 4 on its residual document, operators in code-point order of their names, then rule 18's sign check (§5.9.7);
+5. the schedule (§7.1); then the algebraic structure (§5.9): for each `solve` and `coupled` node with algebraic operators, in tree order, its singularity test, pairing and uniqueness, then each algebraic operator's class, pass 3 and pass 4 on its residual document, operators in code-point order of their names, then rule 18's sign check (§5.9.7); then the step (§7.3), the partition (§7.4), which reads the algebraic operators' radii, the precision (§7.5) and the adjoint (§7.6);
 6. the strategies (§5.5), then the precision check of §7.5 that waits for a resolved method (`precision_low_with_classical_rosenbrock` on a leaf whose `alg` is `"auto"`), then the time-derivative check of §5.5.3 (`unsupported_time_derivative`);
 7. the derived documents (§6) and validation (§8).
 

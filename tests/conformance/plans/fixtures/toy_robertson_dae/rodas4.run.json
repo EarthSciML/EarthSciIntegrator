@@ -1,0 +1,37 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "spec/toy-problems.md \u00a71.10: Robertson as an index-1 DAE, a coupled node with Rodas4.",
+  "model": "../../../toys/robertson_dae.esm",
+  "operators": {
+    "kinetics": {
+      "select": {
+        "terms": [
+          "Rober"
+        ]
+      }
+    },
+    "conservation": {
+      "select": {
+        "terms": [
+          "Rober.residual[1]"
+        ]
+      }
+    }
+  },
+  "step": {
+    "dt": 40
+  },
+  "schedule": {
+    "coupled": [
+      "kinetics",
+      "conservation"
+    ],
+    "alg": "Rodas4",
+    "jacobian": "symbolic",
+    "linsolve": "dense_lu",
+    "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10
+    }
+  }
+}

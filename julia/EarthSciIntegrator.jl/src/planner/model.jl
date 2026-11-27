@@ -64,7 +64,15 @@ struct PlanModel
     # The merged operator registry the flattened model's references resolve
     # against, with what is read of each definition (operator_refs.jl).
     operators::OperatorRefs
+    # The flattened model's algebraic equations (spec/plan.md §5.9.1), in
+    # flattened equation order, and its solved unknowns (§4): the algebraic
+    # unknowns some algebraic equation reads, directly or through observeds,
+    # in code-point order. The solved unknowns are among `states`.
+    residuals::Vector{Any}
+    solved::Vector{String}
 end
+
+is_solved(m, n) = n in m.solved
 
 """The data source `name` of the loaded document, or `nothing`."""
 data_source(file, name) = (file === nothing || file.data_sources === nothing) ? nothing : get(file.data_sources, name, nothing)
@@ -199,7 +207,8 @@ function plan_model(inp::PlanInputs)
         end
     end
     differentiated = Set(x[2] for x in state_eqs)
-    states = [k for k in keys(flat.state_variables) if k in differentiated]
+    solved = solved_unknowns(flat, inp.contributions, observed_defs)
+    states = [k for k in keys(flat.state_variables) if k in differentiated || k in solved]
     shapes = Dict{String, Vector{String}}()
     for dict in (flat.state_variables, flat.parameters, flat.observed_variables), (k, v) in dict
         v.shape === nothing || isempty(v.shape) || (shapes[k] = String.(v.shape))
@@ -207,12 +216,15 @@ function plan_model(inp::PlanInputs)
     for k in keys(flat.lifted_shapes)
         haskey(shapes, k) || error("EarthSciAST's flatten recorded no shape for the lifted state $k (spec/plan.md §6.1.3)")
     end
-    return PlanModel(
+    m = PlanModel(
         inp.file, flat, inp.contributions, states, Set(states), sort(states), collect(keys(flat.parameters)),
         collect(keys(flat.observed_variables)), shapes, sizes, Set(keys(flat.lifted_shapes)), state_eqs,
         observed_defs, observed_definitions(flat), reaction_system_paths(inp.file),
-        forcing_info(inp.file, flat), Set{String}(), OperatorRefs(flat.template_registry)
+        forcing_info(inp.file, flat), Set{String}(), OperatorRefs(flat.template_registry),
+        Any[], sort!(collect(solved))
     )
+    append!(m.residuals, build_residuals(m))
+    return m
 end
 
 """

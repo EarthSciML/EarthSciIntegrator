@@ -1,0 +1,18 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/robertson_dae.esm",
+  "operators": {
+    "rober": {
+      "select": {
+        "components": "Rober"
+      }
+    }
+  },
+  "step": {
+    "dt": 40
+  },
+  "schedule": {
+    "coupled": "rober",
+    "alg": "Rodas4"
+  }
+}

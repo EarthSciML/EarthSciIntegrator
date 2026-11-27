@@ -75,7 +75,7 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
     mark_used_forcing!(m, ctx.terms)                     # §4.1
     term_localities!(ctx, ctx.terms)
     ctx.ops = select_operators(m, ctx.terms, config)
-    opnames = sort!(collect(keys(ctx.ops)))
+    opnames = sort!([k for (k, op) in ctx.ops if !is_algebraic(op)])
     for o in opnames
         operator_locality!(ctx.ops[o], axes)
     end
@@ -95,6 +95,9 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
         build_snode(sched, "root", "/schedule", false)
     end
     check_schedule(ctx, root)
+    # §5.9: the pairing of each solving node, the algebraic operators' passes
+    # 2–4 on their residual documents, rule 18's sign check.
+    algebraic_structure!(ctx, root)
     # §7.3–§7.6.
     step = resolve_step(m, config)
     partition = resolve_partition(ctx, root)
@@ -184,6 +187,16 @@ end
 """The plan's object for an operator (§3, §5)."""
 function operator_json(m::PlanModel, op::PlanOperator, stiff)
     op.structure === nothing && throw(PlannerStageError("operator $(op.name)'s structure (§5.4) needs EarthSciASTDiff"))
+    if is_algebraic(op)
+        d = Dict{String, Any}(
+            "kind" => "algebraic", "locality" => locality_json(op), "writes" => op.writes, "reads" => op.reads,
+            "residuals" => Any[Dict{String, Any}("id" => r.id, "origin" => r.origin, "unknown" => z) for (r, z) in zip(op.residuals, op.pairing)],
+            "structure" => op.structure
+        )
+        f = forcing_among(m, op.reads)
+        isempty(f) || (d["forcing"] = f)
+        return d
+    end
     d = Dict{String, Any}(
         "kind" => "rhs",
         "locality" => locality_json(op),
@@ -224,7 +237,7 @@ function plan_dict(d::PlanDraft)
         "esm_integrator" => String(ctx.config["esm_integrator"]),
         "inputs" => inputs_json(ctx.inputs),
         "time" => Dict{String, Any}("start" => ctx.time[1], "end" => ctx.time[2]),
-        "operators" => Dict{String, Any}(n => operator_json(ctx.model, op, d.stiffness[n]) for (n, op) in ctx.ops),
+        "operators" => Dict{String, Any}(n => operator_json(ctx.model, op, get(d.stiffness, n, nothing)) for (n, op) in ctx.ops),
         "schedule" => d.schedule,
         "step" => d.step,
         "partition" => d.partition,

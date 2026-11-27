@@ -51,6 +51,9 @@ function mark_used_forcing!(m::PlanModel, terms)
     for t in terms
         append!(names, t.refs)
     end
+    for r in m.residuals
+        append!(names, r.refs)
+    end
     for (_, e) in m.flat.field_ics
         append!(names, referenced_names(m, e))
     end

@@ -4,7 +4,15 @@
     "at": "/schedule/alg"
   },
   "algebraic-equation": {
-    "code": "unsupported_algebraic_equation",
+    "code": "operator_not_advanced",
+    "at": "/schedule"
+  },
+  "algebraic-unknown-solved-twice": {
+    "code": "algebraic_unknown_solved_twice",
+    "at": "/schedule/sequence/1"
+  },
+  "algebraic-unknown-unsolved": {
+    "code": "algebraic_unknown_unsolved",
     "at": "/model"
   },
   "ambiguous-term-owner": {
@@ -38,6 +46,10 @@
   "bind-dt-without-dt0": {
     "code": "bind_dt_leaf_without_dt0",
     "at": "/schedule/bind_dt"
+  },
+  "dae-method-invalid": {
+    "code": "dae_method_invalid",
+    "at": "/schedule/alg"
   },
   "data-update-with-schedule": {
     "code": "unsupported_parameter_update",
@@ -79,6 +91,14 @@
     "code": "unsupported_step_limit",
     "at": "/step/limits/0"
   },
+  "operator-kind-mismatch": {
+    "code": "operator_kind_mismatch",
+    "at": "/schedule/leaf"
+  },
+  "operator-mixes-kinds": {
+    "code": "operator_mixes_kinds",
+    "at": "/operators/rober"
+  },
   "operator-not-advanced": {
     "code": "operator_not_advanced",
     "at": "/operators/dep"
@@ -115,9 +135,29 @@
     "code": "selector_matches_nothing",
     "at": "/operators/ghost/select"
   },
+  "solve-bounds-moving": {
+    "code": "solve_bounds_invalid",
+    "at": "/schedule/unknowns/1"
+  },
+  "solve-bounds-rel-change": {
+    "code": "solve_bounds_invalid",
+    "at": "/schedule/method/converged/rel_change"
+  },
+  "solve-bounds-sign": {
+    "code": "solve_bounds_sign",
+    "at": "/schedule/unknowns/0"
+  },
   "solve-node": {
-    "code": "unsupported_solve_node",
-    "at": "/schedule/sequence/0"
+    "code": "operator_kind_mismatch",
+    "at": "/schedule/solve"
+  },
+  "solve-pairing-ambiguous": {
+    "code": "solve_pairing_ambiguous",
+    "at": "/schedule"
+  },
+  "solve-structurally-singular": {
+    "code": "solve_structurally_singular",
+    "at": "/schedule"
   },
   "solver-external-mismatch": {
     "code": "solver_external_mismatch",
@@ -154,6 +194,18 @@
   "tstop-off-fixed-step": {
     "code": "tstop_off_fixed_step",
     "at": "/step/hit_multiples"
+  },
+  "unsupported-dae-bounds": {
+    "code": "unsupported_dae_bounds",
+    "at": "/schedule"
+  },
+  "unsupported-solve-option": {
+    "code": "unsupported_solve_option",
+    "at": "/schedule/method/linesearch"
+  },
+  "unsupported-solve-pairing": {
+    "code": "unsupported_solve_pairing",
+    "at": "/schedule"
   },
   "wrt-matches-nothing": {
     "code": "wrt_matches_nothing",

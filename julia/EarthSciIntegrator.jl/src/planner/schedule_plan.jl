@@ -59,6 +59,10 @@ every option `"auto"` (omitted); one leaf is the root, two or more a
 `sequence`, or a `strang` when the model's `solver.splitting` is `"strang"`.
 """
 function auto_schedule(ops::Dict{String, PlanOperator}, splitting)
+    any(is_algebraic, values(ops)) && refuse(
+        "auto_strategy_unavailable", "/schedule",
+        "the model has algebraic equations; the \"auto\" schedule has no solve node or DAE (name one, spec/run-config.md §4.3, §4.10)"
+    )
     leaves = Any[]
     for c in (:global, :stencil, :column, :pointwise)
         names = sort!([n for (n, op) in ops if need_locality(op) === c])
@@ -74,6 +78,7 @@ end
 """Operator references of a node, with their pointers: its leaf (or coupled) list."""
 function operator_refs(n::SNode)
     refs = Tuple{String, String}[]
+    n.kind == "solve" && return [(String(n.spec["solve"]), nptr(n, "solve"))]
     is_leaflike(n) || return refs
     v = n.spec[n.kind]
     if v isa AbstractString
@@ -402,7 +407,6 @@ function check_schedule(ctx, root::SNode)
     # Unsupported constructs, tree order (§0.1).
     for n in nodes
         n.kind == "map" && refuse("unsupported_map_operator", nptr(n), "map nodes need U6 (M4b)")
-        n.kind == "solve" && refuse("unsupported_solve_node", nptr(n), "solve nodes need U6 (M4b)")
         n.kind == "split_explicit" && refuse("unsupported_split_explicit", nptr(n), "split_explicit arrives at M7")
         # §0.1, D94: both runtimes run dt_scope global only until M3.
         if is_leaflike(n)
@@ -412,7 +416,6 @@ function check_schedule(ctx, root::SNode)
                 "leaf $(n.id): dt_scope \"$scope\" arrives at M3; at M2 the runtimes step every leaf with dt_scope \"global\" (give \"global\" or omit dt_scope)"
             )
         end
-        # (coupled with algebraic operators cannot occur: §4 step 6 refused algebraic equations.)
         if n.kind == "subcycle" && haskey(n.spec, "limits")
             for (i, l) in enumerate(n.spec["limits"])
                 l isa AbstractString && observed_limit(l, nptr(n, "limits", i - 1))
@@ -450,6 +453,8 @@ function check_schedule(ctx, root::SNode)
         o in named && refuse("operator_advanced_twice", p, "operator $o is advanced twice in one invocation")
         push!(named, o)
     end
+    # Rule 19 (spec/plan.md §7.1, §5.9.2), then rule 18's checks that need no derivative.
+    check_algebraic_schedule(ctx, nodes)
     # Rule 6 (§7.1): the imex partition of a leaf whose written alg is IMEXEuler
     # (an "auto" leaf resolved to IMEXEuler is not checked here; an imex key on
     # a leaf of another method is ignored). Missing imex is refused at the
@@ -615,6 +620,7 @@ function operator_stiffness!(ctx, root::SNode, Δ::Dict{String, Float64})
     stiff = Dict{String, Tuple{Symbol, String}}()
     for o in sort!(collect(keys(ctx.ops)))
         op = ctx.ops[o]
+        is_algebraic(op) && continue            # an algebraic operator has no stiffness (§5.5.2)
         n = leaf_of[o]
         alg = get(n.spec, "alg", "auto")
         stiff[o] = if alg != "auto"
@@ -698,11 +704,13 @@ function resolve_leaf(ctx, n::SNode, stiff)
     spec = n.spec
     names = leaf_ops(n)
     cls = reduce(coarser, (need_locality(ctx.ops[o]) for o in names))
-    isstiff = any(o -> stiff[o][1] === :stiff, names)
+    isstiff = any(o -> get(stiff, o, (:stiff, ""))[1] === :stiff, names)
+    dae = is_solving(ctx, n)
     ctrl = get(spec, "control", Dict{String, Any}())
     given(d, k) = haskey(d, k) && d[k] != "auto"
     reltol = Float64(get(ctrl, "reltol", 1.0e-3))
     alg = get(spec, "alg", "auto")
+    dae && alg == "auto" && (alg = "Rodas4")            # spec/run-config.md §4.3
     jac = given(spec, "jacobian") ? String(spec["jacobian"]) : nothing
     ls = given(spec, "linsolve") ? linsolve_object(spec["linsolve"]) : nothing
     imex = nothing
@@ -806,6 +814,10 @@ function resolve_leaf(ctx, n::SNode, stiff)
         ]
     end
     haskey(spec, "bind_dt") && (out["bind_dt"] = Dict{String, Any}(String(k) => v for (k, v) in spec["bind_dt"]))
+    if dae
+        op = ctx.ops[first(node_algebraic_ops(ctx, n))]
+        out["initialize"] = resolve_method(ctx, get(spec, "initialize", DEFAULT_INITIALIZE), op)
+    end
     return out
 end
 
@@ -827,6 +839,7 @@ with `period`, `phase` (default 0) and `hold` (default `none`).
 """
 function resolve_tree(ctx, n::SNode, stiff)
     is_leaflike(n) && return resolve_leaf(ctx, n, stiff)
+    n.kind == "solve" && return resolve_solve(ctx, n)
     out = Dict{String, Any}("id" => n.id)
     if n.kind == "sequence" || n.kind == "strang"
         out[n.kind] = Any[resolve_tree(ctx, c, stiff) for c in n.children]
