@@ -72,7 +72,7 @@
     {"code": "partition_too_fine", "rule": null, "where": "spec/plan.md §7.4", "meaning": "ranks times tiles exceeds an axis's size. Pointer: /partition."},
     {"code": "partition_conflict", "rule": null, "where": "spec/plan.md §7.4", "meaning": "partition.shards entries for two operators of one leaf disagree. Pointer: the first entry in the leaf's operator order that disagrees with the leaf's first entry, /partition/shards/<op>."},
     {"code": "validation_rhs_sum_failed", "rule": null, "where": "spec/plan.md §8.1", "meaning": "The operators' right-hand sides do not sum to the model's. Pointer: /model."},
-    {"code": "validation_band_model_failed", "rule": null, "where": "spec/plan.md §8.1", "meaning": "An operator's band Jacobian disagrees with the independent Jacobian. Pointer: /model."},
+    {"code": "validation_band_model_failed", "rule": null, "where": "spec/plan.md §8.1", "meaning": "An operator's band Jacobian disagrees with the independent Jacobian, or has a non-finite value at a sampled state. Pointer: /model."},
     {"code": "validation_empty_operator", "rule": null, "where": "spec/plan.md §8.1", "meaning": "An operator has no term, or no band although a term reads a state. Pointer: /model."}
   ]
 }

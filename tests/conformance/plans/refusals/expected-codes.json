@@ -211,6 +211,10 @@
     "code": "unsupported_solve_pairing",
     "at": "/schedule"
   },
+  "validation-band-nonfinite": {
+    "code": "validation_band_model_failed",
+    "at": "/model"
+  },
   "wrt-matches-nothing": {
     "code": "wrt_matches_nothing",
     "at": "/adjoint/wrt/0"

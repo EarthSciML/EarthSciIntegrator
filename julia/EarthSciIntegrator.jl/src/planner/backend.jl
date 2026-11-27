@@ -729,8 +729,8 @@ end
 Jacobian from the Jacobian document's fields and the bands against
 ForwardDiff's Jacobian of the right-hand-side document on the band pattern,
 the pattern's columns coloured as §8.2 colours them and each colour seeded as
-one direction, rows of `writes` only: `|J^B − J^I| ≤ 1e-10 M_r` per pattern
-entry, and no nonzero partial of a row in the direction of a colour none of
+one direction, rows of `writes` only: every band value finite, `|J^B − J^I|
+≤ 1e-10 M_r` per pattern entry, and no nonzero partial of a row in the direction of a colour none of
 its pattern columns has. Keeps the ForwardDiff values on the band pattern for
 the band-value file (§8.2).
 """
@@ -747,6 +747,14 @@ function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
     for (s, (t, u)) in enumerate(samples!(b, ctx))
         F = sample_forcing(b, ctx, s)
         JB = band_values(B, P, a.points, u, t, F)
+        # A non-finite band value fails the check whatever the independent
+        # Jacobian says: every comparison with NaN is false.
+        for r in rows, i in entry_range(P, r)
+            isfinite(JB[i]) || refuse(
+                "validation_band_model_failed", "/model",
+                "operator $(op.name) at t = $t: band Jacobian entry ($(L.names[r]), $(L.names[P.cols[i]])) is non-finite ($(JB[i]))"
+            )
+        end
         JI, off = forwarddiff_colours(R, u, t, P, colour, rows; F)
         if off !== nothing
             r, k, v = off
