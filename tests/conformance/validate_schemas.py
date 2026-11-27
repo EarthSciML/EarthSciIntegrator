@@ -48,6 +48,7 @@ SUITES = {
 DOCUMENTS = [
     ("tests/conformance/m1/cases.json", "cases.schema.json", True),
     ("tests/conformance/m2/cases.json", "cases.schema.json", True),
+    ("tests/conformance/m3/cases.json", "cases.schema.json", True),
     ("spec/tableaus/*.json", "tableau.schema.json", False),
     ("tests/conformance/m1/reference/*.json", "result.schema.json", False),
     ("tests/conformance/m2/reference/*.json", "result.schema.json", True),
