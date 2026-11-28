@@ -37,6 +37,29 @@ const CASES: &[(&str, &str)] = &[
     ("unnamed_lift", "auto"),
     ("toy_photostationary_cells", "kvaerno4"),
     ("toy_robertson", "rodas4"),
+    ("toy_box_lcp", "newton"),
+    ("toy_box_lcp", "ptc"),
+    ("toy_cubic_roots", "newton"),
+    ("toy_cubic_roots", "ptc"),
+    ("toy_phase_joint", "ptc"),
+    ("toy_phase_joint", "per_cell"),
+    ("toy_robertson_dae", "rodas4"),
+    ("toy_robertson_dae", "trbdf2"),
+    ("toy_robertson_dae", "kvaerno4"),
+    ("toy_robertson_dae", "inconsistent"),
+    ("nested_default", "auto"),
+    ("toy_picard_roots", "picard"),
+    ("toy_picard_roots", "rel_change"),
+    ("toy_picard_roots", "newton_rel_change"),
+    ("box_scaled", "scaled_ptc"),
+    ("box_scaled", "recover_method"),
+    ("adjoint_cubic", "newton"),
+    ("adjoint_box", "newton"),
+    ("toy_phase_joint", "adjoint"),
+    ("toy_robertson_dae", "kvaerno4_adjoint"),
+    ("toy_robertson_dae", "trbdf2_adjoint"),
+    ("toy_box_lcp", "newton_inexact"),
+    ("toy_cubic_roots", "newton_inexact"),
 ];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.
@@ -355,7 +378,10 @@ fn check_golden(fixture: &str, case: &str, p: &Planned, plan_bytes: &[u8]) {
     files.sort();
     let mut ours: Vec<String> = Vec::new();
     for (op, d) in &p.documents {
-        for (kind, bytes) in [("jacobian", &d.jacobian), ("rhs", &d.rhs)] {
+        let docs = [("jacobian", &d.jacobian), (d.rhs_kind, &d.rhs)]
+            .into_iter()
+            .chain(d.extra.iter().map(|(k, b)| (*k, b)));
+        for (kind, bytes) in docs {
             let name = format!("{op}.{kind}.esm");
             let want = std::fs::read(golden.join("derived").join(&name))
                 .unwrap_or_else(|e| panic!("{fixture}/{case}: golden derived/{name}: {e}"));

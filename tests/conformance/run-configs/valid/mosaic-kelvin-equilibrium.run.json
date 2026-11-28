@@ -1,0 +1,14 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "Solve the Kelvin equilibrium of every MOSAIC size bin of every grid cell (mosaic_kelvin_equilibrium.esm, Kelvin.aw on lev x bin): elementwise, the scalar root of Kelvin's constraint 0 ~ aw0/K(aw) - aw for the bin water activity Kelvin.aw, by Newton with a backtracking line search, starting from aw0 = rh 0.01 (the document's initialization equation). converged.residual 1e-13 matches the tolerance at which the EqWeFiC root tests (aerosol_phase_state.esm kelvin_root_*) were generated. The Fortran instead iterates aw <- aw0/K(aw) to a relative update of 1e-2 (1e-6 above 99% RH), at most ten updates, and stops 0.2% (median) to 1% from this root (data/eqwefic/notes/mosaic_mesa_kelvin_solvers.md). On the MESA branch the water comes from mosaic_mesa_equilibrium.esm and this solve would nest that one; that assembly is not written yet.",
+  "model": "mosaic_kelvin_equilibrium.esm",
+  "operators": {
+    "kelvin": {"select": {"components": "Kelvin"}}
+  },
+  "schedule": {
+    "solve": "kelvin",
+    "unknowns": ["Kelvin.aw"],
+    "method": {"newton": {}, "linesearch": "backtracking", "converged": {"residual": 1e-13}, "maxiter": 50},
+    "warm_start": "initial"
+  }
+}

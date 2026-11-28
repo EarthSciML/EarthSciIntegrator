@@ -206,6 +206,7 @@ fn tree(
     live: &BTreeSet<String>,
     forcing: &BTreeSet<String>,
     rhs: &dyn Fn(usize, &str) -> Value,
+    zrhs: &BTreeMap<String, Value>,
 ) -> Tree {
     let flat = &info.flat;
     let mut tree = Tree::default();
@@ -247,6 +248,14 @@ fn tree(
                 json!({"lhs": expr_json(&eq.lhs), "rhs": expr_json(&eq.rhs)}),
             );
         }
+    }
+    // §6.1.2: each solved unknown's state equation, after the flattened
+    // model's equations and before the `ic` equations, in code-point order:
+    // its residual in its solving operator's residual document (§6.4), zero
+    // elsewhere.
+    for z in &info.solved {
+        let r = zrhs.get(z).cloned().unwrap_or_else(|| zero(info, z));
+        tree.push(z, json!({"lhs": d_of(z), "rhs": r}));
     }
     for (x, e) in &flat.field_ics {
         tree.push(x, ic_equation(x, e));
@@ -373,6 +382,10 @@ pub fn rhs_document(info: &ModelInfo, name: &str, terms: &[&Term]) -> Value {
 /// clash with them.
 pub const PROBE_COMPONENT: &str = JACOBIAN_MODEL;
 
+/// The model of the frozen documents' frozen states (spec/plan.md §6.5),
+/// reserved as `JacobianEval` is (§6.1.4).
+pub const FROZEN_COMPONENT: &str = "FrozenEval";
+
 /// The probe document's new state for the term at position `k` (0-based)
 /// of the slice passed to [`probe_document`]: `JacobianEval.term_<k+1>`.
 pub fn probe_state(k: usize) -> String {
@@ -412,7 +425,7 @@ fn term_document(info: &ModelInfo, name: &str, terms: &[&Term], probe: bool) -> 
         };
         state_rhs(info, i, x, ts)
     };
-    let mut tree = tree(info, &live, &forcing, &rhs);
+    let mut tree = tree(info, &live, &forcing, &rhs, &BTreeMap::new());
     if probe {
         for (k, t) in terms.iter().enumerate() {
             let x = probe_state(k);
@@ -469,6 +482,34 @@ pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
     models.values_mut().for_each(drop_ic);
     default_states(models)?;
     Ok(doc)
+}
+
+/// §6.6: EarthSciASTDiff's `vjp` product on the parameters axis of the view
+/// `sv` (a residual or frozen residual document), written as §6.2 writes
+/// the Jacobian document (no `ic` equations, every state a `default`), and
+/// its inputs and outputs for the plan entry (`lam`, `vjp`).
+pub fn parameter_product(sv: &SysView) -> Result<(Value, Value)> {
+    let msg =
+        |e: earthsci_astdiff::BandError| PlanError::Internal(format!("vjp_document: {}", e.0));
+    let entries =
+        earthsci_astdiff::jacobian_bands_view(sv, earthsci_astdiff::Wrt::Parameters, None)
+            .map_err(msg)?;
+    let (mut doc, io) = earthsci_astdiff::vjp_document(
+        sv,
+        &entries,
+        earthsci_astdiff::Wrt::Parameters,
+        &earthsci_astdiff::ProductOptions::default(),
+    )
+    .map_err(msg)?;
+    let Some(Value::Object(models)) = doc.get_mut("models") else {
+        return Err(PlanError::Internal("vjp_document wrote no models".into()));
+    };
+    models.values_mut().for_each(drop_ic);
+    default_states(models)?;
+    let map = |m: &earthsci_astdiff::IoMap| -> Value {
+        Value::Object(m.iter().map(|(k, v)| (k.clone(), json!(v))).collect())
+    };
+    Ok((doc, json!({"lam": map(&io.lam), "vjp": map(&io.vjp)})))
 }
 
 /// Gives every state of `models` without a `default` the `default` `1.0`
@@ -536,6 +577,71 @@ fn drop_ic(model: &mut Value) {
     if let Some(Value::Object(subs)) = model.get_mut("subsystems") {
         subs.values_mut().for_each(drop_ic);
     }
+}
+
+/// The document of no terms whose solved unknowns' equations are `zrhs`
+/// (zero for the others), with the new `JacobianEval` states `extra`
+/// (`(name, declaration, right-hand side)`), keeping the observeds that
+/// `refs` reach: §6.4's residual document, or §5.9.4's residual probe.
+fn solved_document(
+    info: &ModelInfo,
+    name: &str,
+    zrhs: &BTreeMap<String, Value>,
+    extra: &[(String, Value, Value)],
+    refs: &BTreeSet<String>,
+) -> Value {
+    let live = live_observeds(info, refs);
+    let forcing = forcing_of(info, refs);
+    let rhs = |i: usize, x: &str| state_rhs(info, i, x, &[]);
+    let mut tree = tree(info, &live, &forcing, &rhs, zrhs);
+    for (x, decl, r) in extra {
+        tree.declare(x, decl.clone());
+        tree.push(x, json!({"lhs": d_of(x), "rhs": r}));
+    }
+    let mut models = tree.to_json();
+    info.operators
+        .attach_operators(&mut models)
+        .expect("every reference resolves against the merged registry");
+    document(info, name, models, data_sources_stub(info, &forcing))
+}
+
+/// §6.4: the residual document of algebraic operator `op`.
+pub fn residual_document(
+    info: &ModelInfo,
+    name: &str,
+    op: &crate::operators::Operator,
+    at: &str,
+) -> Result<Value> {
+    let mut zrhs = BTreeMap::new();
+    let mut refs = BTreeSet::new();
+    for (r, z) in op.residuals.iter().zip(&op.pairing) {
+        zrhs.insert(
+            z.clone(),
+            crate::algebraic::residual_rhs(info, r, &info.shapes[z], at)?,
+        );
+        refs.extend(r.refs.iter().cloned());
+    }
+    Ok(solved_document(info, name, &zrhs, &[], &refs))
+}
+
+/// §6.5: the frozen residual document of operator `name`, with the frozen
+/// states `extra`, keeping the observeds `refs` reach.
+pub fn frozen_residual_document(
+    info: &ModelInfo,
+    name: &str,
+    extra: &[(String, Value, Value)],
+    refs: &BTreeSet<String>,
+) -> Value {
+    solved_document(info, name, &BTreeMap::new(), extra, refs)
+}
+
+/// §5.9.4: the residual probe with the states `extra`.
+pub fn residual_probe_document(
+    info: &ModelInfo,
+    extra: &[(String, Value, Value)],
+    refs: &BTreeSet<String>,
+) -> Value {
+    solved_document(info, "probe", &BTreeMap::new(), extra, refs)
 }
 
 #[cfg(test)]

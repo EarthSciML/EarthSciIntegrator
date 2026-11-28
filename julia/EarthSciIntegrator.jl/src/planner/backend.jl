@@ -142,8 +142,19 @@ mutable struct DiffBackend <: PlanBackend
     forcing::Union{Nothing, Vector{Dict{String, Vector{Float64}}}}
     bandvalues::Dict{String, Any}
     report::Dict{String, Any}
+    # An algebraic operator's frozen documents (spec/plan.md §6.5), by
+    # operator: (kind, document) pairs, and the frozen Jacobian's bands.
+    frozen::Dict{String, Vector{Tuple{String, Any}}}
+    frozen_bands::Dict{String, Vector{Dict{String, Any}}}
+    # An algebraic operator's parameter products (spec/plan.md §6.6, D127),
+    # by operator: (kind, document) pairs, and each product's plan-entry io.
+    products::Dict{String, Tuple{Vector{Tuple{String, Any}}, Dict{String, Any}}}
 end
-DiffBackend() = DiffBackend(nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}())
+DiffBackend() = DiffBackend(
+    nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}(),
+    Dict{String, Vector{Tuple{String, Any}}}(), Dict{String, Vector{Dict{String, Any}}}(),
+    Dict{String, Tuple{Vector{Tuple{String, Any}}, Dict{String, Any}}}()
+)
 
 """Bind `b` to the planning context `ctx`, dropping everything derived from another one."""
 function bind!(b::DiffBackend, ctx)
@@ -153,6 +164,9 @@ function bind!(b::DiffBackend, ctx)
     b.layout = b.u0 = b.samples = b.forcing = nothing
     empty!(b.bandvalues)
     empty!(b.report)
+    empty!(b.frozen)
+    empty!(b.frozen_bands)
+    empty!(b.products)
     return b
 end
 
@@ -392,7 +406,7 @@ end
 function artifacts!(b::DiffBackend, ctx, op::PlanOperator)
     bind!(b, ctx)
     haskey(b.ops, op.name) && return b.ops[op.name]
-    d = DerivedDocument(rhs_document(ctx.model, op.name, op.terms))
+    d = DerivedDocument(is_algebraic(op) ? residual_document(ctx.model, op.name, op) : rhs_document(ctx.model, op.name, op.terms))
     entries = try
         document_bands(d.flat, "operator $(op.name)")
     catch e
@@ -510,9 +524,28 @@ end
 # ---------------------------------------------------------------------------
 # Pass 4: structure (§5.4)
 
-"""`true` when no band coefficient references a state, or an observed whose definition references a state, transitively (§5.4)."""
+"""
+The observed a named intermediate of EarthSciASTDiff stands for
+(`<scope>._du_<observed>_<k>`, likewise `_dp_` and `_df_`; esm-jacobian-spec
+§4.6), else `n` itself.
+"""
+function intermediate_observed(n::AbstractString)
+    i = findlast('.', n)
+    scope, base = i === nothing ? ("", n) : (n[1:i], n[(i + 1):end])
+    (length(base) > 4 && base[1:4] in ("_du_", "_dp_", "_df_")) || return String(n)
+    rest = rstrip(base[5:end], '_')
+    j = findlast('_', rest)
+    (j === nothing || j == 1 || j == length(rest) || !all(isdigit, rest[(j + 1):end])) && return String(n)
+    return scope * rest[1:(j - 1)]
+end
+
+"""
+`true` when no band coefficient references a state, or an observed whose
+definition references a state, transitively (§5.4). A named intermediate
+counts as the observed it stands for.
+"""
 function linear_in_u(m::PlanModel, entries)
-    names = Set{String}(n for en in entries for n in EarthSciAST.free_variables(en.band.coef))
+    names = Set{String}(intermediate_observed(n) for en in entries for n in EarthSciAST.free_variables(en.band.coef))
     any(n -> is_state(m, n), names) && return false
     for o in live_observeds(m, names), r in get(m.observed_rhs, o, ASTExpr[])
         any(n -> is_state(m, n), EarthSciAST.free_variables(r)) && return false
@@ -523,7 +556,10 @@ end
 """`true` when the operator's right-hand-side document references `t` in a state equation or in the definition of an observed it keeps (§5.4)."""
 function depends_on_t(m::PlanModel, op::PlanOperator)
     any(t -> "t" in EarthSciAST.free_variables(t.expr), op.terms) && return true
-    for o in live_observeds(m, reduce(vcat, (t.refs for t in op.terms); init = String[])), r in get(m.observed_rhs, o, ASTExpr[])
+    # An algebraic operator's residuals are its document's state equations (§6.4).
+    any(r -> "t" in EarthSciAST.free_variables(r.lhs) || "t" in EarthSciAST.free_variables(r.rhs), op.residuals) && return true
+    refs = vcat(reduce(vcat, (t.refs for t in op.terms); init = String[]), reduce(vcat, (r.refs for r in op.residuals); init = String[]))
+    for o in live_observeds(m, refs), r in get(m.observed_rhs, o, ASTExpr[])
         "t" in EarthSciAST.free_variables(r) && return true
     end
     return false
@@ -586,24 +622,36 @@ end
 function operator_structure(b::DiffBackend, ctx, op::PlanOperator)
     a = artifacts!(b, ctx, op)
     m, axes = ctx.model, ctx.axes
-    cls = EarthSciASTDiff.detect_structure(a.entries, a.sv)
+    # The cells are the run config's horizontal and vertical axes (§5.4, D123).
+    cax = cell_axes(axes)
+    cls = EarthSciASTDiff.detect_structure(a.entries, a.sv; cell_axes = cax)
     s = Dict{String, Any}(
         "class" => String(cls),
         "linear_in_u" => linear_in_u(m, a.entries),
         "depends_on_t" => depends_on_t(m, op),
         "bands" => Any[a.band_dicts...]
     )
+    if is_algebraic(op)
+        # §6.4: an algebraic operator's class and radius from its residual
+        # document's bands, which are also its pattern.
+        op.locality, op.radius = classify_bands(a.bands, m.shapes, axes, m.sizes)
+        op.locality === :stencil && (op.radius = Dict{String, Tuple{Int, Int}}(X => get(op.radius, X, (0, 0)) for X in axes.horizontal))
+    end
     loc = need_locality(op)
-    check_full_locality(op, a.bands, m, axes)
+    is_algebraic(op) || check_full_locality(op, a.bands, m, axes)
     # The footprint and the bandwidth read the pattern the locality and radius
     # were read from: the operator's terms' band lists (§5.2.2, §5.4).
-    pattern() = BandEntry[x for t in op.terms for x in something(t.bands, BandEntry[])]
-    if loc === :pointwise && cls === :block_diagonal
-        p = EarthSciASTDiff.serialize_plan(EarthSciASTDiff.plan_factorization(a.entries, a.sv; structure = cls))
+    pattern() = is_algebraic(op) ? a.bands : BandEntry[x for t in op.terms for x in something(t.bands, BandEntry[])]
+    if loc === :pointwise && cls in (:block_diagonal, :cell_block)
+        p = EarthSciASTDiff.serialize_plan(EarthSciASTDiff.plan_factorization(a.entries, a.sv; structure = cls, cell_axes = cax))
         s["block"] = Dict{String, Any}(
             "vars" => Any[p["block_vars"]...], "ordering" => Any[p["ordering"]...],
             "pattern" => p["pattern"], "lu_pattern" => p["lu_pattern"]
         )
+        if cls === :cell_block
+            s["block"]["cell_axes"] = p["cell_axes"]
+            s["block"]["elements"] = p["elements"]
+        end
     elseif loc === :column
         kl, ku = column_bandwidth(pattern(), m, axes)
         s["column"] = Dict{String, Any}("axis" => axes.vertical, "kl" => kl, "ku" => ku)
@@ -649,7 +697,10 @@ function derived_and_validation(b::DiffBackend, ctx)
     derived = Dict{String, Any}()
     for o in names
         op = ctx.ops[o]
-        for (kind, d) in (("rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op)))
+        docs = Any[(is_algebraic(op) ? "residual" : "rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op))]
+        is_algebraic(op) && append!(docs, frozen_documents!(b, ctx, op))
+        is_algebraic(op) && append!(docs, first(product_documents!(b, ctx, op)))
+        for (kind, d) in docs
             # SHA's `sha256(::String)` re-hashes the whole string for every
             # block (its copy's alias check takes the string's `objectid`), so a
             # document of megabytes takes minutes; a byte vector does not.
@@ -661,7 +712,7 @@ function derived_and_validation(b::DiffBackend, ctx)
     # §8.1, in the order validation lists the checks; the first failure refuses.
     # `rhs_sum` is structural: it builds and evaluates nothing (D91).
     b.report["rhs_sum"] = Dict{String, Any}(
-        "summands" => rhs_sum_check(m, [(o, b.ops[o].rhs.flat) for o in names])
+        "summands" => rhs_sum_check(m, [(o, b.ops[o].rhs.flat) for o in names if !is_algebraic(ctx.ops[o])])
     )
     validation = Any[Dict{String, Any}("check" => "rhs_sum", "passed" => true)]
     for o in names
@@ -684,8 +735,8 @@ end
 Jacobian from the Jacobian document's fields and the bands against
 ForwardDiff's Jacobian of the right-hand-side document on the band pattern,
 the pattern's columns coloured as §8.2 colours them and each colour seeded as
-one direction, rows of `writes` only: `|J^B − J^I| ≤ 1e-10 M_r` per pattern
-entry, and no nonzero partial of a row in the direction of a colour none of
+one direction, rows of `writes` only: every band value finite, `|J^B − J^I|
+≤ 1e-10 M_r` per pattern entry, and no nonzero partial of a row in the direction of a colour none of
 its pattern columns has. Keeps the ForwardDiff values on the band pattern for
 the band-value file (§8.2).
 """
@@ -702,6 +753,14 @@ function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
     for (s, (t, u)) in enumerate(samples!(b, ctx))
         F = sample_forcing(b, ctx, s)
         JB = band_values(B, P, a.points, u, t, F)
+        # A non-finite band value fails the check whatever the independent
+        # Jacobian says: every comparison with NaN is false.
+        for r in rows, i in entry_range(P, r)
+            isfinite(JB[i]) || refuse(
+                "validation_band_model_failed", "/model",
+                "operator $(op.name) at t = $t: band Jacobian entry ($(L.names[r]), $(L.names[P.cols[i]])) is non-finite ($(JB[i]))"
+            )
+        end
         JI, off = forwarddiff_colours(R, u, t, P, colour, rows; F)
         if off !== nothing
             r, k, v = off
@@ -778,6 +837,10 @@ end
 
 """§8.1 `non_empty`: the operator has a term, and a band when any of its terms references a state."""
 function non_empty_check(b::DiffBackend, ctx, op::PlanOperator)
+    if is_algebraic(op)
+        isempty(b.ops[op.name].entries) && refuse("validation_empty_operator", "/model", "algebraic operator $(op.name) has no band")
+        return
+    end
     isempty(op.terms) && refuse("validation_empty_operator", "/model", "operator $(op.name) has no term")
     reads_state = any(t -> any(n -> is_state(ctx.model, n), t.refs), op.terms)
     reads_state && isempty(b.ops[op.name].entries) && refuse(
@@ -803,9 +866,22 @@ end
 function derived_files(b::DiffBackend)
     out = Dict{String, String}()
     for (o, a) in b.ops
-        out["derived/$o.rhs.esm"] = a.rhs.bytes
+        out["derived/$o.$(is_algebraic(b.ctx.ops[o]) ? "residual" : "rhs").esm"] = a.rhs.bytes
         a.jac === nothing || (out["derived/$o.jacobian.esm"] = a.jac.bytes)
+    end
+    for (o, docs) in b.frozen, (kind, d) in docs
+        out["derived/$o.$kind.esm"] = d.bytes
+    end
+    for (o, (docs, _)) in b.products, (kind, d) in docs
+        out["derived/$o.$kind.esm"] = d.bytes
     end
     return out
 end
 derived_files(::PlanBackend) = nothing
+
+"""The cell axes the structure reads (§5.4, D123): the horizontal axes in order, then the vertical one; `nothing` when there are none."""
+function cell_axes(axes::Axes)
+    c = String[axes.horizontal...]
+    axes.vertical === nothing || push!(c, axes.vertical)
+    return isempty(c) ? nothing : c
+end

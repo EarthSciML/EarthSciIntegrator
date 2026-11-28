@@ -380,6 +380,8 @@ A leaf returns one code per invocation (per cell under `dt_scope: cell`, reduced
 | `Unstable` | a rejected step's size is at or below $\epsilon(|t|)$; or a fixed-`dt` step produced a non-finite state or had a singular $W$ (§4.2) |
 | `DtNaN` | the step size became NaN |
 | `ConvergenceFailure` | a Newton failure at fixed `dt` (§5.2) |
+| `InitialFailure` | a `coupled` DAE node's consistent initialization (§14.4) did not converge |
+| `SolveFailure` | a `solve` node did not converge after its `recover` ladder (§15.7). No SciMLBase equivalent; Julia's SciMLBase surface reports `ReturnCode.ConvergenceFailure` and records the node |
 | `DomainViolation` | a domain violation at fixed `dt` (§11). No SciMLBase equivalent; Julia's SciMLBase surface reports `ReturnCode.Unstable` and records `DomainViolation` in the leaf's statistics |
 
 A non-success code from any leaf ends the run with that code, naming the leaf (and cell); the schedule does not retry it.
@@ -403,3 +405,64 @@ A non-success code from any leaf ends the run with that code, naming the leaf (a
 9. **The Newton rate lives within one step attempt** (§5.2 step 4). $\theta_{\text{prev}}$ starts at 1 in every attempt and carries across its stages only, so the step is a function of $(u_n, h)$ and replays bitwise from the tape. OrdinaryDiffEq carries it across steps; the difference is in iteration counts and in converged stages at the Newton tolerance.
 
 **Deviations from OrdinaryDiffEq, collected:** stage times of Kvaerno3/4 (§5.4); the explicit first stage of ESDIRK methods is evaluated, not reused from $z_s/h$ (§5.1); $u_{n+1} = u_n + \sum_i b_i z_i$ also for stiffly accurate methods (§5.1); the smoothed SDIRK error estimate (§5.5); no Jacobian reuse in SDIRK (§5.3); the Newton rate resets at every step attempt (§5.2, D63); the SDIRK initial guess (§5.2); Rosenbrock23's error estimate adds $h d\, f_t$ (§4.3, D62); a stop step shorter than $\epsilon(|t|)$ leaves the controller unchanged (§10, D61); non-finite error estimates reject (§7); the `DomainViolation` return code (§12); the grouping of stage sums and embedded estimates, and no fused multiply-adds (§3.1, §3.2, §4.1, §5.1); exact powers in the PI controller (§8.2).
+
+## 14. Index-1 DAEs (D3b, D122)
+
+### 14.1 Form
+
+A `coupled` node with algebraic operators (spec/run-config.md §4.3) integrates $M\, y' = F(y, t)$ over $y = (u, z)$: $u$ the states its term operators write, $z$ the unknowns its residuals are paired with (spec/plan.md §5.9), both in the plan's DOF order. A **differential row** (a DOF of $u$) has $F_j = f_j$, the sum of the node's term operators, and $M_{jj} = 1$; an **algebraic row** (a DOF of $z$) has $F_j = g_j$, the residual element paired with it, $\text{rhs} - \text{lhs}$, and $M_{jj} = 0$. $M$ is never formed: wherever this section writes $M$, a term on an algebraic row is dropped, not multiplied by zero. $J = \partial F/\partial y$ is assembled from the operators' Jacobian documents: the term operators' for the differential rows (columns $u$ and $z$), the residual documents' for the algebraic rows (spec/plan.md §6.4). The methods are the stiffly accurate ones of spec/run-config.md §4.3; Rosenbrock23 and the methods without an error estimate are not among them.
+
+### 14.2 Rosenbrock
+
+§4.1's transformed form with $\hat W = M/(h\gamma) - J$ and stage right-hand side $r_i = \big(F(U_i) + (h d_i)\, F_t\big) + M s_i$. On an algebraic row the diagonal of $\hat W$ is $-J_{jj}$ and $r_{i,j} = F_j(U_i) + (h d_i)\, F_{t,j}$; differential rows are §4.1's exactly. This is OrdinaryDiffEqRosenbrock's step with a `mass_matrix` (`src/rosenbrock_perform_step.jl`, the stage right-hand side's `mass_matrix * ...` term). The error estimate is §4.3's, and §7's norm runs over every row, algebraic ones included.
+
+### 14.3 ESDIRK
+
+The stage equation of §5.1 becomes $M z_i = h\, F(\tau_i + \gamma z_i,\ t_n + c_i h)$. Newton (§5.2) uses $r_j = \big(h\, F_j(Z, t_n + c_i h) - (M z)_j\big)\cdot\sigma$, so an algebraic row has $r_j = h\, F_j \cdot \sigma$, and factors $\sigma M - J$ (§5.3) with diagonal $-J_{jj}$ on algebraic rows. This is OrdinaryDiffEqNonlinearSolve's `_compute_rhs` with a mass matrix. An explicit first stage is $z_1 = h\, F(y_n, t_n)$ on every row (§5.1); on an algebraic row that is $h\, g(y_n)$, which §14.4 makes at most $h$ times the initialization tolerance. Since the methods are stiffly accurate, the last stage's algebraic rows solve $g(Z_s) = 0$ to the Newton tolerance, and $u_{n+1} = u_n + \sum_i b_i z_i$ (§5.1) equals $Z_s$ to roundoff. The increment norm (§5.2 step 3) runs over every row. The `embedded_smoothed` estimate (§5.5) becomes $e = (M - h\gamma J)^{-1} M e_{\text{raw}}$: the algebraic rows of $e_{\text{raw}}$, which are increments of $z$ rather than errors, are set to zero before the solve with $\sigma M - J$, and the solve gives the algebraic rows their share of the error.
+
+### 14.4 Consistent initialization
+
+At the start of every invocation, before its first step, the node solves $g(u, z, t) = 0$ for $z$ with $u$ and $t$ held, by §15 with the node's `initialize` method, starting from the current $z$. The converged $z$ replaces the current one. A failure ends the node with `InitialFailure` (§12). The first step's initial step size (§9) is computed after it.
+
+### 14.5 Linear solves
+
+The node's `linsolve` factors $\hat W$ (Rosenbrock) or $\sigma M - J$ (ESDIRK) over all of $y$: `dense_lu`, or `block_lu`/`sparse_block_lu` when every operator of the node is pointwise and $J$ is block diagonal over $y$ (spec/plan.md §5.4 applied to the node's operators together). The field-split Krylov preconditioner of architecture §6.4 is not specified in v1.
+
+## 15. `solve` nodes (D3a, D95, D120)
+
+### 15.1 Setting
+
+A `solve` node (spec/run-config.md §4.10) finds its unknowns $z$, in the plan's DOF order, with every other value frozen at the node's start. Its residual $G(z)$ is, on each DOF of $z$, the residual element paired with it (spec/plan.md §5.9), evaluated from the operator's residual document (spec/plan.md §6.4) at $(u, z, p, t)$; $G_z$ is assembled from its Jacobian document's bands whose row and column are both unknowns of the node. A bounded unknown's box $[l, u]$ is evaluated once per invocation, from the frozen state (spec/run-config.md §4.10); an unbounded side is $\mp\infty$. The **reformulated residual** is $R(z) = z - \operatorname{mid}(l, z + G(z), u)$; on an unbounded DOF it is $-G(z)$.
+
+The method's `scale` (spec/run-config.md §4.10, D125) gives each DOF $j$ a positive scale $d_j$, 1 when not given, evaluated once per invocation as the box is. The iteration works on the **scaled residual** $\tilde G = D G$, $D = \operatorname{diag}(d)$, with $\tilde G_z = D G_z$ and $\tilde R(z) = z - \operatorname{mid}(l, z + \tilde G(z), u)$ ($-\tilde G$ on an unbounded DOF): §15.3–§15.5 read $G$, $G_z$ and $R$ as $\tilde G$, $\tilde G_z$ and $\tilde R$. Scaling a row changes neither the solution nor the active set; it changes the steps, and with a bound which branch `mid` takes on the way, since $z$ and $G$ need not have the same units (an amount and a dimensionless rate in MOSAIC's MESA). The convergence test (§15.2) and the active set (§15.8) use the unscaled $R$. An element with $d_j \le 0$, or not finite, fails the invocation, naming the node, the unknown and the element; it is not an attempt's failure, and no `recover` action applies.
+
+### 15.2 Start and convergence
+
+The starting iterate is the current $z$ under `warm_start: previous`, the plan's $u_0$ entries of $z$ under `initial`, projected onto the box: $z_j \leftarrow \min(\max(z_j, l_j), u_j)$. The **residual norm** is $\lVert R(z) \rVert_\infty$, unscaled, over every DOF of $z$; `converged.residual` $\epsilon$ is met when it is $\le \epsilon$. `converged.rel_change` on observed $O$ is met when $\lVert O_k - O_{k-1} \rVert_2 \le \mathrm{tol}\, \lVert O_k \rVert_2$, the norms over $O$'s elements in column-major order (unbounded nodes only, rule 18), $O_k$ its value at iterate $k$. A `converged` with both keys is met when both are; with `rel_change` alone, the residual norm is not tested. The test is made on the starting iterate first, so a converged warm start takes no iteration; `rel_change` compares an iterate with the one before it, so the starting iterate never meets it. A non-finite residual norm, or a step $s$ with a non-finite component (from a non-finite Jacobian entry), is a failure of the attempt (§15.7).
+
+### 15.3 `newton`
+
+Iteration $k$: with $D$ the generalized Jacobian of $R$ at $z_k$ (row $j$: $e_j^\top$ when $\operatorname{mid}$ takes a bound, i.e. $z_j + G_j \le l_j$ or $\ge u_j$; $-\partial G_j/\partial z$ otherwise), solve $D\, s = -R(z_k)$ with the node's `linsolve` (`block_lu` and `sparse_block_lu` factor one block per cell of the operator's `structure.block`, spec/plan.md §5.4, each block holding that cell's unknowns in the block's element order, the elements of variables the operator only reads left out; `dense_lu` one block of every unknown, in canonical order), then $z_{k+1} = \Pi(z_k + \alpha s)$, $\Pi$ the projection onto the box. With `linesearch: "none"` $\alpha = 1$. With `"backtracking"`, $\alpha$ is the first of $1, \tfrac12, \tfrac14, \ldots, 2^{-10}$ for which $\phi(z_{k+1}) \le (1 - 10^{-4}\alpha)\, \phi(z_k)$ with $\phi = \tfrac12 \lVert R \rVert_2^2$; if none does, $\alpha = 2^{-10}$. Without bounds this is Newton on $-G$, the same iterates as Newton on $G$.
+
+With `newton.inexact: true` the step is an **inexact Newton–Krylov** step (D126): $D\, s = -R(z_k)$ is solved only to the relative residual $\lVert D s + R(z_k) \rVert_2 \le \eta_k \lVert R(z_k) \rVert_2$, by GMRES on $D P^{-1} y = -R(z_k)$, $s = P^{-1} y$ (right preconditioning; zero initial guess; unrestarted, at most $N$ iterations, $N$ the number of unknowns; modified Gram–Schmidt with Givens rotations). $D$ is applied from the same Jacobian entries as the exact step. $P$ is the node's `linsolve` applied to $D$: with `block_lu` or `sparse_block_lu`, one LU per cell of the plan's block structure (the exact step's blocks; for a block-diagonal $D$, $P = D$ and GMRES ends after one iteration); with `dense_lu`, the diagonal of $D$ (Jacobi; a zero diagonal entry is taken as 1). The forcing term is Eisenstat and Walker's choice 2: $\eta_0 = 0.5$; $\eta_k = 0.9\, (\lVert R(z_k) \rVert_2 / \lVert R(z_{k-1}) \rVert_2)^2$, raised to $0.9\, \eta_{k-1}^2$ when that is larger and above 0.1, and capped at 0.9. GMRES that reaches $N$ iterations without meeting $\eta_k$, or breaks down (a zero new Krylov vector, which makes its iterate exact on the Krylov space), returns its last iterate as $s$; a singular $P$ fails the attempt as a singular linear solve does. The line search, the projection and the convergence test are the exact step's.
+
+### 15.4 `ptc`
+
+Pseudo-time steps of the flow $dz/d\tau = G(z)$ (D95): $(\delta_k^{-1} I - G_z)\, s = G(z_k)$, $z_{k+1} = \Pi(z_k + s)$, where a component at a bound whose rate points out of the box ($z_i = l_i$ and $G_i \le 0$, or $z_i = u_i$ and $G_i \ge 0$) takes $s_i = 0$: its row of the system is replaced by the identity's and its right-hand side by zero, so the free components step on the system of the free components (a step computed with the held components free would let their outward pull cancel the free components' steps through the coupling, and the iteration stalls); with $\delta_0$ = `ptc.dt0` (default $10^{-3}$) and $\delta_{k+1} = \delta_k \min\big(\text{growth},\ \lVert R(z_k) \rVert_\infty / \lVert R(z_{k+1}) \rVert_\infty\big)$, `growth` defaulting to 2 (switched evolution relaxation, capped). With `growth: "uncapped"`, $\delta_{k+1} = \delta_k\, \lVert \tilde R(z_k) \rVert_\infty / \lVert \tilde R(z_{k+1}) \rVert_\infty$ (switched evolution relaxation, the step growing as the residual falls; with $\lVert \tilde R(z_{k+1}) \rVert_\infty = 0$ the iteration has converged on $\tilde R$ and the factor is not needed). The ratio is of the scaled residual in either form. A DOF whose row of $G_z$ is zero and whose $G$ is zero stays at its starting value. `linesearch` does not apply to `ptc`.
+
+### 15.5 `picard`
+
+As §15.3, with $G_z$ replaced by the Jacobian of the residual with `picard.freeze`'s observeds held constant at their values at the iterate: the frozen residual document gives the values, which set the frozen states of the frozen Jacobian document, whose bands give the Jacobian (spec/plan.md §6.5). $\alpha = 1$ unless `linesearch` is `backtracking`. `converged.rel_change` reads its observed from the frozen residual document at each iterate (§15.2).
+
+### 15.6 Options not specified in v1
+
+`linesearch: "strong_wolfe"` and `anderson` greater than 0 are refused by the planner (`unsupported_solve_option`, spec/run-config.md rule 16).
+
+### 15.7 Failure and `recover`
+
+An attempt fails when `maxiter` iterations pass without convergence, the residual norm is not finite, or a linear solve is singular. Then the `recover` ladder is tried in written order, each action starting a new attempt from the node's starting iterate: `underrelax` $\omega$ multiplies every step $s$ by $\omega$; `scale_param` multiplies its parameter by `by` up to `max` times, one more each attempt; `revert_warm_start` restarts from the model's initial value of $z$; `{"method": M}` runs an attempt with another method, `M` holding `newton` or `ptc` with its options, `linesearch` and `maxiter` (each defaulted as the node's method is, spec/plan.md §7.1), while `converged`, `linsolve` and `scale` remain the node's (a Newton solve that falls back to pseudo-time, D125). Each action is recorded on the tape (spec/tape.md §2). With the ladder exhausted the node ends the run with `SolveFailure` (§12).
+
+### 15.8 After convergence
+
+A node with a bounded unknown classifies its active set and sets components at a bound to the bound exactly (spec/run-config.md §4.10), then writes $z$ into the state.
+

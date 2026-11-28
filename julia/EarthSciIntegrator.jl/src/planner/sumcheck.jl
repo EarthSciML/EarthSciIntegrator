@@ -79,6 +79,11 @@ function rhs_sum_check(m::PlanModel, docs::AbstractVector)
         lifted[x] = l
         output_idx[x] = l ? faq_output_idx(flat.equations[ei].rhs) : nothing
     end
+    # §6.1.2: a solved unknown has the zero right-hand side in every
+    # right-hand-side document (D121).
+    for z in m.solved
+        want[z] = String[]; lifted[z] = false; output_idx[z] = nothing
+    end
     obs = Set{String}(m.observeds)
     observeds = observed_forms(flat, obs)
     ics = ic_forms(flat)

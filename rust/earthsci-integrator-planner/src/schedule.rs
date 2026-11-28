@@ -302,6 +302,8 @@ pub fn check(root: &Node, cx: &CheckContext) -> Result<()> {
     rule_2(root, cx)?;
     rule_3(root, cx)?;
     rule_5(root, cx)?;
+    // Rule 19, then rule 18's checks that need no derivative (spec/plan.md §7.1).
+    crate::algebraic::check_schedule(root, cx.ops, cx.info)?;
     rule_6(root, cx)?;
     rule_7(root)?;
     rule_8(root)?;
@@ -382,13 +384,6 @@ fn check_unsupported(root: &Node, cx: &CheckContext) -> Result<()> {
                     codes::UNSUPPORTED_MAP_OPERATOR,
                     n.pointer.clone(),
                     "map nodes need U6 (M4b)",
-                ))
-            }
-            Kind::Solve => {
-                return Err(refuse(
-                    codes::UNSUPPORTED_SOLVE_NODE,
-                    n.pointer.clone(),
-                    "solve nodes need U6 (M4b)",
                 ))
             }
             Kind::SplitExplicit => {
@@ -637,6 +632,9 @@ fn rule_3(root: &Node, cx: &CheckContext) -> Result<()> {
                     .map(|(i, o)| (o.clone(), n.op_ptr(i))),
             );
         }
+        if matches!(n.kind, Kind::Solve) {
+            named.push((crate::algebraic::solve_op(n), n.key_ptr("solve")));
+        }
         named.extend(frozen_ops(n));
         named.extend(imex_ops(n));
         for (op, at) in named {
@@ -672,6 +670,17 @@ fn rule_5(root: &Node, cx: &CheckContext) -> Result<()> {
                 }
                 advanced.insert(op.clone());
             }
+        }
+        if matches!(n.kind, Kind::Solve) {
+            let op = crate::algebraic::solve_op(n);
+            if first.insert(op.clone(), n.id().to_string()).is_some() {
+                return Err(refuse(
+                    codes::OPERATOR_ADVANCED_TWICE,
+                    n.key_ptr("solve"),
+                    format!("{op} is advanced by two nodes"),
+                ));
+            }
+            advanced.insert(op);
         }
         advanced.extend(frozen_ops(n).into_iter().map(|(o, _)| o));
     }
@@ -1053,7 +1062,15 @@ pub fn write(
     info: &ModelInfo,
     ops: &BTreeMap<String, Operator>,
     strategy: &dyn Fn(&Node) -> Result<LeafStrategy>,
+    algebraic: &BTreeMap<String, Value>,
 ) -> Result<Value> {
+    // A resolved `solve` node, or a DAE's `initialize`, by node id
+    // (spec/plan.md §7.1), resolved by the caller.
+    if matches!(n.kind, Kind::Solve) {
+        return algebraic.get(n.id()).cloned().ok_or_else(|| {
+            crate::error::PlanError::Internal(format!("solve node {} is not resolved", n.id()))
+        });
+    }
     let mut out = Map::new();
     out.insert("id".into(), json!(n.id()));
     let dur = |v: &Value, at: String| duration(v, &at, info).map(|x| json!(x));
@@ -1195,6 +1212,9 @@ pub fn write(
             if let Some(b) = given("bind_dt") {
                 out.insert("bind_dt".into(), b.clone());
             }
+            if let Some(init) = algebraic.get(n.id()) {
+                out.insert("initialize".into(), init.clone());
+            }
         }
         Kind::Sequence(children) | Kind::Strang(children) => {
             let key = if matches!(n.kind, Kind::Sequence(_)) {
@@ -1204,12 +1224,15 @@ pub fn write(
             };
             let list: Result<Vec<Value>> = children
                 .iter()
-                .map(|c| write(c, info, ops, strategy))
+                .map(|c| write(c, info, ops, strategy, algebraic))
                 .collect();
             out.insert(key.into(), Value::Array(list?));
         }
         Kind::Subcycle(child) => {
-            out.insert("subcycle".into(), write(child, info, ops, strategy)?);
+            out.insert(
+                "subcycle".into(),
+                write(child, info, ops, strategy, algebraic)?,
+            );
             if let Some(k) = n.value.get("n") {
                 out.insert("n".into(), k.clone());
             }
@@ -1223,7 +1246,10 @@ pub fn write(
             }
         }
         Kind::Every(child) => {
-            out.insert("every".into(), write(child, info, ops, strategy)?);
+            out.insert(
+                "every".into(),
+                write(child, info, ops, strategy, algebraic)?,
+            );
             out.insert(
                 "period".into(),
                 dur(&n.value["period"], n.key_ptr("period"))?,

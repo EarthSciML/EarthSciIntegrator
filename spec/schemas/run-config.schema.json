@@ -262,7 +262,10 @@
       "type": "object",
       "required": ["coupled"],
       "$ref": "#/$defs/leafOptions",
-      "properties": {"coupled": {"$ref": "#/$defs/operatorRefs"}},
+      "properties": {
+        "coupled": {"$ref": "#/$defs/operatorRefs"},
+        "initialize": {"description": "Consistent initialization of an index-1 DAE: the method solving g(u, z) = 0 for z at the start of every invocation (spec/run-config.md §4.3, D122). Used only on a coupled node with algebraic operators.", "$ref": "#/$defs/nonlinearMethod"}
+      },
       "unevaluatedProperties": false
     },
     "sequenceNode": {
@@ -405,7 +408,10 @@
           "additionalProperties": false,
           "properties": {
             "dt0": {"$ref": "#/$defs/positiveNumber"},
-            "growth": {"type": "number", "exclusiveMinimum": 1}
+            "growth": {
+              "description": "The cap on the pseudo-time step's growth factor, or \"uncapped\" for switched evolution relaxation (spec/methods.md §15.4, D125).",
+              "oneOf": [{"type": "number", "exclusiveMinimum": 1}, {"const": "uncapped"}]
+            }
           }
         },
         "linsolve": {"$ref": "#/$defs/linsolve"},
@@ -422,6 +428,12 @@
           "dependentRequired": {"rel_change": ["tol"]}
         },
         "maxiter": {"type": "integer", "minimum": 1},
+        "scale": {
+          "description": "A positive scale per unknown of the node: a number, or a parameter or state-free observed name, scalar or of the unknown's shape (spec/run-config.md §4.10, D125).",
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/qualifiedName"},
+          "additionalProperties": {"oneOf": [{"type": "number", "exclusiveMinimum": 0}, {"$ref": "#/$defs/qualifiedName"}]}
+        },
         "recover": {
           "description": "Ladder tried in order when an attempt fails (§6.3).",
           "type": "array",
@@ -439,7 +451,23 @@
                   "max": {"type": "integer", "minimum": 1}
                 }
               },
-              {"const": "revert_warm_start"}
+              {"const": "revert_warm_start"},
+              {
+                "description": "An attempt with another method: newton or ptc with its options, linesearch and maxiter (spec/methods.md §15.7, D125).",
+                "type": "object", "required": ["method"], "additionalProperties": false,
+                "properties": {
+                  "method": {
+                    "type": "object", "additionalProperties": false,
+                    "properties": {
+                      "newton": {"$ref": "#/$defs/newtonOptions"},
+                      "ptc": {"$ref": "#/$defs/nonlinearMethod/properties/ptc"},
+                      "linesearch": {"enum": ["none", "backtracking"]},
+                      "maxiter": {"type": "integer", "minimum": 1}
+                    },
+                    "oneOf": [{"required": ["newton"]}, {"required": ["ptc"]}]
+                  }
+                }
+              }
             ]
           }
         }
@@ -454,7 +482,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "inexact": {"description": "Eisenstat–Walker forcing terms.", "type": "boolean"}
+        "inexact": {"description": "An inexact Newton–Krylov step: GMRES preconditioned by the linsolve, to the Eisenstat–Walker forcing term (spec/methods.md §15.3, D126).", "type": "boolean"}
       }
     },
 

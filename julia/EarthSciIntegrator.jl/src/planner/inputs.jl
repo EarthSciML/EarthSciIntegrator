@@ -162,10 +162,6 @@ that is not time-varying (`file`'s data sources, §4.1), and an index set that i
 `interval` with an integer size.
 """
 function check_scope(flat::EarthSciAST.FlattenedSystem, file::Union{Nothing, EarthSciAST.EsmFile} = nothing)
-    isempty(flat.algebraic_variables) || refuse(
-        "unsupported_algebraic_equation", "/model",
-        "the flattened model has algebraic unknowns ($(join(keys(flat.algebraic_variables), ", "))); algebraic operators need U6 (M4b)"
-    )
     (isempty(flat.continuous_events) && isempty(flat.discrete_events)) || refuse(
         "unsupported_event", "/model",
         "the flattened model has $(length(flat.continuous_events)) continuous and $(length(flat.discrete_events)) discrete events; " *

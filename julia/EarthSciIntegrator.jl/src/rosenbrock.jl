@@ -88,7 +88,9 @@ struct RosenbrockContext{O}
     structure::Structure
     depends_on_t::Bool
     check_stages::Vector{Int}    # DOFs whose stage values must be ≥ 0 (domain.check_stages), else empty
+    mass::Union{Nothing, BitVector} # an index-1 DAE's algebraic rows (spec/methods.md §14.2), else nothing
 end
+RosenbrockContext(ops, ls, s, dt, cs) = RosenbrockContext(ops, ls, s, dt, cs, nothing)
 
 """Whether f_t is formed for this method and leaf (spec/methods.md §4.2)."""
 forms_ft(m::RosenbrockMethod, ctx::RosenbrockContext) = m.uses_ft && ctx.depends_on_t
@@ -109,7 +111,7 @@ function rosenbrock_linearization(m::RosenbrockMethod, ctx::RosenbrockContext, u
         ft = zeros(T, N)
         ft!(ctx.ops, ft, u, p, t)
     end
-    F = factor_W(J, m.form === :rosenbrock23 ? inv(h * m.d[1]) : inv(h * m.gamma), ctx.ls)
+    F = factor_W(J, m.form === :rosenbrock23 ? inv(h * m.d[1]) : inv(h * m.gamma), ctx.ls; mass = ctx.mass)
     return J, ft, F
 end
 
@@ -184,6 +186,8 @@ function rosenbrock_stages(m::RosenbrockMethod, ctx::RosenbrockContext, u, p, t,
                 cij = m.C[i, j]
                 cij == 0 || _addto!(si, cij / h, k[j])
             end
+            # M sᵢ: the term is dropped on an algebraic row (§14.2).
+            ctx.mass === nothing || (si[ctx.mass] .= 0)
             r .= r .+ si
         end
         k[i] = lu_solve(F, r)
@@ -381,7 +385,13 @@ function rosenbrock_adjoint_step(m::RosenbrockMethod, ctx::RosenbrockContext, u,
             (a == 0 && cij == 0) && continue
             kb[j] === nothing && (kb[j] = zeros(N))
             a == 0 || _addto!(kb[j], a, σ[i])
-            cij == 0 || _addto!(kb[j], cij / h, μ[i])
+            # The forward step adds M sᵢ, dropped on an algebraic row, so the
+            # reverse adds (Cᵢⱼ/h) M μᵢ (spec/adjoint.md §5.10, D127).
+            if cij != 0
+                μm = μ[i]
+                ctx.mass === nothing || (μm = copy(μm); μm[ctx.mass] .= 0)
+                _addto!(kb[j], cij / h, μm)
+            end
             cij == 0 || μq == 0 || (kbq[j] += (cij / h) * μq)
         end
     end

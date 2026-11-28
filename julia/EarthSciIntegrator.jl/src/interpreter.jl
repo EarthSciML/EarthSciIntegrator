@@ -396,6 +396,8 @@ function _scatter(S::LeafState, u, x)
 end
 
 function advance!(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64, tb::Float64)
+    # An index-1 DAE starts every invocation from a consistent z (spec/methods.md §14.4).
+    node.dae === nothing || (u = dae_initialize(run, ctx, node, u, ta))
     node.state === nothing && return _advance!(run, ctx, node, u, ta, tb)
     # A leaf advances its own state, the union of its operators' writes; every
     # other state is a constant of the leaf over its interval, read from the

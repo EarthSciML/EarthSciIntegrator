@@ -1,0 +1,43 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "spec/toy-problems.md §1.9 with an adjoint (D127): the parameter product for kappa, and active bounds.",
+  "model": "../../../toys/phase_joint.esm",
+  "operators": {
+    "phase": {
+      "select": {
+        "components": "Phase"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "solve": "phase",
+    "unknowns": [
+      "Phase.w",
+      "Phase.s"
+    ],
+    "method": {
+      "ptc": {
+        "dt0": 0.1,
+        "growth": 2
+      },
+      "converged": {
+        "residual": 1e-12
+      },
+      "maxiter": 2000
+    },
+    "warm_start": "initial"
+  },
+  "adjoint": {
+    "functional": {
+      "sum": "Phase.w",
+      "over": "final"
+    },
+    "wrt": [
+      "u0",
+      "params:numeric"
+    ]
+  }
+}

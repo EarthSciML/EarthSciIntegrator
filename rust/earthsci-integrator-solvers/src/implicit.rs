@@ -279,6 +279,7 @@ impl Implicit {
             nf: 0,
             newton_iters: 0,
             newton_solves: 0,
+            mass: None,
         })
     }
 
@@ -297,7 +298,7 @@ impl Implicit {
     ) -> Option<f64> {
         let sigma = 1.0 / (h * self.w_gamma()?);
         jac(part, &mut w.jac, u, t);
-        w.w.shifted_negation(&w.jac, T::from_f64(sigma));
+        w.w.shifted_negation_masked(&w.jac, T::from_f64(sigma), w.mass.as_deref());
         w.lu.factor(&w.w).then_some(sigma)
     }
 
@@ -411,6 +412,14 @@ impl Implicit {
                                 let coef = T::from_f64(bti);
                                 for j in 0..n {
                                     w.r[j] += coef * w.z[i][j];
+                                }
+                            }
+                        }
+                        // With a mass mask, e = (M − hγJ)⁻¹ M e_raw (§14.3).
+                        if let Some(m) = &w.mass {
+                            for (x, &a) in w.r.iter_mut().zip(m.iter()) {
+                                if a {
+                                    *x = T::zero();
                                 }
                             }
                         }
@@ -597,8 +606,14 @@ fn newton<T: Scalar>(
         f(part, &mut w.fs, &w.ustep, ts);
         w.nf += 1;
         w.newton_iters += 1;
+        // M z: dropped on an algebraic row (spec/methods.md §14.3).
         for j in 0..n {
-            w.r[j] = (hh * w.fs[j] - w.zc[j]) * sg;
+            let zj = if w.mass.as_ref().is_some_and(|m| m[j]) {
+                T::zero()
+            } else {
+                w.zc[j]
+            };
+            w.r[j] = (hh * w.fs[j] - zj) * sg;
         }
         w.lu.solve(&mut w.r);
         for j in 0..n {
@@ -661,6 +676,8 @@ fn newton<T: Scalar>(
 /// Workspace and outputs of an implicit step.
 #[derive(Debug, Clone)]
 pub struct ImplicitWork<T> {
+    /// An index-1 DAE's algebraic rows (spec/methods.md §14.3), else `None`.
+    pub mass: Option<Vec<bool>>,
     /// Stage states (see [`Implicit::step`]).
     pub y: Vec<Vec<T>>,
     /// Stage unknowns `z_i`.

@@ -324,6 +324,7 @@ fn push_relax() -> ToyProblem<f64> {
         operators: vec![Arc::new(Push), Arc::new(Relax)],
         maps: vec![],
         invariants: vec![],
+        algebraic: Default::default(),
     }
 }
 
@@ -434,6 +435,7 @@ fn a_block_structure_short_of_the_model_state_is_refused() {
         operators: vec![Arc::new(Short) as Arc<dyn Operator<f64>>],
         maps: vec![],
         invariants: vec![],
+        algebraic: Default::default(),
     };
     let rc = |leaf: Value| rc_model("short", leaf, 0.25, None);
     match RunSpec::with_problem(
@@ -586,6 +588,7 @@ fn a_short_block_structure_runs_in_a_leaf_that_writes_every_dof() {
         ],
         maps: vec![],
         invariants: vec![],
+        algebraic: Default::default(),
     };
     let r = rc_model(
         "short",
@@ -668,6 +671,7 @@ fn a_block_leaf_structure_short_of_the_leaf_state_is_refused() {
         operators: vec![Arc::new(OverShort) as Arc<dyn Operator<f64>>],
         maps: vec![],
         invariants: vec![],
+        algebraic: Default::default(),
     };
     let r = rc_model(
         "overshort",

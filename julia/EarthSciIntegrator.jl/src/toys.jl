@@ -25,7 +25,11 @@ struct ToyProblem
     invariants::Vector{Function}
     exact::Union{Nothing, Function}
     stiff::Bool
+    # The algebraic operators' unknowns and bounds, by operator name
+    # (AlgebraicInfo, algebraic_runtime.jl); empty for a problem without any.
+    algebraic::Dict{String, Any}
 end
+ToyProblem(args::Vararg{Any, 12}) = ToyProblem(args..., Dict{String, Any}())
 
 """The 1-based DOF indices of variable `name`."""
 function variable_dofs(prob::ToyProblem, name::AbstractString)

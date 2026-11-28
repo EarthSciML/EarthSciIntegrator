@@ -1,20 +1,17 @@
 {
   "esm_integrator": "0.1.0",
-  "description": "MOSAIC's phase state of one size bin as EqWeFiC writes it (components/aerosol/mosaic: aerosol_phase_state.esm and mesa_salt_equilibrium.esm, which state the residuals and leave the iterations to the integrator; D95). Two nested solves before the aerosol's gas-particle transfer: the Kelvin equilibrium of the bin's water activity, a scalar root (WRF-Chem iterates it by fixed point to 1e-2), and MESA's solid-liquid equilibrium, fifteen solid salt amounts that cannot be negative or exceed what each salt's ions allow (the bounds are the model's: lb 0 and ub a variable on elec_s, so the run config names only the method), whose rate S - 1 makes it a complementarity problem (WRF-Chem integrates it by explicit pseudo-time steps to a 1% driving force, at most 80). The operator and variable names are illustrative until the MOSAIC assembly is written.",
-  "model": "eqatmchem_mosaic.esm",
+  "description": "MOSAIC's phase state of every size bin as EqWeFiC states it (components/aerosol/mosaic; the residuals are in the .esm files and the iterations are the integrator's, D95): two solves in sequence. Kelvin.aw is the bin water activity, the scalar root of Kelvin's constraint 0 ~ aw0/K(aw) - aw (couplings/mosaic_kelvin_equilibrium.esm). Mesa.e_salt is the solid amount of each of the fifteen soluble salts, the unknown of MESA's constraint 0 ~ g with g = S - 1 (couplings/mosaic_mesa_equilibrium.esm), bounded in the model by lb 0, which makes it the complementarity problem e_salt >= 0, g <= 0, e_salt g = 0. Each residual pairs with its unknown by the diagonal structural pairing (D120). The component names are EqWeFiC's; the model joining the two documents is the assembly EqWeFiC has not written yet (on MESA's branch the Kelvin and MESA solves nest or are solved together, which is the assembly's choice), so this fixture is checked against the schema only.",
+  "model": "mosaic_phase_state.esm",
   "operators": {
-    "kelvin": {"select": {"variables": "mosaic.phase.ah2o_a"}},
-    "mesa": {"select": {"variables": "mosaic.mesa.elec_s"}},
-    "transfer": {"select": {"components": "mosaic.astem"}}
+    "kelvin": {"select": {"components": "Kelvin"}},
+    "mesa": {"select": {"components": "Mesa"}}
   },
   "schedule": {"sequence": [
-    {"solve": "kelvin", "unknowns": ["mosaic.phase.ah2o_a"],
-     "method": {"newton": {}, "linesearch": "backtracking", "converged": {"residual": 1e-12}, "maxiter": 50},
+    {"solve": "kelvin", "unknowns": ["Kelvin.aw"],
+     "method": {"newton": {}, "linesearch": "backtracking", "converged": {"residual": 1e-13}, "maxiter": 50},
      "warm_start": "previous"},
-    {"solve": "mesa", "unknowns": ["mosaic.mesa.elec_s"],
-     "method": {"ptc": {"dt0": 1e-3, "growth": 2}, "converged": {"residual": 1e-10}, "maxiter": 500},
-     "warm_start": "previous"},
-    {"leaf": "transfer", "alg": "Rodas4"}
-  ]},
-  "step": {"dt": 300}
+    {"solve": "mesa", "unknowns": ["Mesa.e_salt"],
+     "method": {"ptc": {"dt0": 1e-6, "growth": 2}, "converged": {"residual": 1e-10}, "maxiter": 10000},
+     "warm_start": "initial"}
+  ]}
 }

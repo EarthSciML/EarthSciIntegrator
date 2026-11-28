@@ -6,6 +6,7 @@
 //! (controller off), which the adjoint and the frozen-tape finite
 //! differences use.
 
+use crate::algebraic::{run_solve, DaeSpec, Residual, SolveMethod, SolveSpec};
 use crate::config::{parse_duration, Control, LeafNode, Node, RunConfig};
 use crate::leaf::{
     landing_tol, stop_rule, BindKind, DomainSpec, DtMode, LeafCall, LeafMethod, LeafSpec, StepData,
@@ -48,6 +49,11 @@ pub enum SNode {
         child: Box<SNode>,
         n: usize,
     },
+    /// A `solve` node (spec/run-config.md §4.10).
+    Solve {
+        id: String,
+        idx: usize,
+    },
 }
 
 /// A built map node. Toy map operators take their `Δ` from the node's
@@ -63,6 +69,7 @@ pub struct Schedule<T: Scalar> {
     pub root: SNode,
     pub leaves: Vec<LeafSpec<T>>,
     pub maps: Vec<MapSpec<T>>,
+    pub solves: Vec<SolveSpec<T>>,
 }
 
 /// What the adjoint will need, so the build can refuse missing calls.
@@ -82,6 +89,7 @@ impl<T: Scalar> Schedule<T> {
             },
             leaves: Vec::new(),
             maps: Vec::new(),
+            solves: Vec::new(),
         };
         let root = s.build_node(node, "root", pb, needs)?;
         s.root = root;
@@ -106,6 +114,41 @@ impl<T: Scalar> Schedule<T> {
                 SNode::Leaf {
                     id,
                     idx: self.leaves.len() - 1,
+                }
+            }
+            Node::Solve { id, spec } => {
+                let id = id_or(id);
+                let name = spec["solve"].as_str().unwrap_or_default();
+                let op = pb.operator(name).ok_or_else(|| {
+                    Error::Config(format!("solve node {id}: no operator named {name:?}"))
+                })?;
+                let info = pb.algebraic.get(name).cloned().ok_or_else(|| {
+                    Error::Config(format!(
+                        "solve node {id}: {name:?} is not an algebraic operator"
+                    ))
+                })?;
+                let warm = spec
+                    .get("warm_start")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("previous");
+                if warm != "previous" && warm != "initial" {
+                    return Err(Error::Config(format!(
+                        "solve node {id}: warm_start {warm:?}"
+                    )));
+                }
+                let initial = info.dofs.iter().map(|&d| pb.u0[d]).collect();
+                self.solves.push(SolveSpec {
+                    id: id.clone(),
+                    ops: vec![op],
+                    initial,
+                    pnames: pb.param_names.clone(),
+                    info,
+                    method: SolveMethod::from_json(&spec["method"], &id)?,
+                    warm_initial: warm == "initial",
+                });
+                SNode::Solve {
+                    id,
+                    idx: self.solves.len() - 1,
                 }
             }
             Node::Map { id, op } => {
@@ -187,7 +230,7 @@ impl<T: Scalar> Schedule<T> {
 
 fn check_ids(n: &SNode, seen: &mut std::collections::HashSet<String>) -> Result<(), Error> {
     let (id, kids): (&String, Vec<&SNode>) = match n {
-        SNode::Leaf { id, .. } | SNode::Map { id, .. } => (id, vec![]),
+        SNode::Leaf { id, .. } | SNode::Map { id, .. } | SNode::Solve { id, .. } => (id, vec![]),
         SNode::Sequence { id, children } | SNode::Strang { id, children } => {
             (id, children.iter().collect())
         }
@@ -224,6 +267,7 @@ fn build_leaf<T: Scalar>(
     let names = l
         .leaf
         .as_ref()
+        .or(l.coupled.as_ref())
         .ok_or_else(|| Error::Config(format!("leaf {id}: no operators")))?
         .names();
     let mut ops = Vec::new();
@@ -525,6 +569,38 @@ fn build_leaf<T: Scalar>(
         )));
     }
 
+    // A coupled node with algebraic operators is an index-1 DAE
+    // (spec/methods.md §14): its algebraic rows, operators and
+    // consistent-initialization method.
+    let dae = if l.coupled.is_some() && names.iter().any(|n| pb.algebraic.contains_key(n)) {
+        let alg: Vec<&String> = names
+            .iter()
+            .filter(|n| pb.algebraic.contains_key(*n))
+            .collect();
+        let infos: Vec<&crate::algebraic::AlgebraicInfo> =
+            alg.iter().map(|n| &pb.algebraic[*n]).collect();
+        let info = crate::algebraic::AlgebraicInfo::concat(&infos);
+        if info.bounded() {
+            return Err(Error::Config(format!(
+                "coupled node {id}: a bounded unknown in a DAE is not specified (unsupported_dae_bounds)"
+            )));
+        }
+        let zset: std::collections::HashSet<usize> = info.dofs.iter().copied().collect();
+        let init = match &l.initialize {
+            Some(v) => SolveMethod::from_json(v, id)?,
+            None => SolveMethod::default_initialize(),
+        };
+        Some(DaeSpec {
+            initial: info.dofs.iter().map(|&d| pb.u0[d]).collect(),
+            pnames: pb.param_names.clone(),
+            mass: dofs.iter().map(|d| zset.contains(d)).collect(),
+            ops: alg.iter().filter_map(|n| pb.operator(n)).collect(),
+            info,
+            init,
+        })
+    } else {
+        None
+    };
     Ok(LeafSpec {
         id: id.to_string(),
         ops,
@@ -547,6 +623,7 @@ fn build_leaf<T: Scalar>(
         imex_implicit,
         work: Default::default(),
         bound_work: Default::default(),
+        dae,
     })
 }
 
@@ -794,6 +871,24 @@ pub enum AdjRecord<T> {
         dt: f64,
         mask: Vec<u8>,
     },
+    /// A `solve` invocation (spec/adjoint.md §4.6): the model state before
+    /// it, its converged unknowns and active set, the recover actions.
+    Solve {
+        solve: usize,
+        u_before: Vec<f64>,
+        t: f64,
+        z: Vec<f64>,
+        active: std::collections::BTreeMap<String, crate::tape::ActiveSet>,
+        recover: Vec<String>,
+    },
+    /// An index-1 DAE's consistent initialization (spec/adjoint.md §5.10):
+    /// the model state before it and the initialized unknowns.
+    DaeInit {
+        leaf: usize,
+        u_before: Vec<f64>,
+        t: f64,
+        z: Vec<f64>,
+    },
 }
 
 /// Executes the schedule over one macro step.
@@ -871,6 +966,54 @@ impl<'a, T: Scalar> Exec<'a, T> {
             SNode::Leaf { id, idx } => {
                 let path = self.path(id);
                 let leaf = &self.sched.leaves[*idx];
+                // An index-1 DAE starts every invocation from a consistent z
+                // (spec/methods.md §14.4).
+                if let Some(d) = &leaf.dae {
+                    let uf: Vec<f64> = u.iter().map(|x| x.to_f64()).collect();
+                    let warm: Vec<f64> = d.info.dofs.iter().map(|&j| uf[j]).collect();
+                    let r = Residual {
+                        ops: &d.ops,
+                        dofs: &d.info.dofs,
+                        u: &uf,
+                        t: t0,
+                    };
+                    let o = run_solve(
+                        &r, &d.info, self.p, &d.pnames, &d.init, &warm, &d.initial, &leaf.id,
+                    )?;
+                    if !o.ok {
+                        return Err(Error::Run(format!(
+                            "leaf {}: the consistent initialization did not converge at t = {t0} (InitialFailure)",
+                            leaf.id
+                        )));
+                    }
+                    let mut z = o.z;
+                    if self.replay.is_some() {
+                        if let Some(adj) = &mut self.adj {
+                            // Its reverse is a §4.6 solve at the invocation's
+                            // start, after the leaf's steps (spec/adjoint.md
+                            // §5.10, D127).
+                            adj.push(AdjRecord::DaeInit {
+                                leaf: *idx,
+                                u_before: uf.clone(),
+                                t: t0,
+                                z: z.clone(),
+                            });
+                        } else if self.tight_newton {
+                            let nz = z.len();
+                            z = crate::algebraic::replay_held(
+                                &r,
+                                &d.info,
+                                &z,
+                                self.p,
+                                &vec![false; nz],
+                                &vec![false; nz],
+                            )?;
+                        }
+                    }
+                    for (&j, &v) in d.info.dofs.iter().zip(&z) {
+                        u[j] = T::from_f64(v);
+                    }
+                }
                 let rec = self.recorded(&path)?;
                 // Replay takes the recorded steps and reproduces the recorded
                 // rejected count, which leaves no other trace (spec/tape.md §2).
@@ -992,6 +1135,104 @@ impl<'a, T: Scalar> Exec<'a, T> {
             SNode::Sequence { children, .. } => {
                 for c in children {
                     self.exec(c, u, t0, t1, false)?;
+                }
+            }
+            SNode::Solve { id, idx } => {
+                let path = self.path(id);
+                let s = &self.sched.solves[*idx];
+                let z = match self.recorded(&path)? {
+                    // Replay: the recorded converged unknowns, bit for bit, on
+                    // the replay for the reverse pass; at perturbed inputs the
+                    // recorded active set held and the free rows converged
+                    // to roundoff (spec/adjoint.md §4.6, §7.2; D127).
+                    Some(TapeRecord::Solve {
+                        z, active, recover, ..
+                    }) => {
+                        let uf: Vec<f64> = u.iter().map(|x| x.to_f64()).collect();
+                        if let Some(adj) = &mut self.adj {
+                            adj.push(AdjRecord::Solve {
+                                solve: *idx,
+                                u_before: uf,
+                                t: t0,
+                                z: z.clone(),
+                                active: active.clone(),
+                                recover: recover.clone(),
+                            });
+                            z.clone()
+                        } else if self.tight_newton {
+                            let (held, up) = crate::algebraic::held_set(&s.info, active);
+                            let (pp, _) = crate::algebraic::recorded_scaling(
+                                &s.method, recover, &s.pnames, self.p,
+                            );
+                            let r = Residual {
+                                ops: &s.ops,
+                                dofs: &s.info.dofs,
+                                u: &uf,
+                                t: t0,
+                            };
+                            crate::algebraic::replay_held(&r, &s.info, z, &pp, &held, &up)?
+                        } else {
+                            z.clone()
+                        }
+                    }
+                    Some(_) => {
+                        return Err(Error::Run(format!("replay: {path} is not a solve record")))
+                    }
+                    None => {
+                        let uf: Vec<f64> = u.iter().map(|x| x.to_f64()).collect();
+                        let warm: Vec<f64> = if s.warm_initial {
+                            s.initial.clone()
+                        } else {
+                            s.info.dofs.iter().map(|&j| uf[j]).collect()
+                        };
+                        let r = Residual {
+                            ops: &s.ops,
+                            dofs: &s.info.dofs,
+                            u: &uf,
+                            t: t0,
+                        };
+                        let o = run_solve(
+                            &r, &s.info, self.p, &s.pnames, &s.method, &warm, &s.initial, id,
+                        )?;
+                        if !o.ok {
+                            return Err(Error::Run(format!(
+                                "solve node {id} ({path}) did not converge at t = {t0} (SolveFailure)"
+                            )));
+                        }
+                        let active = crate::algebraic::active_sets(&s.info, &o);
+                        self.tape_out.push(TapeRecord::Solve {
+                            path: path.clone(),
+                            t: t0,
+                            dt: delta,
+                            z: o.z.clone(),
+                            iterations: o.iterations,
+                            recover: o.recover.clone(),
+                            active,
+                        });
+                        o.z
+                    }
+                };
+                if self.replay.is_some() {
+                    if let Some(TapeRecord::Solve {
+                        iterations,
+                        recover,
+                        active,
+                        ..
+                    }) = self.recorded(&path)?
+                    {
+                        self.tape_out.push(TapeRecord::Solve {
+                            path: path.clone(),
+                            t: t0,
+                            dt: delta,
+                            z: z.clone(),
+                            iterations: *iterations,
+                            recover: recover.clone(),
+                            active: active.clone(),
+                        });
+                    }
+                }
+                for (&j, &v) in s.info.dofs.iter().zip(&z) {
+                    u[j] = T::from_f64(v);
                 }
             }
             SNode::Strang { children, .. } => {

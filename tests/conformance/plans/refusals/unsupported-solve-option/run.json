@@ -1,0 +1,24 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/cubic_roots.esm",
+  "operators": {
+    "cubic": {
+      "select": {
+        "components": "Cubic"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "solve": "cubic",
+    "unknowns": [
+      "Cubic.z"
+    ],
+    "method": {
+      "newton": {},
+      "linesearch": "strong_wolfe"
+    }
+  }
+}

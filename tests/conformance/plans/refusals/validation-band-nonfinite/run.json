@@ -1,0 +1,19 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "model.esm",
+  "operators": {
+    "root": {
+      "select": {
+        "components": "Root"
+      }
+    }
+  },
+  "step": {
+    "dt": 0.1
+  },
+  "schedule": {
+    "leaf": "root",
+    "alg": "Rodas4",
+    "dt": 0.1
+  }
+}

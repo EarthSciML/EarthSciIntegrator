@@ -439,12 +439,14 @@ fn a_band_that_joins_two_cells_keeps_the_leaf_dense() {
     plan(&rc_path, &options, &AstDiffBands)
         .and_then(|p| p.write(&plan_dir))
         .unwrap();
-    // Say shift is pointwise with structure.block, which its band is not.
+    // Say shift is pointwise and block_diagonal with structure.block, which
+    // its band is not.
     let pj_path = plan_dir.join("plan.json");
     let mut pj: Value = serde_json::from_str(&std::fs::read_to_string(&pj_path).unwrap()).unwrap();
     let op = &mut pj["operators"]["shift"];
     assert_ne!(op["locality"]["class"], "pointwise", "{}", op["locality"]);
     op["locality"] = json!({"class": "pointwise"});
+    op["structure"]["class"] = json!("block_diagonal");
     op["structure"]["block"] = json!({
         "vars": ["Box.W"], "ordering": [1], "pattern": [[1, 1]], "lu_pattern": [[1, 1]],
     });

@@ -26,6 +26,7 @@
 //! - [`plan`]: the pipeline and the plan directory.
 //! - [`jcs`]: RFC 8785 canonical JSON (§2.1).
 
+pub mod algebraic;
 pub mod astdiff;
 pub mod axes;
 pub mod derived;

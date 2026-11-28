@@ -117,6 +117,7 @@ include("planner/terms.jl")
 include("planner/passes.jl")
 include("planner/dofsets.jl")
 include("planner/derived.jl")
+include("planner/algebraic.jl")
 include("planner/evaluate.jl")
 include("planner/backend.jl")
 include("planner/sumcheck.jl")
@@ -129,6 +130,7 @@ include("planner/planner.jl")
 # plan's derived documents, run by the schedule interpreter above.
 include("forcing_runtime.jl")
 include("plan_runtime.jl")
+include("algebraic_runtime.jl")
 
 """
     odefunction(ops::OperatorSum; inplace=true)

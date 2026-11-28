@@ -1,0 +1,37 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "model.esm",
+  "operators": {
+    "box": {
+      "select": {
+        "components": "Box"
+      }
+    },
+    "feed": {
+      "select": {
+        "components": "Feed"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "solve": "box",
+        "unknowns": [
+          "Box.z"
+        ],
+        "method": {
+          "ptc": {}
+        }
+      },
+      {
+        "leaf": "feed",
+        "alg": "Rodas4",
+        "dt": 1
+      }
+    ]
+  }
+}

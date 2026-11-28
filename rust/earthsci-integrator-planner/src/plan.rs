@@ -42,11 +42,21 @@ pub struct Documents {
     pub rhs: Vec<u8>,
     /// `<op>.jacobian.esm`'s bytes.
     pub jacobian: Vec<u8>,
+    /// The first document's kind: `rhs`, or `residual` for an algebraic
+    /// operator (§6.4).
+    pub rhs_kind: &'static str,
+    /// An algebraic operator's frozen documents (§6.5): (kind, bytes).
+    pub extra: Vec<(&'static str, Vec<u8>)>,
 }
 
 /// Everything the planner computes for a run config.
 #[derive(Debug, Clone)]
 pub struct Planned {
+    /// A picard operator's frozen Jacobian band list (§6.5), by operator.
+    pub frozen_bands: BTreeMap<String, Vec<Value>>,
+    /// An algebraic operator's parameter products' inputs and outputs
+    /// (§6.6, D127), by operator and kind (`vjp`, `frozen_vjp`).
+    pub products: BTreeMap<String, Map<String, Value>>,
     pub run_config: RunConfig,
     pub model: ModelInfo,
     pub axes: Axes,
@@ -322,6 +332,9 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let mut structures = BTreeMap::new();
     let state_dependent = info.state_dependent();
     for (name, op) in &ops {
+        if op.is_algebraic() {
+            continue;
+        }
         let ts: Vec<&Term> = op.terms.iter().map(|&i| &terms[i]).collect();
         let doc = derived::rhs_document(&info, name, &ts);
         let band_model_failed = |m: String| {
@@ -390,6 +403,15 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     }
 
     // §7.1–§7.6 checks.
+    if rc.at("/schedule").and_then(Value::as_str) == Some("auto")
+        && ops.values().any(Operator::is_algebraic)
+    {
+        return Err(refuse(
+            codes::AUTO_STRATEGY_UNAVAILABLE,
+            "/schedule",
+            "the model has algebraic equations; the \"auto\" schedule has no solve node or DAE (name one, spec/run-config.md §4.3, §4.10)",
+        ));
+    }
     let root = schedule::tree(&rc, &info, &ops);
     schedule::check(
         &root,
@@ -400,6 +422,224 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             interval,
         },
     )?;
+    // §5.9: each solving node's pairing, in tree order, then each algebraic
+    // operator's passes 2–4 on its residual document, in code-point order.
+    for n in root.preorder() {
+        if !crate::algebraic::is_solving(n, &ops) {
+            continue;
+        }
+        let names = crate::algebraic::node_algebraic_ops(n, &ops);
+        let sn = crate::algebraic::SolvingNode {
+            node: n,
+            ops: names.clone(),
+            residuals: names
+                .iter()
+                .flat_map(|o| ops[o].residuals.clone())
+                .collect(),
+            unknowns: crate::algebraic::node_unknowns(n, &ops, &info),
+        };
+        let pairing = crate::algebraic::pair_node(&info, &sn)?;
+        let (frozen, nfreeze) = crate::algebraic::node_frozen(n, &info);
+        let mut i = 0;
+        for o in &names {
+            let k = ops[o].residuals.len();
+            let op = ops.get_mut(o).expect("named");
+            op.pairing = pairing[i..i + k].to_vec();
+            op.frozen = frozen.clone();
+            op.nfreeze = nfreeze;
+            i += k;
+        }
+    }
+    let mut frozen_docs: BTreeMap<String, Vec<(&'static str, Vec<u8>)>> = BTreeMap::new();
+    let mut frozen_bands: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut products: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+    let has_adjoint = rc.at("/adjoint").is_some();
+    let algebraic_names: Vec<String> = ops
+        .values()
+        .filter(|o| o.is_algebraic())
+        .map(|o| o.name.clone())
+        .collect();
+    for name in &algebraic_names {
+        if ops[name].pairing.is_empty() {
+            continue;
+        }
+        let at = if ops[name].is_default {
+            "/schedule".to_string()
+        } else {
+            crate::error::ptr("/operators", name)
+        };
+        let doc = derived::residual_document(&info, name, &ops[name], &at)?;
+        let band_model_failed = |m: String| {
+            refuse(
+                codes::BAND_MODEL_FAILED,
+                "/model",
+                format!("operator {name}: {m}"),
+            )
+        };
+        let view = astdiff::FlatView::of_document(doc.clone()).map_err(band_model_failed)?;
+        let sv = view
+            .sysview()
+            .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let band_list =
+            astdiff::bands(&sv).map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+        let full: Vec<BandEntry> = band_list.iter().map(astdiff::band_entry).collect();
+        let loc = locality::classify(&full, &info.shapes, &info.index_sets, &axes);
+        {
+            let op = ops.get_mut(name).expect("named");
+            op.locality = locality::operator_locality([&loc], &axes);
+            let writes: BTreeSet<String> = op.pairing.iter().cloned().collect();
+            op.writes = writes.into_iter().collect();
+            let mut refs = BTreeSet::new();
+            for r in &op.residuals {
+                refs.extend(r.refs.iter().cloned());
+            }
+            op.reads = info.close_over_observeds(&refs).into_iter().collect();
+            op.forcing = info.forcing_among(&op.reads);
+        }
+        let st = structure::algebraic_structure(
+            &info,
+            &axes,
+            &ops[name],
+            &sv,
+            band_list,
+            &state_dependent,
+        )?;
+        jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
+        // §6.5: the frozen documents.
+        let op = &ops[name];
+        let mut frozen_doc: Option<Value> = None;
+        if !op.frozen.is_empty() {
+            let mut extra = Vec::new();
+            let mut refs = BTreeSet::new();
+            for (k, o) in op.frozen.iter().enumerate() {
+                extra.push((
+                    crate::algebraic::frozen_state(k + 1),
+                    crate::algebraic::frozen_declaration(&info, o),
+                    crate::algebraic::frozen_rhs(&info, o),
+                ));
+                refs.insert(o.clone());
+            }
+            let fr = derived::frozen_residual_document(&info, name, &extra, &refs);
+            let mut docs = vec![("frozen_residual", derived::to_bytes(&fr))];
+            frozen_doc = Some(fr);
+            if op.nfreeze > 0 {
+                let mut fdoc = doc.clone();
+                let ren: BTreeMap<String, String> = op
+                    .frozen
+                    .iter()
+                    .enumerate()
+                    // Only picard's freeze observeds are held (§6.5).
+                    .take(op.nfreeze)
+                    .map(|(k, o)| (o.clone(), crate::algebraic::frozen_state(k + 1)))
+                    .collect();
+                crate::algebraic::rename_refs(&mut fdoc["models"], &ren);
+                let models = fdoc["models"].as_object_mut().expect("models");
+                let jm = models
+                    .entry(derived::FROZEN_COMPONENT.to_string())
+                    .or_insert_with(|| json!({"variables": {}, "equations": []}));
+                for (k, o) in op.frozen.iter().enumerate() {
+                    let x = crate::algebraic::frozen_state(k + 1);
+                    let local = x
+                        .rsplit_once('.')
+                        .map_or(x.as_str(), |(_, v)| v)
+                        .to_string();
+                    jm["variables"][local] = crate::algebraic::frozen_declaration(&info, o);
+                    jm["equations"].as_array_mut().expect("equations").push(
+                        json!({"lhs": {"op": "D", "args": [x], "wrt": "t"}, "rhs": crate::algebraic::frozen_zero(&info, o)}),
+                    );
+                }
+                let fview = astdiff::FlatView::of_document(fdoc).map_err(band_model_failed)?;
+                let fsv = fview
+                    .sysview()
+                    .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+                let fbands = astdiff::bands(&fsv)
+                    .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+                frozen_bands.insert(
+                    name.clone(),
+                    fbands.iter().map(structure::band_json).collect::<Vec<_>>(),
+                );
+                docs.push((
+                    "frozen_jacobian",
+                    derived::to_bytes(&derived::jacobian_document(&fsv, &fbands)?),
+                ));
+            }
+            frozen_docs.insert(name.clone(), docs);
+        }
+        // §6.6: the parameter products, when the run config has `adjoint`.
+        if has_adjoint {
+            let mut ios = Map::new();
+            let (d, io) = derived::parameter_product(&sv)?;
+            let mut docs = vec![("vjp", derived::to_bytes(&d))];
+            ios.insert("vjp".into(), io);
+            if !crate::algebraic::bound_observeds(&info, op).is_empty() {
+                let fr = frozen_doc
+                    .take()
+                    .expect("a bound observed is a frozen observed");
+                let fview = astdiff::FlatView::of_document(fr).map_err(band_model_failed)?;
+                let fsv = fview
+                    .sysview()
+                    .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+                let (d2, io2) = derived::parameter_product(&fsv)?;
+                docs.push(("frozen_vjp", derived::to_bytes(&d2)));
+                ios.insert("frozen_vjp".into(), io2);
+            }
+            frozen_docs.entry(name.clone()).or_default().extend(docs);
+            products.insert(name.clone(), ios);
+        }
+        rhs_docs.insert(name.clone(), doc);
+        structures.insert(name.clone(), st);
+    }
+    // Rule 18's sign check (§5.9.7), at the sampled states.
+    let mut numbers = Numbers::new(&info, interval, &rhs_docs);
+    for n in root.preorder() {
+        if !matches!(n.kind, Kind::Solve) {
+            continue;
+        }
+        let written: Vec<String> = n
+            .value
+            .get("unknowns")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        let o = crate::algebraic::solve_op(n);
+        let op = &ops[&o];
+        if !op
+            .pairing
+            .iter()
+            .any(|z| crate::algebraic::is_bounded(&info, z))
+        {
+            continue;
+        }
+        numbers.op(&o, op, &structures[&o], &jac_docs[&o])?;
+        numbers.states()?;
+        let (_, samples) = numbers.states.as_ref().expect("set above");
+        let on = &numbers.ops[&o];
+        for (s, jb) in samples.iter().zip(&on.jb) {
+            for z in &op.pairing {
+                if !crate::algebraic::is_bounded(&info, z) {
+                    continue;
+                }
+                let Some((first, ext)) = numbers.dofs.states.get(z) else {
+                    continue;
+                };
+                let len: usize = ext.iter().product();
+                for d in *first..*first + len {
+                    let v = jb.get(&(d, d)).copied().unwrap_or(0.0);
+                    if v > 0.0 {
+                        let i = written.iter().position(|w| w == z).unwrap_or(0);
+                        return Err(refuse(
+                            codes::SOLVE_BOUNDS_SIGN,
+                            crate::error::ptr(&n.key_ptr("unknowns"), i),
+                            format!("the residual paired with {} has the positive diagonal derivative {v} at t = {}; the residual of lhs ~ rhs is rhs - lhs, the pseudo-time rate of its unknown (spec/run-config.md §4.10)", numbers.names[d], s.t),
+                        ));
+                    }
+                }
+            }
+        }
+    }
     let step = settings::step(&rc, &info)?;
     let partition = settings::partition(&rc, &info, &axes, &ops, &root)?;
     // §7.5's classical-Rosenbrock check runs here for the methods the run
@@ -423,11 +663,13 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         .solver
         .as_ref()
         .and_then(|s| s.stiffness.as_deref());
-    let mut numbers = Numbers::new(&info, interval, &rhs_docs);
     let mut stiffness = BTreeMap::new();
     let mut gershgorin_report = Map::new();
     let mut facts = StructureFacts::default();
     for (name, op) in &ops {
+        if op.is_algebraic() {
+            continue; // an algebraic operator has no stiffness (§5.5.2)
+        }
         let leaf = root
             .leaves()
             .into_iter()
@@ -487,6 +729,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     let inputs = settings::inputs(&rc, &info);
 
     let mut planned = Planned {
+        frozen_bands: std::mem::take(&mut frozen_bands),
+        products: std::mem::take(&mut products),
         run_config: rc,
         model: info.clone(),
         axes,
@@ -520,6 +764,12 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             Documents {
                 rhs: derived::to_bytes(doc),
                 jacobian: derived::to_bytes(&jac_docs[name]),
+                rhs_kind: if planned.operators[name].is_algebraic() {
+                    "residual"
+                } else {
+                    "rhs"
+                },
+                extra: frozen_docs.remove(name).unwrap_or_default(),
             },
         );
     }
@@ -544,7 +794,12 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             .terms
             .iter()
             .any(|&i| planned.terms[i].names.iter().any(|n| info.is_state(n)));
-        if op.terms.is_empty() || (reads_state && planned.structures[name].bands.is_empty()) {
+        let empty = if op.is_algebraic() {
+            planned.structures[name].bands.is_empty()
+        } else {
+            op.terms.is_empty() || (reads_state && planned.structures[name].bands.is_empty())
+        };
+        if empty {
             return Err(refuse(
                 codes::VALIDATION_EMPTY_OPERATOR,
                 "/model",
@@ -696,6 +951,40 @@ impl Planned {
     pub fn operator_json(&self, name: &str) -> Value {
         let op = &self.operators[name];
         let mut out = Map::new();
+        if op.is_algebraic() {
+            out.insert("kind".into(), json!("algebraic"));
+            out.insert("locality".into(), self.locality_json(op));
+            out.insert("writes".into(), json!(op.writes));
+            out.insert("reads".into(), json!(op.reads));
+            if !op.forcing.is_empty() {
+                out.insert("forcing".into(), json!(op.forcing));
+            }
+            let rs: Vec<Value> = op
+                .residuals
+                .iter()
+                .zip(&op.pairing)
+                .map(|(r, z)| json!({"id": r.id, "origin": r.origin, "unknown": z}))
+                .collect();
+            out.insert("residuals".into(), Value::Array(rs));
+            if let Some(b) = crate::algebraic::bounds_json(&self.model, op) {
+                out.insert("bounds".into(), b);
+            }
+            // §6.5: the frozen observeds, in order (D125).
+            if !op.frozen.is_empty() {
+                out.insert("frozen".into(), json!(op.frozen));
+            }
+            out.insert("structure".into(), self.structures[name].to_json());
+            if let Some(fb) = self.frozen_bands.get(name) {
+                out.insert("frozen_bands".into(), Value::Array(fb.clone()));
+            }
+            // §6.6: the parameter products' inputs and outputs (D127).
+            if let Some(ios) = self.products.get(name) {
+                for (k, io) in ios {
+                    out.insert(k.clone(), io.clone());
+                }
+            }
+            return Value::Object(out);
+        }
         out.insert("kind".into(), json!("rhs"));
         out.insert("locality".into(), self.locality_json(op));
         out.insert("writes".into(), json!(op.writes));
@@ -763,8 +1052,15 @@ impl Planned {
 
     /// A leaf's resolved method (§5.5.3).
     pub fn leaf_strategy(&self, n: &Node, facts: Option<&StructureFacts>) -> Result<LeafStrategy> {
+        let mut value = n.value.clone();
+        // A DAE's "auto" method is Rodas4 (spec/run-config.md §4.3).
+        if crate::algebraic::is_solving(n, &self.operators)
+            && value.get("alg").and_then(Value::as_str).unwrap_or("auto") == "auto"
+        {
+            value.insert("alg".into(), json!("Rodas4"));
+        }
         strategy::resolve_leaf(
-            &Value::Object(n.value.clone()),
+            &Value::Object(value),
             &self.leaf_facts(n, facts),
             &n.pointer,
         )
@@ -788,7 +1084,77 @@ impl Planned {
             &algs,
         )?;
         self.check_time_derivative(&algs)?;
-        schedule::write(&self.schedule, &self.model, &self.operators, &strategy)
+        let algebraic = self.resolved_algebraic()?;
+        schedule::write(
+            &self.schedule,
+            &self.model,
+            &self.operators,
+            &strategy,
+            &algebraic,
+        )
+    }
+
+    /// The resolved `solve` nodes and DAE `initialize` methods (§7.1), by
+    /// node id.
+    fn resolved_algebraic(&self) -> Result<BTreeMap<String, Value>> {
+        let mut out = BTreeMap::new();
+        for n in self.schedule.preorder() {
+            if !crate::algebraic::is_solving(n, &self.operators) {
+                continue;
+            }
+            let o = crate::algebraic::node_algebraic_ops(n, &self.operators)[0].clone();
+            let (meth, solve) = match &n.kind {
+                Kind::Solve => (n.value["method"].clone(), true),
+                _ => (
+                    n.value
+                        .get("initialize")
+                        .cloned()
+                        .unwrap_or_else(crate::algebraic::default_initialize),
+                    false,
+                ),
+            };
+            let ls = match meth.get("linsolve").filter(|v| v.as_str() != Some("auto")) {
+                Some(g) => strategy::linsolve_object(g),
+                None => {
+                    let st = &self.structures[&o];
+                    match (&self.operators[&o].locality.class, &st.block) {
+                        (Class::Pointwise, Some(b)) => {
+                            // A cell block's size is its element count (D123).
+                            let size = b
+                                .json
+                                .get("elements")
+                                .and_then(Value::as_array)
+                                .map_or(b.vars.len(), Vec::len);
+                            if size <= 16 {
+                                json!({"block_lu": {"pivot": true, "refine": 0}})
+                            } else {
+                                json!({"sparse_block_lu": {"refine": 0}})
+                            }
+                        }
+                        _ => json!({"dense_lu": {}}),
+                    }
+                }
+            };
+            let resolved = crate::algebraic::resolve_method(&meth, ls);
+            if solve {
+                let mut unknowns: Vec<String> = n.value["unknowns"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+                unknowns.sort();
+                out.insert(n.id().to_string(), json!({
+                    "id": n.id(), "solve": o, "unknowns": unknowns,
+                    "warm_start": n.value.get("warm_start").cloned().unwrap_or_else(|| json!("previous")),
+                    "method": resolved,
+                }));
+            } else {
+                out.insert(n.id().to_string(), resolved);
+            }
+        }
+        Ok(out)
     }
 
     /// §5.5.3, D94: a leaf whose method, given or resolved, is a Rosenbrock
@@ -886,7 +1252,10 @@ impl Planned {
     pub fn derived_json(&self) -> Value {
         let mut out = Map::new();
         for (op, d) in &self.documents {
-            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+            let mut docs: Vec<(&str, &Vec<u8>)> =
+                vec![(d.rhs_kind, &d.rhs), ("jacobian", &d.jacobian)];
+            docs.extend(d.extra.iter().map(|(k, b)| (*k, b)));
+            for (kind, bytes) in docs {
                 out.insert(
                     Self::derived_path(op, kind),
                     json!({"kind": kind, "operator": op, "sha256": settings::sha256_hex(bytes)}),
@@ -949,7 +1318,10 @@ impl Planned {
         std::fs::create_dir_all(dir.join("derived")).map_err(io)?;
         std::fs::write(dir.join("plan.json"), self.plan_bytes()?).map_err(io)?;
         for (op, d) in &self.documents {
-            for (kind, bytes) in [("rhs", &d.rhs), ("jacobian", &d.jacobian)] {
+            let mut docs: Vec<(&str, &Vec<u8>)> =
+                vec![(d.rhs_kind, &d.rhs), ("jacobian", &d.jacobian)];
+            docs.extend(d.extra.iter().map(|(k, b)| (*k, b)));
+            for (kind, bytes) in docs {
                 std::fs::write(dir.join(Self::derived_path(op, kind)), bytes).map_err(io)?;
             }
         }

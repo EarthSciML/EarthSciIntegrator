@@ -150,6 +150,16 @@ pub(crate) fn band_model_with(
     rows: &[bool],
 ) -> Result<BandModelReport, String> {
     let n = u.len();
+    // A non-finite band value fails the check whatever the independent
+    // Jacobian says: every comparison with NaN is false.
+    for (&(r, c), &v) in jb.iter() {
+        if rows[r] && !v.is_finite() {
+            return Err(format!(
+                "band Jacobian entry ({}, {}) is non-finite ({v})",
+                names[r], names[c]
+            ));
+        }
+    }
     // Steps: h_n = ε^(1/3) max(|u_n|, |b_n|) / d; the step taken is the
     // exact distance (u_n + h_n) − u_n. `d` is 1 for the check and 10, 100
     // for the kink fallback.

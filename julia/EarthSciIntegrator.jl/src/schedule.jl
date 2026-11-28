@@ -79,19 +79,21 @@ struct LeafNode{O <: OperatorSum, M <: AbstractMethod} <: Node
     ψ::Union{Nothing, Integrand} # the integrand of a functional over time, on the leaf that integrates it
     imex::Any                    # IMEX Euler: (explicit part or nothing, implicit part) as OperatorSums; else nothing
     state::Union{Nothing, LeafState} # the part of the model state the leaf advances, when it is not the whole state; else nothing
+    dae::Any                         # an index-1 DAE's DAEInfo (algebraic_runtime.jl), else nothing
 end
-LeafNode(args::Vararg{Any, 19}) = LeafNode(args..., nothing)
+LeafNode(args::Vararg{Any, 19}) = LeafNode(args..., nothing, nothing)
+LeafNode(args::Vararg{Any, 20}) = LeafNode(args..., nothing)
 is_adaptive(l::LeafNode) = l.dt === nothing
 
 """The [`RosenbrockContext`](@ref) of a Rosenbrock leaf."""
 rosenbrock_context(l::LeafNode) = RosenbrockContext(
     l.ops, l.linsolve, structure(l.ops), depends_on_t(l.ops),
-    l.check_stages ? l.nonnegative : Int[]
+    l.check_stages ? l.nonnegative : Int[], l.dae === nothing ? nothing : l.dae.mass
 )
 
 """The [`ImplicitContext`](@ref) of an SDIRK, θ-method or IMEX Euler leaf."""
 implicit_context(l::LeafNode) = l.imex === nothing ?
-    ImplicitContext(l.ops, nothing, l.ops, l.linsolve, structure(l.ops), something(l.tol)) :
+    ImplicitContext(l.ops, nothing, l.ops, l.linsolve, structure(l.ops), something(l.tol), l.dae === nothing ? nothing : l.dae.mass) :
     ImplicitContext(l.ops, l.imex[1], l.imex[2], l.linsolve, structure(l.ops), something(l.tol))
 
 """`sequence`: the children in order over the whole interval (Lie–Trotter)."""
@@ -178,7 +180,7 @@ end
 
 const _LEAF_KEYS = Set(
     [
-        "leaf", "id", "alg", "theta", "implicit_solve", "dt", "control", "jacobian", "linsolve",
+        "leaf", "coupled", "initialize", "id", "alg", "theta", "implicit_solve", "dt", "control", "jacobian", "linsolve",
         "imex", "domain", "frozen", "partition", "bind_dt",
     ]
 )
@@ -233,6 +235,10 @@ function build_node(spec::AbstractDict, prob::ToyProblem, path::String)
         (n isa Integer && !(n isa Bool) && n >= 1) ||
             throw(ConfigError("subcycle $id: n = $(repr(n)); it must be an integer of at least 1 (run-config §4.8)"))
         return SubcycleNode(id, build_node(spec["subcycle"], prob, "$path.subcycle"), Int(n))
+    elseif kind == "solve"
+        return build_solve(spec, prob, id)
+    elseif kind == "coupled"
+        return build_leaf(spec, prob, id)
     elseif kind == "map"
         name = String(spec["map"])
         haskey(prob.maps, name) || throw(ConfigError("map node $id names '$name', which is not a map operator of $(prob.name)"))
@@ -490,7 +496,8 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
         k in _LEAF_KEYS || throw(ConfigError("unknown key '$k' on leaf $id"))
     end
     haskey(spec, "frozen") && throw(UnsupportedError("leaf option 'frozen' (leaf $id) is not implemented in this stage"))
-    names = spec["leaf"] isa AbstractString ? [String(spec["leaf"])] : String.(spec["leaf"])
+    lk = haskey(spec, "coupled") ? "coupled" : "leaf"
+    names = spec[lk] isa AbstractString ? [String(spec[lk])] : String.(spec[lk])
     ops = AbstractOperator[]
     for n in names
         haskey(prob.operators, n) || throw(ConfigError("leaf $id names operator '$n', which $(prob.name) does not define"))
@@ -670,7 +677,8 @@ function build_leaf(spec::AbstractDict, prob::ToyProblem, id::String)
     end
     return LeafNode(
         id, names, opsum, tab, method, dt, tol, dt0, something(getd("dtmin"), 0.0), getd("dtmax"),
-        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex, leafstate
+        controller, maxiters, nonneg, onv, bindings, linsolve, check_stages, nothing, imex, leafstate,
+        dae_info(spec, prob, id, names, leafstate)
     )
 end
 
@@ -696,7 +704,7 @@ function with_background(l::LeafNode, u)
     return LeafNode(
         l.id, l.opnames, rebind(l.ops), l.tab, l.method, l.dt, l.tol, l.dt0,
         l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, l.ψ,
-        imex, l.state
+        imex, l.state, l.dae
     )
 end
 
@@ -704,7 +712,7 @@ end
 with_integrand(l::LeafNode, ψ::Integrand) = LeafNode(
     l.id, l.opnames, l.ops, l.tab, l.method, l.dt, l.tol, l.dt0,
     l.dtmin, l.dtmax, l.controller, l.maxiters, l.nonnegative, l.on_violation, l.bindings, l.linsolve, l.check_stages, ψ,
-    l.imex, l.state
+    l.imex, l.state, l.dae
 )
 
 """

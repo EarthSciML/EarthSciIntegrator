@@ -1,0 +1,99 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "cubic_roots",
+    "description": "spec/toy-problems.md \u00a71.7: an unbounded solve per cell, 0 = c - z - z^3, c_i = i."
+  },
+  "index_sets": {
+    "cell": {
+      "kind": "interval",
+      "size": 4
+    }
+  },
+  "models": {
+    "Cubic": {
+      "variables": {
+        "z": {
+          "type": "unknown",
+          "shape": [
+            "cell"
+          ],
+          "default": 0.0,
+          "description": "the root in each cell (algebraic unknown)"
+        },
+        "c": {
+          "type": "parameter",
+          "shape": [
+            "cell"
+          ],
+          "default": [
+            1.0,
+            2.0,
+            3.0,
+            4.0
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "cell"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "z",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "^",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "z",
+                            "i"
+                          ]
+                        },
+                        3
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "c",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          },
+          "rhs": 0.0
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

@@ -405,6 +405,22 @@ g_{I,z_I}^\top \mu_I = \bar z_I, \qquad
 
 and $\bar b_A$ goes to $\bar u$ and $\bar p$ through the VJP of a referenced bound; a number's is zero. So it is one transposed solve on the inactive block, plus the bound's VJP when a bound is a reference. With $A$ empty this is the unbounded rule. A degenerate component is in $A$, which gives the one-sided derivative that keeps it at the bound.
 
+**The products and the solve** (D127). A runtime forms the rule above from the operator's documents:
+- $g_z$ and $g_u$ are the residual's Jacobian document (spec/plan.md §6.4), unfrozen under `picard` as said above. The residual rows are paired with the unknowns (D120), so $g_z$ is square.
+- One transposed solve gives $\mu_I$ and $\bar b_A$ together: with $K$ the matrix $g_z$ whose rows in $A$ are replaced by the identity's, $K^\top \nu = \bar z$ gives $\nu_I = \mu_I$ (solving $g_{I,z_I}^\top \mu_I = \bar z_I$) and $\nu_A = \bar z_A - g_{I,z_A}^\top \mu_I = \bar b_A$. It is factored one block per cell where the plan gives the operator's structure a `block` (spec/plan.md §5.4), else as one block.
+- $g_u^\top \mu$ is the residual's Jacobian document applied transposed, with $\mu$ zero on the rows in $A$, read on the model state outside the unknowns.
+- $g_p^\top \mu$ is the operator's `vjp` document (spec/plan.md §6.6): EarthSciASTDiff's product on the parameters axis of the residual document, evaluated with its cotangent inputs set to $\mu$ on the unknowns' rows.
+- $\bar b_A$ goes to $\bar p$ by the bound's source. A parameter bound adds $\bar b_{A,i}$ to that parameter's cotangent, element by element. A number, or an array parameter read only through its `default`, adds nothing. A state-free observed bound (D125) goes through the operator's `frozen_vjp` document (spec/plan.md §6.6), the parameter product of its frozen residual document, evaluated with the cotangent input of that observed's frozen state set to $\bar b_A$ at the elements in $A$ and zero elsewhere.
+- $\bar F$ (data-fed parameters) would need the forcing axis's product, which no plan emits yet.
+
+**A scale gets no cotangent** (D125, D127). The converged $z$ does not depend on the method's `scale`, so a parameter or observed that a scale references gets nothing from the node. Only bounds carry a derivative.
+
+**The frozen-tape replay of a `solve` node** (§7.2, D127). The replay is the tape's map, so a `solve` node keeps its recorded decisions:
+- On the replay that recomputes the forward pass for the reverse pass, the node's $z$ is the tape's converged $z$, bit for bit.
+- On a replay at perturbed inputs (finite differences, §7.2), the node holds the tape's active set: $z_A = b_A$ at the perturbed inputs, and $g_I(u, z_I, z_A, p) = 0$ is solved for $z_I$ by Newton on the free rows from the tape's $z$, converged to roundoff. It does not re-solve the complementarity problem, whose active set could change. This is the map whose derivative the rule above is, the one-sided derivative at a degenerate component included.
+- A tangent through the node (Julia's forward sensitivities, §7.1) is the implicit-function tangent at the node's $z$: $dz_A = db_A$, $g_{I,z_I}\, dz_I = -\big(g_{I,u}\,du + g_{I,z_A}\,dz_A + g_{I,p}\,dp\big)$. It is not the derivative of the iteration, so the solve's tolerance does not enter the dot-product identity.
+- The warm start, the iterations, the `recover` path and the method (`inexact` included) are not part of the map.
+
 ## 5. Combinators
 
 The adjoint of a composition is the composition of the adjoints in reverse order (decisions §1.1). Every combinator below states its forward map on $[t, t+\Delta]$ (architecture §4.3) and its reverse.
@@ -494,11 +510,14 @@ The exact forward arithmetic, and hence its adjoint, is specified with the M7 me
 
 Without algebraic operators, `coupled` is a single leaf on the summed operators, and its adjoint is the family's. With `imex`, it is §4.4.
 
-With algebraic operators it is a semi-explicit index-1 DAE (D3b; specified in v1, implemented after M6 unless M4b needs it, D35). What can be stated now: with $M = \mathrm{diag}(I, 0)$, stiffly accurate Rodas and SDIRK, and consistent initialization by solving $g(u_0, z_0) = 0$:
-- the stage adjoints of §4.2 and §4.3 hold with $W$ replaced by the block $2\times2$ matrix $\begin{pmatrix} I/(h\gamma) - f_u & -f_z \\ -g_u & -g_z \end{pmatrix}$ (Rosenbrock) or its SDIRK analogue;
-- the consistent initialization contributes a §4.6-type solve at $t_0$, mapping $\bar z_0$ into $\bar u_0$ and $\bar p$.
+With algebraic operators it is a semi-explicit index-1 DAE (D3b, D122; spec/methods.md §14). An invocation is the consistent initialization (§14.4), $z \leftarrow \zeta(u, p, t_0)$ solving $g(u, z, p, t_0) = 0$ with $u$ held, followed by the leaf's steps of $M y' = F(y, t)$ on $y = (u, z)$, $M = \operatorname{diag}(I, 0)$. Its adjoint, written out here (D127), is the exact derivative of that map on the frozen tape:
 
-The DAE adjoint is written out when D3b is implemented.
+- **Rosenbrock steps** (§14.2) take §4.2's transformed-form adjoint with $\hat W = M/(h\gamma) - J$, the forward factors reused for the transposed solves, and one change: the forward step adds $M s_i$, $s_i = \sum_{j<i} (C_{ij}/h)\, k_j$, to the stage right-hand side, which drops the term on an algebraic row, so the reverse adds $(C_{ij}/h)\, M \mu_i$ to $\bar k_j$ (the algebraic rows of $\mu_i$ dropped) in place of $(C_{ij}/h)\, \mu_i$. $J = \partial F/\partial y$ is the forward step's (spec/methods.md §14.1), so $J(U_i)^\top \mu_i$ and the second-order term $\nabla_y \sum_i \mu_i^\top J(y_n)\, k_i$ run over the residual rows too. The second-order term needs `hess_u` of every operator not linear in $y$, the algebraic ones included; a plan's operators do not provide it before U8, so on a plan a Rosenbrock DAE adjoint is refused under the rule for any Rosenbrock adjoint (operator-interface.md §3).
+- **ESDIRK steps** (§14.3) take §4.3's adjoint with $W_i = M - h\gamma J(Z_i)$ (solved as $(\sigma M - J(Z_i))^{-\top}$ times the right-hand side times $\sigma$, $\sigma = 1/(h\gamma)$), refactored at the converged stage. An explicit first stage is $z_1 = h F(y_n, t_n)$ on every row, so its $W_1 = I$ as before. The tangent of a stage (§7.1) solves the same matrix untransposed.
+- Neither the error estimate (§14.3's $e = (M - h\gamma J)^{-1} M e_{\text{raw}}$, §14.2's) nor stiff accuracy enters: the step sequence is a tape constant.
+- **The initialization** is §4.6's unbounded rule applied at the invocation's start, after the steps' adjoints: with $(\lambda_u, \lambda_z)$ the cotangent of the initialized state, $g_z^\top \mu = \lambda_z$, $\lambda_u \mathrel{-}= g_u^\top \mu$, $\bar p \mathrel{-}= g_p^\top \mu$, and the cotangent of the incoming $z$ is zero: it only starts the initialization's iteration (§4.6's warm start). $g_z$, $g_u$ are the residual's Jacobian document and $g_p^\top \mu$ its `vjp` document (§4.6). On the replay that recomputes the forward pass the initialization runs as the forward did, from the same state, so it gives the forward's $z$ bit for bit; at perturbed inputs it is then converged to roundoff (§7.2); a tangent is §4.6's implicit-function tangent.
+
+A gradient with respect to a parameter also needs the term operators' parameter products ($f_p^\top \mu$), which plans do not emit before M4 (U7); until then a DAE leaf's parameter cotangents are those of any leaf whose operators provide no `vjp_p` (operator-interface.md §3, §8.3), and the planned DAE adjoint is taken with respect to the initial state.
 
 ## 6. Accumulation
 

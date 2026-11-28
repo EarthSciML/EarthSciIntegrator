@@ -1,0 +1,30 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "model.esm",
+  "operators": {
+    "kinetics": {
+      "select": {
+        "terms": [
+          "Rober"
+        ]
+      }
+    },
+    "conservation": {
+      "select": {
+        "terms": [
+          "Rober.residual[1]"
+        ]
+      }
+    }
+  },
+  "step": {
+    "dt": 40
+  },
+  "schedule": {
+    "coupled": [
+      "kinetics",
+      "conservation"
+    ],
+    "alg": "Rodas4"
+  }
+}

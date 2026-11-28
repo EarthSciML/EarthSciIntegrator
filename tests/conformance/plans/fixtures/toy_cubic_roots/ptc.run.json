@@ -1,0 +1,27 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "spec/toy-problems.md \u00a71.7 by pseudo-transient continuation, every option but the first pseudo-time step defaulted.",
+  "model": "../../../toys/cubic_roots.esm",
+  "operators": {
+    "cubic": {
+      "select": {
+        "components": "Cubic"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "solve": "cubic",
+    "unknowns": [
+      "Cubic.z"
+    ],
+    "method": {
+      "ptc": {
+        "dt0": 0.5
+      }
+    },
+    "warm_start": "initial"
+  }
+}

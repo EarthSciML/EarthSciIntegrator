@@ -1,0 +1,46 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "spec/toy-problems.md §1.10: Robertson as an index-1 DAE, a coupled node with TRBDF2 (stiffly accurate ESDIRK, spec/methods.md §14.3). With an adjoint with respect to the initial state (spec/adjoint.md §5.10, D127).",
+  "model": "../../../toys/robertson_dae.esm",
+  "operators": {
+    "kinetics": {
+      "select": {
+        "terms": [
+          "Rober"
+        ]
+      }
+    },
+    "conservation": {
+      "select": {
+        "terms": [
+          "Rober.residual[1]"
+        ]
+      }
+    }
+  },
+  "step": {
+    "dt": 40
+  },
+  "schedule": {
+    "coupled": [
+      "kinetics",
+      "conservation"
+    ],
+    "alg": "TRBDF2",
+    "jacobian": "symbolic",
+    "linsolve": "dense_lu",
+    "control": {
+      "reltol": 1e-06,
+      "abstol": 1e-10
+    }
+  },
+  "adjoint": {
+    "functional": {
+      "sum": "Rober.y1",
+      "over": "final"
+    },
+    "wrt": [
+      "u0"
+    ]
+  }
+}

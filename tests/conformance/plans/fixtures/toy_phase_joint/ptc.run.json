@@ -1,0 +1,33 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "spec/toy-problems.md \u00a71.9: an unbounded and a bounded unknown solved together; the pairing is unique by extents.",
+  "model": "../../../toys/phase_joint.esm",
+  "operators": {
+    "phase": {
+      "select": {
+        "components": "Phase"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "solve": "phase",
+    "unknowns": [
+      "Phase.w",
+      "Phase.s"
+    ],
+    "method": {
+      "ptc": {
+        "dt0": 0.1,
+        "growth": 2
+      },
+      "converged": {
+        "residual": 1e-12
+      },
+      "maxiter": 2000
+    },
+    "warm_start": "initial"
+  }
+}

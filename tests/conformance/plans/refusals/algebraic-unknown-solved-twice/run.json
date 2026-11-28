@@ -1,0 +1,46 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/phase_joint.esm",
+  "operators": {
+    "water": {
+      "select": {
+        "terms": [
+          "Phase.residual[1]"
+        ]
+      }
+    },
+    "solid": {
+      "select": {
+        "terms": [
+          "Phase.residual[2]"
+        ]
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "solve": "water",
+        "unknowns": [
+          "Phase.w",
+          "Phase.s"
+        ],
+        "method": {
+          "newton": {}
+        }
+      },
+      {
+        "solve": "solid",
+        "unknowns": [
+          "Phase.s"
+        ],
+        "method": {
+          "newton": {}
+        }
+      }
+    ]
+  }
+}

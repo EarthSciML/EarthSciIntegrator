@@ -75,7 +75,7 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
     mark_used_forcing!(m, ctx.terms)                     # §4.1
     term_localities!(ctx, ctx.terms)
     ctx.ops = select_operators(m, ctx.terms, config)
-    opnames = sort!(collect(keys(ctx.ops)))
+    opnames = sort!([k for (k, op) in ctx.ops if !is_algebraic(op)])
     for o in opnames
         operator_locality!(ctx.ops[o], axes)
     end
@@ -95,6 +95,9 @@ function plan(config_path::AbstractString; tspan = nothing, backend::PlanBackend
         build_snode(sched, "root", "/schedule", false)
     end
     check_schedule(ctx, root)
+    # §5.9: the pairing of each solving node, the algebraic operators' passes
+    # 2–4 on their residual documents, rule 18's sign check.
+    algebraic_structure!(ctx, root)
     # §7.3–§7.6.
     step = resolve_step(m, config)
     partition = resolve_partition(ctx, root)
@@ -170,12 +173,12 @@ function _resolved_alg(tree, id)
     return nothing
 end
 
-"""§4 step 7 (§6.1.4): a top-level component named `JacobianEval` is refused, since the Jacobian document uses that name."""
+"""§4 step 7 (§6.1.4): a top-level component named `JacobianEval` or `FrozenEval` is refused, since the derived documents use those names."""
 function check_reserved_names(file::EarthSciAST.EsmFile)
-    for d in (file.models, file.reaction_systems)
-        d !== nothing && haskey(d, "JacobianEval") && refuse(
+    for n in (PROBE_COMPONENT, FROZEN_COMPONENT), d in (file.models, file.reaction_systems)
+        d !== nothing && haskey(d, n) && refuse(
             "reserved_component_name", "/model",
-            "the model has a top-level component named JacobianEval, which the Jacobian document reserves (spec/plan.md §6.1.4)"
+            "the model has a top-level component named $n, which the derived documents reserve (spec/plan.md §6.1.4)"
         )
     end
     return
@@ -184,6 +187,20 @@ end
 """The plan's object for an operator (§3, §5)."""
 function operator_json(m::PlanModel, op::PlanOperator, stiff)
     op.structure === nothing && throw(PlannerStageError("operator $(op.name)'s structure (§5.4) needs EarthSciASTDiff"))
+    if is_algebraic(op)
+        d = Dict{String, Any}(
+            "kind" => "algebraic", "locality" => locality_json(op), "writes" => op.writes, "reads" => op.reads,
+            "residuals" => Any[Dict{String, Any}("id" => r.id, "origin" => r.origin, "unknown" => z) for (r, z) in zip(op.residuals, op.pairing)],
+            "structure" => op.structure
+        )
+        f = forcing_among(m, op.reads)
+        isempty(f) || (d["forcing"] = f)
+        bj = bounds_json(m, op)
+        bj === nothing || (d["bounds"] = bj)
+        # §6.5: the frozen observeds, in order (D125).
+        isempty(op.frozen) || (d["frozen"] = Any[op.frozen...])
+        return d
+    end
     d = Dict{String, Any}(
         "kind" => "rhs",
         "locality" => locality_json(op),
@@ -224,7 +241,7 @@ function plan_dict(d::PlanDraft)
         "esm_integrator" => String(ctx.config["esm_integrator"]),
         "inputs" => inputs_json(ctx.inputs),
         "time" => Dict{String, Any}("start" => ctx.time[1], "end" => ctx.time[2]),
-        "operators" => Dict{String, Any}(n => operator_json(ctx.model, op, d.stiffness[n]) for (n, op) in ctx.ops),
+        "operators" => Dict{String, Any}(n => operator_json(ctx.model, op, get(d.stiffness, n, nothing)) for (n, op) in ctx.ops),
         "schedule" => d.schedule,
         "step" => d.step,
         "partition" => d.partition,
@@ -232,6 +249,16 @@ function plan_dict(d::PlanDraft)
         "derived" => derived,
         "validation" => validation
     )
+    # §6.5: a picard operator's frozen Jacobian band list.
+    if ctx.backend isa DiffBackend
+        for (n, fb) in ctx.backend.frozen_bands
+            out["operators"][n]["frozen_bands"] = Any[fb...]
+        end
+        # §6.6: the parameter products' inputs and outputs (D127).
+        for (n, (_, ios)) in ctx.backend.products, (k, io) in ios
+            out["operators"][n][k] = io
+        end
+    end
     fj = forcing_json(ctx.model)
     fj === nothing || (out["forcing"] = fj)
     haskey(ctx.config, "adjoint") && (out["checkpoint_schedule"] = Dict{String, Any}("kind" => "all", "macro_steps" => 0))

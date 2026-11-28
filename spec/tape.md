@@ -22,7 +22,7 @@ Invocation order within a macro step is the execution order. Paths and order are
 
 | Node | Recorded per invocation |
 |---|---|
-| `leaf`, `coupled` | `t`, `Δ`; the accepted steps as a list of `(t_n, h_n)`; counts of accepted and rejected steps; the return code. For SDIRK and IMEX leaves, nothing about Newton iterations: the adjoint differentiates the converged stages (spec/adjoint.md §4.3). |
+| `leaf`, `coupled` | `t`, `Δ`; for a `coupled` node with algebraic operators, the unknowns its consistent initialization converged to and the iterations it took (spec/methods.md §14.4); the accepted steps as a list of `(t_n, h_n)`; counts of accepted and rejected steps; the return code. For SDIRK and IMEX leaves, nothing about Newton iterations: the adjoint differentiates the converged stages (spec/adjoint.md §4.3). |
 | `subcycle` | the number of substeps and, under `limits`, each substep's size and the limit that set it. |
 | `every` | whether it fired, and Δₑ when it did (spec/run-config.md §4.9). |
 | `map` | the mask of discrete decisions the map recorded (operator-interface.md §7). |
@@ -59,8 +59,11 @@ For tests and debugging, an implementation can write its tape as JSON Lines, one
 ```json
 {"path": "0/root.0", "node": "leaf", "t": 0, "dt": 0.025, "steps": [[0, 0.0125], [0.0125, 0.0125]], "accepted": 2, "rejected": 0, "retcode": "Success"}
 {"path": "0/root.1", "node": "map", "t": 0, "dt": 0.025, "mask": []}
+{"path": "0/root.2", "node": "solve", "t": 0, "dt": 0.025, "z": [0.25, 0.0], "iterations": 1, "recover": [], "active": {"Box.z": {"lower": [1], "upper": [0]}}}
 {"path": "0", "node": "macro", "t": 0, "dt": 0.025, "reason": "step.dt"}
 ```
+
+- A `solve` record carries the converged unknowns `z` in the plan's DOF order, the iterations of the attempt that converged, the `recover` actions taken in order, each named by its key (`underrelax`, `scale_param`, `revert_warm_start`, `method`; D125), and `active` (§2), each bound's element indices 0-based within the unknown.
 
 - Numbers are written in shortest round-trip form, so a tape read back is bitwise the tape written. JSON numbers cannot hold NaN or infinities, so these are written as the strings `"NaN"`, `"Infinity"` and `"-Infinity"`; `"NaN"` reads back as the canonical quiet NaN.
 - The macro-step record follows the invocations of its step.

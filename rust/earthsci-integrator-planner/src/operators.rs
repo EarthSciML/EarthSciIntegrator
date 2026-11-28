@@ -27,6 +27,24 @@ pub struct Operator {
     pub forcing: Vec<String>,
     /// Pass 2: its class and radius.
     pub locality: Locality,
+    /// An algebraic operator's residuals (§5.9.1), in flattened equation
+    /// order; empty for a term operator.
+    pub residuals: Vec<crate::algebraic::Residual>,
+    /// Once its solving node is paired (§5.9.5), each residual's unknown.
+    pub pairing: Vec<String>,
+    /// The frozen observeds of its solving node (spec/plan.md §6.5:
+    /// picard's freeze, then rel_change, scale and bound observeds) and how
+    /// many of the first are picard's freeze (0 for a node that is not a
+    /// picard solve).
+    pub frozen: Vec<String>,
+    pub nfreeze: usize,
+}
+
+impl Operator {
+    /// Whether it is an algebraic operator (§5.9.1).
+    pub fn is_algebraic(&self) -> bool {
+        !self.residuals.is_empty()
+    }
 }
 
 /// A term operator's selector.
@@ -74,6 +92,34 @@ impl Selector<'_> {
         }
         if let Some(ts) = &self.terms {
             if !ts.contains(&t.provenance.as_str()) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// spec/run-config.md §3.1 for an algebraic equation: `components`
+    /// covers its owner, `variables` lists a name it reads, `terms` lists
+    /// its id, and a `locality` key never matches.
+    fn matches_residual(&self, r: &crate::algebraic::Residual) -> bool {
+        if self.locality.is_some() {
+            return false;
+        }
+        if let Some(cs) = &self.components {
+            let Some(owner) = &r.owner else {
+                return false;
+            };
+            if !cs.iter().any(|c| covers(c, owner)) {
+                return false;
+            }
+        }
+        if let Some(vs) = &self.variables {
+            if !vs.iter().any(|v| r.reads.contains(*v)) {
+                return false;
+            }
+        }
+        if let Some(ts) = &self.terms {
+            if !ts.contains(&r.id.as_str()) {
                 return false;
             }
         }
@@ -129,7 +175,7 @@ pub fn select(
                     return Err(refuse(
                         codes::NAME_WRONG_KIND,
                         at,
-                        format!("{v} is not a state variable"),
+                        format!("{v} is not a state variable or solved unknown"),
                     ));
                 }
             }
@@ -190,8 +236,32 @@ pub fn select(
             }
         }
     }
+    // §5.9.1: algebraic equations; unmatched ones go to `default_algebraic`.
+    let mut rassigned: BTreeMap<String, Vec<crate::algebraic::Residual>> = BTreeMap::new();
+    for r in &info.residuals {
+        let matched: Vec<&str> = selectors
+            .iter()
+            .filter(|s| s.matches_residual(r))
+            .map(|s| s.name)
+            .collect();
+        if let [first, second, ..] = matched.as_slice() {
+            return Err(refuse(
+                codes::TERM_SELECTED_TWICE,
+                ptr("/operators", first),
+                format!(
+                    "algebraic equation {} is selected by both {first} and {second}",
+                    r.id
+                ),
+            ));
+        }
+        let name = matched
+            .first()
+            .map_or("default_algebraic", |n| *n)
+            .to_string();
+        rassigned.entry(name).or_default().push(r.clone());
+    }
     for s in &selectors {
-        if !assigned.contains_key(s.name) {
+        if !assigned.contains_key(s.name) && !rassigned.contains_key(s.name) {
             return Err(refuse(
                 codes::SELECTOR_MATCHES_NOTHING,
                 ptr(&ptr("/operators", s.name), "select"),
@@ -199,7 +269,42 @@ pub fn select(
             ));
         }
     }
+    for s in &selectors {
+        if assigned.contains_key(s.name) && rassigned.contains_key(s.name) {
+            return Err(refuse(
+                codes::OPERATOR_MIXES_KINDS,
+                ptr("/operators", s.name),
+                format!("the selector of {} matches both right-hand-side terms and algebraic equations (spec/plan.md §5.9.1)", s.name),
+            ));
+        }
+    }
     let mut out = BTreeMap::new();
+    for (name, rs) in rassigned {
+        let bind_dt = declared
+            .get(name.as_str())
+            .and_then(|op| op.get("bind_dt"))
+            .cloned();
+        out.insert(
+            name.clone(),
+            Operator {
+                is_default: name == "default_algebraic",
+                name,
+                terms: vec![],
+                bind_dt,
+                writes: vec![],
+                reads: vec![],
+                forcing: vec![],
+                locality: Locality {
+                    class: Class::Pointwise,
+                    radius: BTreeMap::new(),
+                },
+                residuals: rs,
+                pairing: vec![],
+                frozen: vec![],
+                nfreeze: 0,
+            },
+        );
+    }
     for (name, idx) in assigned {
         let bind_dt = declared
             .get(name.as_str())
@@ -221,6 +326,10 @@ pub fn select(
                     class: Class::Pointwise,
                     radius: BTreeMap::new(),
                 },
+                residuals: vec![],
+                pairing: vec![],
+                frozen: vec![],
+                nfreeze: 0,
             },
         );
     }

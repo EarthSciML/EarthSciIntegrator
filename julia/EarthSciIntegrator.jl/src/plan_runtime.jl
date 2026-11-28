@@ -479,7 +479,7 @@ end
 
 """Operator names a resolved schedule node and its descendants advance (`leaf`, `coupled` and `frozen` entries)."""
 function schedule_operators(node, acc = String[])
-    for k in ("leaf", "coupled")
+    for k in ("leaf", "coupled", "solve")
         haskey(node, k) && append!(acc, node[k] isa AbstractString ? [node[k]] : node[k])
     end
     for f in get(node, "frozen", Any[])
@@ -573,7 +573,10 @@ function plan_problem(
         d = get!(() -> build_plan_document(path, op, tspan), cache, (h, tspan))
         return _with(d; path)
     end
-    built = Dict{String, Tuple{PlanDocument, PlanDocument}}(n => (doc(n, "rhs"), doc(n, "jacobian")) for n in names)
+    # An algebraic operator's first document is its residual document
+    # (spec/plan.md §6.4), evaluated as a right-hand side.
+    first_kind(n) = get(plan["operators"][n], "kind", "rhs") == "algebraic" ? "residual" : "rhs"
+    built = Dict{String, Tuple{PlanDocument, PlanDocument}}(n => (doc(n, first_kind(n)), doc(n, "jacobian")) for n in names)
     # The layout comes from the first operator's right-hand side; every other
     # document must declare the same states (§8.2). The parameters are the
     # model's: every scalar parameter any of the documents reads, at its
@@ -640,15 +643,179 @@ function plan_problem(
     if mflat !== nothing && ic_reads(mflat, Set(keys(plan["forcing"])))
         u0 = data_initial_state(mfile, F, tspan, L)
     end
+    algebraic = Dict{String, Any}()
+    for n in names
+        first_kind(n) == "residual" || continue
+        docjson = JSON.parsefile(joinpath(dir, "derived/$n.residual.esm"))
+        info = algebraic_info(n, plan["operators"][n], L, pnames, docjson)
+        fz = haskey(plan["derived"], "derived/$n.frozen_residual.esm") ?
+            frozen_docs(n, plan["operators"][n], L, pnames, doc, info.dofs) : nothing
+        ext = Dict{String, Vector{Int}}(z => L.extents[z] for z in unique(info.names))
+        # §6.6: the parameter products, when the plan has them (D127).
+        entry = plan["operators"][n]
+        vj = haskey(entry, "vjp") ? Any[param_product(n, "vjp", entry, L, pnames, doc)] : Any[]
+        fv = haskey(entry, "frozen_vjp") ?
+            Any[param_product(n, "frozen_vjp", entry, canonical_layout(doc(n, "frozen_residual")), pnames, doc)] : Any[]
+        info = AlgebraicInfo(info.dofs, info.names, info.lower, info.upper, fz, solve_blocks(n, entry, L, docjson, info), docjson, ext, vj, fv)
+        algebraic[n] = info
+    end
     variables = Pair{String, Vector{Int}}[
         x => collect((L.offset[x] + 1):(L.offset[x] + prod(L.extents[x]; init = 1))) for x in sort!(collect(keys(L.offset)))
     ]
     name = String(get(get(plan["inputs"], "model", Dict()), "path", "plan"))
     prob = ToyProblem(
         name, length(L.names), u0, p, pnames, tspan, ops, Dict{String, AbstractMapOperator}(), variables,
-        Function[], nothing, false
+        Function[], nothing, false, algebraic
     )
     return PlanProblem(prob, plan, L, F)
+end
+
+"""The index sets of variable `name` as declared in a derived document's JSON (`[]` for a scalar)."""
+function declared_shape(doc, name::AbstractString, opname)
+    segs = split(name, '.')
+    node = get(doc["models"], segs[1], nothing)
+    for x in segs[2:(end - 1)]
+        node === nothing && break
+        node = get(get(node, "subsystems", Dict()), x, nothing)
+    end
+    v = node === nothing ? nothing : get(get(node, "variables", Dict()), segs[end], nothing)
+    v === nothing && throw(ConfigError("operator '$opname': its residual document does not declare $name"))
+    return String[String(x) for x in get(v, "shape", Any[])]
+end
+
+"""
+The blocks of algebraic operator `name`'s unknowns (`info`), from its
+structure's `block` (spec/plan.md §5.4), else `nothing`: per cell, the
+positions among the unknowns of the block's elements, in the block's order.
+A `cell_block` plan lists its elements (a variable and its indices along the
+axes inside the cell) and its cell axes; a `block_diagonal` plan has one
+element per variable, in its `ordering` of `vars`, and every axis is a cell
+axis. Elements of variables the operator only reads are left out. Blocks
+are in column-major order of their cells.
+"""
+function solve_blocks(name, entry, L::DofLayout, docjson, info)
+    st = entry["structure"]
+    haskey(st, "block") || return nothing
+    blk = st["block"]
+    cellaxes, elems = if haskey(blk, "elements")
+        String.(blk["cell_axes"]), Tuple{String, Vector{Int}}[(String(e[1]), Int.(e[2])) for e in blk["elements"]]
+    else
+        vars = String.(blk["vars"])
+        nothing, Tuple{String, Vector{Int}}[(vars[o], Int[]) for o in blk["ordering"]]
+    end
+    # The block's elements also hold the variables the operator only reads;
+    # the solve's blocks are its unknowns', in the block's order.
+    filter!(e -> e[1] in info.names, elems)
+    at = Dict(e => i for (i, e) in enumerate(elems))
+    bad(msg) = throw(ConfigError("operator '$name': its block structure: $msg"))
+    groups = Dict{Vector{Int}, Vector{Int}}()
+    k = 0
+    for z in unique(info.names)
+        shape = declared_shape(docjson, z, name)
+        cd = cellaxes === nothing ? collect(eachindex(shape)) : Int[
+                something(findfirst(==(a), shape), 0) for a in cellaxes
+            ]
+        any(==(0), cd) && bad("$z does not span every cell axis $(cellaxes)")
+        inner = setdiff(eachindex(shape), cd)
+        for c in cells(L.extents[z])
+            k += 1
+            e = get(at, (z, c[inner]), 0)
+            e == 0 && bad("$z$(c) is no element of a block")
+            g = get!(() -> zeros(Int, length(elems)), groups, c[cd])
+            g[e] == 0 || bad("two unknowns are element $e of one block")
+            g[e] = k
+        end
+    end
+    k == length(info.dofs) || bad("the unknowns are not those of the plan entry")
+    out = Vector{Int}[groups[key] for key in sort!(collect(keys(groups)); by = reverse)]
+    any(g -> any(==(0), g), out) && bad("a cell lacks an element of its block")
+    return out
+end
+
+"""
+The [`FrozenDocs`](@ref) of algebraic operator `name` (spec/plan.md §6.5): its
+frozen residual document and, when the plan lists it, its frozen Jacobian
+document, built by `doc(name, kind)` (`zdofs` the unknowns' model DOFs, in
+the solve's order) and bound to their own layout, the
+model's states (layout `L`) and the frozen states `FrozenEval.frozen_m`.
+"""
+function frozen_docs(name, entry, L::DofLayout, pnames, doc, zdofs)
+    r = doc(name, "frozen_residual")
+    Lf = canonical_layout(r)
+    r = bind_document(r, Lf, pnames, name)
+    at = Dict(n => i for (i, n) in enumerate(Lf.names))
+    tolf = Int[
+        get(at, n) do
+            throw(ConfigError("operator '$name': derived/$name.frozen_residual.esm does not declare state element $n"))
+        end for n in L.names
+    ]
+    fdofs = Vector{Int}[]
+    while haskey(Lf.offset, "FrozenEval.frozen_$(length(fdofs) + 1)")
+        x = "FrozenEval.frozen_$(length(fdofs) + 1)"
+        push!(fdofs, collect((Lf.offset[x] + 1):(Lf.offset[x] + prod(Lf.extents[x]; init = 1))))
+    end
+    length(Lf.names) == length(L.names) + sum(length, fdofs; init = 0) ||
+        throw(ConfigError("operator '$name': derived/$name.frozen_residual.esm declares states other than the model's and its frozen states"))
+    j, points = nothing, NTuple{3, Int}[]
+    if haskey(entry, "frozen_bands")
+        j = bind_document(doc(name, "frozen_jacobian"), Lf, pnames, name)
+        bands = BandEntry[BandEntry(b) for b in entry["frozen_bands"]]
+        zpos = Dict(tolf[d] => i for (i, d) in enumerate(zdofs))
+        for (k, f, row, col) in band_points(Lf, bands)
+            (haskey(zpos, row) && haskey(zpos, col)) || continue
+            b = bands[k]
+            ext = vcat(Lf.extents[b.row], Int[hi for (_, _, hi) in b.contracted])
+            nm = element_name("JacobianEval.J_$k", cells(ext)[f])
+            haskey(j.slots, nm) || throw(ConfigError("operator '$name': derived/$name.frozen_jacobian.esm has no band field element $nm"))
+            push!(points, (j.slots[nm], zpos[row], zpos[col]))
+        end
+    end
+    names = String.(get(entry, "frozen", Any[]))
+    length(names) == length(fdofs) || throw(
+        ConfigError("operator '$name': the plan entry lists $(length(names)) frozen observeds, its frozen residual document $(length(fdofs))")
+    )
+    return FrozenDocs(names, r, j, length(Lf.names), tolf, fdofs, points)
+end
+
+"""
+The [`ParamProduct`](@ref) of algebraic operator `name`'s product document
+`kind` (`vjp` or `frozen_vjp`, spec/plan.md §6.6), whose source document has
+the layout `Ls`, by the plan entry's input and output names.
+"""
+function param_product(name, kind, entry, Ls::DofLayout, pnames, doc)
+    d = doc(name, kind)
+    Lv = canonical_layout(d)
+    d = bind_document(d, Lv, pnames, name)
+    at = Dict(n => i for (i, n) in enumerate(Lv.names))
+    bad(msg) = throw(ConfigError("operator '$name': derived/$name.$kind.esm $msg"))
+    src = Int[get(() -> bad("does not declare state element $n"), at, n) for n in Ls.names]
+    # An input or output variable, by its unscoped name (EarthSciASTDiff
+    # declares it in the model `VjpEval`).
+    function var(v)
+        xs = [x for x in keys(Lv.offset) if x == v || endswith(x, "." * v)]
+        length(xs) == 1 || bad("declares $(length(xs)) variables named $v")
+        return only(xs)
+    end
+    io = entry[kind]
+    lam = zeros(Int, length(Ls.names))
+    for (s, v) in io["lam"]
+        haskey(Ls.offset, s) || bad("has an input for $s, which its source does not declare")
+        x = var(String(v))
+        n = prod(Ls.extents[s]; init = 1)
+        prod(Lv.extents[x]; init = 1) == n || bad("has an input $v of another size than $s")
+        for e in 1:n
+            lam[Ls.offset[s] + e] = Lv.offset[x] + e
+        end
+    end
+    out = Tuple{Int, Int}[]
+    for (pn, v) in io["vjp"]
+        k = findfirst(==(String(pn)), pnames)
+        # An array parameter is a constant of a planned run (M4).
+        k === nothing && continue
+        x = var(String(v))
+        push!(out, (k, Lv.offset[x] + 1))
+    end
+    return ParamProduct(d, length(Lv.names), src, lam, out)
 end
 
 _with_forcing(op::PlannedOperator, F) = PlannedOperator(
@@ -704,9 +871,19 @@ function planned_operator(name, entry, L::DofLayout, r::PlanDocument, j::PlanDoc
     points = NTuple{3, Int}[(fields[k][f], row, col) for (k, f, row, col) in band_points(L, bands)]
     return PlannedOperator(
         String(name), w, planned_structure(entry, L), Bool(st["depends_on_t"]), Bool(st["linear_in_u"]), r, j, points,
-        BandCache(), L, entry["locality"]["class"] == "pointwise" && haskey(st, "block"), nothing, EpochSetRef(), EpochSetRef()
+        BandCache(), L, _blockable(entry), nothing, EpochSetRef(), EpochSetRef()
     )
 end
+
+"""
+Whether a planned operator's leaf storage can be block diagonal, one
+element per state per cell: pointwise, with a `block` of class
+`block_diagonal`. A `cell_block` structure keeps elements along other axes
+inside a cell's block (D123); a solve takes its blocks from the plan
+instead ([`solve_blocks`](@ref)).
+"""
+_blockable(entry) = entry["locality"]["class"] == "pointwise" && haskey(entry["structure"], "block") &&
+    entry["structure"]["class"] == "block_diagonal"
 
 """
 The structure of a planned operator: the structure a leaf of this operator
@@ -719,7 +896,7 @@ takes its structure from all of its state variables ([`bind_planned_leaf`](@ref)
 """
 function planned_structure(entry, L::DofLayout)
     st = entry["structure"]
-    entry["locality"]["class"] == "pointwise" && haskey(st, "block") || return DenseStructure()
+    _blockable(entry) || return DenseStructure()
     return block_structure(L, unique(String.(entry["writes"])))
 end
 

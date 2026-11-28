@@ -19,7 +19,7 @@ It is specified once and implemented natively in Julia and in Rust (D1).
 - continuous root-finding events (§9);
 - multi-domain nesting (not planned for now; D23);
 - BDF, and ARK methods other than `IMEXEuler` (D35);
-- the implementation of monolithic index-1 DAE integration, D3b (specified in v1, implemented after M6; D35);
+- BDF for index-1 DAEs (D122: DAEs are integrated with stiffly accurate Rosenbrock and ESDIRK methods from M4b);
 - forward sensitivities in Rust (Julia has them, D36);
 - Python, which comes later as a third native implementation (D1).
 
@@ -86,7 +86,7 @@ The planner and the runtime are separate on purpose:
   - per-term provenance (upstream ask U2);
   - variable classification (`ode_states`, `observed_unknowns`, `algebraic_unknowns`);
   - parameter classes and the cadence partition (CONST / DISCRETE / CONTINUOUS);
-  - events, parameter `update` rules and algebraic equations, returned as structured objects by U6's strip mode, not refused.
+  - events and parameter `update` rules, returned as structured objects by U6's strip mode, not refused; algebraic equations, which the planner reads from the flattened model and writes into residual documents itself (D121).
 - **The run config** (§4), which may leave any choice as `"auto"`.
 - **Precedence.** The run config's `model` key is authoritative for a run. If the `.esm` also carries `solver.external`, the two must point at each other, or the planner refuses. The planner never writes `solver.external` into derived documents. Solver hints on mounted component files are dropped at assembly (U01), so the run config restates any per-component tolerances.
 
@@ -97,7 +97,7 @@ The planner and the runtime are separate on purpose:
    - Assign each term to an operator by provenance (component path) and the run config's selectors.
    - Unselected terms fall into default operators grouped by locality.
    - Provenance (U2) separates `operator_compose` contributions; reseact has three. Where a model instead sums its physics tendencies in observeds of one assembly component (EqWeFiC's `moist_theta_tendency.esm` and a linear factor), the planner inlines those observeds, distributes the factor, and assigns each term to the component that owns the namespaced variable it reads. The `components` selector uses that rule.
-   - Algebraic equations become `algebraic` operators. Event conditions, affects and step maps become `condition` and `map` operators. Run-config step-limit expressions become `limit` operators.
+   - Algebraic equations become `algebraic` operators, whose residuals each solving node pairs with its unknowns by structural matching (D120, spec/plan.md §5.9). Event conditions, affects and step maps become `condition` and `map` operators. Run-config step-limit expressions become `limit` operators.
    - **Parameter `update` rules** (esm ≥ 1.0 replaced parameter-writing events with them) become `condition`/`map` operators acting on parameters. `schedule` and `data` rules map to tstops and forcing epochs. `crossing` rules are refused in v1 (D22).
 2. **Locality analysis.** For every state read in a term, find its index offset relative to the written cell:
    - all offsets zero → `pointwise`;
@@ -122,10 +122,10 @@ The planner and the runtime are separate on purpose:
    - Jacobian band model. It also serves `Jᵀ·λ` by transposing at assembly, except for recurrence and scan operators: there a transpose costs O(N²) per line against O(N·L) for a reverse sweep, so the planner emits a dedicated VJP model (U9);
    - second-order band models for Rosenbrock adjoints: `∇_u`, `∇_p` and `∇_F` of the contraction `μᵀJ(u)w`, plus `∂f_t/∂u` where a method uses `f_t` (U8);
    - ∂f/∂p (including array parameters) and ∂f/∂(forcing) band models (U7);
-   - algebraic residual models;
+   - algebraic residual models: a document in which each paired unknown's time derivative is its residual, rhs − lhs, the pseudo-time flow of D95, so its Jacobian document is EarthSciASTDiff's as for any right-hand side (D121);
    - map, limit and condition models.
 
-   RHS and band models compile with the stock EarthSciAST compiler. Residual, map, limit and condition models need U6: today algebraic unknowns are state slots, and observeds cannot be compiled as standalone kernels.
+   RHS, residual and band models compile with the stock EarthSciAST compiler: a residual document is a right-hand-side document (D121), and every derived document declares the solved algebraic unknowns as states. Map, limit and condition models need U6's standalone kernels (EarthSciAST#700, released in 0.15.0).
 7. **Partition plan.** Rank and tile decomposition, halo widths per operator (the radius from pass 2), and shard sizing for pointwise and column leaves. The output stores' shard shape is an input: rank block boundaries fall on multiples of the output shard length, so ranks can write concurrently without locks (U12).
 8. **Validation and emission.** Checks:
    - Σ (operator RHS) = flat RHS, compared structurally: every term of the flattened model in exactly one operator's right-hand-side document, and every observed, declaration and initial condition the documents carry the model's (spec/plan.md §8.1; D91 replaced the comparison of evaluations at sampled states, which needed a whole-model build);
@@ -334,11 +334,12 @@ W is kept structured and never assembled dense:
 - **Bounds (D95):** an unknown whose model variable carries `lb` or `ub` (numbers, or references to variables that do not depend on it; U18) makes the solve a mixed complementarity problem: projected PTC, semismooth Newton on `z − mid(l, z + g, u)`, or projected Picard, converging on that reformulated residual. The residual's sign is fixed (rhs − lhs, the pseudo-time rate of its unknown) and the planner checks it on the diagonal. The adjoint differentiates on the active set the tape records (spec/adjoint.md §4.6, spec/tape.md §2). First user: MOSAIC's MESA solid–liquid equilibrium in EqWeFiC (solid salts ≥ 0).
 - **Adjoint (IFT):** one transposed solve, `g_zᵀ μ = λ_z`, per step. Integrator code in both languages; in Julia `SciMLSensitivity.SteadyStateAdjoint` is an acceptable implementation of the same thing (D32).
 
-### 6.4 Index-1 DAE (D3b; specified in v1, implemented after M6 unless M4b needs it, D35)
+### 6.4 Index-1 DAE (D3b; implemented at M4b, D122)
 
 - Semi-explicit form: `u' = f(u,z)`, `0 = g(u,z)`. `M = diag(I,0)` is implicit and never assembled.
-- Methods: stiffly accurate Rodas, stiffly accurate SDIRK (BDF post-v1).
-- Consistent initialization solves `g(u0, z) = 0` at t0.
+- Methods: stiffly accurate Rodas (Rodas3, Rodas4, Rodas5P), stiffly accurate ESDIRK (TRBDF2, Kvaerno3, Kvaerno4); BDF post-v1 (spec/methods.md §14).
+- The residuals pair with the unknowns by structural matching (D120).
+- Consistent initialization solves `g(u, z) = 0` for z with u held, at the start of every invocation of the node (D122).
 - The Newton system is block 2×2. It is solved by Krylov with a field-split preconditioner: the column or block preconditioner for u, and the SSA preconditioner for z.
 
 ## 7. Partitioning and execution (D6, D10, D11)
@@ -595,7 +596,7 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | U3 | EarthSciAST | Range-restricted, DOF-subset RHS over a tile or a lane list, with halo reads and global indices (Julia `f!`; Rust slab tape); released in v0.5.0 | M3 (tiles, lanes), M5 (MPI) |
 | U4 | EarthSciAST | Reentrant, thread-safe RHS entry point: Rust `RhsProgram` (`Send + Sync`); Julia `f!` without global forcing state; released in v0.5.0 (`rhs_program` in both) | M3 |
 | U5 | EarthSciAST | Honour declared Float32 in integration: Rust (stop refusing), Julia (honour `element_type`), and the Rust XLA emitter | M5g, M7 |
-| U6 | EarthSciAST | Strip mode for events, parameter updates and algebraic equations, plus standalone kernels for residuals, conditions, affects, limits and maps | M4b |
+| U6 | EarthSciAST | Strip mode for events, parameter updates and algebraic equations, plus standalone kernels for residuals, conditions, affects, limits and maps. Done: EarthSciAST#700, released in 0.15.0. `solve` nodes and DAEs do not use it (D121) | M4b |
 | U7 | EarthSciASTDiff | ∂f/∂(forcing buffer) bands, and array parameters as real columns; released in 0.2.0 (EarthSciASTDiff#28) | M4 |
 | U8 | EarthSciASTDiff | Second-order bands for Rosenbrock adjoints (`∇_u`, `∇_p`, `∇_F` of `μᵀJw`; `∂f_t/∂u`); released in 0.2.0 (EarthSciASTDiff#29) | M4 (Rust; Julia can use the D38 fallback) |
 | U9 | EarthSciASTDiff | Filtered `faq`, non-`+` semirings, recurrences; `column_block` structure; dedicated VJP models; released in 0.2.0 (EarthSciASTDiff#35, #42), recurrences in Rust and Python only | M4 (reseact's `Mz` filtered prefix scan), M4b (eqice column contractions)/M7 |
@@ -628,11 +629,11 @@ RFC drafts for every ask are in [`rfcs/`](rfcs/). Needed-by dates reflect what t
 | M2 | Planner v1: provenance, locality, DOF sets, band models, strategy rules, plan goldens; data-fed parameters planned and supplied, with every esm data-source feature through EarthSciAST and EarthSciIO providers and forcing epochs on one rank (D87) | Tier 1 on reseact-shaped fixtures; the M2 end-to-end cases, the data cases `data_decay`, `data_monthly` and `data_points` included (spec/toy-problems.md §4) |
 | M3 | reseact forward, shared memory: shards, lane pools (per-cell dt), dynamic re-sharding, epochs at reseact's scale (forcing slices per lane; the epoch mechanism itself is M2's, D87) | Matches the prototype's native reference trajectory (`dt_scope: global`) **at no more than the prototype's native-reference wall time**; `dt_scope: cell` bitwise invariant to shard and thread count |
 | M4 | reseact adjoint: params, then u0, gridded emissions, forcing (needs U7, U8, U9 and, in Rust, U12); forward sensitivities with dt tangents in Julia (D36) | Agreement with the prototype's 48 h gradient to ≤1e-9 relative (D16); exact dot-product (adjoint against the frozen-tape forward-sensitivity tangent, D40; Julia, while Rust is gated by finite differences and agreement with Julia, D44) and replay |
-| M4b | eqice on shared memory (D37): `solve` nodes (Newton–Krylov, Picard, PTC), IMEX columns, PISM limits, maps; needs U6 and U9's `column_block` | Test F (31×31×61) against the C++ dumps |
+| M4b | eqice on shared memory (D37): `solve` nodes (Newton–Krylov, Picard, PTC, bounded per D95), index-1 DAEs (D122), IMEX columns, PISM limits, maps; needs U6 (maps, limits) and U9's `column_block` | Test F (31×31×61) against the C++ dumps |
 | M5 | MPI: ranks, halo exchange, deterministic reductions, distributed I/O; multi-rank conformance in CI | reseact at 2×2.5° and 0.25° |
 | M5g | Julia XLA GPU: kernel-layer lowering, one program per leaf step, lane pools at fixed capacity, in-node multi-GPU via XLA collectives, device checkpoints | reseact forward and adjoint on GPU match CPU to tolerance, in two configurations (D28): f64 state, and mixed (f32 transport state, 16-bit W, chemistry on CPU). Bitwise run-to-run on one device |
 | M5b | Cross-rank lane migration for pointwise leaves (§7.6); f16/bf16 W and preconditioner storage with iterative refinement (§8) | Day/night load balance across ranks at 0.25°; refinement recovers f64 trajectories to tolerance |
-| M6 | eqice at ice-sheet scale under MPI; monolithic index-1 DAE (D3b) if test F or the larger runs need it | Larger-domain eqice runs with the M5 determinism gates; D3b dot-product and consistent-initialization tests |
+| M6 | eqice at ice-sheet scale under MPI | Larger-domain eqice runs with the M5 determinism gates; D3b dot-product and consistent-initialization tests |
 | M7 | EqWeFiC: SCM 24 h (f32, `every`/`frozen`/`bind_dt`), then `split_explicit` + HEVI once `grids/wrf_arw_c` exists; fire mesh | PLAN.md acceptance criteria |
 
 ## 15. Risks

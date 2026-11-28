@@ -396,6 +396,34 @@ impl<T: Scalar> Operator<T> for PlannedOperator {
             }
         }
     }
+    fn jac_entries(
+        &self,
+        dofs: &[usize],
+        u: &[T],
+        p: &[f64],
+        t: f64,
+        f: &mut dyn FnMut(usize, usize, T),
+    ) {
+        let at = |&(k, r, c): &(usize, usize, usize)| {
+            Some((
+                k,
+                dofs.binary_search(&r).ok()?,
+                dofs.binary_search(&c).ok()?,
+            ))
+        };
+        let done = self.jacobian.eval(u, p, t, |du| {
+            for (k, a, b) in self.points.iter().filter_map(at) {
+                f(a, b, T::from_f64(du[k]));
+            }
+        });
+        if let Err(e) = done {
+            self.record("Jacobian", e);
+            for (_, a, b) in self.points.iter().filter_map(at) {
+                f(a, b, T::from_f64(f64::NAN));
+            }
+        }
+    }
+
     fn jac(&self, out: &mut MatrixStorage<T>, u: &[T], p: &[f64], t: f64) {
         // A block_diagonal operator's points stay inside their cell (checked
         // when it was built), so either storage takes every point.
@@ -514,9 +542,8 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
     }
     for (name, role) in &names {
         let what = match role {
-            Role::Term => continue,
+            Role::Term | Role::Algebraic => continue,
             Role::Map => "a map node",
-            Role::Algebraic => "a solve node",
         };
         return Err(Error::Unimplemented(format!(
             "operator {name}: the schedule runs it from {what}, which a plan's operators do not \
@@ -566,18 +593,25 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
                 "plan.json: the schedule names {name}, which has no operators entry"
             )));
         }
-        if entry["kind"].as_str() != Some("rhs") {
-            return Err(cfg(format!(
-                "operator {name}: the schedule uses it as a term operator, but its kind is {}",
-                entry["kind"]
-            )));
-        }
+        // An algebraic operator's first document is its residual document
+        // (spec/plan.md §6.4), evaluated as a right-hand side; a `solve` node
+        // or a `coupled` node advances it.
+        let first = match entry["kind"].as_str() {
+            Some("rhs") => "rhs",
+            Some("algebraic") => "residual",
+            _ => {
+                return Err(cfg(format!(
+                    "operator {name}: its kind {} is not one a plan's runtime runs",
+                    entry["kind"]
+                )))
+            }
+        };
         let path_of = |kind: &str| -> Result<String, Error> {
             docs.get(&(name.clone(), kind.to_string()))
                 .cloned()
                 .ok_or_else(|| cfg(format!("operator {name}: the plan has no {kind} document")))
         };
-        let (rhs_path, jac_path) = (path_of("rhs")?, path_of("jacobian")?);
+        let (rhs_path, jac_path) = (path_of(first)?, path_of("jacobian")?);
         let (rhs_prob, rhs_prog) =
             build_program(&dir.join(&rhs_path), tspan).map_err(|e| refuse(name, &rhs_path, e))?;
         let (_, jac_prog) =
@@ -714,6 +748,132 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
     };
 
     let mut operators: Vec<Arc<dyn Operator<T>>> = Vec::new();
+    // Each algebraic operator's unknowns and bounds (spec/plan.md §5.9.7).
+    let mut algebraic = BTreeMap::new();
+    for b in &built {
+        let entry = &plan["operators"][&b.name];
+        if entry["kind"].as_str() != Some("algebraic") {
+            continue;
+        }
+        let doc: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(&b.rhs_path))
+                .map_err(|e| refuse(&b.name, &b.rhs_path, e))?,
+        )
+        .map_err(|e| refuse(&b.name, &b.rhs_path, e))?;
+        let mut info = crate::algebraic::AlgebraicInfo {
+            dofs: vec![],
+            names: vec![],
+            lower: vec![],
+            upper: vec![],
+            frozen: None,
+            blocks: None,
+            doc: None,
+            extents: BTreeMap::new(),
+            vjp: vec![],
+            fvjp: vec![],
+        };
+        let frozen_names: Vec<&str> = entry["frozen"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        for z in entry["writes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let r = m
+                .dofs
+                .dofs_of(z)
+                .ok_or_else(|| refuse(&b.name, &b.rhs_path, format!("no state {z}")))?;
+            let ext: Vec<usize> = m.dofs.states[z].1.clone();
+            let n = r.len();
+            info.extents.insert(z.to_string(), ext.clone());
+            info.dofs.extend(r);
+            info.names.extend(std::iter::repeat_n(z.to_string(), n));
+            let bnds = &entry["bounds"][z];
+            for (key, dest) in [("lb", &mut info.lower), ("ub", &mut info.upper)] {
+                let v = &bnds[key];
+                let src: Vec<Option<crate::algebraic::Bound>> = if v.is_null() {
+                    vec![None; n]
+                } else if let Some(x) = v.as_f64() {
+                    vec![Some(crate::algebraic::Bound::Const(x)); n]
+                } else {
+                    let pn = v.as_str().unwrap_or_default();
+                    match m.params.iter().position(|x| x == pn) {
+                        Some(i) => vec![Some(crate::algebraic::Bound::Param(i)); n],
+                        // A state-free observed bound reads the frozen
+                        // residual document once per invocation (D125).
+                        None if frozen_names.contains(&pn) => (0..n)
+                            .map(|e| Some(crate::algebraic::Bound::Obs(pn.to_string(), e)))
+                            .collect(),
+                        None => crate::algebraic::array_default(&doc, pn, &ext)
+                            .map_err(|e| refuse(&b.name, &b.rhs_path, e))?
+                            .into_iter()
+                            .map(|x| Some(crate::algebraic::Bound::Const(x)))
+                            .collect(),
+                    }
+                };
+                dest.extend(src);
+            }
+        }
+        // The frozen documents (spec/plan.md §6.5), when the plan has them.
+        if let Some(rp) = docs.get(&(b.name.clone(), "frozen_residual".to_string())) {
+            let jp = docs.get(&(b.name.clone(), "frozen_jacobian".to_string()));
+            let f = PlannedFrozen::load(
+                dir, tspan, &b.name, entry, &m.dofs, &m.params, &forcing, &timeline, &info.dofs,
+                rp, jp,
+            )?;
+            info.frozen = Some(crate::algebraic::Frozen(Arc::new(f)));
+        }
+        // The parameter products (spec/plan.md §6.6, D127), when the plan
+        // has them.
+        for kind in ["vjp", "frozen_vjp"] {
+            let Some(path) = docs.get(&(b.name.clone(), kind.to_string())) else {
+                continue;
+            };
+            let frozen = if kind == "frozen_vjp" {
+                let rp = docs
+                    .get(&(b.name.clone(), "frozen_residual".to_string()))
+                    .ok_or_else(|| {
+                        refuse(
+                            &b.name,
+                            path,
+                            "a frozen_vjp without a frozen_residual document",
+                        )
+                    })?;
+                let (_, rprog) =
+                    build_program(&dir.join(rp), tspan).map_err(|e| refuse(&b.name, rp, e))?;
+                Some(program_dofs(&rprog, |_| false))
+            } else {
+                None
+            };
+            let pr = PlannedProduct::load(
+                dir,
+                tspan,
+                &b.name,
+                &entry[kind],
+                &m.dofs,
+                frozen.as_ref(),
+                &m.params,
+                &forcing,
+                &timeline,
+                path,
+            )?;
+            let pr = crate::algebraic::Product(Arc::new(pr));
+            if kind == "vjp" {
+                info.vjp.push(pr);
+            } else {
+                info.fvjp.push(pr);
+            }
+        }
+        info.blocks = solve_blocks(&b.name, entry, &m.dofs, &doc, &info.names)
+            .map_err(|e| refuse(&b.name, &b.rhs_path, format!("its block structure: {e}")))?;
+        info.doc = Some(Arc::new(doc));
+        algebraic.insert(b.name.clone(), info);
+    }
     for b in built {
         let (name, rhs_path, jac_path) = (&b.name, &b.rhs_path, &b.jac_path);
         let entry = &plan["operators"][name];
@@ -763,6 +923,7 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
         operators,
         maps: vec![],
         invariants: vec![],
+        algebraic,
     };
 
     // The run config of the resolved schedule and step (spec/plan.md §7.1,
@@ -847,6 +1008,496 @@ fn state_shapes(path: &Path, dofs: &Dofs) -> Result<BTreeMap<String, Vec<String>
         .collect()
 }
 
+/// An algebraic operator's frozen documents (spec/plan.md §6.5), bound to
+/// their own canonical layout: the model's states and the frozen states
+/// `FrozenEval.frozen_m`.
+struct PlannedFrozen {
+    /// The frozen observeds, in order (the plan entry's `frozen`).
+    names: Vec<String>,
+    resid: Document,
+    jac: Option<Document>,
+    /// The length of the frozen layout.
+    nf: usize,
+    /// Each model DOF's DOF in the frozen layout.
+    tolf: Vec<usize>,
+    /// Per frozen observed: its frozen state's DOFs in the frozen layout,
+    /// and its slots in the frozen residual document's output.
+    fdofs: Vec<Vec<usize>>,
+    fslots: Vec<Vec<usize>>,
+    /// The frozen Jacobian's band points among the unknowns: (output slot,
+    /// row position, column position).
+    points: Vec<(usize, usize, usize)>,
+}
+
+impl PlannedFrozen {
+    #[allow(clippy::too_many_arguments)]
+    fn load(
+        dir: &Path,
+        tspan: (f64, f64),
+        name: &str,
+        entry: &Value,
+        dofs: &Dofs,
+        params: &[String],
+        forcing: &BTreeMap<String, PlanForcing>,
+        timeline: &Arc<ForcingTimeline>,
+        zdofs: &[usize],
+        rpath: &str,
+        jpath: Option<&String>,
+    ) -> Result<PlannedFrozen, Error> {
+        let (_, rprog) =
+            build_program(&dir.join(rpath), tspan).map_err(|e| refuse(name, rpath, e))?;
+        let lf = program_dofs(&rprog, |_| false);
+        let mut tolf = vec![0usize; dofs.n];
+        for (st, (start, ext)) in &dofs.states {
+            let r = lf.dofs_of(st).ok_or_else(|| {
+                refuse(name, rpath, format!("it does not declare the state {st}"))
+            })?;
+            if lf.states[st].1 != *ext {
+                return Err(refuse(
+                    name,
+                    rpath,
+                    format!("its state {st} has other extents than the model's"),
+                ));
+            }
+            for (k, j) in r.enumerate() {
+                tolf[start + k] = j;
+            }
+        }
+        let resid = Document::new(rprog, &lf, params, forcing, timeline.clone())
+            .map_err(|e| refuse(name, rpath, e))?;
+        let (mut fdofs, mut fslots): (Vec<Vec<usize>>, Vec<Vec<usize>>) = (vec![], vec![]);
+        loop {
+            let x = format!(
+                "{}.frozen_{}",
+                earthsci_integrator_planner::derived::FROZEN_COMPONENT,
+                fdofs.len() + 1
+            );
+            let Some(r) = lf.dofs_of(&x) else { break };
+            let (off, _) = resid
+                .prog
+                .block_range(&x)
+                .ok_or_else(|| refuse(name, rpath, format!("no block {x}")))?;
+            fslots.push(r.clone().map(|j| off + j - r.start).collect());
+            fdofs.push(r.collect());
+        }
+        if lf.n != dofs.n + fdofs.iter().map(Vec::len).sum::<usize>() {
+            return Err(refuse(
+                name,
+                rpath,
+                "it declares states other than the model's and its frozen states",
+            ));
+        }
+        let mut points = vec![];
+        let jac = match jpath {
+            None => None,
+            Some(jp) => {
+                let (_, jprog) =
+                    build_program(&dir.join(jp), tspan).map_err(|e| refuse(name, jp, e))?;
+                let jac = Document::new(jprog, &lf, params, forcing, timeline.clone())
+                    .map_err(|e| refuse(name, jp, e))?;
+                let zpos: HashMap<usize, usize> = zdofs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &d)| (tolf[d], i))
+                    .collect();
+                for (k, b) in entry["frozen_bands"]
+                    .as_array()
+                    .ok_or_else(|| refuse(name, jp, "the plan entry has no frozen_bands"))?
+                    .iter()
+                    .enumerate()
+                {
+                    let field = band_field(k + 1);
+                    let (base, len) = jac
+                        .prog
+                        .block_range(&field)
+                        .ok_or_else(|| refuse(name, jp, format!("it has no {field}")))?;
+                    let mut with_coef = b.clone();
+                    with_coef["coef"] = json!(0);
+                    let en = earthsci_astdiff::parse_band(&with_coef)
+                        .map_err(|e| refuse(name, jp, format!("band {}: {e}", k + 1)))?;
+                    let scatter = band_scatter(&lf, &en, len, &field)
+                        .map_err(|e| refuse(name, jp, format!("band {}: {e}", k + 1)))?;
+                    for (off, r, c) in scatter {
+                        if let (Some(&ri), Some(&ci)) = (zpos.get(&r), zpos.get(&c)) {
+                            points.push((base + off, ri, ci));
+                        }
+                    }
+                }
+                Some(jac)
+            }
+        };
+        let names: Vec<String> = entry["frozen"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        if names.len() != fdofs.len() {
+            return Err(refuse(
+                name,
+                rpath,
+                format!(
+                    "the plan entry lists {} frozen observeds, the document {}",
+                    names.len(),
+                    fdofs.len()
+                ),
+            ));
+        }
+        Ok(PlannedFrozen {
+            names,
+            resid,
+            jac,
+            nf: lf.n,
+            tolf,
+            fdofs,
+            fslots,
+            points,
+        })
+    }
+
+    /// The frozen layout's state at the model state `x`, its frozen states
+    /// zero.
+    fn state(&self, x: &[f64]) -> Vec<f64> {
+        let mut uf = vec![0.0; self.nf];
+        for (i, &j) in self.tolf.iter().enumerate() {
+            uf[j] = x[i];
+        }
+        uf
+    }
+}
+
+impl crate::algebraic::FrozenEval for PlannedFrozen {
+    fn values(&self, x: &[f64], p: &[f64], t: f64) -> Result<Vec<Vec<f64>>, String> {
+        let uf = self.state(x);
+        self.resid.eval(&uf, p, t, |du| {
+            self.fslots
+                .iter()
+                .map(|s| s.iter().map(|&k| du[k]).collect())
+                .collect()
+        })
+    }
+
+    fn has_jacobian(&self) -> bool {
+        self.jac.is_some()
+    }
+
+    fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    fn jacobian(&self, x: &[f64], p: &[f64], t: f64) -> Result<crate::algebraic::Entries, String> {
+        let jac = self.jac.as_ref().ok_or("no frozen Jacobian document")?;
+        let mut uf = self.state(x);
+        for (ds, v) in self.fdofs.iter().zip(self.values(x, p, t)?) {
+            for (&d, y) in ds.iter().zip(v) {
+                uf[d] = y;
+            }
+        }
+        jac.eval(&uf, p, t, |du| {
+            let mut a = crate::algebraic::Entries::new();
+            for &(s, r, c) in &self.points {
+                *a.entry((r, c)).or_insert(0.0) += du[s];
+            }
+            a
+        })
+    }
+}
+
+/// A parameter product document (spec/plan.md §6.6, D127) bound to its own
+/// canonical layout: the source document's states, the cotangent inputs and
+/// the outputs.
+struct PlannedProduct {
+    doc: Document,
+    n: usize,
+    /// Each model DOF's DOF in the product's layout.
+    src: Vec<usize>,
+    /// Each model DOF's cotangent input DOF, when it has one.
+    lam: Vec<Option<usize>>,
+    /// Per frozen state `FrozenEval.frozen_m`: its elements' cotangent input
+    /// DOFs (a frozen residual's product).
+    flam: Vec<Vec<usize>>,
+    /// Each scalar parameter of the run with an output: (its index, the
+    /// output's slot).
+    out: Vec<(usize, usize)>,
+}
+
+impl PlannedProduct {
+    #[allow(clippy::too_many_arguments)]
+    fn load(
+        dir: &Path,
+        tspan: (f64, f64),
+        name: &str,
+        io: &Value,
+        dofs: &Dofs,
+        frozen: Option<&Dofs>,
+        params: &[String],
+        forcing: &BTreeMap<String, PlanForcing>,
+        timeline: &Arc<ForcingTimeline>,
+        path: &str,
+    ) -> Result<PlannedProduct, Error> {
+        let (_, prog) = build_program(&dir.join(path), tspan).map_err(|e| refuse(name, path, e))?;
+        let lv = program_dofs(&prog, |_| false);
+        let doc = Document::new(prog, &lv, params, forcing, timeline.clone())
+            .map_err(|e| refuse(name, path, e))?;
+        // An input or output variable, by its unscoped name (EarthSciASTDiff
+        // declares it in the model `VjpEval`).
+        let var = |v: &str| -> Result<String, Error> {
+            let xs: Vec<&String> = lv
+                .states
+                .keys()
+                .filter(|x| *x == v || x.ends_with(&format!(".{v}")))
+                .collect();
+            match xs.as_slice() {
+                [x] => Ok((*x).clone()),
+                _ => Err(refuse(
+                    name,
+                    path,
+                    format!("it declares {} variables named {v}", xs.len()),
+                )),
+            }
+        };
+        let mut src = vec![0usize; dofs.n];
+        for (st, (start, _)) in &dofs.states {
+            let r = lv
+                .dofs_of(st)
+                .ok_or_else(|| refuse(name, path, format!("it does not declare the state {st}")))?;
+            for (k, j) in r.enumerate() {
+                src[start + k] = j;
+            }
+        }
+        let mut lam = vec![None; dofs.n];
+        let mut flam: Vec<Vec<usize>> = vec![];
+        for (s, v) in io["lam"].as_object().into_iter().flatten() {
+            let x = var(v.as_str().unwrap_or_default())?;
+            let r = lv.dofs_of(&x).expect("a state of the layout");
+            if let Some(m) = s
+                .strip_prefix(&format!(
+                    "{}.frozen_",
+                    earthsci_integrator_planner::derived::FROZEN_COMPONENT
+                ))
+                .and_then(|k| k.parse::<usize>().ok())
+            {
+                if frozen.is_none() {
+                    return Err(refuse(
+                        name,
+                        path,
+                        format!("an input for {s} outside a frozen residual's product"),
+                    ));
+                }
+                if flam.len() < m {
+                    flam.resize(m, vec![]);
+                }
+                flam[m - 1] = r.collect();
+                continue;
+            }
+            let Some(sr) = dofs.dofs_of(s) else {
+                return Err(refuse(
+                    name,
+                    path,
+                    format!("an input for {s}, which the model does not declare"),
+                ));
+            };
+            if sr.len() != r.len() {
+                return Err(refuse(
+                    name,
+                    path,
+                    format!("its input {v} has another size than {s}"),
+                ));
+            }
+            for (a, b) in sr.zip(r) {
+                lam[a] = Some(b);
+            }
+        }
+        let mut out = vec![];
+        for (pn, v) in io["vjp"].as_object().into_iter().flatten() {
+            // An array parameter is a constant of a planned run (M4).
+            let Some(k) = params.iter().position(|q| q == pn) else {
+                continue;
+            };
+            let x = var(v.as_str().unwrap_or_default())?;
+            let (off, _) = doc
+                .prog
+                .block_range(&x)
+                .ok_or_else(|| refuse(name, path, format!("no block {x}")))?;
+            out.push((k, off));
+        }
+        Ok(PlannedProduct {
+            doc,
+            n: lv.n,
+            src,
+            lam,
+            flam,
+            out,
+        })
+    }
+}
+
+impl crate::algebraic::ProductEval for PlannedProduct {
+    fn add(
+        &self,
+        pbar: &mut [f64],
+        x: &[f64],
+        p: &[f64],
+        t: f64,
+        w: &[f64],
+        wf: &[(usize, usize, f64)],
+    ) -> Result<(), String> {
+        if self.out.is_empty() {
+            return Ok(());
+        }
+        let mut u = vec![0.0; self.n];
+        for (i, &j) in self.src.iter().enumerate() {
+            u[j] = x[i];
+        }
+        for (i, &v) in w.iter().enumerate() {
+            if let Some(j) = self.lam[i] {
+                u[j] = v;
+            }
+        }
+        for &(m, e, v) in wf {
+            let ds = self.flam.get(m).ok_or("no input for that frozen state")?;
+            let j = if ds.len() == 1 { ds[0] } else { ds[e] };
+            u[j] += v;
+        }
+        self.doc.eval(&u, p, t, |du| {
+            for &(k, s) in &self.out {
+                pbar[k] += du[s];
+            }
+        })
+    }
+}
+
+/// The index sets of variable `name` as declared in a derived document.
+fn declared_shape(doc: &Value, name: &str) -> Result<Vec<String>, String> {
+    let segs: Vec<&str> = name.split('.').collect();
+    let mut node = &doc["models"][segs[0]];
+    for s in &segs[1..segs.len() - 1] {
+        node = &node["subsystems"][*s];
+    }
+    let v = &node["variables"][segs[segs.len() - 1]];
+    if v.is_null() {
+        return Err(format!("the residual document does not declare {name}"));
+    }
+    Ok(v["shape"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|x| x.as_str().map(str::to_string))
+        .collect())
+}
+
+/// The blocks of an algebraic operator's unknowns (`names`, the unknown
+/// variable of each position), from its structure's `block` (spec/plan.md
+/// §5.4), else `None`: per cell, the positions among the unknowns of the
+/// block's elements, in the block's order. A `cell_block` plan lists its
+/// elements (a variable and its indices along the axes inside the cell)
+/// and its cell axes; a `block_diagonal` plan has one element per
+/// variable, in its `ordering` of `vars`, and every axis is a cell axis.
+/// Elements of variables the operator only reads are left out. Blocks are
+/// in column-major order of their cells.
+fn solve_blocks(
+    name: &str,
+    entry: &Value,
+    dofs: &Dofs,
+    doc: &Value,
+    names: &[String],
+) -> Result<Option<Vec<Vec<usize>>>, String> {
+    let _ = name;
+    let blk = &entry["structure"]["block"];
+    if blk.is_null() {
+        return Ok(None);
+    }
+    let strs = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect()
+    };
+    let ints = |v: &Value| -> Vec<i64> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_i64)
+            .collect()
+    };
+    type Elements = Vec<(String, Vec<i64>)>;
+    let (cell_axes, elems): (Option<Vec<String>>, Elements) =
+        if let Some(es) = blk["elements"].as_array() {
+            (
+                Some(strs(&blk["cell_axes"])),
+                es.iter()
+                    .map(|e| (e[0].as_str().unwrap_or_default().to_string(), ints(&e[1])))
+                    .collect(),
+            )
+        } else {
+            let vars = strs(&blk["vars"]);
+            let ord = ints(&blk["ordering"]);
+            (
+                None,
+                ord.iter()
+                    .map(|&o| (vars[(o - 1) as usize].clone(), vec![]))
+                    .collect(),
+            )
+        };
+    // The block's elements also hold the variables the operator only reads;
+    // the solve's blocks are its unknowns', in the block's order.
+    let elems: Vec<(String, Vec<i64>)> =
+        elems.into_iter().filter(|e| names.contains(&e.0)).collect();
+    let at: BTreeMap<&(String, Vec<i64>), usize> =
+        elems.iter().enumerate().map(|(i, e)| (e, i)).collect();
+    let mut groups: BTreeMap<Vec<i64>, Vec<usize>> = BTreeMap::new();
+    let mut k = 0usize;
+    let mut seen: Vec<&String> = vec![];
+    for z in names {
+        if seen.contains(&z) {
+            continue;
+        }
+        seen.push(z);
+        let shape = declared_shape(doc, z)?;
+        let cd: Vec<usize> = match &cell_axes {
+            None => (0..shape.len()).collect(),
+            Some(ax) => ax
+                .iter()
+                .map(|a| {
+                    shape
+                        .iter()
+                        .position(|s| s == a)
+                        .ok_or_else(|| format!("{z} does not span the cell axis {a}"))
+                })
+                .collect::<Result<_, _>>()?,
+        };
+        let inner: Vec<usize> = (0..shape.len()).filter(|d| !cd.contains(d)).collect();
+        let ext = &dofs.states[z].1;
+        let ranges: Vec<(i64, i64)> = ext.iter().map(|&n| (1, n as i64)).collect();
+        for c in earthsci_integrator_planner::numeric::cells(&ranges) {
+            let key: (String, Vec<i64>) = (z.clone(), inner.iter().map(|&d| c[d]).collect());
+            let e = *at
+                .get(&key)
+                .ok_or_else(|| format!("{z}{c:?} is no element of a block"))?;
+            // Keyed by the cell's indices reversed: column-major order.
+            let cell: Vec<i64> = cd.iter().rev().map(|&d| c[d]).collect();
+            let g = groups
+                .entry(cell)
+                .or_insert_with(|| vec![usize::MAX; elems.len()]);
+            if g[e] != usize::MAX {
+                return Err(format!("two unknowns are element {} of one block", e + 1));
+            }
+            g[e] = k;
+            k += 1;
+        }
+    }
+    if k != names.len() {
+        return Err("the unknowns are not those of the plan entry".into());
+    }
+    let out: Vec<Vec<usize>> = groups.into_values().collect();
+    if out.iter().any(|g| g.contains(&usize::MAX)) {
+        return Err("a cell lacks an element of its block".into());
+    }
+    Ok(Some(out))
+}
+
 /// One operator from its plan entry and documents (§8.2, §8.3). `ncells` is
 /// the number of cells of the states' one shape, when they share one.
 fn build_operator(
@@ -911,8 +1562,12 @@ fn build_operator(
     // arrays of one shape (ncells the cells of that shape) or all scalars
     // (ncells = 1), with n the number of states. A leaf's own structure
     // looks at its own states only (structure_over, §8.3).
-    let blockable =
-        entry["locality"]["class"].as_str() == Some("pointwise") && st.get("block").is_some();
+    // A cell_block structure keeps elements along other axes inside a cell's
+    // block, which this storage (one element per state per cell) cannot
+    // hold; a solve takes its blocks from the plan instead (solve_blocks).
+    let blockable = entry["locality"]["class"].as_str() == Some("pointwise")
+        && st.get("block").is_some()
+        && st["class"].as_str() == Some("block_diagonal");
     let structure = match ncells {
         Some(ncells) if blockable => {
             if let Some((_, r, c)) = points.iter().find(|(_, r, c)| r % ncells != c % ncells) {

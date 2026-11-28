@@ -90,13 +90,15 @@ struct DenseLU{T}
 end
 
 """`W = α I - J` as a new dense matrix (see the file header for the arithmetic)."""
-function form_W(J::DenseJacobian, α)
+function form_W(J::DenseJacobian, α, mass = nothing)
     A = J.A
     N = size(A, 1)
     T = promote_type(eltype(A), typeof(α))
     W = Matrix{T}(undef, N, N)
+    # With a mass mask (an index-1 DAE, spec/methods.md §14), an algebraic
+    # row's diagonal is -J_ii: W = αM - J.
     @inbounds for j in 1:N, i in 1:N
-        W[i, j] = i == j ? α - A[i, j] : -A[i, j]
+        W[i, j] = i == j && (mass === nothing || !mass[i]) ? α - A[i, j] : -A[i, j]
     end
     return W
 end
@@ -196,14 +198,14 @@ struct BlockLU{T}
     ok::Bool
 end
 
-function form_W(J::BlockJacobian, α)
+function form_W(J::BlockJacobian, α, mass = nothing)
     nc, n = J.ncells, J.n
     T = promote_type(eltype(J.data), typeof(α))
     W = Vector{T}(undef, length(J.data))
     @inbounds for i in 0:(n - 1), j in 0:(n - 1)
         base = (i * n + j) * nc
         for c in 1:nc
-            W[base + c] = i == j ? α - J.data[base + c] : -J.data[base + c]
+            W[base + c] = i == j && (mass === nothing || !mass[i * nc + c]) ? α - J.data[base + c] : -J.data[base + c]
         end
     end
     return BlockJacobian{T}(nc, n, W)
@@ -313,4 +315,4 @@ issuccess_lu(F::Union{DenseLU, BlockLU}) = F.ok
 Form `W = α I - J` from the Jacobian storage and factor it with the leaf's
 linear solver. Check `issuccess_lu` before solving.
 """
-factor_W(J::Union{DenseJacobian, BlockJacobian}, α, ls::LinsolveSpec) = lu_factor(form_W(J, α), ls.pivot)
+factor_W(J::Union{DenseJacobian, BlockJacobian}, α, ls::LinsolveSpec; mass = nothing) = lu_factor(form_W(J, α, mass), ls.pivot)

@@ -1,0 +1,32 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/picard_roots.esm",
+  "operators": {
+    "picard": {
+      "select": {
+        "components": "Picard"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "description": "spec/toy-problems.md \u00a71.11 by Picard, freezing the observed nu.",
+  "schedule": {
+    "solve": "picard",
+    "unknowns": [
+      "Picard.z"
+    ],
+    "method": {
+      "picard": {
+        "freeze": [
+          "Picard.nu"
+        ]
+      },
+      "converged": {
+        "residual": 1e-12
+      },
+      "maxiter": 100
+    }
+  }
+}

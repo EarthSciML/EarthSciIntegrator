@@ -1,0 +1,134 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "picard_roots",
+    "description": "spec/toy-problems.md \u00a71.11: an unbounded solve per cell, 0 = c - nu z with the observed nu = 1 + z^2 (so 0 = c - z - z^3), c_i = i/4; Picard freezes nu."
+  },
+  "index_sets": {
+    "cell": {
+      "kind": "interval",
+      "size": 4
+    }
+  },
+  "models": {
+    "Picard": {
+      "variables": {
+        "z": {
+          "type": "unknown",
+          "shape": [
+            "cell"
+          ],
+          "default": 0.0,
+          "description": "the root in each cell (algebraic unknown)"
+        },
+        "nu": {
+          "type": "unknown",
+          "shape": [
+            "cell"
+          ],
+          "description": "the observed coefficient 1 + z^2"
+        },
+        "c": {
+          "type": "parameter",
+          "shape": [
+            "cell"
+          ],
+          "default": [
+            0.25,
+            0.5,
+            0.75,
+            1.0
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "cell"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "nu",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "z",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "c",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          },
+          "rhs": 0.0
+        },
+        {
+          "lhs": "nu",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "cell"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                1.0,
+                {
+                  "op": "^",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "z",
+                        "i"
+                      ]
+                    },
+                    2
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

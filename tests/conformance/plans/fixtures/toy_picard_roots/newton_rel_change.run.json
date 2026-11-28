@@ -1,0 +1,29 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/picard_roots.esm",
+  "operators": {
+    "picard": {
+      "select": {
+        "components": "Picard"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "description": "spec/toy-problems.md \u00a71.11 by Newton, converged on the relative change of nu (the frozen residual document alone).",
+  "schedule": {
+    "solve": "picard",
+    "unknowns": [
+      "Picard.z"
+    ],
+    "method": {
+      "newton": {},
+      "converged": {
+        "rel_change": "Picard.nu",
+        "tol": 1e-12
+      },
+      "maxiter": 50
+    }
+  }
+}

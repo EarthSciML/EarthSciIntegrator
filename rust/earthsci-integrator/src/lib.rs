@@ -14,6 +14,7 @@
 //!   independent of the operator interface.
 
 pub mod adjoint;
+pub mod algebraic;
 pub mod config;
 pub mod conformance;
 pub mod conformance_m2;

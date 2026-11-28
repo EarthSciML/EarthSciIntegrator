@@ -1,0 +1,149 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "nested_default",
+    "description": "Inline defaults over two and three index sets, not symmetric, read by one equation: the planner writes them nested, outermost index first (spec/plan.md \u00a76.1.1)."
+  },
+  "index_sets": {
+    "k": {
+      "kind": "interval",
+      "size": 2
+    },
+    "m": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "M": {
+      "variables": {
+        "u": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "default": 1.0
+        },
+        "A": {
+          "type": "parameter",
+          "shape": [
+            "k",
+            "m"
+          ],
+          "default": [
+            [
+              1.0,
+              2.0,
+              3.0
+            ],
+            [
+              4.0,
+              5.0,
+              6.0
+            ]
+          ]
+        },
+        "B": {
+          "type": "parameter",
+          "shape": [
+            "k",
+            "m",
+            "k"
+          ],
+          "default": [
+            [
+              [
+                1.0,
+                2.0
+              ],
+              [
+                3.0,
+                4.0
+              ],
+              [
+                5.0,
+                6.0
+              ]
+            ],
+            [
+              [
+                7.0,
+                8.0
+              ],
+              [
+                9.0,
+                10.0
+              ],
+              [
+                11.0,
+                12.0
+              ]
+            ]
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "u"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              },
+              "j": {
+                "from": "m"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                {
+                  "op": "index",
+                  "args": [
+                    "A",
+                    "i",
+                    "j"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "B",
+                    "i",
+                    "j",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "u",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

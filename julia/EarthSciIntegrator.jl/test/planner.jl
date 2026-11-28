@@ -599,15 +599,12 @@ end
             Dict(
                 "model" => cross, "schedule" => Dict(
                     "sequence" => [
-                        Dict(
-                            "solve" => "default_pointwise",
-                            "unknowns" => ["Chem.O3"], "method" => Dict("newton" => Dict())
-                        ),
+                        Dict("map" => "default_pointwise"),
                     ]
                 ), "step" => Dict("limits" => ["Chem.ratio"])
             )
         ) ==
-            ("unsupported_solve_node", "/schedule/sequence/0")
+            ("unsupported_map_operator", "/schedule/sequence/0")
         @test try_plan(Dict("model" => cross, "schedule" => leaf("default_pointwise"), "step" => Dict("limits" => [Dict("max" => 60), "Chem.k"]))) ==
             ("name_wrong_kind", "/step/limits/1")
         # Rule 9 for the adjoint's observation times (D83): output.saveat multiples from time zero.

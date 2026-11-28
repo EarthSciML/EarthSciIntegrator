@@ -27,7 +27,8 @@ pub struct Block {
 /// `block_vars` renamed `vars`. `None` when it is not a block LU.
 fn block_of(mut plan: Value) -> Option<Block> {
     let m = plan.as_object_mut()?;
-    if m.remove("type")? != "block_diagonal_lu" {
+    let ty = m.remove("type")?;
+    if ty != "block_diagonal_lu" && ty != "cell_block_lu" {
         return None;
     }
     let vars = m.remove("block_vars")?;
@@ -94,27 +95,119 @@ pub fn structure(
     bands: Vec<JacEntry>,
     state_dependent: &BTreeSet<String>,
 ) -> Result<Structure> {
-    let ctx = earthsci_astdiff::ctx_of(sv)
-        .map_err(|e| PlanError::Internal(format!("ctx_of: {}", e.0)))?;
-    let class = earthsci_astdiff::detect_structure(&bands, &ctx).to_string();
-
-    // linear_in_u: no coefficient reads a state, or an observed whose
-    // definition reads one, transitively (`state_dependent`).
-    let linear_in_u = bands.iter().all(|en| {
-        earthsci_ast::free_variables(&en.band.coef)
-            .iter()
-            .all(|n| !state_dependent.contains(n))
-    });
-
-    // depends_on_t: `t` in a state equation of the document (the operator's
-    // terms) or in the definition of an observed it keeps.
     let mut names = BTreeSet::new();
     let mut in_terms = false;
     for &i in &op.terms {
         names.extend(terms[i].names.iter().cloned());
         in_terms |= reads_t(earthsci_ast::free_variables(&terms[i].expr));
     }
-    let live = crate::derived::live_observeds(info, &names);
+    // The operator's terms' structure-only bands, not `bands` (§5.4).
+    let pattern: Vec<&BandEntry> = op.terms.iter().flat_map(|&i| &term_bands[i]).collect();
+    structure_from(
+        info,
+        axes,
+        op.locality.class,
+        &names,
+        in_terms,
+        &pattern,
+        sv,
+        bands,
+        state_dependent,
+    )
+}
+
+/// An algebraic operator's structure (§6.4): from its residual document's
+/// bands, which are also its pattern; it depends on `t` when a residual or
+/// an observed it keeps reads `t`.
+#[allow(clippy::too_many_arguments)]
+pub fn algebraic_structure(
+    info: &ModelInfo,
+    axes: &Axes,
+    op: &Operator,
+    sv: &SysView,
+    bands: Vec<JacEntry>,
+    state_dependent: &BTreeSet<String>,
+) -> Result<Structure> {
+    let mut names = BTreeSet::new();
+    let mut reads = false;
+    for r in &op.residuals {
+        names.extend(r.refs.iter().cloned());
+        let mut found = false;
+        crate::model::collect_strings(&r.lhs, &mut |s| found |= s == "t");
+        crate::model::collect_strings(&r.rhs, &mut |s| found |= s == "t");
+        reads |= found;
+    }
+    let pattern: Vec<BandEntry> = bands.iter().map(crate::astdiff::band_entry).collect();
+    let pattern: Vec<&BandEntry> = pattern.iter().collect();
+    structure_from(
+        info,
+        axes,
+        op.locality.class,
+        &names,
+        reads,
+        &pattern,
+        sv,
+        bands,
+        state_dependent,
+    )
+}
+
+/// The observed a named intermediate of EarthSciASTDiff stands for
+/// (`<scope>._du_<observed>_<k>`, likewise `_dp_` and `_df_`;
+/// esm-jacobian-spec §4.6), else `n` itself.
+pub(crate) fn intermediate_observed(n: &str) -> String {
+    let (scope, base) = match n.rfind('.') {
+        None => ("", n),
+        Some(i) => (&n[..=i], &n[i + 1..]),
+    };
+    if base.len() <= 4 || !matches!(&base[..4], "_du_" | "_dp_" | "_df_") {
+        return n.to_string();
+    }
+    let rest = base[4..].trim_end_matches('_');
+    match rest.rsplit_once('_') {
+        Some((mid, k))
+            if !mid.is_empty() && !k.is_empty() && k.bytes().all(|c| c.is_ascii_digit()) =>
+        {
+            format!("{scope}{mid}")
+        }
+        _ => n.to_string(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn structure_from(
+    info: &ModelInfo,
+    axes: &Axes,
+    locality: Class,
+    names: &BTreeSet<String>,
+    in_terms: bool,
+    pattern: &[&BandEntry],
+    sv: &SysView,
+    bands: Vec<JacEntry>,
+    state_dependent: &BTreeSet<String>,
+) -> Result<Structure> {
+    let ctx = earthsci_astdiff::ctx_of(sv)
+        .map_err(|e| PlanError::Internal(format!("ctx_of: {}", e.0)))?;
+    // The cells are the run config's horizontal and vertical axes (§5.4, D123).
+    let mut cax: Vec<String> = axes.horizontal.clone();
+    cax.extend(axes.vertical.iter().cloned());
+    let cell_axes = (!cax.is_empty()).then_some(cax.as_slice());
+    let class = earthsci_astdiff::detect_structure_with(&bands, sv, &ctx, None, cell_axes)
+        .map_err(|e| PlanError::Internal(format!("detect_structure: {}", e.0)))?
+        .to_string();
+
+    // linear_in_u: no coefficient reads a state, or an observed whose
+    // definition reads one, transitively (`state_dependent`).
+    // A named intermediate counts as the observed it stands for.
+    let linear_in_u = bands.iter().all(|en| {
+        earthsci_ast::free_variables(&en.band.coef)
+            .iter()
+            .all(|n| !state_dependent.contains(&intermediate_observed(n)))
+    });
+
+    // depends_on_t: `t` in a state equation of the document (the operator's
+    // terms) or in the definition of an observed it keeps.
+    let live = crate::derived::live_observeds(info, names);
     let depends_on_t = in_terms
         || live.iter().any(|o| {
             info.observed_defs
@@ -122,29 +215,34 @@ pub fn structure(
                 .is_some_and(|d| reads_t(earthsci_ast::free_variables(d)))
         });
 
-    let block = if op.locality.class == Class::Pointwise && class == "block_diagonal" {
-        let plan = earthsci_astdiff::plan_factorization(&bands, sv, &ctx, Some(&class))
+    let block =
+        if locality == Class::Pointwise && (class == "block_diagonal" || class == "cell_block") {
+            let plan = earthsci_astdiff::plan_factorization_with(
+                &bands,
+                sv,
+                &ctx,
+                Some(&class),
+                None,
+                cell_axes,
+            )
             .map_err(|e| PlanError::Internal(format!("plan_factorization: {}", e.0)))?
             .ok_or_else(|| {
                 PlanError::Internal("plan_factorization gave no block_diagonal plan".into())
             })?;
-        let plan = earthsci_astdiff::serialize_plan(&plan);
-        Some(block_of(plan.clone()).ok_or_else(|| {
-            PlanError::Internal(format!("serialize_plan gave no block LU: {plan}"))
-        })?)
-    } else {
-        None
-    };
+            let plan = earthsci_astdiff::serialize_plan(&plan);
+            Some(block_of(plan.clone()).ok_or_else(|| {
+                PlanError::Internal(format!("serialize_plan gave no block LU: {plan}"))
+            })?)
+        } else {
+            None
+        };
 
-    // The operator's terms' structure-only bands, not `bands` (§5.4).
-    let reaches: Vec<_> = op
-        .terms
+    let reaches: Vec<_> = pattern
         .iter()
-        .flat_map(|&i| &term_bands[i])
         .map(|b| band_reach(b, &info.shapes, &info.index_sets, axes))
         .collect();
 
-    let column = match (&op.locality.class, &axes.vertical) {
+    let column = match (&locality, &axes.vertical) {
         (Class::Column, Some(v)) => {
             let nv = info.index_sets[v];
             let (mut kl, mut ku) = (0i64, 0i64);
@@ -163,7 +261,7 @@ pub fn structure(
         _ => None,
     };
 
-    let footprint = (op.locality.class == Class::Stencil).then(|| {
+    let footprint = (locality == Class::Stencil).then(|| {
         let mut out: BTreeSet<Vec<i64>> = BTreeSet::new();
         for r in &reaches {
             // One integer per horizontal axis; a band with several offsets on

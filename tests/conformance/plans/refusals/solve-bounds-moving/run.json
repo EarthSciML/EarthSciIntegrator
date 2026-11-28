@@ -1,0 +1,24 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "model.esm",
+  "operators": {
+    "phase": {
+      "select": {
+        "components": "Phase"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "solve": "phase",
+    "unknowns": [
+      "Phase.w",
+      "Phase.s"
+    ],
+    "method": {
+      "ptc": {}
+    }
+  }
+}

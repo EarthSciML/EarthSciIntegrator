@@ -222,6 +222,7 @@ impl Rosenbrock {
             has_fend: false,
             e: vec![0.0; n],
             nf: 0,
+            mass: None,
         })
     }
 
@@ -240,7 +241,7 @@ impl Rosenbrock {
         let dtgamma = h * self.w_gamma();
         let sigma = 1.0 / dtgamma;
         jac(&mut w.jac, un, t);
-        w.w.shifted_negation(&w.jac, T::from_f64(sigma));
+        w.w.shifted_negation_masked(&w.jac, T::from_f64(sigma), w.mass.as_deref());
         if w.lu.factor(&w.w) {
             Some(sigma)
         } else {
@@ -331,6 +332,14 @@ impl Rosenbrock {
                                 let (lo, hi) = w.k.split_at_mut(i);
                                 for (sv, &kv) in hi[0].iter_mut().zip(lo[j].iter()) {
                                     *sv += coef * kv;
+                                }
+                            }
+                        }
+                        // M s_i: dropped on an algebraic row (spec/methods.md §14.2).
+                        if let Some(m) = &w.mass {
+                            for (sv, &a) in w.k[i].iter_mut().zip(m.iter()) {
+                                if a {
+                                    *sv = T::zero();
                                 }
                             }
                         }
@@ -447,6 +456,8 @@ impl Rosenbrock {
 /// Workspace and outputs of a Rosenbrock step.
 #[derive(Debug, Clone)]
 pub struct RosWork<T> {
+    /// An index-1 DAE's algebraic rows (spec/methods.md §14.2), else `None`.
+    pub mass: Option<Vec<bool>>,
     /// Stage states `U_i`; `y[0] = u_n`.
     pub y: Vec<Vec<T>>,
     /// Stage increments `k_i`.

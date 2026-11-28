@@ -67,6 +67,25 @@ function _leaf_adjoint!(entry, λ, p̄, seeds)
     return λ
 end
 
+"""
+Reverse one `solve` invocation (spec/adjoint.md §4.6) or one index-1 DAE's
+consistent initialization (§5.10), recorded on the replay.
+"""
+function algebraic_adjoint!(run, entry, λ, p̄)
+    if entry[1] === :solve
+        _, node, rec, uin, p, t = entry
+        held, up = held_set(node.info, rec.active)
+        pp, s = recorded_scaling(node.method, rec.recover, run.prob.pnames, p)
+        return solve_adjoint(node.ops, node.info, uin, rec.z, pp, t, held, up, λ, p̄; s)
+    end
+    _, node, z, uin, p, t = entry
+    d = node.dae
+    # Only the leaf's own state is the leaf's: the initialization reads the
+    # model state at the invocation's start (the trace's `uin`).
+    nz = length(z)
+    return solve_adjoint(d.ops, d.info, uin, z, p, t, falses(nz), falses(nz), λ, p̄)
+end
+
 """Reverse one map invocation (spec/adjoint.md §5.7)."""
 function map_adjoint!(entry, λ, p̄)
     _, node, rec, uin, p, t = entry
@@ -89,7 +108,8 @@ function macro_adjoint(run::Run, k::Integer, λ::Vector{Float64}; seeds = Dict{F
     p̄ = zeros(length(run.p))
     λ = copy(λ)
     for entry in Iterators.reverse(trace)
-        λ = entry[1] === :leaf ? leaf_adjoint!(entry, λ, p̄, seeds) : map_adjoint!(entry, λ, p̄)
+        λ = entry[1] === :leaf ? leaf_adjoint!(entry, λ, p̄, seeds) :
+            entry[1] === :map ? map_adjoint!(entry, λ, p̄) : algebraic_adjoint!(run, entry, λ, p̄)
     end
     return λ, p̄
 end

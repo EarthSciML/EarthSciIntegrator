@@ -134,7 +134,9 @@ struct ImplicitContext{O, OE, OI}
     ls::LinsolveSpec
     structure::Structure
     tol::Tolerances
+    mass::Union{Nothing, BitVector} # an index-1 DAE's algebraic rows (spec/methods.md §14.3), else nothing
 end
+ImplicitContext(ops, opsE, opsI, ls, s, tol) = ImplicitContext(ops, opsE, opsI, ls, s, tol, nothing)
 
 _feval(ops, x, p, τ, ::Type{T}) where {T} = (out = zeros(T, length(x)); eval_rhs!(out, ops, x, p, τ); out)
 
@@ -143,7 +145,7 @@ function _factor_at(ctx::ImplicitContext, ops, u, p, t, σ)
     up, pp = map(_f64, u), map(_f64, p)
     J = jacobian_storage(ctx.ls, ctx.structure, Float64, length(u))
     jac!(ops, J, up, pp, t)
-    return factor_W(J, σ, ctx.ls)
+    return factor_W(J, σ, ctx.ls; mass = ctx.mass)
 end
 
 """
@@ -158,9 +160,9 @@ with `refactor(Z)`, the factors of `σI - J(Z)`.
 """
 function newton_stage(
         fI, F, σ, τ::Vector{Float64}, γ, h, ti, z0::Vector{Float64}, un, tol::Tolerances,
-        θ::Base.RefValue{Float64}, adaptive::Bool; refactor = nothing
+        θ::Base.RefValue{Float64}, adaptive::Bool; refactor = nothing, mass = nothing
     )
-    z, ok, nf = _newton(fI, F, σ, τ, γ, h, ti, z0, un, tol, θ, adaptive)
+    z, ok, nf = _newton(fI, F, σ, τ, γ, h, ti, z0, un, tol, θ, adaptive; mass)
     (ok && NEWTON_TIGHT[] && refactor !== nothing) || return z, ok, nf
     # Full Newton from the converged stage until the increment stops shrinking.
     N = length(z)
@@ -172,7 +174,7 @@ function newton_stage(
         end
         fz = fI(Z, ti)
         nf += 1
-        r = [(h * fz[j] - z[j]) * σ for j in 1:N]
+        r = [(h * fz[j] - (mass !== nothing && mass[j] ? 0.0 : z[j])) * σ for j in 1:N]
         dz = lu_solve(refactor(Z), r)
         ndz = error_norm(dz, un, Z, tol)
         (isfinite(ndz) && ndz < ndzprev) || break
@@ -185,7 +187,7 @@ end
 
 function _newton(
         fI, F, σ, τ::Vector{Float64}, γ, h, ti, z0::Vector{Float64}, un, tol::Tolerances,
-        θ::Base.RefValue{Float64}, adaptive::Bool
+        θ::Base.RefValue{Float64}, adaptive::Bool; mass = nothing
     )
     N = length(τ)
     z = copy(z0)
@@ -201,8 +203,9 @@ function _newton(
         end
         fz = fI(Z, ti)
         nf += 1
+        # M z: dropped on an algebraic row (spec/methods.md §14.3).
         @inbounds for j in 1:N
-            r[j] = (h * fz[j] - z[j]) * σ
+            r[j] = (h * fz[j] - (mass !== nothing && mass[j] ? 0.0 : z[j])) * σ
         end
         dz = lu_solve(F, r)
         ndzprev = ndz
@@ -299,7 +302,7 @@ function sdirk_stages(m::SDIRKMethod, ctx::ImplicitContext, u, p, t, h, adaptive
         z0 = zprev === nothing ? zeros(N) : zprev
         zp, ok, n = newton_stage(
             fI, F, σ, map(_f64, τi), γ, h, ti, z0, up, ctx.tol, θ, adaptive;
-            refactor = Z -> _factor_at(ctx, ctx.ops, Z, pp, ti, σ)
+            refactor = Z -> _factor_at(ctx, ctx.ops, Z, pp, ti, σ), mass = ctx.mass
         )
         nf += n
         ok || return fail(false)
@@ -354,6 +357,8 @@ function sdirk_step(m::SDIRKMethod, ctx::ImplicitContext, u, p, t, h, adaptive::
                 bt == 0 && continue
                 e === nothing ? (e = convert(eltype(u1), bt) .* st.z[i]) : _addto!(e, bt, st.z[i])
             end
+            # With a mass mask, e = (M - hγJ)⁻¹ M e_raw (spec/methods.md §14.3).
+            e === nothing || ctx.mass === nothing || (e[ctx.mass] .= 0)
             E = e === nothing ? 0.0 : error_norm(lu_solve(st.F, e .* st.σ), u, u1, ctx.tol)
         elseif est === :divided_difference
             # OrdinaryDiffEqSDIRK `src/generic_imex_perform_step.jl:2401-2420`, in its

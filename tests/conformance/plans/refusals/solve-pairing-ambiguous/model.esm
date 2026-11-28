@@ -1,0 +1,75 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "ambiguous",
+    "description": "spec/toy-problems.md \u00a71.8 written as two bounded scalar unknowns whose equations each read both: two diagonal pairings with different complementarity answers (spec/plan.md \u00a75.9.6)."
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "z1": {
+          "type": "unknown",
+          "default": 0.0,
+          "lb": 0
+        },
+        "z2": {
+          "type": "unknown",
+          "default": 0.0,
+          "lb": 0
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "*",
+                    "args": [
+                      2,
+                      "z1"
+                    ]
+                  },
+                  "z2"
+                ]
+              },
+              1
+            ]
+          },
+          "rhs": 0.0
+        },
+        {
+          "lhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  "z1",
+                  {
+                    "op": "*",
+                    "args": [
+                      2,
+                      "z2"
+                    ]
+                  }
+                ]
+              },
+              2
+            ]
+          },
+          "rhs": 0.0
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

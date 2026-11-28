@@ -1,0 +1,69 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "singular",
+    "description": "Three algebraic equations in x, y, w, two of which read x alone: no matching covers every unknown (spec/plan.md \u00a75.9.3)."
+  },
+  "models": {
+    "S": {
+      "variables": {
+        "x": {
+          "type": "unknown",
+          "default": 0.0
+        },
+        "y": {
+          "type": "unknown",
+          "default": 0.0
+        },
+        "w": {
+          "type": "unknown",
+          "default": 0.0
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  "x",
+                  "y"
+                ]
+              },
+              "w"
+            ]
+          },
+          "rhs": 1.0
+        },
+        {
+          "lhs": {
+            "op": "*",
+            "args": [
+              3,
+              "x"
+            ]
+          },
+          "rhs": 3.0
+        },
+        {
+          "lhs": {
+            "op": "*",
+            "args": [
+              2,
+              "x"
+            ]
+          },
+          "rhs": 1.0
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "../../../toys/picard_roots.esm",
+  "operators": {
+    "picard": {
+      "select": {
+        "components": "Picard"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "description": "spec/toy-problems.md \u00a71.11 by Picard, freezing nu, converged on the relative change of nu.",
+  "schedule": {
+    "solve": "picard",
+    "unknowns": [
+      "Picard.z"
+    ],
+    "method": {
+      "picard": {
+        "freeze": [
+          "Picard.nu"
+        ]
+      },
+      "converged": {
+        "rel_change": "Picard.nu",
+        "tol": 1e-12
+      },
+      "maxiter": 200
+    }
+  }
+}
