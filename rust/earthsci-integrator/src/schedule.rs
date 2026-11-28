@@ -118,11 +118,6 @@ impl<T: Scalar> Schedule<T> {
             }
             Node::Solve { id, spec } => {
                 let id = id_or(id);
-                if needs.adjoint {
-                    return Err(Error::Unimplemented(format!(
-                        "solve node {id}: its adjoint (spec/adjoint.md §4.6) is not implemented in this stage"
-                    )));
-                }
                 let name = spec["solve"].as_str().unwrap_or_default();
                 let op = pb.operator(name).ok_or_else(|| {
                     Error::Config(format!("solve node {id}: no operator named {name:?}"))
@@ -578,11 +573,6 @@ fn build_leaf<T: Scalar>(
     // (spec/methods.md §14): its algebraic rows, operators and
     // consistent-initialization method.
     let dae = if l.coupled.is_some() && names.iter().any(|n| pb.algebraic.contains_key(n)) {
-        if needs.adjoint {
-            return Err(Error::Unimplemented(format!(
-                "coupled node {id}: the adjoint of an index-1 DAE (spec/adjoint.md §5.10) is not implemented in this stage"
-            )));
-        }
         let alg: Vec<&String> = names
             .iter()
             .filter(|n| pb.algebraic.contains_key(*n))
@@ -881,6 +871,24 @@ pub enum AdjRecord<T> {
         dt: f64,
         mask: Vec<u8>,
     },
+    /// A `solve` invocation (spec/adjoint.md §4.6): the model state before
+    /// it, its converged unknowns and active set, the recover actions.
+    Solve {
+        solve: usize,
+        u_before: Vec<f64>,
+        t: f64,
+        z: Vec<f64>,
+        active: std::collections::BTreeMap<String, crate::tape::ActiveSet>,
+        recover: Vec<String>,
+    },
+    /// An index-1 DAE's consistent initialization (spec/adjoint.md §5.10):
+    /// the model state before it and the initialized unknowns.
+    DaeInit {
+        leaf: usize,
+        u_before: Vec<f64>,
+        t: f64,
+        z: Vec<f64>,
+    },
 }
 
 /// Executes the schedule over one macro step.
@@ -978,7 +986,31 @@ impl<'a, T: Scalar> Exec<'a, T> {
                             leaf.id
                         )));
                     }
-                    for (&j, &v) in d.info.dofs.iter().zip(&o.z) {
+                    let mut z = o.z;
+                    if self.replay.is_some() {
+                        if let Some(adj) = &mut self.adj {
+                            // Its reverse is a §4.6 solve at the invocation's
+                            // start, after the leaf's steps (spec/adjoint.md
+                            // §5.10, D127).
+                            adj.push(AdjRecord::DaeInit {
+                                leaf: *idx,
+                                u_before: uf.clone(),
+                                t: t0,
+                                z: z.clone(),
+                            });
+                        } else if self.tight_newton {
+                            let nz = z.len();
+                            z = crate::algebraic::replay_held(
+                                &r,
+                                &d.info,
+                                &z,
+                                self.p,
+                                &vec![false; nz],
+                                &vec![false; nz],
+                            )?;
+                        }
+                    }
+                    for (&j, &v) in d.info.dofs.iter().zip(&z) {
                         u[j] = T::from_f64(v);
                     }
                 }
@@ -1108,14 +1140,41 @@ impl<'a, T: Scalar> Exec<'a, T> {
             SNode::Solve { id, idx } => {
                 let path = self.path(id);
                 let s = &self.sched.solves[*idx];
-                if self.adj.is_some() {
-                    return Err(Error::Unimplemented(format!(
-                        "solve node {id}: its adjoint (spec/adjoint.md §4.6) is not implemented in this stage"
-                    )));
-                }
                 let z = match self.recorded(&path)? {
-                    // Replay: the recorded converged unknowns.
-                    Some(TapeRecord::Solve { z, .. }) => z.clone(),
+                    // Replay: the recorded converged unknowns, bit for bit, on
+                    // the replay for the reverse pass; at perturbed inputs the
+                    // recorded active set held and the free rows converged
+                    // to roundoff (spec/adjoint.md §4.6, §7.2; D127).
+                    Some(TapeRecord::Solve {
+                        z, active, recover, ..
+                    }) => {
+                        let uf: Vec<f64> = u.iter().map(|x| x.to_f64()).collect();
+                        if let Some(adj) = &mut self.adj {
+                            adj.push(AdjRecord::Solve {
+                                solve: *idx,
+                                u_before: uf,
+                                t: t0,
+                                z: z.clone(),
+                                active: active.clone(),
+                                recover: recover.clone(),
+                            });
+                            z.clone()
+                        } else if self.tight_newton {
+                            let (held, up) = crate::algebraic::held_set(&s.info, active);
+                            let (pp, _) = crate::algebraic::recorded_scaling(
+                                &s.method, recover, &s.pnames, self.p,
+                            );
+                            let r = Residual {
+                                ops: &s.ops,
+                                dofs: &s.info.dofs,
+                                u: &uf,
+                                t: t0,
+                            };
+                            crate::algebraic::replay_held(&r, &s.info, z, &pp, &held, &up)?
+                        } else {
+                            z.clone()
+                        }
+                    }
                     Some(_) => {
                         return Err(Error::Run(format!("replay: {path} is not a solve record")))
                     }

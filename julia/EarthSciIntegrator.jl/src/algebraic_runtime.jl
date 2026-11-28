@@ -22,11 +22,15 @@ struct AlgebraicInfo
     blocks::Union{Nothing, Vector{Vector{Int}}}
     doc::Any                         # the residual document's JSON (an array parameter's default), or nothing
     extents::Dict{String, Vector{Int}}   # each unknown variable's extents
+    vjp::Vector{Any}                 # the parameter products of the residual documents (spec/plan.md §6.6), ParamProduct
+    fvjp::Vector{Any}                # the parameter products of the frozen residual document
 end
 AlgebraicInfo(dofs, names, lower, upper) = AlgebraicInfo(dofs, names, lower, upper, nothing, nothing)
 AlgebraicInfo(dofs, names, lower, upper, frozen) = AlgebraicInfo(dofs, names, lower, upper, frozen, nothing)
 AlgebraicInfo(dofs, names, lower, upper, frozen, blocks) =
     AlgebraicInfo(dofs, names, lower, upper, frozen, blocks, nothing, Dict{String, Vector{Int}}())
+AlgebraicInfo(dofs, names, lower, upper, frozen, blocks, doc, extents) =
+    AlgebraicInfo(dofs, names, lower, upper, frozen, blocks, doc, extents, Any[], Any[])
 
 """
     FrozenDocs
@@ -769,9 +773,19 @@ function advance!(run::Run, ctx::ExecCtx, node::SolveNode, u, ta::Float64, tb::F
         out[info.dofs] = o.z
         return out
     end
-    mode.trace === nothing || throw(UnsupportedError("the adjoint of solve node $(node.id) (spec/adjoint.md §4.6) is not implemented in this stage"))
     rec = tape_record(mode.tape, path, SolveRecord, ta, tb)
-    out[info.dofs] = rec.z
+    z = rec.z
+    if mode.trace !== nothing
+        # The replay for the reverse pass: the tape's z, bit for bit (spec/adjoint.md §4.6).
+        push!(mode.trace, (:solve, node, rec, Float64.(u), Float64.(_params(run, mode)), ta))
+    elseif NEWTON_TIGHT[]
+        # At perturbed inputs: the tape's active set held, the free rows
+        # converged to roundoff (spec/adjoint.md §4.6, §7.2; D127).
+        held, up = held_set(info, rec.active)
+        pp, _ = recorded_scaling(node.method, rec.recover, run.prob.pnames, Float64.(_params(run, mode)))
+        z = replay_held(node.ops, info, u, rec.z, pp, ta, held, up)
+    end
+    out[info.dofs] = z
     return out
 end
 
@@ -811,7 +825,10 @@ function dae_info(spec::AbstractDict, prob::ToyProblem, id, names, leafstate)
     # One algebraic operator's frozen documents serve a picard or rel_change
     # initialization (spec/plan.md §6.5), and its blocks a block_lu one.
     one = length(infos) == 1
-    info = AlgebraicInfo(dofs, znames, Any[nothing for _ in dofs], Any[nothing for _ in dofs], one ? only(infos).frozen : nothing, one ? only(infos).blocks : nothing)
+    info = AlgebraicInfo(
+        dofs, znames, Any[nothing for _ in dofs], Any[nothing for _ in dofs], one ? only(infos).frozen : nothing,
+        one ? only(infos).blocks : nothing, nothing, Dict{String, Vector{Int}}(), reduce(vcat, (i.vjp for i in infos)), Any[]
+    )
     model_dofs = leafstate === nothing ? collect(1:prob.N) : leafstate.dofs
     zset = Set(dofs)
     mass = BitVector([d in zset for d in model_dofs])
@@ -826,14 +843,264 @@ the run with `InitialFailure`.
 """
 function dae_initialize(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64)
     d = node.dae
-    ctx.mode isa ReplayMode && ctx.mode.trace !== nothing &&
-        throw(UnsupportedError("the adjoint of the index-1 DAE leaf $(node.id) (spec/adjoint.md §5.10) is not implemented in this stage"))
     p = _params(run, ctx.mode)
     uf = Float64.(u)
     z0 = uf[d.info.dofs]
     o = run_solve(d.ops, d.info, uf, p, ta, d.init, z0, run.u0[d.info.dofs], run.prob.pnames; id = node.id)
     o.ok || throw(RunFailure("InitialFailure", "the consistent initialization of $(node.id) did not converge at t = $ta"))
+    z = o.z
+    mode = ctx.mode
+    if mode isa ReplayMode
+        nz = length(z)
+        if mode.trace !== nothing
+            # The initialization's reverse is a §4.6 solve at the invocation's
+            # start, after the leaf's steps (spec/adjoint.md §5.10, D127).
+            push!(mode.trace, (:dae_init, node, z, uf, Float64.(p), ta))
+        elseif NEWTON_TIGHT[]
+            z = replay_held(d.ops, d.info, uf, z, Float64.(p), ta, falses(nz), falses(nz))
+        end
+    end
     out = copy(u)
-    out[d.info.dofs] = o.z
+    out[d.info.dofs] = z
     return out
+end
+
+# ---------------------------------------------------------------------------
+# Adjoints (spec/adjoint.md §4.6, §5.10; D127)
+
+"""
+    ParamProduct
+
+A parameter product document (spec/plan.md §6.6) bound to its own layout of
+`n` DOFs: `src[j]` is the DOF of source-layout DOF `j` (the model's layout
+for a residual document, the frozen layout for a frozen residual document),
+`lam[j]` the DOF of its cotangent input (0 for a state with none), and `out`
+the `(parameter index, output DOF)` of each scalar parameter of the run.
+"""
+struct ParamProduct
+    doc::Any
+    n::Int
+    src::Vector{Int}
+    lam::Vector{Int}
+    out::Vector{Tuple{Int, Int}}
+end
+
+"""Adds `g_pᵀ w` (or the frozen residual's) to `p̄`: product `P` at the source state `x` with cotangent `w` per source DOF."""
+function product!(P::ParamProduct, p̄, x, p, t, w)
+    isempty(P.out) && return p̄
+    U = zeros(P.n)
+    U[P.src] = x
+    for j in eachindex(w)
+        (P.lam[j] > 0 && w[j] != 0) && (U[P.lam[j]] = w[j])
+    end
+    evaluate(P.doc, U, p, t) do du
+        for (k, o) in P.out
+            p̄[k] += du[P.doc.perm[o]]
+        end
+    end
+    return p̄
+end
+
+"""The held positions of a solve record's active set (`active`, per unknown variable), and which of them are at their upper bound."""
+function held_set(info::AlgebraicInfo, active)
+    nz = length(info.dofs)
+    held, up = falses(nz), falses(nz)
+    first = Dict{String, Int}()
+    for (i, z) in enumerate(info.names)
+        haskey(first, z) || (first[z] = i)
+    end
+    for (z, (lo, upr, _)) in active, (set, isup) in ((lo, false), (upr, true)), e in set
+        i = first[z] + e
+        held[i] = true
+        up[i] = isup
+    end
+    return held, up
+end
+
+"""The blocks of the adjoint's transposed solve: the plan's, else one block of every unknown (spec/adjoint.md §4.6)."""
+function adjoint_blocks(info::AlgebraicInfo)
+    nz = length(info.dofs)
+    blocks = info.blocks === nothing ? [collect(1:nz)] : info.blocks
+    of = fill((0, 0), nz)
+    for (k, P) in enumerate(blocks), (i, q) in enumerate(P)
+        of[q] = (k, i)
+    end
+    return SolveBlocks(blocks, of)
+end
+
+"""
+The parameters a solve's residual was evaluated with: `p` with each
+`scale_param` action the tape records applied (spec/adjoint.md §4.6), and
+the factor per parameter.
+"""
+function recorded_scaling(m::SolveMethod, actions, pnames, p)
+    s = ones(length(p))
+    k = 1
+    for a in m.recover
+        k > length(actions) && break
+        if a isa AbstractDict && haskey(a, "scale_param")
+            i = findfirst(==(String(a["scale_param"])), pnames)
+            for _ in 1:Int(get(a, "max", 1))
+                (k <= length(actions) && actions[k] == "scale_param") || break
+                s[i] *= Float64(a["by"])
+                k += 1
+            end
+        else
+            k += 1
+        end
+    end
+    return p .* s, s
+end
+
+"""
+    solve_adjoint(ops, info, u, z, p, t, held, up, λ, p̄; s) -> λₙ
+
+The reverse of a solve (spec/adjoint.md §4.6, D127) at its converged `z`
+with the active set `held` (`up`: at the upper bound): one transposed solve
+with `g_z`'s held rows the identity's gives `−μ_I` and `b̄_A`; `λₙ` is `λ`
+with the unknowns' cotangents zeroed (the warm start is not differentiated)
+and `−g_uᵀμ` added on the other states, `p̄` gains `−g_pᵀμ` (times `s`, the
+recorded scale of each parameter) and each referenced bound's cotangent.
+"""
+function solve_adjoint(ops, info::AlgebraicInfo, u, z, p, t, held, up, λ, p̄; s = nothing)
+    dofs = info.dofs
+    nz, N = length(dofs), length(u)
+    x = _with_z(u, dofs, z)
+    A = residual_jacobian(ops, dofs, x, z, p, t)
+    B = adjoint_blocks(info)
+    Ms = _block_matrices(A, 0.0, held, B)
+    zb = Float64[λ[d] for d in dofs]
+    ν = zeros(nz)
+    for (k, P) in enumerate(B.blocks)
+        F = lu_factor(Ms[k], true)
+        issuccess_lu(F) || throw(ReplayMismatchError("solve adjoint: the free block of the residual's Jacobian is singular at t = $t"))
+        ν[P] = lu_solve_transpose(F, zb[P])
+    end
+    w = zeros(N)
+    for i in 1:nz
+        held[i] || (w[dofs[i]] = ν[i])
+    end
+    gx = zeros(N)
+    for op in ops
+        vjp_u!(op, gx, x, p, t, w)
+    end
+    λn = Float64.(λ)
+    zset = Set(dofs)
+    for j in 1:N
+        j in zset ? (λn[j] = 0.0) : (λn[j] += gx[j])
+    end
+    pc = zeros(length(p̄))
+    for P in info.vjp
+        product!(P, pc, x, p, t, w)
+    end
+    s === nothing ? (p̄ .+= pc) : (p̄ .+= pc .* s)
+    fl = nothing
+    for i in 1:nz
+        held[i] || continue
+        b = up[i] ? info.upper[i] : info.lower[i]
+        b === nothing && throw(ReplayMismatchError("solve adjoint: $(info.names[i]) is recorded at a bound it does not have"))
+        if b[1] === :param
+            p̄[b[2]] += ν[i]
+        elseif b[1] === :obs
+            Fz = info.frozen
+            fl === nothing && (fl = zeros(Fz.nf))
+            ds = Fz.fdofs[findfirst(==(b[2]), Fz.names)]
+            fl[length(ds) == 1 ? ds[1] : ds[b[3]]] += ν[i]
+        end
+    end
+    if fl !== nothing
+        xf = frozen_state_vector(info.frozen, x)
+        for P in info.fvjp
+            product!(P, p̄, xf, p, t, fl)
+        end
+    end
+    return λn
+end
+
+"""
+    solve_tangent(ops, info, u, z, p, t, held, up, du, dp) -> dz
+
+The implicit-function tangent of a solve (spec/adjoint.md §4.6, D127):
+`dz_A = db_A`, `g_{I,z_I} dz_I = −(g_{I,u} du + g_{I,z_A} dz_A + g_{I,p} dp)`.
+`g_u du` is the residual's Jacobian applied to `du`; `g_p dp` is formed from
+the parameter products, one evaluation per free unknown (and per element
+at an observed bound), which suits the tests it is for.
+"""
+function solve_tangent(ops, info::AlgebraicInfo, u, z, p, t, held, up, du, dp)
+    dofs = info.dofs
+    nz, N = length(dofs), length(u)
+    x = _with_z(u, dofs, z)
+    dz = zeros(nz)
+    for i in 1:nz
+        held[i] || continue
+        b = up[i] ? info.upper[i] : info.lower[i]
+        b[1] === :param && (dz[i] = dp[b[2]])
+        if b[1] === :obs
+            # db = (∂O/∂p) dp at the element, from the frozen residual's product.
+            Fz = info.frozen
+            ds = Fz.fdofs[findfirst(==(b[2]), Fz.names)]
+            e = zeros(Fz.nf)
+            e[length(ds) == 1 ? ds[1] : ds[b[3]]] = 1.0
+            row = zeros(length(p))
+            for P in info.fvjp
+                product!(P, row, frozen_state_vector(Fz, x), p, t, e)
+            end
+            dz[i] = dot(row, dp)
+        end
+    end
+    # (−g_z with the held rows the identity's) dz = (g_u du + g_p dp on the
+    # free rows, dz_A on the held ones): the free rows are
+    # −g_{I,z_I} dz_I − g_{I,z_A} dz_A = g_{I,u} du + g_{I,p} dp.
+    v = Float64.(du)
+    v[dofs] .= 0.0
+    jv = zeros(N)
+    for op in ops
+        jvp_u!(op, jv, x, p, t, v)
+    end
+    rr = Float64[jv[d] for d in dofs]
+    for i in 1:nz
+        held[i] && (rr[i] = dz[i]; continue)
+        e = zeros(N)
+        e[dofs[i]] = 1.0
+        row = zeros(length(p))
+        for P in info.vjp
+            product!(P, row, x, p, t, e)
+        end
+        rr[i] += dot(row, dp)
+    end
+    A = residual_jacobian(ops, dofs, x, z, p, t)
+    s = _linsolve(A, 0.0, held, rr, adjoint_blocks(info), true)
+    s === nothing && throw(ReplayMismatchError("solve_tangent: the free block is singular"))
+    return s
+end
+
+"""
+The frozen-tape replay of a solve at perturbed inputs (spec/adjoint.md §4.6,
+D127): the active set held (`z_A = b_A` at `p`), Newton on the free rows from
+`z0`, increments applied while they shrink.
+"""
+function replay_held(ops, info::AlgebraicInfo, u, z0, p, t, held, up)
+    dofs = info.dofs
+    uf = Float64.(u)
+    obs = observed_values(info, _with_z(uf, dofs, z0), p, t)
+    l, h = bound_values(info, p, obs)
+    z = copy(z0)
+    for i in eachindex(z)
+        held[i] && (z[i] = up[i] ? h[i] : l[i])
+    end
+    B = adjoint_blocks(info)
+    prev = Inf
+    for _ in 1:100
+        g = residual_at(ops, dofs, uf, z, p, t)
+        g[held] .= 0.0
+        A = residual_jacobian(ops, dofs, uf, z, p, t)
+        s = _linsolve(A, 0.0, held, g, B, true)
+        s === nothing && throw(ReplayMismatchError("solve replay: the free block is singular at t = $t"))
+        ns = maximum(abs, s; init = 0.0)
+        ns < prev || break
+        z .+= s
+        prev = ns
+        ns == 0 && break
+    end
+    return z
 end

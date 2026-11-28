@@ -137,6 +137,71 @@ impl<T: Scalar> RunSpec<T> {
                             mask,
                         );
                     }
+                    AdjRecord::Solve {
+                        solve,
+                        u_before,
+                        t,
+                        z,
+                        active,
+                        recover,
+                    } => {
+                        // spec/adjoint.md §4.6 (D127).
+                        let s = &self.schedule.solves[*solve];
+                        let (held, up) = crate::algebraic::held_set(&s.info, active);
+                        let (pp, sc) =
+                            crate::algebraic::recorded_scaling(&s.method, recover, &s.pnames, p);
+                        let r = crate::algebraic::Residual {
+                            ops: &s.ops,
+                            dofs: &s.info.dofs,
+                            u: u_before,
+                            t: *t,
+                        };
+                        let mut pc = vec![0.0; p.len()];
+                        crate::algebraic::solve_adjoint(
+                            &r,
+                            &s.info,
+                            z,
+                            &pp,
+                            &held,
+                            &up,
+                            &mut lam,
+                            &mut pc,
+                            Some(&sc),
+                        )?;
+                        accumulate(&mut pbar, &pc, &bound);
+                    }
+                    AdjRecord::DaeInit {
+                        leaf,
+                        u_before,
+                        t,
+                        z,
+                    } => {
+                        // The consistent initialization (spec/adjoint.md §5.10).
+                        let d = self.schedule.leaves[*leaf]
+                            .dae
+                            .as_ref()
+                            .expect("a DAE leaf records its initialization");
+                        let nz = z.len();
+                        let r = crate::algebraic::Residual {
+                            ops: &d.ops,
+                            dofs: &d.info.dofs,
+                            u: u_before,
+                            t: *t,
+                        };
+                        let mut pc = vec![0.0; p.len()];
+                        crate::algebraic::solve_adjoint(
+                            &r,
+                            &d.info,
+                            z,
+                            p,
+                            &vec![false; nz],
+                            &vec![false; nz],
+                            &mut lam,
+                            &mut pc,
+                            None,
+                        )?;
+                        accumulate(&mut pbar, &pc, &bound);
+                    }
                 }
             }
         }
@@ -502,7 +567,20 @@ pub fn ros_adjoint_step<T: Scalar>(
                         axpy(&mut kbar[j], a[i][j], &si);
                     }
                     if cmat[i][j] != 0.0 {
-                        axpy(&mut kbar[j], cmat[i][j] / h, &mui);
+                        // The forward step adds M sᵢ, dropped on an algebraic
+                        // row, so the reverse adds (Cᵢⱼ/h) M μᵢ
+                        // (spec/adjoint.md §5.10, D127).
+                        match &w.mass {
+                            Some(mass) => {
+                                let mm: Vec<T> = mui
+                                    .iter()
+                                    .zip(mass)
+                                    .map(|(&x, &alg)| if alg { T::zero() } else { x })
+                                    .collect();
+                                axpy(&mut kbar[j], cmat[i][j] / h, &mm);
+                            }
+                            None => axpy(&mut kbar[j], cmat[i][j] / h, &mui),
+                        }
                         kq[j] += (cmat[i][j] / h) * muq;
                     }
                 }

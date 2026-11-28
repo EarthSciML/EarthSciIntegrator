@@ -2,6 +2,9 @@
 //! (spec/toy-problems.md §1.7–§1.11; spec/methods.md §14, §15), as
 //! julia/EarthSciIntegrator.jl/test/algebraic_runtime.jl tests them.
 
+use earthsci_integrator::algebraic::{held_set, run_solve, solve_adjoint, solve_tangent, Residual};
+use earthsci_integrator::config::RunConfig;
+use earthsci_integrator::conformance::{check_fd, check_replay, Outcome};
 use earthsci_integrator::planned::load_plan;
 use earthsci_integrator::schedule::{ForwardRun, RunSpec};
 use earthsci_integrator::tape::{ActiveSet, Tape, TapeRecord};
@@ -268,5 +271,201 @@ fn robertson_dae() {
             (1.0 - y.iter().sum::<f64>()).abs() <= 1e-14,
             "{case}: {y:?}"
         );
+    }
+}
+
+/// Plans the fixture case and runs it forward with its run config's
+/// `adjoint`: the run spec, the forward run and the state DOFs.
+fn adjoint_case(fixture: &str, case: &str) -> (RunSpec<f64>, ForwardRun<f64>, Dofs) {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("algebraic_runtime")
+        .join(format!("{fixture}__{case}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let rcpath = fixtures().join(fixture).join(format!("{case}.run.json"));
+    plan(&rcpath, &Options::default(), &AstDiffBands)
+        .and_then(|p| p.write(&dir))
+        .unwrap_or_else(|e| panic!("{fixture}/{case}: plan: {e}"));
+    let lp = load_plan::<f64>(&dir).unwrap_or_else(|e| panic!("{fixture}/{case}: load: {e}"));
+    let dofs = lp.state_dofs.clone();
+    let pj: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("plan.json")).unwrap()).unwrap();
+    let rj: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&rcpath).unwrap()).unwrap();
+    let rc = RunConfig::from_value(&serde_json::json!({
+        "esm_integrator": "0.1.0", "model": "model.esm",
+        "schedule": pj["schedule"], "step": pj["step"], "adjoint": rj["adjoint"],
+    }))
+    .unwrap();
+    let spec = RunSpec::<f64>::with_problem(lp.problem, &rc, lp.tspan, None)
+        .unwrap_or_else(|e| panic!("{fixture}/{case}: run spec: {e}"));
+    let run = spec
+        .forward(&spec.u0(), &spec.problem.p)
+        .unwrap_or_else(|e| panic!("{fixture}/{case}: forward: {e}"));
+    (spec, run, dofs)
+}
+
+fn pass(o: Outcome, what: &str) {
+    match o {
+        Outcome::Pass(m) => println!("{what}: {m}"),
+        other => panic!("{what}: {other:?}"),
+    }
+}
+
+/// A pseudo-random number in [−1, 1].
+fn rnd(seed: &mut u64) -> f64 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    (*seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+}
+
+/// The per-invocation dot-product identity of a solve (spec/adjoint.md
+/// §7.1, §4.6): ⟨λ, dz⟩ against ⟨λₙ, δu⟩ + ⟨p̄, δp⟩ for the implicit-function
+/// tangent and the adjoint at the same converged `z`, relative to the terms'
+/// magnitude.
+#[allow(clippy::too_many_arguments)]
+fn node_dot(
+    r: &Residual<'_, f64>,
+    info: &earthsci_integrator::algebraic::AlgebraicInfo,
+    z: &[f64],
+    p: &[f64],
+    held: &[bool],
+    up: &[bool],
+    wrt_p: &[bool],
+) -> f64 {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let n = r.u.len();
+    let du: Vec<f64> = (0..n).map(|_| rnd(&mut seed)).collect();
+    let dp: Vec<f64> = wrt_p
+        .iter()
+        .map(|&w| if w { rnd(&mut seed) } else { 0.0 })
+        .collect();
+    let dz = solve_tangent(r, info, z, p, held, up, &du, &dp).unwrap();
+    let mut lam = vec![0.0; n];
+    let lz: Vec<f64> = info.dofs.iter().map(|_| rnd(&mut seed)).collect();
+    for (&d, &v) in info.dofs.iter().zip(&lz) {
+        lam[d] = v;
+    }
+    let mut pbar = vec![0.0; p.len()];
+    solve_adjoint(r, info, z, p, held, up, &mut lam, &mut pbar, None).unwrap();
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let abs_dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| (x * y).abs()).sum::<f64>();
+    let (lhs, rhs) = (dot(&lz, &dz), dot(&lam, &du) + dot(&pbar, &dp));
+    let scale = abs_dot(&lz, &dz).max(abs_dot(&lam, &du) + abs_dot(&pbar, &dp));
+    (lhs - rhs).abs() / scale.max(f64::MIN_POSITIVE)
+}
+
+/// The adjoint of a solve (spec/adjoint.md §4.6, D127): the parameter
+/// products, a parameter and an observed bound, the per-invocation identity,
+/// finite differences of the frozen-tape map (the active set held) and the
+/// exact replay.
+#[test]
+fn solve_adjoint_toys() {
+    for (fixture, case) in [
+        ("adjoint_cubic", "newton"),
+        ("adjoint_box", "newton"),
+        ("toy_phase_joint", "adjoint"),
+    ] {
+        let what = format!("{fixture}/{case}");
+        let (spec, run, dofs) = adjoint_case(fixture, case);
+        let p = spec.problem.p.clone();
+        let u0 = spec.u0();
+        let TapeRecord::Solve { z, active, t, .. } = solve_record(&run.tape) else {
+            unreachable!()
+        };
+        let s = &spec.schedule.solves[0];
+        let (held, up) = held_set(&s.info, active);
+        let r = Residual {
+            ops: &s.ops,
+            dofs: &s.info.dofs,
+            u: &u0,
+            t: *t,
+        };
+        let mis = node_dot(&r, &s.info, z, &p, &held, &up, &spec.wrt_p);
+        assert!(mis <= 1e-12, "{what}: per-invocation identity {mis:e}");
+        let g = spec.gradient(&run, &p).unwrap();
+        assert!(g.p.iter().any(|&x| x != 0.0), "{what}: a zero gradient");
+        pass(
+            check_fd(&spec, &run, &g, 1e-6, &[1e-3, 1e-4, 1e-5]),
+            &format!("{what} fd"),
+        );
+        pass(
+            check_replay(&spec, &run, &u0, &p),
+            &format!("{what} replay"),
+        );
+        let at = |n: &str| {
+            spec.problem
+                .param_names
+                .iter()
+                .position(|x| x == n)
+                .unwrap()
+        };
+        if fixture == "adjoint_box" {
+            // Both bounds active: dz₁/dcap = zmax₁ through the frozen
+            // residual's product, dz₂/dzlo = 1 through the parameter bound,
+            // and b does not move an unknown held at a bound.
+            assert!((g.p[at("Box.cap")] - 0.25).abs() <= 1e-14, "{:?}", g.p);
+            assert!((g.p[at("Box.zlo")] - 1.0).abs() <= 1e-14, "{:?}", g.p);
+            assert_eq!(g.p[at("Box.beta")], 0.0);
+        } else if fixture == "adjoint_cubic" {
+            // Σ dz/da = Σ cᵢ / (1 + 3zᵢ²).
+            let z = at_end(&run, &dofs, "Cubic.z");
+            let want: f64 = [1.0, 2.0, 3.0, 4.0]
+                .iter()
+                .zip(&z)
+                .map(|(c, z)| c / (1.0 + 3.0 * z * z))
+                .sum();
+            assert!(
+                (g.p[at("Cubic.a")] - want).abs() <= 1e-12 * want,
+                "{} {want}",
+                g.p[0]
+            );
+        }
+    }
+}
+
+/// The adjoint of an index-1 DAE (spec/adjoint.md §5.10, D127) with respect
+/// to the initial state: ESDIRK steps with σM − J and the consistent
+/// initialization as a §4.6 solve; finite differences of the frozen-tape
+/// map, the initialization's per-invocation identity, the exact replay.
+#[test]
+fn dae_adjoint_robertson() {
+    for case in ["kvaerno4_adjoint", "trbdf2_adjoint"] {
+        let (spec, run, dofs) = adjoint_case("toy_robertson_dae", case);
+        let p = spec.problem.p.clone();
+        let u0 = spec.u0();
+        let g = spec.gradient(&run, &p).unwrap();
+        assert_eq!(
+            g.u0[dofs["Rober.y3"][0]], 0.0,
+            "{case}: y3 only starts the initialization"
+        );
+        pass(
+            check_fd(&spec, &run, &g, 1e-5, &[1e-3, 1e-4, 1e-5]),
+            &format!("{case} fd"),
+        );
+        pass(
+            check_replay(&spec, &run, &u0, &p),
+            &format!("{case} replay"),
+        );
+        let d = spec.schedule.leaves[0].dae.as_ref().unwrap();
+        let r = Residual {
+            ops: &d.ops,
+            dofs: &d.info.dofs,
+            u: &u0,
+            t: 0.0,
+        };
+        let warm: Vec<f64> = d.info.dofs.iter().map(|&j| u0[j]).collect();
+        let o = run_solve(&r, &d.info, &p, &d.pnames, &d.init, &warm, &warm, case).unwrap();
+        let nz = o.z.len();
+        let mis = node_dot(
+            &r,
+            &d.info,
+            &o.z,
+            &p,
+            &vec![false; nz],
+            &vec![false; nz],
+            &vec![false; p.len()],
+        );
+        assert!(mis <= 1e-12, "{case}: initialization identity {mis:e}");
     }
 }

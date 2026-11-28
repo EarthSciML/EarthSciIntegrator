@@ -651,7 +651,12 @@ function plan_problem(
         fz = haskey(plan["derived"], "derived/$n.frozen_residual.esm") ?
             frozen_docs(n, plan["operators"][n], L, pnames, doc, info.dofs) : nothing
         ext = Dict{String, Vector{Int}}(z => L.extents[z] for z in unique(info.names))
-        info = AlgebraicInfo(info.dofs, info.names, info.lower, info.upper, fz, solve_blocks(n, plan["operators"][n], L, docjson, info), docjson, ext)
+        # §6.6: the parameter products, when the plan has them (D127).
+        entry = plan["operators"][n]
+        vj = haskey(entry, "vjp") ? Any[param_product(n, "vjp", entry, L, pnames, doc)] : Any[]
+        fv = haskey(entry, "frozen_vjp") ?
+            Any[param_product(n, "frozen_vjp", entry, canonical_layout(doc(n, "frozen_residual")), pnames, doc)] : Any[]
+        info = AlgebraicInfo(info.dofs, info.names, info.lower, info.upper, fz, solve_blocks(n, entry, L, docjson, info), docjson, ext, vj, fv)
         algebraic[n] = info
     end
     variables = Pair{String, Vector{Int}}[
@@ -770,6 +775,47 @@ function frozen_docs(name, entry, L::DofLayout, pnames, doc, zdofs)
         ConfigError("operator '$name': the plan entry lists $(length(names)) frozen observeds, its frozen residual document $(length(fdofs))")
     )
     return FrozenDocs(names, r, j, length(Lf.names), tolf, fdofs, points)
+end
+
+"""
+The [`ParamProduct`](@ref) of algebraic operator `name`'s product document
+`kind` (`vjp` or `frozen_vjp`, spec/plan.md §6.6), whose source document has
+the layout `Ls`, by the plan entry's input and output names.
+"""
+function param_product(name, kind, entry, Ls::DofLayout, pnames, doc)
+    d = doc(name, kind)
+    Lv = canonical_layout(d)
+    d = bind_document(d, Lv, pnames, name)
+    at = Dict(n => i for (i, n) in enumerate(Lv.names))
+    bad(msg) = throw(ConfigError("operator '$name': derived/$name.$kind.esm $msg"))
+    src = Int[get(() -> bad("does not declare state element $n"), at, n) for n in Ls.names]
+    # An input or output variable, by its unscoped name (EarthSciASTDiff
+    # declares it in the model `VjpEval`).
+    function var(v)
+        xs = [x for x in keys(Lv.offset) if x == v || endswith(x, "." * v)]
+        length(xs) == 1 || bad("declares $(length(xs)) variables named $v")
+        return only(xs)
+    end
+    io = entry[kind]
+    lam = zeros(Int, length(Ls.names))
+    for (s, v) in io["lam"]
+        haskey(Ls.offset, s) || bad("has an input for $s, which its source does not declare")
+        x = var(String(v))
+        n = prod(Ls.extents[s]; init = 1)
+        prod(Lv.extents[x]; init = 1) == n || bad("has an input $v of another size than $s")
+        for e in 1:n
+            lam[Ls.offset[s] + e] = Lv.offset[x] + e
+        end
+    end
+    out = Tuple{Int, Int}[]
+    for (pn, v) in io["vjp"]
+        k = findfirst(==(String(pn)), pnames)
+        # An array parameter is a constant of a planned run (M4).
+        k === nothing && continue
+        x = var(String(v))
+        push!(out, (k, Lv.offset[x] + 1))
+    end
+    return ParamProduct(d, length(Lv.names), src, lam, out)
 end
 
 _with_forcing(op::PlannedOperator, F) = PlannedOperator(

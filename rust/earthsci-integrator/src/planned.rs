@@ -769,6 +769,8 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
             blocks: None,
             doc: None,
             extents: BTreeMap::new(),
+            vjp: vec![],
+            fvjp: vec![],
         };
         let frozen_names: Vec<&str> = entry["frozen"]
             .as_array()
@@ -825,6 +827,47 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
                 rp, jp,
             )?;
             info.frozen = Some(crate::algebraic::Frozen(Arc::new(f)));
+        }
+        // The parameter products (spec/plan.md §6.6, D127), when the plan
+        // has them.
+        for kind in ["vjp", "frozen_vjp"] {
+            let Some(path) = docs.get(&(b.name.clone(), kind.to_string())) else {
+                continue;
+            };
+            let frozen = if kind == "frozen_vjp" {
+                let rp = docs
+                    .get(&(b.name.clone(), "frozen_residual".to_string()))
+                    .ok_or_else(|| {
+                        refuse(
+                            &b.name,
+                            path,
+                            "a frozen_vjp without a frozen_residual document",
+                        )
+                    })?;
+                let (_, rprog) =
+                    build_program(&dir.join(rp), tspan).map_err(|e| refuse(&b.name, rp, e))?;
+                Some(program_dofs(&rprog, |_| false))
+            } else {
+                None
+            };
+            let pr = PlannedProduct::load(
+                dir,
+                tspan,
+                &b.name,
+                &entry[kind],
+                &m.dofs,
+                frozen.as_ref(),
+                &m.params,
+                &forcing,
+                &timeline,
+                path,
+            )?;
+            let pr = crate::algebraic::Product(Arc::new(pr));
+            if kind == "vjp" {
+                info.vjp.push(pr);
+            } else {
+                info.fvjp.push(pr);
+            }
         }
         info.blocks = solve_blocks(&b.name, entry, &m.dofs, &doc, &info.names)
             .map_err(|e| refuse(&b.name, &b.rhs_path, format!("its block structure: {e}")))?;
@@ -1157,6 +1200,170 @@ impl crate::algebraic::FrozenEval for PlannedFrozen {
                 *a.entry((r, c)).or_insert(0.0) += du[s];
             }
             a
+        })
+    }
+}
+
+/// A parameter product document (spec/plan.md §6.6, D127) bound to its own
+/// canonical layout: the source document's states, the cotangent inputs and
+/// the outputs.
+struct PlannedProduct {
+    doc: Document,
+    n: usize,
+    /// Each model DOF's DOF in the product's layout.
+    src: Vec<usize>,
+    /// Each model DOF's cotangent input DOF, when it has one.
+    lam: Vec<Option<usize>>,
+    /// Per frozen state `FrozenEval.frozen_m`: its elements' cotangent input
+    /// DOFs (a frozen residual's product).
+    flam: Vec<Vec<usize>>,
+    /// Each scalar parameter of the run with an output: (its index, the
+    /// output's slot).
+    out: Vec<(usize, usize)>,
+}
+
+impl PlannedProduct {
+    #[allow(clippy::too_many_arguments)]
+    fn load(
+        dir: &Path,
+        tspan: (f64, f64),
+        name: &str,
+        io: &Value,
+        dofs: &Dofs,
+        frozen: Option<&Dofs>,
+        params: &[String],
+        forcing: &BTreeMap<String, PlanForcing>,
+        timeline: &Arc<ForcingTimeline>,
+        path: &str,
+    ) -> Result<PlannedProduct, Error> {
+        let (_, prog) = build_program(&dir.join(path), tspan).map_err(|e| refuse(name, path, e))?;
+        let lv = program_dofs(&prog, |_| false);
+        let doc = Document::new(prog, &lv, params, forcing, timeline.clone())
+            .map_err(|e| refuse(name, path, e))?;
+        // An input or output variable, by its unscoped name (EarthSciASTDiff
+        // declares it in the model `VjpEval`).
+        let var = |v: &str| -> Result<String, Error> {
+            let xs: Vec<&String> = lv
+                .states
+                .keys()
+                .filter(|x| *x == v || x.ends_with(&format!(".{v}")))
+                .collect();
+            match xs.as_slice() {
+                [x] => Ok((*x).clone()),
+                _ => Err(refuse(
+                    name,
+                    path,
+                    format!("it declares {} variables named {v}", xs.len()),
+                )),
+            }
+        };
+        let mut src = vec![0usize; dofs.n];
+        for (st, (start, _)) in &dofs.states {
+            let r = lv
+                .dofs_of(st)
+                .ok_or_else(|| refuse(name, path, format!("it does not declare the state {st}")))?;
+            for (k, j) in r.enumerate() {
+                src[start + k] = j;
+            }
+        }
+        let mut lam = vec![None; dofs.n];
+        let mut flam: Vec<Vec<usize>> = vec![];
+        for (s, v) in io["lam"].as_object().into_iter().flatten() {
+            let x = var(v.as_str().unwrap_or_default())?;
+            let r = lv.dofs_of(&x).expect("a state of the layout");
+            if let Some(m) = s
+                .strip_prefix(&format!(
+                    "{}.frozen_",
+                    earthsci_integrator_planner::derived::FROZEN_COMPONENT
+                ))
+                .and_then(|k| k.parse::<usize>().ok())
+            {
+                if frozen.is_none() {
+                    return Err(refuse(
+                        name,
+                        path,
+                        format!("an input for {s} outside a frozen residual's product"),
+                    ));
+                }
+                if flam.len() < m {
+                    flam.resize(m, vec![]);
+                }
+                flam[m - 1] = r.collect();
+                continue;
+            }
+            let Some(sr) = dofs.dofs_of(s) else {
+                return Err(refuse(
+                    name,
+                    path,
+                    format!("an input for {s}, which the model does not declare"),
+                ));
+            };
+            if sr.len() != r.len() {
+                return Err(refuse(
+                    name,
+                    path,
+                    format!("its input {v} has another size than {s}"),
+                ));
+            }
+            for (a, b) in sr.zip(r) {
+                lam[a] = Some(b);
+            }
+        }
+        let mut out = vec![];
+        for (pn, v) in io["vjp"].as_object().into_iter().flatten() {
+            // An array parameter is a constant of a planned run (M4).
+            let Some(k) = params.iter().position(|q| q == pn) else {
+                continue;
+            };
+            let x = var(v.as_str().unwrap_or_default())?;
+            let (off, _) = doc
+                .prog
+                .block_range(&x)
+                .ok_or_else(|| refuse(name, path, format!("no block {x}")))?;
+            out.push((k, off));
+        }
+        Ok(PlannedProduct {
+            doc,
+            n: lv.n,
+            src,
+            lam,
+            flam,
+            out,
+        })
+    }
+}
+
+impl crate::algebraic::ProductEval for PlannedProduct {
+    fn add(
+        &self,
+        pbar: &mut [f64],
+        x: &[f64],
+        p: &[f64],
+        t: f64,
+        w: &[f64],
+        wf: &[(usize, usize, f64)],
+    ) -> Result<(), String> {
+        if self.out.is_empty() {
+            return Ok(());
+        }
+        let mut u = vec![0.0; self.n];
+        for (i, &j) in self.src.iter().enumerate() {
+            u[j] = x[i];
+        }
+        for (i, &v) in w.iter().enumerate() {
+            if let Some(j) = self.lam[i] {
+                u[j] = v;
+            }
+        }
+        for &(m, e, v) in wf {
+            let ds = self.flam.get(m).ok_or("no input for that frozen state")?;
+            let j = if ds.len() == 1 { ds[0] } else { ds[e] };
+            u[j] += v;
+        }
+        self.doc.eval(&u, p, t, |du| {
+            for &(k, s) in &self.out {
+                pbar[k] += du[s];
+            }
         })
     }
 }

@@ -47,6 +47,34 @@ pub trait FrozenEval: Send + Sync {
 #[derive(Clone)]
 pub struct Frozen(pub Arc<dyn FrozenEval>);
 
+/// A parameter product document of an algebraic operator (spec/plan.md
+/// §6.6, D127), evaluated at a model state `x`.
+pub trait ProductEval: Send + Sync {
+    /// Adds the product to `pbar` (each scalar parameter of the run): `w` is
+    /// the cotangent of each model DOF (for a residual document's product),
+    /// `wf` the cotangent of frozen state `m`'s element `e` as `(m, e, v)`
+    /// (for a frozen residual document's product).
+    fn add(
+        &self,
+        pbar: &mut [f64],
+        x: &[f64],
+        p: &[f64],
+        t: f64,
+        w: &[f64],
+        wf: &[(usize, usize, f64)],
+    ) -> Result<(), String>;
+}
+
+/// A parameter product document, when the plan has it.
+#[derive(Clone)]
+pub struct Product(pub Arc<dyn ProductEval>);
+
+impl std::fmt::Debug for Product {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Product")
+    }
+}
+
 impl std::fmt::Debug for Frozen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Frozen")
@@ -72,6 +100,10 @@ pub struct AlgebraicInfo {
     pub doc: Option<Arc<Value>>,
     /// Each unknown variable's extents.
     pub extents: BTreeMap<String, Vec<usize>>,
+    /// The residual documents' parameter products (spec/plan.md §6.6).
+    pub vjp: Vec<Product>,
+    /// The frozen residual document's parameter product.
+    pub fvjp: Vec<Product>,
 }
 
 impl AlgebraicInfo {
@@ -123,6 +155,8 @@ impl AlgebraicInfo {
                 _ => None,
             },
             extents: BTreeMap::new(),
+            vjp: infos.iter().flat_map(|i| i.vjp.iter().cloned()).collect(),
+            fvjp: vec![],
         };
         for i in infos {
             out.dofs.extend(&i.dofs);
@@ -466,7 +500,7 @@ pub struct Residual<'a, T: Scalar> {
 }
 
 impl<T: Scalar> Residual<'_, T> {
-    fn state(&self, z: &[f64]) -> Vec<T> {
+    pub fn state(&self, z: &[f64]) -> Vec<T> {
         let mut x: Vec<T> = self.u.iter().map(|&v| T::from_f64(v)).collect();
         for (&d, &v) in self.dofs.iter().zip(z) {
             x[d] = T::from_f64(v);
@@ -475,7 +509,7 @@ impl<T: Scalar> Residual<'_, T> {
     }
 
     /// The model state with the unknowns set to `z`, in f64.
-    fn state_f64(&self, z: &[f64]) -> Vec<f64> {
+    pub fn state_f64(&self, z: &[f64]) -> Vec<f64> {
         let mut x = self.u.to_vec();
         for (&d, &v) in self.dofs.iter().zip(z) {
             x[d] = v;
@@ -1102,4 +1136,330 @@ pub struct DaeSpec<T: Scalar> {
     pub init: SolveMethod,
     pub initial: Vec<f64>,
     pub pnames: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Adjoints (spec/adjoint.md §4.6, §5.10; D127)
+
+/// The held positions of a solve record's active set (per unknown variable,
+/// element positions), and which of them are at their upper bound.
+pub fn held_set(
+    info: &AlgebraicInfo,
+    active: &BTreeMap<String, ActiveSet>,
+) -> (Vec<bool>, Vec<bool>) {
+    let nz = info.dofs.len();
+    let (mut held, mut up) = (vec![false; nz], vec![false; nz]);
+    let mut first: BTreeMap<&str, usize> = BTreeMap::new();
+    for (i, z) in info.names.iter().enumerate() {
+        first.entry(z.as_str()).or_insert(i);
+    }
+    for (z, a) in active {
+        let f = first[z.as_str()];
+        for &e in &a.lower {
+            held[f + e] = true;
+        }
+        for &e in &a.upper {
+            held[f + e] = true;
+            up[f + e] = true;
+        }
+    }
+    (held, up)
+}
+
+impl<'a> Blocks<'a> {
+    /// The adjoint's blocks: the plan's, else one block of every unknown.
+    fn adjoint(info: &'a AlgebraicInfo) -> Blocks<'a> {
+        let nz = info.dofs.len();
+        let blocks: std::borrow::Cow<'a, [Vec<usize>]> = match &info.blocks {
+            Some(b) => std::borrow::Cow::Borrowed(b.as_slice()),
+            None => std::borrow::Cow::Owned(vec![(0..nz).collect()]),
+        };
+        let mut of = vec![(0, 0); nz];
+        for (k, b) in blocks.iter().enumerate() {
+            for (i, &q) in b.iter().enumerate() {
+                of[q] = (k, i);
+            }
+        }
+        Blocks { blocks, of }
+    }
+}
+
+/// The parameters a solve's residual was evaluated with: `p` with each
+/// `scale_param` action the tape records applied (spec/adjoint.md §4.6),
+/// and the factor of each parameter.
+pub fn recorded_scaling(
+    m: &SolveMethod,
+    actions: &[String],
+    pnames: &[String],
+    p: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    let mut s = vec![1.0; p.len()];
+    let mut k = 0;
+    for a in &m.recover {
+        if k >= actions.len() {
+            break;
+        }
+        match a {
+            Recover::ScaleParam { param, by, max } => {
+                let Some(i) = pnames.iter().position(|x| x == param) else {
+                    continue;
+                };
+                for _ in 0..*max {
+                    if actions.get(k).map(String::as_str) != Some("scale_param") {
+                        break;
+                    }
+                    s[i] *= by;
+                    k += 1;
+                }
+            }
+            _ => k += 1,
+        }
+    }
+    (p.iter().zip(&s).map(|(a, b)| a * b).collect(), s)
+}
+
+/// The frozen cotangent `(m, e)` of an observed bound `name` at element `e`.
+fn obs_slot(info: &AlgebraicInfo, name: &str, e: usize) -> Result<(usize, usize), Error> {
+    let Some(Frozen(f)) = &info.frozen else {
+        return Err(Error::Run(format!(
+            "solve adjoint: the bound {name} needs the frozen documents"
+        )));
+    };
+    let m = f
+        .names()
+        .iter()
+        .position(|x| x == name)
+        .ok_or_else(|| Error::Run(format!("solve adjoint: {name} is not a frozen observed")))?;
+    Ok((m, e))
+}
+
+/// The reverse of a solve (spec/adjoint.md §4.6, D127) at its converged `z`
+/// with the active set `held` (`up`: at the upper bound). One transposed
+/// solve with `g_z`'s held rows the identity's gives `−μ_I` and `b̄_A`;
+/// `lam` has the unknowns' cotangents zeroed (the warm start is not
+/// differentiated) and `−g_uᵀμ` added on the other states; `pbar` gains
+/// `−g_pᵀμ` (times `s`, the recorded scale of each parameter) and each
+/// referenced bound's cotangent.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_adjoint<T: Scalar>(
+    r: &Residual<'_, T>,
+    info: &AlgebraicInfo,
+    z: &[f64],
+    p: &[f64],
+    held: &[bool],
+    up: &[bool],
+    lam: &mut [f64],
+    pbar: &mut [f64],
+    s: Option<&[f64]>,
+) -> Result<(), Error> {
+    let nz = info.dofs.len();
+    let n = lam.len();
+    let a = r.gz(z, p);
+    let bl = Blocks::adjoint(info);
+    let ms = block_matrices(&a, 0.0, held, &bl)?;
+    let mut nu = vec![0.0; nz];
+    for (blk, mm) in bl.blocks.iter().zip(&ms) {
+        let k = blk.len();
+        // The transpose, column-major.
+        let mut mt = vec![0.0; k * k];
+        for i in 0..k {
+            for j in 0..k {
+                mt[j * k + i] = mm[i * k + j];
+            }
+        }
+        let mut lu = DenseLu::<f64>::new(k);
+        if !lu.factor(&mt) {
+            return Err(Error::Run(format!(
+                "solve adjoint: the free block of the residual's Jacobian is singular at t = {}",
+                r.t
+            )));
+        }
+        let mut xb: Vec<f64> = blk.iter().map(|&q| lam[info.dofs[q]]).collect();
+        lu.solve(&mut xb);
+        for (&q, v) in blk.iter().zip(xb) {
+            nu[q] = v;
+        }
+    }
+    let mut w = vec![0.0; n];
+    for i in 0..nz {
+        if !held[i] {
+            w[info.dofs[i]] = nu[i];
+        }
+    }
+    let x = r.state(z);
+    let wt: Vec<T> = w.iter().map(|&v| T::from_f64(v)).collect();
+    let mut gx = vec![T::zero(); n];
+    for op in r.ops {
+        op.vjp_u(&mut gx, &x, p, r.t, &wt);
+    }
+    let mut zset = vec![false; n];
+    for &d in &info.dofs {
+        zset[d] = true;
+    }
+    for j in 0..n {
+        if zset[j] {
+            lam[j] = 0.0;
+        } else {
+            lam[j] += gx[j].to_f64();
+        }
+    }
+    let xf = r.state_f64(z);
+    let mut pc = vec![0.0; pbar.len()];
+    for Product(v) in &info.vjp {
+        v.add(&mut pc, &xf, p, r.t, &w, &[])
+            .map_err(|e| Error::Run(format!("solve adjoint: the parameter product: {e}")))?;
+    }
+    for (k, v) in pc.into_iter().enumerate() {
+        pbar[k] += s.map_or(v, |s| v * s[k]);
+    }
+    let mut wf = Vec::new();
+    for i in 0..nz {
+        if !held[i] {
+            continue;
+        }
+        let b = if up[i] {
+            &info.upper[i]
+        } else {
+            &info.lower[i]
+        };
+        match b {
+            Some(Bound::Param(k)) => pbar[*k] += nu[i],
+            Some(Bound::Obs(name, e)) => {
+                let (m, e) = obs_slot(info, name, *e)?;
+                wf.push((m, e, nu[i]));
+            }
+            Some(Bound::Const(_)) => {}
+            None => {
+                return Err(Error::Run(format!(
+                    "solve adjoint: {} is recorded at a bound it does not have",
+                    info.names[i]
+                )))
+            }
+        }
+    }
+    if !wf.is_empty() {
+        for Product(v) in &info.fvjp {
+            v.add(pbar, &xf, p, r.t, &[], &wf).map_err(|e| {
+                Error::Run(format!("solve adjoint: the frozen parameter product: {e}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// The implicit-function tangent of a solve (spec/adjoint.md §4.6, D127):
+/// `dz_A = db_A`, `g_{I,z_I} dz_I = −(g_{I,u} du + g_{I,z_A} dz_A + g_{I,p} dp)`.
+/// `g_p dp` (and an observed bound's `db`) is formed from the parameter
+/// products, one evaluation per unknown, which suits the tests it is for.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_tangent<T: Scalar>(
+    r: &Residual<'_, T>,
+    info: &AlgebraicInfo,
+    z: &[f64],
+    p: &[f64],
+    held: &[bool],
+    up: &[bool],
+    du: &[f64],
+    dp: &[f64],
+) -> Result<Vec<f64>, Error> {
+    let nz = info.dofs.len();
+    let n = du.len();
+    let xf = r.state_f64(z);
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let mut v: Vec<f64> = du.to_vec();
+    for &d in &info.dofs {
+        v[d] = 0.0;
+    }
+    let x = r.state(z);
+    let vt: Vec<T> = v.iter().map(|&a| T::from_f64(a)).collect();
+    let mut jv = vec![T::zero(); n];
+    for op in r.ops {
+        op.jvp_u(&mut jv, &x, p, r.t, &vt);
+    }
+    // (−g_z with the held rows the identity's) dz = (g_u du + g_p dp on the
+    // free rows, dz_A on the held ones).
+    let mut rhs: Vec<f64> = info.dofs.iter().map(|&d| jv[d].to_f64()).collect();
+    for i in 0..nz {
+        let mut row = vec![0.0; p.len()];
+        if held[i] {
+            let b = if up[i] {
+                &info.upper[i]
+            } else {
+                &info.lower[i]
+            };
+            rhs[i] = match b {
+                Some(Bound::Param(k)) => dp[*k],
+                Some(Bound::Obs(name, e)) => {
+                    let (m, e) = obs_slot(info, name, *e)?;
+                    for Product(f) in &info.fvjp {
+                        f.add(&mut row, &xf, p, r.t, &[], &[(m, e, 1.0)])
+                            .map_err(|e| Error::Run(format!("solve tangent: {e}")))?;
+                    }
+                    dot(&row, dp)
+                }
+                _ => 0.0,
+            };
+            continue;
+        }
+        let mut e = vec![0.0; n];
+        e[info.dofs[i]] = 1.0;
+        for Product(f) in &info.vjp {
+            f.add(&mut row, &xf, p, r.t, &e, &[])
+                .map_err(|e| Error::Run(format!("solve tangent: {e}")))?;
+        }
+        rhs[i] += dot(&row, dp);
+    }
+    let a = r.gz(z, p);
+    linsolve(&a, 0.0, held, &rhs, &Blocks::adjoint(info))?
+        .ok_or_else(|| Error::Run("solve tangent: the free block is singular".into()))
+}
+
+/// The frozen-tape replay of a solve at perturbed inputs (spec/adjoint.md
+/// §4.6, D127): the active set held (`z_A = b_A` at `p`), Newton on the
+/// free rows from `z0`, increments applied while they shrink.
+pub fn replay_held<T: Scalar>(
+    r: &Residual<'_, T>,
+    info: &AlgebraicInfo,
+    z0: &[f64],
+    p: &[f64],
+    held: &[bool],
+    up: &[bool],
+) -> Result<Vec<f64>, Error> {
+    let obs = info.observed(&r.state_f64(z0), p, r.t)?;
+    let (l, h) = info.values(p, &obs);
+    let mut z = z0.to_vec();
+    for i in 0..z.len() {
+        if held[i] {
+            z[i] = if up[i] { h[i] } else { l[i] };
+        }
+    }
+    let bl = Blocks::adjoint(info);
+    let mut prev = f64::INFINITY;
+    for _ in 0..100 {
+        let mut g = r.g(&z, p);
+        for i in 0..g.len() {
+            if held[i] {
+                g[i] = 0.0;
+            }
+        }
+        let a = r.gz(&z, p);
+        let s = linsolve(&a, 0.0, held, &g, &bl)?.ok_or_else(|| {
+            Error::Run(format!(
+                "solve replay: the free block is singular at t = {}",
+                r.t
+            ))
+        })?;
+        let ns = ninf(&s);
+        if ns >= prev {
+            break;
+        }
+        for (a, b) in z.iter_mut().zip(&s) {
+            *a += b;
+        }
+        prev = ns;
+        if ns == 0.0 {
+            break;
+        }
+    }
+    Ok(z)
 }

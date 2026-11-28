@@ -385,7 +385,13 @@ function rosenbrock_adjoint_step(m::RosenbrockMethod, ctx::RosenbrockContext, u,
             (a == 0 && cij == 0) && continue
             kb[j] === nothing && (kb[j] = zeros(N))
             a == 0 || _addto!(kb[j], a, σ[i])
-            cij == 0 || _addto!(kb[j], cij / h, μ[i])
+            # The forward step adds M sᵢ, dropped on an algebraic row, so the
+            # reverse adds (Cᵢⱼ/h) M μᵢ (spec/adjoint.md §5.10, D127).
+            if cij != 0
+                μm = μ[i]
+                ctx.mass === nothing || (μm = copy(μm); μm[ctx.mass] .= 0)
+                _addto!(kb[j], cij / h, μm)
+            end
             cij == 0 || μq == 0 || (kbq[j] += (cij / h) * μq)
         end
     end
