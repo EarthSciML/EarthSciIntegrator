@@ -677,7 +677,7 @@ checksum = "e1d926b4d407d372f141f93bb444696142c29d32962ccbd3531117cf3aa0bfa9"
 [[package]]
 name = "earthsci-ast"
 version = "0.15.1"
-source = "git+https://github.com/ctessum-claude/EarthSciSerialization.git?rev=f5f24e2a0bfb7ab37124b32345312fb6d056e729#f5f24e2a0bfb7ab37124b32345312fb6d056e729"
+source = "git+https://github.com/ctessum-claude/EarthSciSerialization.git?rev=b6b3c36a8cf737536e98253524c4322e766c91b1#b6b3c36a8cf737536e98253524c4322e766c91b1"
 dependencies = [
  "diffsol",
  "earthsciio",
@@ -703,7 +703,7 @@ dependencies = [
 [[package]]
 name = "earthsci-astdiff"
 version = "0.7.0"
-source = "git+https://github.com/ctessum-claude/EarthSciASTDiff.git?rev=b9cc4afc85386e0d5db7f009f5f6723b7a1d081b#b9cc4afc85386e0d5db7f009f5f6723b7a1d081b"
+source = "git+https://github.com/ctessum-claude/EarthSciASTDiff.git?rev=f8d2f8b4ee0267c3a6151024b47bc2f0024f8c0c#f8d2f8b4ee0267c3a6151024b47bc2f0024f8c0c"
 dependencies = [
  "earthsci-ast",
  "indexmap",
