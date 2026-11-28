@@ -22,18 +22,21 @@ earthsci-integrator-solvers = { path = "earthsci-integrator-solvers", version = 
 earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = "0.2.0" }
 
 # Unreleased dependencies, pinned by git revision until they are released.
-# EarthSciAST: draft EarthSciAST#801 (m3-gate-lane-and-ic-fixes, f5f24e2a0)
-# on upstream main, which carries #781 (a time per lane, U19), #780 (an array
-# faq read at the lane's own cell) and #784 (nested reference calls), none of
-# them in a release after 0.15.0. #801 seeds the initial state from a primed
-# provider's record and builds lane programs over a makearray region that
-# covers part of a lane set (a surface-only coefficient).
-# EarthSciASTDiff: the fork branch named-steps (b9cc4af), on
-# upstream main at the merge of EarthSciASTDiff#81 (ef2cc07, time bands hold
-# data fixed). It writes each time-dependent observed's derivative in t once
-# as a named companion observed, which shrinks reseact's chemistry
-# time-derivative document from 68.8 MB to 1.7 MB; no upstream pull request
-# yet. Drop both pins when the releases are out (spec/plan.md §0.2).
+# EarthSciAST: the fork branch m3-gate-lanes-combined (b6b3c36a8). It is
+# draft EarthSciAST#801 (m3-gate-lane-and-ic-fixes) on upstream main, which
+# carries #781 (a time per lane, U19), #780 (an array faq read at the lane's
+# own cell) and #784 (nested reference calls), none of them in a release
+# after 0.15.0, with the lane-speed drafts #809 (Julia) and #816 (Rust)
+# merged on it. #801 seeds the initial state from a primed provider's record
+# and builds lane programs over a makearray region that covers part of a
+# lane set (a surface-only coefficient); #809 and #816 make a lane call's
+# work proportional to its lanes, not to the domain.
+# EarthSciASTDiff: the fork branch named-steps-joins (f8d2f8b4), draft
+# EarthSciASTDiff#87 on upstream main: each time-dependent observed's
+# derivative in t written once as a named companion observed (reseact's
+# chemistry time-derivative document is 1.7 MB instead of 68.8 MB), named
+# intermediates on every axis, narrow regions as makearray regions,
+# differentiating joins and a chosen parameter set. Drop both pins when the releases are out (spec/plan.md §0.2).
 [patch.crates-io]
-earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "f5f24e2a0bfb7ab37124b32345312fb6d056e729" }
-earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "b9cc4afc85386e0d5db7f009f5f6723b7a1d081b" }
+earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "b6b3c36a8cf737536e98253524c4322e766c91b1" }
+earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "f8d2f8b4ee0267c3a6151024b47bc2f0024f8c0c" }
