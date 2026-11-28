@@ -47,9 +47,17 @@
     "code": "unsupported_event",
     "at": "/model"
   },
-  "dt-scope-cell": {
-    "code": "unsupported_dt_scope",
+  "dt-scope-bind-dt": {
+    "code": "dt_scope_bind_dt",
     "at": "/schedule/control/dt_scope"
+  },
+  "dt-scope-column": {
+    "code": "unsupported_dt_scope",
+    "at": "/schedule/sequence/1/control/dt_scope"
+  },
+  "dt-scope-stencil": {
+    "code": "dt_scope_not_local",
+    "at": "/schedule/sequence/0/control/dt_scope"
   },
   "duplicate-node-id": {
     "code": "duplicate_node_id",
@@ -103,9 +111,9 @@
     "code": "reserved_component_name",
     "at": "/model"
   },
-  "rosenbrock-time-dependent": {
-    "code": "unsupported_time_derivative",
-    "at": "/schedule/alg"
+  "reshard-without-shard-scope": {
+    "code": "reshard_without_shard_scope",
+    "at": "/schedule/partition/reshard"
   },
   "schedule-update": {
     "code": "unsupported_parameter_update",

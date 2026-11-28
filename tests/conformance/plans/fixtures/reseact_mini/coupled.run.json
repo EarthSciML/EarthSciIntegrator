@@ -1,0 +1,65 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "A coupled node over the pointwise chemistry: never sharded, so its dt_scope resolves to global even though the chemistry's storage is block_diagonal (spec/partitioning.md \u00a72.1).",
+  "model": "../../../toys/reseact_mini.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "operators": {
+    "transport": {
+      "select": {
+        "locality": [
+          "stencil",
+          "column"
+        ]
+      }
+    },
+    "chemistry": {
+      "select": {
+        "locality": "pointwise"
+      }
+    }
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "transport",
+        "alg": "SSPRK43",
+        "control": {
+          "reltol": 0.0001,
+          "abstol": 1e-06,
+          "dt0": 15
+        }
+      },
+      {
+        "id": "chem",
+        "coupled": "chemistry",
+        "alg": "TRBDF2",
+        "jacobian": "symbolic",
+        "control": {
+          "reltol": 0.0001,
+          "abstol": 1e-09,
+          "dt0": 0.5
+        },
+        "domain": {
+          "nonnegative": "all",
+          "on_violation": "reject"
+        }
+      }
+    ]
+  },
+  "step": {
+    "dt": 300,
+    "hit": [
+      "forcing_refresh",
+      "output"
+    ]
+  },
+  "output": {
+    "saveat": 1800
+  }
+}

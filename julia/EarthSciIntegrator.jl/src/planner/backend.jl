@@ -121,6 +121,11 @@ mutable struct OperatorArtifacts
     rhs_built::Union{Nothing, BuiltDocument}
     jac_built::Union{Nothing, BuiltDocument}
     points::Union{Nothing, Vector{NTuple{4, Int}}}
+    # The time-derivative document (§6.4), for an operator that has one: its
+    # time band list, the document and its build.
+    time_entries::Union{Nothing, Vector{EarthSciASTDiff.JacEntry}}
+    time::Union{Nothing, DerivedDocument}
+    time_built::Union{Nothing, BuiltDocument}
 end
 
 """
@@ -141,9 +146,13 @@ mutable struct DiffBackend <: PlanBackend
     samples::Union{Nothing, Vector{Tuple{Float64, Vector{Float64}}}}
     forcing::Union{Nothing, Vector{Dict{String, Vector{Float64}}}}
     bandvalues::Dict{String, Any}
+    timevalues::Dict{String, Any}     # per operator with a time-derivative document: (banded rows, ForwardDiff's f_t there per sample)
     report::Dict{String, Any}
 end
-DiffBackend() = DiffBackend(nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}())
+DiffBackend() = DiffBackend(
+    nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}(),
+    Dict{String, Any}()
+)
 
 """Bind `b` to the planning context `ctx`, dropping everything derived from another one."""
 function bind!(b::DiffBackend, ctx)
@@ -152,6 +161,7 @@ function bind!(b::DiffBackend, ctx)
     empty!(b.ops)
     b.layout = b.u0 = b.samples = b.forcing = nothing
     empty!(b.bandvalues)
+    empty!(b.timevalues)
     empty!(b.report)
     return b
 end
@@ -407,7 +417,7 @@ function artifacts!(b::DiffBackend, ctx, op::PlanOperator)
     dicts = Dict{String, Any}[band_json(en) for en in entries]
     a = OperatorArtifacts(
         d, entries, dicts, BandEntry[BandEntry(x) for x in dicts], EarthSciASTDiff.sysview(d.flat),
-        nothing, nothing, nothing, nothing
+        nothing, nothing, nothing, nothing, nothing, nothing, nothing
     )
     return b.ops[op.name] = a
 end
@@ -419,6 +429,41 @@ function jacobian_document!(b::DiffBackend, ctx, op::PlanOperator)
     # parameters keep their data rules (EarthSciASTDiff#55).
     a.jac === nothing && (a.jac = DerivedDocument(jacobian_document(a.rhs.flat, a.entries; data_sources = a.rhs.file.data_sources)))
     return a.jac
+end
+
+"""
+    time_document!(b, ctx, op) -> DerivedDocument
+
+The operator's time-derivative document (§6.4, D102), built on first use:
+EarthSciASTDiff's time band list (`jacobian_bands` with `wrt = :time`) of its
+right-hand-side document, and the evaluation document of those bands built
+exactly as the Jacobian document is ([`jacobian_document`](@ref)). An
+EarthSciASTDiff refusal is `band_model_failed` at `/model`.
+"""
+function time_document!(b::DiffBackend, ctx, op::PlanOperator)
+    a = artifacts!(b, ctx, op)
+    a.time === nothing || return a.time
+    what = "operator $(op.name)'s time bands"
+    a.time_entries = try
+        EarthSciASTDiff.jacobian_bands(a.sv; wrt = :time)
+    catch e
+        e isa PlannerRefusal && rethrow()
+        refuse("band_model_failed", "/model", "EarthSciASTDiff refused to differentiate $what: " * sprint(showerror, e))
+    end
+    a.time = DerivedDocument(jacobian_document(a.rhs.flat, a.time_entries; data_sources = a.rhs.file.data_sources))
+    return a.time
+end
+
+"""The time band fields' extents in the time-derivative document (§6.4): each band's row state's extents."""
+time_fields(L::DofLayout, entries) = [L.extents[String(en.u)] for en in entries]
+
+function time_built!(b::DiffBackend, ctx, op::PlanOperator)
+    a = artifacts!(b, ctx, op)
+    if a.time_built === nothing
+        L = layout!(b, ctx)
+        a.time_built = build_document(time_document!(b, ctx, op).flat, L, ctx.time; fields = time_fields(L, a.time_entries))
+    end
+    return a.time_built
 end
 
 layout!(b::DiffBackend, ctx) = (bind!(b, ctx); b.layout === nothing ? (b.layout = DofLayout(ctx.model)) : b.layout)
@@ -643,13 +688,50 @@ end
 # ---------------------------------------------------------------------------
 # Passes 6 and 8: derived documents and validation (§6, §7.7, §8)
 
-function derived_and_validation(b::DiffBackend, ctx)
+"""
+    rosenbrock_time_operators(ctx, schedule) -> Set{String}
+
+The operators §6.4 gives a time-derivative document (D102): those whose
+`structure.depends_on_t` is true that a leaf or coupled node of the resolved
+`schedule` advances (not through its `frozen` entries alone) with a
+Rosenbrock method.
+"""
+function rosenbrock_time_operators(ctx, schedule)
+    out = Set{String}()
+    function walk(n)
+        for k in ("leaf", "coupled")
+            haskey(n, k) || continue
+            TABLEAUS[n["alg"]].family === :rosenbrock || continue
+            for o in _as_list(n[k])
+                op_depends_on_t(ctx, o) && push!(out, String(o))
+            end
+        end
+        for k in ("sequence", "strang"), c in get(n, k, Any[])
+            walk(c)
+        end
+        for k in ("subcycle", "every")
+            haskey(n, k) && walk(n[k])
+        end
+        return
+    end
+    walk(schedule)
+    return out
+end
+
+function derived_and_validation(b::DiffBackend, ctx, schedule = nothing)
     m = ctx.model
     names = sort!(collect(keys(ctx.ops)))
+    timed = schedule === nothing ? Set{String}() : rosenbrock_time_operators(ctx, schedule)
     derived = Dict{String, Any}()
     for o in names
         op = ctx.ops[o]
-        for (kind, d) in (("rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op)))
+        docs = Any[("rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op))]
+        if o in timed
+            # §6.4: the document, and the time bands in the plan's structure.
+            push!(docs, ("time_derivative", time_document!(b, ctx, op)))
+            op.structure["time_bands"] = Any[band_json(en) for en in b.ops[o].time_entries]
+        end
+        for (kind, d) in docs
             # SHA's `sha256(::String)` re-hashes the whole string for every
             # block (its copy's alias check takes the string's `objectid`), so a
             # document of megabytes takes minutes; a byte vector does not.
@@ -673,8 +755,76 @@ function derived_and_validation(b::DiffBackend, ctx)
         band_model_check!(b, ctx, op)
         push!(validation, Dict{String, Any}("check" => "band_model", "operator" => o, "passed" => true))
         push!(validation, Dict{String, Any}("check" => "non_empty", "operator" => o, "passed" => true))
+        if o in timed
+            time_band_model_check!(b, ctx, op)
+            push!(validation, Dict{String, Any}("check" => "time_band_model", "operator" => o, "passed" => true))
+        end
     end
     return derived, validation
+end
+
+struct TimeModelTag end
+
+"""
+    time_band_model_check!(b, ctx, op)
+
+§8.1 `time_band_model`, Julia's form (D102): at each sampled state, ``f_t^B``
+from the time-derivative document (field `J_k`'s cell `f` added into its row
+variable's cell `f`) against ForwardDiff's derivative in `t` (one dual
+direction) of the right-hand-side document, forcing held at the sample's,
+rows of `writes` only: `|fB - fI| ≤ 1e-10 M_r` with
+`M_r = max(|fB|, |fI|, |f_r| / max(|t_s|, 1))`, and `fI = 0` exactly in a
+row no time band writes. Keeps ForwardDiff's
+values at the banded rows for the band-value file (§8.2, `time_entries`).
+"""
+function time_band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
+    L = layout!(b, ctx)
+    R = rhs_built!(b, ctx, op)
+    T = time_built!(b, ctx, op)
+    a = b.ops[op.name]
+    rows = state_dofs(L, op.writes)
+    # The canonical rows of each field's cells.
+    places = [(k, state_dofs(L, [String(en.u)])) for (k, en) in enumerate(a.time_entries)]
+    banded = sort!(unique!(reduce(vcat, (r for (_, r) in places); init = Int[])))
+    D = ForwardDiff.Dual{TimeModelTag, Float64, 1}
+    worst = 0.0
+    values = Vector{Vector{Float64}}()
+    for (s, (t, u)) in enumerate(samples!(b, ctx))
+        F = sample_forcing(b, ctx, s)
+        du = eval_slots(T, u, t, F)
+        fB = zeros(length(u))
+        for (k, rs) in places
+            for (f, r) in enumerate(rs)
+                fB[r] += du[T.fields[k][f]]
+            end
+        end
+        ud = D[D(x, ForwardDiff.Partials((0.0,))) for x in u]
+        fd = eval_rhs(R, ud, D(t, ForwardDiff.Partials((1.0,))), F)
+        for r in rows
+            fr = ForwardDiff.value(fd[r])
+            fI = ForwardDiff.partials(fd[r])[1]
+            if !insorted(r, banded)
+                fI == 0 || refuse(
+                    "validation_time_band_model_failed", "/model",
+                    "operator $(op.name) at t = $t: its right-hand side in row $(L.names[r]) depends on t " *
+                        "(ForwardDiff's derivative $fI) but no time band writes it"
+                )
+                continue
+            end
+            Mr = max(abs(fB[r]), abs(fI), abs(fr) / max(abs(t), 1.0))
+            d = abs(fB[r] - fI)
+            worst = max(worst, d == 0 ? 0.0 : d / Mr)
+            d <= 1.0e-10 * Mr || refuse(
+                "validation_time_band_model_failed", "/model",
+                "operator $(op.name) at t = $t: f_t at $(L.names[r]) is $(fB[r]) from the time bands, " *
+                    "ForwardDiff's is $fI (row scale $Mr)"
+            )
+        end
+        push!(values, Float64[ForwardDiff.partials(fd[r])[1] for r in banded])
+    end
+    get!(b.report, "time_band_model", Dict{String, Any}())[op.name] = worst
+    b.timevalues[op.name] = (banded, values)
+    return
 end
 
 """
@@ -731,7 +881,7 @@ function band_model_check!(b::DiffBackend, ctx, op::PlanOperator)
     end
     get!(b.report, "band_model", Dict{String, Any}())[op.name] = worst
     get!(b.report, "band_model_colours", Dict{String, Any}())[op.name] = isempty(colour) ? 0 : maximum(colour) + 1
-    b.bandvalues[op.name] = BandValues(P, samples)
+    b.bandvalues[op.name] = BandValues(op.name, P, samples)
     return
 end
 
@@ -745,6 +895,7 @@ end
 
 """An operator's band values (§8.2): its pattern and one [`BandValueSample`](@ref) per sampled state."""
 struct BandValues
+    op::String
     pattern::BandPattern
     samples::Vector{BandValueSample}
 end
@@ -763,11 +914,16 @@ function bandvalues_json(b::DiffBackend, ctx, v::BandValues)
     rc = Tuple{Int, Int}[(r, P.cols[i]) for r in 1:P.n for i in entry_range(P, r)]
     order = sortperm(rc; by = x -> (L.names[x[1]], L.names[x[2]]))
     out = Any[]
-    for s in v.samples
+    tv = get(b.timevalues, v.op, nothing)
+    torder = tv === nothing ? nothing : sortperm(tv[1]; by = r -> L.names[r])
+    for (k, s) in enumerate(v.samples)
         sample = Dict{String, Any}(
             "t" => s.t, "u" => Dict{String, Any}(L.names[n] => s.u[n] for n in eachindex(s.u)),
             "entries" => Any[Any[L.names[rc[i][1]], L.names[rc[i][2]], s.values[i]] for i in order]
         )
+        # §8.1 `time_band_model` (D102): ForwardDiff's f_t at every row a time
+        # band writes, sorted by element name.
+        tv === nothing || (sample["time_entries"] = Any[Any[L.names[tv[1][i]], tv[2][k][i]] for i in torder])
         # §8.2: the sampled forcing values at every element of the canonical
         # forcing order (the used data-fed parameters only).
         s.F === nothing || (sample["forcing"] = forcing_element_values(ctx.model, s.F))
@@ -805,6 +961,7 @@ function derived_files(b::DiffBackend)
     for (o, a) in b.ops
         out["derived/$o.rhs.esm"] = a.rhs.bytes
         a.jac === nothing || (out["derived/$o.jacobian.esm"] = a.jac.bytes)
+        a.time === nothing || (out["derived/$o.time_derivative.esm"] = a.time.bytes)
     end
     return out
 end

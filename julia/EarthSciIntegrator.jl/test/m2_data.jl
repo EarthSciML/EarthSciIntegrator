@@ -195,6 +195,52 @@ crossed(run, epochs) = [B for r in run.tape.records if r isa EarthSciIntegrator.
         @test Jat(B - 1800) == left
     end
 
+    # §8.4.1, §8.4.3 (D102): an observed that reads only data is computed
+    # once per forcing epoch by EarthSciAST's programs, and refilled only when
+    # the forcing set changes (a new set per epoch, or notify_forcing_refresh!
+    # after an in-place write). The runtime gives each epoch its own set, so
+    # the same operator evaluated in one epoch, then the next, then the first
+    # again reads each epoch's data; a cached value carried across epochs
+    # fails here.
+    @testset "a data-only observed is recomputed at each forcing epoch (§8.4.3, D102)" begin
+        doc = decay_step_doc()
+        m = doc["models"]["Decay"]
+        m["variables"]["G"] = Dict("type" => "unknown", "units" => "1/s", "shape" => ["x"])
+        ix(n) = Dict("op" => "index", "args" => [n, "i"])
+        push!(
+            m["equations"], Dict(
+                "lhs" => "G",
+                "rhs" => Dict(
+                    "op" => "faq", "args" => Any[], "output_idx" => ["i"], "ranges" => Dict("i" => [1, 3]),
+                    "expr" => Dict("op" => "*", "args" => [ix("Decay.s"), ix("Decay.F_k")])
+                )
+            )
+        )
+        m["equations"][1]["rhs"]["values"][1]["expr"] =
+            Dict("op" => "-", "args" => [Dict("op" => "*", "args" => [ix("Decay.G"), ix("Decay.u")])])
+        model = write_toy("data_decay_observed.esm", doc)
+        rc = Dict(
+            "esm_integrator" => "0.1.0", "model" => "../toys/$model",
+            "operators" => Dict("decay" => Dict("select" => Dict("components" => "Decay"))),
+            "schedule" => Dict("leaf" => "decay", "alg" => "RK4", "dt" => 1800, "control" => Dict("dt_scope" => "global")),
+            "step" => Dict("dt" => 3600, "hit" => ["forcing_refresh", "output"])
+        )
+        pp = plan_problem(plan_data_case("data.decay_observed", rc, (79200.0, 93600.0)))
+        op = pp.prob.operators["decay"]
+        u, p = ones(length(pp.prob.u0)), pp.prob.p
+        K(h, i) = 1.0e-4 * (1 + i / 2 + (h % 5) / 4)
+        S = [1.0, 1.25, 1.5]
+        f(t) = EarthSciIntegrator.with_step_start(t) do
+            out = zeros(length(u))
+            EarthSciIntegrator.rhs!(op, out, u, p, t)
+            out
+        end
+        # 22:10, 23:10, back to 22:15, then 00:10: each reads its own hour.
+        for (t, h) in ((79200.0 + 600, 22), (82800.0 + 600, 23), (79200.0 + 900, 22), (86400.0 + 600, 24))
+            @test f(t) ≈ [-S[i + 1] * K(h, i) for i in 0:2] rtol = 1.0e-14
+        end
+    end
+
     # §8.4.2 step 2: providers count time from the model's time origin (D74),
     # the POSIX epoch for a model that declares none, while EarthSciAST's
     # providers count from the run window's start then. A run of data_decay

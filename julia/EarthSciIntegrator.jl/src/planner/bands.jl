@@ -274,7 +274,7 @@ Methods:
 - `gershgorin_bound(backend, ctx, op) -> Union{Float64, Nothing}` (`max_s ρ(u_s, p, t_s)`)
 - `jacobian_reads_forcing(backend, ctx, op) -> Union{Bool, Nothing}` (a band
   coefficient references a data-fed parameter, directly or through an observed; §5.5.2)
-- `derived_and_validation(backend, ctx) -> Union{Tuple{AbstractDict, AbstractVector}, Nothing}`
+- `derived_and_validation(backend, ctx, schedule) -> Union{Tuple{AbstractDict, AbstractVector}, Nothing}`
 """
 abstract type PlanBackend end
 
@@ -302,4 +302,4 @@ term_bands(::PendingBackend, ctx, t) = all(s -> !haskey(ctx.model.shapes, s), ct
 operator_structure(::PendingBackend, ctx, op) = nothing
 gershgorin_bound(::PendingBackend, ctx, op) = nothing
 jacobian_reads_forcing(::PlanBackend, ctx, op) = isempty(ctx.model.forcing) ? false : nothing
-derived_and_validation(::PendingBackend, ctx) = nothing
+derived_and_validation(::PendingBackend, ctx, schedule = nothing) = nothing

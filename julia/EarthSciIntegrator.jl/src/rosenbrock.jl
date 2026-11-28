@@ -237,7 +237,7 @@ function rosenbrock_step(
             @inbounds for j in eachindex(e)
                 e[j] = dto6 * ((kk1[j] - 2 * kk2[j]) + kk3[j])
             end
-            E = error_norm(e, u, u1, tol)
+            E = estimate_norm(e, u, u1, tol)
         end
     elseif adaptive
         m.tab.error_estimate === :embedded ||
@@ -252,7 +252,7 @@ function rosenbrock_step(
                 _addto!(e, bt, st.k[i])
             end
         end
-        E = e === nothing ? 0.0 : error_norm(e, u, u1, tol)
+        E = e === nothing ? 0.0 : estimate_norm(e, u, u1, tol)
     end
     return StepResult(u1, E, fsal, nf, false, st.violation, dq)
 end

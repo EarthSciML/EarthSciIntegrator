@@ -25,5 +25,9 @@ EarthSciASTDiff = "0.7"
 OrdinaryDiffEqSDIRK = "2"
 SciMLBase = "3"
 
+# EarthSciAST: the fork branch m3-gate-lanes-combined (#801, #809 and #816);
+# EarthSciASTDiff: draft #87's branch named-steps-joins (see ../Project.toml).
 [sources]
+EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "b6b3c36a8cf737536e98253524c4322e766c91b1"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "f8d2f8b4ee0267c3a6151024b47bc2f0024f8c0c"}
 EarthSciIntegrator = {path = ".."}

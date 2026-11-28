@@ -27,3 +27,22 @@ OrderedCollections = "1, 2"
 SHA = "0.7, 1"
 SciMLBase = "2, 3"
 julia = "1.10"
+
+# M3's lane programs need a time per lane (EarthSciAST#781) and Julia's build
+# of reseact needs nested reference calls (EarthSciAST#784), both merged
+# upstream after the 0.15.0 release; the gate's lane builds need draft
+# EarthSciAST#801 on top of them (a makearray region covering part of a lane
+# set; an ic that reads a scalar observed of t), and its lane speed needs
+# the drafts #809 (Julia) and #816 (Rust), a lane call's work proportional to
+# its lanes. Pinned at the fork branch m3-gate-lanes-combined (b6b3c36a8),
+# #801 with #809 and #816 merged on it. Time-derivative documents need
+# EarthSciASTDiff#81 (time bands hold data fixed, read an elementwise observed
+# at a cell), merged upstream after 0.7.0, and draft EarthSciASTDiff#87
+# (named steps on every axis, each time-dependent observed's derivative in t
+# written once as a named companion; differentiating joins; a chosen
+# parameter set): pinned at its branch named-steps-joins (f8d2f8b4), the
+# commit the Rust runtime pins. Replace both with the
+# releases that carry them.
+[sources]
+EarthSciAST = {url = "https://github.com/ctessum-claude/EarthSciSerialization.git", subdir = "pkg/EarthSciAST.jl", rev = "b6b3c36a8cf737536e98253524c4322e766c91b1"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "f8d2f8b4ee0267c3a6151024b47bc2f0024f8c0c"}

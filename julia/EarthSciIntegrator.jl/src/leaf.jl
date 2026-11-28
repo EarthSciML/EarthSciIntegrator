@@ -185,8 +185,12 @@ function leaf_forward(
         end
         pp = pstep(h)
         k1 = (fsal !== nothing && (!leaf_bound || fsal_h == h)) ? fsal : nothing
+        begin_attempt!(leaf.tol)
         res = with_step_start(() -> method_step(leaf, fp(pp), pp, u, t, h, k1, adaptive, hist), t)
         nf += res.nf
+        # A shard unit's re-sharding signal (spec/partitioning.md §6.2): the
+        # ratios of the attempt's error estimate, when it has a finite one.
+        adaptive && !res.newton_fail && !res.singular && add_cell_ratios!(leaf.tol, res.E)
         unew = res.u
         # A negative stage state under domain.check_stages is a violation whatever
         # on_violation says, since a stage cannot be clipped (spec/methods.md §11).

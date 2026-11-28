@@ -74,8 +74,12 @@ jobs:
       - run: pip install "jsonschema>=4.18"
       - name: Test
         # Test-only dependencies (OrdinaryDiffEq, SciMLSensitivity, Zygote)
-        # live in julia/EarthSciIntegrator.jl/test/Project.toml.
+        # live in julia/EarthSciIntegrator.jl/test/Project.toml. Four threads,
+        # so the M3 invariance variants with 2 to 4 executor threads run them
+        # in parallel (spec/partitioning.md §9.1); the tests check that they do.
         run: julia --project=julia/EarthSciIntegrator.jl -e 'using Pkg; Pkg.test()'
+        env:
+          JULIA_NUM_THREADS: "4"
       - name: Upload conformance result files
         if: always()
         uses: actions/upload-artifact@v7

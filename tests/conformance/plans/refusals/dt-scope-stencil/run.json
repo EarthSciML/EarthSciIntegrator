@@ -1,0 +1,48 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "dt_scope cell on a stencil leaf, whose cells read each other within a step (spec/partitioning.md §2.1, D97).",
+  "model": "../../../toys/reseact_mini.esm",
+  "axes": {
+    "horizontal": [
+      "lon",
+      "lat"
+    ],
+    "vertical": "lev"
+  },
+  "operators": {
+    "transport": {
+      "select": {
+        "locality": [
+          "stencil",
+          "column"
+        ]
+      }
+    },
+    "chemistry": {
+      "select": {
+        "locality": "pointwise"
+      }
+    }
+  },
+  "schedule": {
+    "sequence": [
+      {
+        "leaf": "transport",
+        "alg": "SSPRK43",
+        "control": {
+          "dt_scope": "cell"
+        }
+      },
+      {
+        "leaf": "chemistry",
+        "alg": "TRBDF2"
+      }
+    ]
+  },
+  "step": {
+    "dt": 300,
+    "hit": [
+      "forcing_refresh"
+    ]
+  }
+}

@@ -488,7 +488,10 @@
         "dtmin": {"$ref": "#/$defs/duration"},
         "dtmax": {"$ref": "#/$defs/duration"},
         "controller": {"enum": ["auto", "PI", "I", "PID"]},
-        "dt_scope": {"enum": ["auto", "global", "shard", "cell"]},
+        "dt_scope": {
+          "description": "Which DOFs share one step-size controller (spec/partitioning.md §2): the leaf, each shard or each cell. auto or omitted: cell for a pointwise leaf with block_diagonal storage, global otherwise (D17, D97).",
+          "enum": ["auto", "global", "shard", "cell"]
+        },
         "maxiters": {"type": "integer", "minimum": 1}
       }
     },
@@ -614,7 +617,18 @@
       "additionalProperties": false,
       "properties": {
         "shards": {"oneOf": [{"type": "integer", "minimum": 1}, {"$ref": "#/$defs/auto"}]},
-        "shard_size": {"type": "integer", "minimum": 1}
+        "shard_size": {"type": "integer", "minimum": 1},
+        "lanes": {
+          "description": "Lane capacity of the leaf's lane pools (spec/partitioning.md §3, §10.1). Omitted: the runtime chooses. Changes no result.",
+          "type": "integer", "minimum": 1
+        },
+        "reshard": {
+          "description": "Re-sharding under dt_scope shard (spec/partitioning.md §6.2): none (the default), or re-compose the shards every k macro steps.",
+          "oneOf": [
+            {"const": "none"},
+            {"type": "object", "additionalProperties": false, "required": ["every"], "properties": {"every": {"type": "integer", "minimum": 1}}}
+          ]
+        }
       }
     },
     "grid2": {
