@@ -713,8 +713,8 @@ function solve_blocks(name, entry, L::DofLayout, docjson, info)
     for z in unique(info.names)
         shape = declared_shape(docjson, z, name)
         cd = cellaxes === nothing ? collect(eachindex(shape)) : Int[
-            something(findfirst(==(a), shape), 0) for a in cellaxes
-        ]
+                something(findfirst(==(a), shape), 0) for a in cellaxes
+            ]
         any(==(0), cd) && bad("$z does not span every cell axis $(cellaxes)")
         inner = setdiff(eachindex(shape), cd)
         for c in cells(L.extents[z])

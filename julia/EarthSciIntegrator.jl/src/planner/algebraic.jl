@@ -532,7 +532,7 @@ end
 """The method objects of a solving node with their pointers: a `solve` node's `method`, a DAE's `initialize` when given."""
 function node_methods(n)
     n.kind == "solve" && return [(n.spec["method"], "method")]
-    haskey(n.spec, "initialize") ? [(n.spec["initialize"], "initialize")] : Tuple{Any, String}[]
+    return haskey(n.spec, "initialize") ? [(n.spec["initialize"], "initialize")] : Tuple{Any, String}[]
 end
 
 """
@@ -613,7 +613,7 @@ function check_algebraic_schedule(ctx, nodes)
         rd = Set{String}(z for o in node_algebraic_ops(ctx, n) for r in ops[o].residuals for z in r.reads)
         function frozen_name(o, at, what)
             need_kind(m, o, :observed, at, what)
-            String(o) in rd || refuse("name_wrong_kind", at, "$what $o is not read by the residuals of node $(n.id) (spec/plan.md §6.5)")
+            return String(o) in rd || refuse("name_wrong_kind", at, "$what $o is not read by the residuals of node $(n.id) (spec/plan.md §6.5)")
         end
         if haskey(meth, "picard")
             for (i, o) in enumerate(meth["picard"]["freeze"])
