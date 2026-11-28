@@ -482,7 +482,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "inexact": {"description": "Eisenstat–Walker forcing terms.", "type": "boolean"}
+        "inexact": {"description": "An inexact Newton–Krylov step: GMRES preconditioned by the linsolve, to the Eisenstat–Walker forcing term (spec/methods.md §15.3, D126).", "type": "boolean"}
       }
     },
 

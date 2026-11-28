@@ -60,7 +60,7 @@ fn close(a: &[f64], b: &[f64], tol: f64) -> bool {
 
 #[test]
 fn cubic_roots() {
-    for case in ["newton", "ptc"] {
+    for case in ["newton", "newton_inexact", "ptc"] {
         let (run, lp) = run_case("toy_cubic_roots", case);
         assert_eq!(run.outputs.last().unwrap().0, 1.0);
         let z = at_end(&run, &lp, "Cubic.z");
@@ -202,7 +202,7 @@ fn picard_roots() {
 
 #[test]
 fn box_lcp() {
-    for case in ["newton", "ptc"] {
+    for case in ["newton", "newton_inexact", "ptc"] {
         let (run, lp) = run_case("toy_box_lcp", case);
         // Both bounds active: z₁ at its referenced upper bound, z₂ at 0 (§1.8).
         assert_eq!(at_end(&run, &lp, "Box.z"), vec![0.25, 0.0], "{case}");

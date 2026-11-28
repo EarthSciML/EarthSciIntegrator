@@ -53,6 +53,8 @@ const CASES: &[(&str, &str)] = &[
     ("toy_picard_roots", "newton_rel_change"),
     ("box_scaled", "scaled_ptc"),
     ("box_scaled", "recover_method"),
+    ("toy_box_lcp", "newton_inexact"),
+    ("toy_cubic_roots", "newton_inexact"),
 ];
 
 /// The left-hand-side `op` of every equation of a model and its subsystems.

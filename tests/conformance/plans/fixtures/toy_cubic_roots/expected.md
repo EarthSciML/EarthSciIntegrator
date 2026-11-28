@@ -25,3 +25,7 @@ spec/toy-problems.md §1.7 (`tests/conformance/toys/cubic_roots.esm`): one algeb
 ```
 
 **Derived.** cubic.jacobian.esm, cubic.residual.esm
+
+## newton_inexact
+
+As `newton`, with `newton` `{"inexact": true}`: an inexact Newton–Krylov step with Eisenstat–Walker forcing (spec/methods.md §15.3, D126). The plan writes `inexact` as given; the derived documents are `newton`'s.

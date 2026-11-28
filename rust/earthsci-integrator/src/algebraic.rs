@@ -300,6 +300,9 @@ pub struct SolveMethod {
     pub block: bool,
     /// The method's `scale`: unknown to a number or a name (D125).
     pub scale: BTreeMap<String, Value>,
+    /// `newton.inexact`: a Newton–Krylov step with Eisenstat–Walker forcing
+    /// (D126).
+    pub inexact: bool,
 }
 
 /// `ptc.growth`: a number, or infinite for "uncapped" (switched evolution
@@ -388,6 +391,7 @@ impl SolveMethod {
                 .unwrap_or(0.0),
             maxiter: m.get("maxiter").and_then(Value::as_u64).unwrap_or(100) as usize,
             recover,
+            inexact: m["newton"]["inexact"].as_bool().unwrap_or(false),
             scale: m
                 .get("scale")
                 .and_then(Value::as_object)
@@ -415,6 +419,7 @@ impl SolveMethod {
             backtracking: mm.get("linesearch").and_then(Value::as_str) == Some("backtracking"),
             maxiter: mm.get("maxiter").and_then(Value::as_u64).unwrap_or(100) as usize,
             recover: vec![],
+            inexact: mm["newton"]["inexact"].as_bool().unwrap_or(false),
             ..self.clone()
         }
     }
@@ -433,6 +438,7 @@ impl SolveMethod {
             maxiter: 100,
             recover: vec![],
             scale: BTreeMap::new(),
+            inexact: false,
         }
     }
 }
@@ -559,15 +565,14 @@ impl<'a> Blocks<'a> {
     }
 }
 
-/// Solves `(σI − A) x = b` with the rows `held` replaced by the identity's,
-/// one LU per block (partial pivoting); `None` when a block is singular.
-fn linsolve(
+/// The matrix `σI − A` with the rows `held` replaced by the identity's, one
+/// column-major dense matrix per block.
+fn block_matrices(
     a: &Entries,
     sigma: f64,
     held: &[bool],
-    b: &[f64],
     bl: &Blocks<'_>,
-) -> Result<Option<Vec<f64>>, Error> {
+) -> Result<Vec<Vec<f64>>, Error> {
     let mut ms: Vec<Vec<f64>> = bl
         .blocks
         .iter()
@@ -583,7 +588,6 @@ fn linsolve(
         let n = bl.blocks[kr].len();
         ms[kr][ic * n + ir] -= v;
     }
-    let mut x = vec![0.0; b.len()];
     for (blk, mm) in bl.blocks.iter().zip(ms.iter_mut()) {
         let n = blk.len();
         for (i, &q) in blk.iter().enumerate() {
@@ -595,6 +599,23 @@ fn linsolve(
                 mm[i * n + i] = 1.0;
             }
         }
+    }
+    Ok(ms)
+}
+
+/// Solves `(σI − A) x = b` with the rows `held` replaced by the identity's,
+/// one LU per block (partial pivoting); `None` when a block is singular.
+fn linsolve(
+    a: &Entries,
+    sigma: f64,
+    held: &[bool],
+    b: &[f64],
+    bl: &Blocks<'_>,
+) -> Result<Option<Vec<f64>>, Error> {
+    let ms = block_matrices(a, sigma, held, bl)?;
+    let mut x = vec![0.0; b.len()];
+    for (blk, mm) in bl.blocks.iter().zip(&ms) {
+        let n = blk.len();
         let mut lu = DenseLu::<f64>::new(n);
         if !lu.factor(mm) {
             return Ok(None);
@@ -606,6 +627,151 @@ fn linsolve(
         }
     }
     Ok(Some(x))
+}
+
+fn norm2(v: &[f64]) -> f64 {
+    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+/// The inexact Newton–Krylov step of spec/methods.md §15.3 (D126): GMRES on
+/// `D P⁻¹ y = b`, `s = P⁻¹ y`, with `D = −A` and the rows `held` the
+/// identity's; right-preconditioned, unrestarted, at most N iterations, zero
+/// initial guess, modified Gram–Schmidt with Givens rotations, stopping at
+/// `‖D s − b‖₂ ≤ η ‖b‖₂`. `P` is the per-cell block LU with a block
+/// linsolve, else the diagonal of `D`. `None` when `P` is singular.
+fn krylov_step(
+    a: &Entries,
+    held: &[bool],
+    b: &[f64],
+    bl: &Blocks<'_>,
+    m: &SolveMethod,
+    eta: f64,
+) -> Result<Option<Vec<f64>>, Error> {
+    let n = b.len();
+    let dv = |v: &[f64]| -> Vec<f64> {
+        let mut out = vec![0.0; n];
+        for (&(r, c), &x) in a {
+            out[r] -= x * v[c];
+        }
+        for i in 0..n {
+            if held[i] {
+                out[i] = v[i];
+            }
+        }
+        out
+    };
+    let lus: Option<Vec<DenseLu<f64>>> = if m.block {
+        let ms = block_matrices(a, 0.0, held, bl)?;
+        let mut lus = Vec::new();
+        for (blk, mm) in bl.blocks.iter().zip(&ms) {
+            let mut lu = DenseLu::<f64>::new(blk.len());
+            if !lu.factor(mm) {
+                return Ok(None);
+            }
+            lus.push(lu);
+        }
+        Some(lus)
+    } else {
+        None
+    };
+    // Jacobi: the diagonal of D, −A_ii (1 on a held row; a zero taken as 1).
+    let mut d = vec![0.0; n];
+    for (&(r, c), &x) in a {
+        if r == c {
+            d[r] -= x;
+        }
+    }
+    for i in 0..n {
+        if held[i] || d[i] == 0.0 {
+            d[i] = 1.0;
+        }
+    }
+    let prec = |v: &[f64]| -> Vec<f64> {
+        match &lus {
+            Some(lus) => {
+                let mut out = vec![0.0; n];
+                for (blk, lu) in bl.blocks.iter().zip(lus) {
+                    let mut xb: Vec<f64> = blk.iter().map(|&q| v[q]).collect();
+                    lu.solve(&mut xb);
+                    for (&q, x) in blk.iter().zip(xb) {
+                        out[q] = x;
+                    }
+                }
+                out
+            }
+            None => v.iter().zip(&d).map(|(x, y)| x / y).collect(),
+        }
+    };
+    let beta = norm2(b);
+    if beta == 0.0 {
+        return Ok(Some(vec![0.0; n]));
+    }
+    let mut vs: Vec<Vec<f64>> = vec![b.iter().map(|x| x / beta).collect()];
+    let mut zs: Vec<Vec<f64>> = Vec::new();
+    let mut h = vec![vec![0.0; n]; n + 1];
+    let (mut cs, mut sn) = (vec![0.0; n], vec![0.0; n]);
+    let mut g = vec![0.0; n + 1];
+    g[0] = beta;
+    let mut k = 0;
+    for j in 0..n {
+        let z = prec(&vs[j]);
+        let mut w = dv(&z);
+        zs.push(z);
+        for i in 0..=j {
+            h[i][j] = w.iter().zip(&vs[i]).map(|(x, y)| x * y).sum();
+            let hij = h[i][j];
+            w.iter_mut().zip(&vs[i]).for_each(|(x, y)| *x -= hij * y);
+        }
+        let hnext = norm2(&w);
+        h[j + 1][j] = hnext;
+        for i in 0..j {
+            let t = cs[i] * h[i][j] + sn[i] * h[i + 1][j];
+            h[i + 1][j] = -sn[i] * h[i][j] + cs[i] * h[i + 1][j];
+            h[i][j] = t;
+        }
+        let dj = h[j][j].hypot(h[j + 1][j]);
+        (cs[j], sn[j]) = if dj == 0.0 {
+            (1.0, 0.0)
+        } else {
+            (h[j][j] / dj, h[j + 1][j] / dj)
+        };
+        h[j][j] = dj;
+        h[j + 1][j] = 0.0;
+        g[j + 1] = -sn[j] * g[j];
+        g[j] *= cs[j];
+        k = j + 1;
+        if g[j + 1].abs() <= eta * beta || hnext == 0.0 {
+            break;
+        }
+        vs.push(w.iter().map(|x| x / hnext).collect());
+    }
+    let mut y = vec![0.0; k];
+    for i in (0..k).rev() {
+        let mut acc = g[i];
+        for c in (i + 1)..k {
+            acc -= h[i][c] * y[c];
+        }
+        y[i] = if h[i][i] == 0.0 { 0.0 } else { acc / h[i][i] };
+    }
+    let mut s = vec![0.0; n];
+    for (yi, z) in y.iter().zip(&zs) {
+        s.iter_mut().zip(z).for_each(|(x, zz)| *x += yi * zz);
+    }
+    Ok(Some(s))
+}
+
+/// Eisenstat–Walker choice 2 (spec/methods.md §15.3, D126): the forcing
+/// term from the last two residual 2-norms and the previous term.
+fn forcing(nr: f64, prev: Option<(f64, f64)>) -> f64 {
+    let Some((nr_prev, eta_prev)) = prev else {
+        return 0.5;
+    };
+    let mut eta = 0.9 * (nr / nr_prev).powi(2);
+    let s = 0.9 * eta_prev * eta_prev;
+    if s > 0.1 {
+        eta = eta.max(s);
+    }
+    eta.min(0.9)
 }
 
 /// The frozen documents a picard method or `converged.rel_change` needs
@@ -685,6 +851,7 @@ fn attempt<T: Scalar>(
     }
     let mut o = observed(&z)?;
     let mut delta = m.dt0;
+    let mut ew: Option<(f64, f64)> = None;
     for k in 1..=m.maxiter {
         let mut a = match (m.kind, fz) {
             (MethodKind::Picard, Some(f)) => f.jacobian(&r.state_f64(&z), p, r.t).map_err(fail)?,
@@ -730,7 +897,16 @@ fn attempt<T: Scalar>(
                     .map(|i| z[i] + g[i] <= l[i] || z[i] + g[i] >= h[i])
                     .collect();
                 let b: Vec<f64> = rr.iter().map(|x| -x).collect();
-                let Some(mut s) = linsolve(&a, 0.0, &held, &b, bl)? else {
+                let step = if m.inexact {
+                    // Newton–Krylov with Eisenstat–Walker forcing (§15.3, D126).
+                    let nr = norm2(&rr);
+                    let eta = forcing(nr, ew);
+                    ew = Some((nr, eta));
+                    krylov_step(&a, &held, &b, bl, m, eta)?
+                } else {
+                    linsolve(&a, 0.0, &held, &b, bl)?
+                };
+                let Some(mut s) = step else {
                     return Ok((z, false, k));
                 };
                 if !s.iter().all(|x| x.is_finite()) {

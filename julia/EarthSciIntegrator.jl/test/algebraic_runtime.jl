@@ -20,7 +20,7 @@ _end(run, pp, v) = run.outputs[end][2][AR.layout_dofs(pp, [v])]
 _solve_record(run) = only(r for r in run.tape.records if r isa AR.SolveRecord)
 
 @testset "algebraic runtime" begin
-    @testset "cubic_roots $case" for case in ("newton", "ptc")
+    @testset "cubic_roots $case" for case in ("newton", "newton_inexact", "ptc")
         run, pp = _run_case("toy_cubic_roots", case)
         @test run.outputs[end][1] == 1.0
         @test _end(run, pp, "Cubic.z") ≈ [0.6823278038280193, 1.0, 1.2134116627622296, 1.378796700129551] atol = 1.0e-11
@@ -28,7 +28,7 @@ _solve_record(run) = only(r for r in run.tape.records if r isa AR.SolveRecord)
         # block_diagonal: one 1 × 1 block per cell.
         @test pp.prob.algebraic["cubic"].blocks == [[1], [2], [3], [4]]
     end
-    @testset "box_lcp $case" for case in ("newton", "ptc")
+    @testset "box_lcp $case" for case in ("newton", "newton_inexact", "ptc")
         run, pp = _run_case("toy_box_lcp", case)
         # Both bounds active: z₁ at its referenced upper bound, z₂ at 0 (§1.8).
         @test _end(run, pp, "Box.z") == [0.25, 0.0]

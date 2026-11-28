@@ -230,6 +230,7 @@ struct SolveMethod
     pivot::Bool
     block::Bool                      # linsolve block_lu or sparse_block_lu: one LU per block of the plan's structure
     scale::Dict{String, Any}         # unknown => number or name (D125)
+    inexact::Bool                    # newton.inexact: Newton–Krylov with Eisenstat–Walker forcing (D126)
 end
 
 function SolveMethod(m::AbstractDict, id)
@@ -254,7 +255,8 @@ function SolveMethod(m::AbstractDict, id)
         kind, Float64(get(p, "dt0", 1.0e-3)), _growth(get(p, "growth", 2.0)),
         Symbol(get(m, "linesearch", "none")), Float64(get(conv, "residual", Inf)), rc,
         Float64(get(conv, "tol", 0.0)), Int(get(m, "maxiter", 100)), collect(Any, get(m, "recover", Any[])), pivot, block,
-        Dict{String, Any}(String(k) => v for (k, v) in get(m, "scale", Dict{String, Any}()))
+        Dict{String, Any}(String(k) => v for (k, v) in get(m, "scale", Dict{String, Any}())),
+        Bool(get(get(m, "newton", Dict{String, Any}()), "inexact", false))
     )
 end
 
@@ -272,7 +274,7 @@ function recover_method(m::SolveMethod, mm::AbstractDict)
     return SolveMethod(
         kind, Float64(get(p, "dt0", 1.0e-3)), _growth(get(p, "growth", 2.0)),
         Symbol(get(mm, "linesearch", "none")), m.tol, m.relchange, m.rctol, Int(get(mm, "maxiter", 100)),
-        Any[], m.pivot, m.block, m.scale
+        Any[], m.pivot, m.block, m.scale, Bool(get(get(mm, "newton", Dict{String, Any}()), "inexact", false))
     )
 end
 
@@ -358,13 +360,24 @@ block by block: one LU per block (spec/methods.md §15.3, §15.4). `nothing`
 when a block is singular.
 """
 function _linsolve(A::AbstractDict, σ, held, b, B::SolveBlocks, pivot::Bool)
+    Ms = _block_matrices(A, σ, held, B)
+    x = zeros(length(b))
+    for (k, P) in enumerate(B.blocks)
+        F = lu_factor(Ms[k], pivot)
+        issuccess_lu(F) || return nothing
+        x[P] = lu_solve(F, b[P])
+    end
+    return x
+end
+
+"""The matrix `σI − A`, with the rows `held` replaced by the identity's, block by block (`B`)."""
+function _block_matrices(A::AbstractDict, σ, held, B::SolveBlocks)
     Ms = [zeros(length(P), length(P)) for P in B.blocks]
     for ((r, c), v) in A
         (kr, ir), (kc, ic) = B.of[r], B.of[c]
         kr == kc || throw(ConfigError("solve: the Jacobian couples unknowns $r and $c of two blocks of the plan's block structure"))
         Ms[kr][ir, ic] -= v
     end
-    x = zeros(length(b))
     for (k, P) in enumerate(B.blocks)
         M = Ms[k]
         for (i, q) in enumerate(P)
@@ -374,11 +387,111 @@ function _linsolve(A::AbstractDict, σ, held, b, B::SolveBlocks, pivot::Bool)
                 M[i, i] = 1.0
             end
         end
-        F = lu_factor(M, pivot)
-        issuccess_lu(F) || return nothing
-        x[P] = lu_solve(F, b[P])
     end
-    return x
+    return Ms
+end
+
+_norm2(v) = sqrt(sum(abs2, v))
+
+"""
+    _krylov_step(A, held, b, B, m, η) -> s or nothing
+
+The inexact Newton–Krylov step of spec/methods.md §15.3 (D126): GMRES on
+`D P⁻¹ y = b`, `s = P⁻¹ y`, with `D = −A` and the rows `held` the identity's;
+right-preconditioned, unrestarted, at most N iterations, zero initial guess,
+modified Gram–Schmidt with Givens rotations, stopping at `‖D s − b‖₂ ≤ η ‖b‖₂`.
+`P` is the per-cell block LU with a block linsolve, else the diagonal of `D`.
+`nothing` when `P` is singular.
+"""
+function _krylov_step(A::AbstractDict, held, b, B::SolveBlocks, m::SolveMethod, η)
+    n = length(b)
+    Dv(v) = begin
+        out = zeros(n)
+        for ((r, c), a) in A
+            out[r] -= a * v[c]
+        end
+        for i in 1:n
+            held[i] && (out[i] = v[i])
+        end
+        out
+    end
+    prec = if m.block
+        Fs = [lu_factor(M, m.pivot) for M in _block_matrices(A, 0.0, held, B)]
+        all(issuccess_lu, Fs) || return nothing
+        v -> begin
+            out = zeros(n)
+            for (k, P) in enumerate(B.blocks)
+                out[P] = lu_solve(Fs[k], v[P])
+            end
+            out
+        end
+    else
+        # Jacobi: the diagonal of D, −A_ii (1 on a held row; a zero taken as 1).
+        d = zeros(n)
+        for ((r, c), a) in A
+            r == c && (d[r] -= a)
+        end
+        for i in 1:n
+            (held[i] || d[i] == 0) && (d[i] = 1.0)
+        end
+        v -> v ./ d
+    end
+    β = _norm2(b)
+    β == 0 && return zeros(n)
+    V = Vector{Float64}[b ./ β]
+    Z = Vector{Float64}[]
+    H = zeros(n + 1, n)
+    cs, sn = zeros(n), zeros(n)
+    g = zeros(n + 1)
+    g[1] = β
+    k = 0
+    for j in 1:n
+        z = prec(V[j])
+        push!(Z, z)
+        w = Dv(z)
+        for i in 1:j
+            H[i, j] = sum(w .* V[i])
+            w .-= H[i, j] .* V[i]
+        end
+        hnext = _norm2(w)
+        H[j + 1, j] = hnext
+        for i in 1:(j - 1)
+            t = cs[i] * H[i, j] + sn[i] * H[i + 1, j]
+            H[i + 1, j] = -sn[i] * H[i, j] + cs[i] * H[i + 1, j]
+            H[i, j] = t
+        end
+        dj = hypot(H[j, j], H[j + 1, j])
+        cs[j], sn[j] = dj == 0 ? (1.0, 0.0) : (H[j, j] / dj, H[j + 1, j] / dj)
+        H[j, j] = dj
+        H[j + 1, j] = 0.0
+        g[j + 1] = -sn[j] * g[j]
+        g[j] = cs[j] * g[j]
+        k = j
+        (abs(g[j + 1]) <= η * β || hnext == 0) && break
+        push!(V, w ./ hnext)
+    end
+    y = zeros(k)
+    for i in k:-1:1
+        acc = g[i]
+        for c in (i + 1):k
+            acc -= H[i, c] * y[c]
+        end
+        y[i] = H[i, i] == 0 ? 0.0 : acc / H[i, i]
+    end
+    s = zeros(n)
+    for i in 1:k
+        s .+= y[i] .* Z[i]
+    end
+    return s
+end
+
+"""Eisenstat–Walker choice 2 (spec/methods.md §15.3, D126): the forcing term from the last two residual 2-norms and the previous term."""
+function _forcing(nr, nr_prev, η_prev)
+    nr_prev === nothing && return 0.5
+    η = 0.9 * (nr / nr_prev)^2
+    s = 0.9 * η_prev^2
+    s > 0.1 && (η = max(η, s))
+    return min(η, 0.9)
 end
 
 _mid(l, x, h) = min(max(x, l), h)
@@ -430,6 +543,7 @@ function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l,
     o = m.relchange == 0 ? nothing : O(z)
     B = SolveBlocks(info, m)
     δ = m.dt0
+    nr_prev, η_prev = nothing, 0.5
     for k in 1:m.maxiter
         A = m.kind === :picard ? frozen_jacobian(F, _with_z(u, dofs, z), length(z), p, t) :
             residual_jacobian(ops, dofs, u, z, p, t)
@@ -457,7 +571,15 @@ function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l,
             # The generalized Jacobian of R (§15.3): an identity row where
             # `mid` takes a bound, else -G_z's row.
             held = BitVector([(z[i] + g[i] <= l[i] || z[i] + g[i] >= h[i]) for i in eachindex(z)])
-            s = _linsolve(A, 0.0, held, -r, B, m.pivot)
+            s = if m.inexact
+                # Newton–Krylov with Eisenstat–Walker forcing (§15.3, D126).
+                nr = _norm2(r)
+                η = _forcing(nr, nr_prev, η_prev)
+                nr_prev, η_prev = nr, η
+                _krylov_step(A, held, -r, B, m, η)
+            else
+                _linsolve(A, 0.0, held, -r, B, m.pivot)
+            end
             s === nothing && return z, false, k
             all(isfinite, s) || return z, false, k
             s .*= ω
