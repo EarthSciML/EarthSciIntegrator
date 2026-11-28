@@ -971,3 +971,61 @@ function frozen_documents!(b, ctx, op)
     end
     return b.frozen[op.name] = docs
 end
+
+# ---------------------------------------------------------------------------
+# The parameter products (spec/plan.md §6.6, D127)
+
+"""The state-free observeds that bound the unknowns of `op` (D125), among its frozen observeds."""
+function bound_observeds(ctx, op)
+    m = ctx.model
+    out = String[]
+    for z in op.writes
+        sv = get(m.flat.state_variables, z, nothing)
+        sv === nothing && continue
+        for bnd in (sv.lb, sv.ub)
+            bnd isa AbstractString && String(bnd) in op.frozen && !(String(bnd) in out) && push!(out, String(bnd))
+        end
+    end
+    return out
+end
+
+"""
+§6.6: EarthSciASTDiff's `vjp` product on the parameters axis of the derived
+document `src`, written as §6.2 writes the Jacobian document (no `ic`
+equations, every state a `default`), and its io for the plan entry.
+"""
+function parameter_product(src)
+    doc, io = EarthSciASTDiff.vjp_document(src.flat; wrt = :parameters, data_sources = src.file.data_sources)
+    drop_ic!(doc["models"])
+    default_states!(doc["models"])
+    js = Dict{String, Any}(
+        "lam" => Dict{String, Any}(String(k) => String(v) for (k, v) in io.lam),
+        "vjp" => Dict{String, Any}(String(k) => String(v) for (k, v) in io.vjp),
+    )
+    return DerivedDocument(doc), js
+end
+
+"""
+    product_documents!(b, ctx, op) -> (Vector{(kind, DerivedDocument)}, io)
+
+An algebraic operator's parameter products when the run config has
+`adjoint` (§6.6): `vjp` of its residual document, and `frozen_vjp` of its
+frozen residual document when a bound of its unknowns references a
+state-free observed.
+"""
+function product_documents!(b, ctx, op)
+    haskey(ctx.config, "adjoint") || return (Tuple{String, Any}[], Dict{String, Any}())
+    haskey(b.products, op.name) && return b.products[op.name]
+    docs = Tuple{String, Any}[]
+    ios = Dict{String, Any}()
+    d, io = parameter_product(artifacts!(b, ctx, op).rhs)
+    push!(docs, ("vjp", d))
+    ios["vjp"] = io
+    if !isempty(bound_observeds(ctx, op))
+        fr = only(d for (k, d) in frozen_documents!(b, ctx, op) if k == "frozen_residual")
+        d2, io2 = parameter_product(fr)
+        push!(docs, ("frozen_vjp", d2))
+        ios["frozen_vjp"] = io2
+    end
+    return b.products[op.name] = (docs, ios)
+end

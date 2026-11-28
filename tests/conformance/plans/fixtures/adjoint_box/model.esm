@@ -1,0 +1,175 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "adjoint_box",
+    "description": "spec/toy-problems.md §1.8: 0 = b - A z with 0 <= z <= zmax, solution z = (0.25, 0). A = [[2, 1], [1, 2]] is written as ifelse(i == j, 2, 1)."
+  },
+  "index_sets": {
+    "k": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "z": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "default": 0.0,
+          "lb": "zlo",
+          "ub": "zcap"
+        },
+        "zmax": {
+          "type": "parameter",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            0.25,
+            10.0
+          ]
+        },
+        "b": {
+          "type": "parameter",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            1.0,
+            -2.0
+          ]
+        },
+        "beta": {
+          "type": "parameter",
+          "default": 1.0,
+          "description": "a scalar factor on b (D127)"
+        },
+        "zlo": {
+          "type": "parameter",
+          "default": 0.0,
+          "description": "a scalar parameter lower bound (D127)"
+        },
+        "cap": {
+          "type": "parameter",
+          "default": 1.0,
+          "description": "a scalar factor on the observed upper bound (D127)"
+        },
+        "zcap": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "description": "a state-free observed upper bound, cap zmax"
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "faq",
+                  "output_idx": [],
+                  "args": [],
+                  "ranges": {
+                    "j": {
+                      "from": "k"
+                    }
+                  },
+                  "expr": {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": "==",
+                            "args": [
+                              "i",
+                              "j"
+                            ]
+                          },
+                          2.0,
+                          1.0
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "z",
+                          "j"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "beta",
+                    {
+                      "op": "index",
+                      "args": [
+                        "b",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "rhs": 0.0
+        },
+        {
+          "lhs": "zcap",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "cap",
+                {
+                  "op": "index",
+                  "args": [
+                    "zmax",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "spec/toy-problems.md §1.8 with a scalar parameter lower bound zlo, an observed upper bound zcap = cap zmax and a factor beta on b, and an adjoint (D127): both bounds active.",
+  "model": "model.esm",
+  "operators": {
+    "box": {
+      "select": {
+        "components": "Box"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "solve": "box",
+    "unknowns": [
+      "Box.z"
+    ],
+    "method": {
+      "newton": {},
+      "converged": {
+        "residual": 1e-12
+      },
+      "maxiter": 50
+    }
+  },
+  "adjoint": {
+    "functional": {
+      "sum": "Box.z",
+      "over": "final"
+    },
+    "wrt": [
+      "u0",
+      "params:numeric"
+    ]
+  }
+}

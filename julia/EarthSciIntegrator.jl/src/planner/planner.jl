@@ -254,6 +254,10 @@ function plan_dict(d::PlanDraft)
         for (n, fb) in ctx.backend.frozen_bands
             out["operators"][n]["frozen_bands"] = Any[fb...]
         end
+        # §6.6: the parameter products' inputs and outputs (D127).
+        for (n, (_, ios)) in ctx.backend.products, (k, io) in ios
+            out["operators"][n][k] = io
+        end
     end
     fj = forcing_json(ctx.model)
     fj === nothing || (out["forcing"] = fj)

@@ -484,6 +484,34 @@ pub fn jacobian_document(sv: &SysView, entries: &[JacEntry]) -> Result<Value> {
     Ok(doc)
 }
 
+/// §6.6: EarthSciASTDiff's `vjp` product on the parameters axis of the view
+/// `sv` (a residual or frozen residual document), written as §6.2 writes
+/// the Jacobian document (no `ic` equations, every state a `default`), and
+/// its inputs and outputs for the plan entry (`lam`, `vjp`).
+pub fn parameter_product(sv: &SysView) -> Result<(Value, Value)> {
+    let msg =
+        |e: earthsci_astdiff::BandError| PlanError::Internal(format!("vjp_document: {}", e.0));
+    let entries =
+        earthsci_astdiff::jacobian_bands_view(sv, earthsci_astdiff::Wrt::Parameters, None)
+            .map_err(msg)?;
+    let (mut doc, io) = earthsci_astdiff::vjp_document(
+        sv,
+        &entries,
+        earthsci_astdiff::Wrt::Parameters,
+        &earthsci_astdiff::ProductOptions::default(),
+    )
+    .map_err(msg)?;
+    let Some(Value::Object(models)) = doc.get_mut("models") else {
+        return Err(PlanError::Internal("vjp_document wrote no models".into()));
+    };
+    models.values_mut().for_each(drop_ic);
+    default_states(models)?;
+    let map = |m: &earthsci_astdiff::IoMap| -> Value {
+        Value::Object(m.iter().map(|(k, v)| (k.clone(), json!(v))).collect())
+    };
+    Ok((doc, json!({"lam": map(&io.lam), "vjp": map(&io.vjp)})))
+}
+
 /// Gives every state of `models` without a `default` the `default` `1.0`
 /// (§6.2 item 4). With its `ic` equations dropped, such a state (one only
 /// an `ic` equation or `field_ics` entry starts) has no starting value,

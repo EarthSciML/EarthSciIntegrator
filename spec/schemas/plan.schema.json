@@ -138,10 +138,19 @@
         "sha256": {"$ref": "#/$defs/sha256"}
       }
     },
+    "productIo": {
+      "type": "object",
+      "required": ["lam", "vjp"],
+      "additionalProperties": false,
+      "properties": {
+        "lam": {"type": "object", "additionalProperties": {"type": "string"}},
+        "vjp": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
     "derivedKind": {
       "enum": [
         "rhs", "jacobian", "frozen_jacobian", "vjp", "second_order", "param_jacobian", "forcing_jacobian",
-        "residual", "frozen_residual", "map", "limit", "condition"
+        "residual", "frozen_residual", "frozen_vjp", "map", "limit", "condition"
       ]
     },
     "operatorPlan": {
@@ -182,6 +191,8 @@
           "minItems": 1,
           "items": {"$ref": "run-config.schema.json#/$defs/qualifiedName"}
         },
+        "vjp": {"$ref": "#/$defs/productIo", "description": "The inputs and outputs of the operator's vjp document (spec/plan.md §6.6, D127). Present only when the run config has adjoint."},
+        "frozen_vjp": {"$ref": "#/$defs/productIo", "description": "The inputs and outputs of the operator's frozen_vjp document (spec/plan.md §6.6, D127). Present only when a bound references a state-free observed and the run config has adjoint."},
         "frozen_bands": {
           "description": "The frozen Jacobian document's band list (spec/plan.md §6.5, D124), as structure.bands is written.",
           "type": "array",

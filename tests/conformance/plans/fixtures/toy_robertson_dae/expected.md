@@ -27,3 +27,11 @@ As `rodas4`, with `alg` `Kvaerno4`, a stiffly accurate ESDIRK method of spec/run
 ## inconsistent
 
 As `rodas4` on `tests/conformance/toys/robertson_dae_inconsistent.esm`, whose `y3` starts at 0.5, an inconsistent value. The plan is `rodas4`'s with the other model and that `default`; the runtime's consistent initialization (spec/methods.md §14.4) returns `y3 = 0` before the first step.
+
+## kvaerno4_adjoint
+
+As `kvaerno4`, with the run config's `adjoint` (functional `sum` of `Rober.y1` at the final time, `wrt` `u0`; spec/adjoint.md §5.10). The algebraic operator `conservation` gains `vjp` (spec/plan.md §6.6), whose columns are the parameters of its residual document (`Rober.k1`, `Rober.k2`, `Rober.k3`, all zero since the conservation residual reads none of them), and `derived` gains conservation.vjp.esm. The right-hand-side operator `kinetics` gets no parameter product (U7, M4). The checkpoint schedule is the placeholder.
+
+## trbdf2_adjoint
+
+As `trbdf2`, with the same `adjoint` and the same additions as `kvaerno4_adjoint`.

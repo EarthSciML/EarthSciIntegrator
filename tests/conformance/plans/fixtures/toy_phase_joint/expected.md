@@ -17,3 +17,7 @@ spec/toy-problems.md §1.9: two residual blocks of different extents, so the can
 ## per_cell
 
 As `ptc`, with `axes` `{"horizontal": ["cell"]}`, so `salt` lies inside a cell (D123). The sums over salt keep the operator **pointwise**, and its structure is `cell_block`: one block per cell over the cell axis `cell`, holding `Phase.s` at salts 1 and 2 and `Phase.w` (3 × 3), the residual of `w` coupling to both salts and each salt's to `w` (`pattern` and `lu_pattern` `[[1,1],[1,3],[2,2],[2,3],[3,1],[3,2],[3,3]]`). The solve's `linsolve` resolves to `{"block_lu": {"pivot": true, "refine": 0}}`. This is the shape of MESA's per-bin blocks.
+
+## adjoint
+
+As `ptc`, with the run config's `adjoint` (functional `sum` of `Phase.w` at the final time, `wrt` `u0` and `params:numeric`). The operator gains `vjp` (spec/plan.md §6.6), whose only parameter column is the scalar `Phase.kappa`, and `derived` gains phase.vjp.esm; the checkpoint schedule is the placeholder.

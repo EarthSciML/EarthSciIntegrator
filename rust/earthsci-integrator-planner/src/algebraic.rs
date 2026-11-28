@@ -443,6 +443,23 @@ fn node_methods(n: &Node) -> Vec<(&Value, &'static str)> {
     }
 }
 
+/// The state-free observeds that bound the unknowns of `op` (D125), among
+/// its frozen observeds: what its `frozen_vjp` document is for (§6.6).
+pub fn bound_observeds(info: &ModelInfo, op: &Operator) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for z in &op.writes {
+        let Some(v) = info.flat.state_variables.get(z) else {
+            continue;
+        };
+        for b in [bound_name(&v.lb), bound_name(&v.ub)].into_iter().flatten() {
+            if op.frozen.contains(&b) && !out.contains(&b) {
+                out.push(b);
+            }
+        }
+    }
+    out
+}
+
 pub fn is_bounded(info: &ModelInfo, z: &str) -> bool {
     let v = &info.flat.state_variables[z];
     v.lb.is_some() || v.ub.is_some()

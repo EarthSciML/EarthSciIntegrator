@@ -54,6 +54,9 @@ pub struct Documents {
 pub struct Planned {
     /// A picard operator's frozen Jacobian band list (§6.5), by operator.
     pub frozen_bands: BTreeMap<String, Vec<Value>>,
+    /// An algebraic operator's parameter products' inputs and outputs
+    /// (§6.6, D127), by operator and kind (`vjp`, `frozen_vjp`).
+    pub products: BTreeMap<String, Map<String, Value>>,
     pub run_config: RunConfig,
     pub model: ModelInfo,
     pub axes: Axes,
@@ -449,6 +452,8 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
     }
     let mut frozen_docs: BTreeMap<String, Vec<(&'static str, Vec<u8>)>> = BTreeMap::new();
     let mut frozen_bands: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut products: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+    let has_adjoint = rc.at("/adjoint").is_some();
     let algebraic_names: Vec<String> = ops
         .values()
         .filter(|o| o.is_algebraic())
@@ -502,6 +507,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
         jac_docs.insert(name.clone(), derived::jacobian_document(&sv, &st.bands)?);
         // §6.5: the frozen documents.
         let op = &ops[name];
+        let mut frozen_doc: Option<Value> = None;
         if !op.frozen.is_empty() {
             let mut extra = Vec::new();
             let mut refs = BTreeSet::new();
@@ -513,12 +519,9 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 ));
                 refs.insert(o.clone());
             }
-            let mut docs = vec![(
-                "frozen_residual",
-                derived::to_bytes(&derived::frozen_residual_document(
-                    &info, name, &extra, &refs,
-                )),
-            )];
+            let fr = derived::frozen_residual_document(&info, name, &extra, &refs);
+            let mut docs = vec![("frozen_residual", derived::to_bytes(&fr))];
+            frozen_doc = Some(fr);
             if op.nfreeze > 0 {
                 let mut fdoc = doc.clone();
                 let ren: BTreeMap<String, String> = op
@@ -561,6 +564,27 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                 ));
             }
             frozen_docs.insert(name.clone(), docs);
+        }
+        // §6.6: the parameter products, when the run config has `adjoint`.
+        if has_adjoint {
+            let mut ios = Map::new();
+            let (d, io) = derived::parameter_product(&sv)?;
+            let mut docs = vec![("vjp", derived::to_bytes(&d))];
+            ios.insert("vjp".into(), io);
+            if !crate::algebraic::bound_observeds(&info, op).is_empty() {
+                let fr = frozen_doc
+                    .take()
+                    .expect("a bound observed is a frozen observed");
+                let fview = astdiff::FlatView::of_document(fr).map_err(band_model_failed)?;
+                let fsv = fview
+                    .sysview()
+                    .map_err(|e| band_model_failed(astdiff::astdiff_message(e)))?;
+                let (d2, io2) = derived::parameter_product(&fsv)?;
+                docs.push(("frozen_vjp", derived::to_bytes(&d2)));
+                ios.insert("frozen_vjp".into(), io2);
+            }
+            frozen_docs.entry(name.clone()).or_default().extend(docs);
+            products.insert(name.clone(), ios);
         }
         rhs_docs.insert(name.clone(), doc);
         structures.insert(name.clone(), st);
@@ -706,6 +730,7 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
 
     let mut planned = Planned {
         frozen_bands: std::mem::take(&mut frozen_bands),
+        products: std::mem::take(&mut products),
         run_config: rc,
         model: info.clone(),
         axes,
@@ -951,6 +976,12 @@ impl Planned {
             out.insert("structure".into(), self.structures[name].to_json());
             if let Some(fb) = self.frozen_bands.get(name) {
                 out.insert("frozen_bands".into(), Value::Array(fb.clone()));
+            }
+            // §6.6: the parameter products' inputs and outputs (D127).
+            if let Some(ios) = self.products.get(name) {
+                for (k, io) in ios {
+                    out.insert(k.clone(), io.clone());
+                }
             }
             return Value::Object(out);
         }

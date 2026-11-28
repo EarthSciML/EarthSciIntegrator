@@ -53,6 +53,11 @@ const CASES: &[(&str, &str)] = &[
     ("toy_picard_roots", "newton_rel_change"),
     ("box_scaled", "scaled_ptc"),
     ("box_scaled", "recover_method"),
+    ("adjoint_cubic", "newton"),
+    ("adjoint_box", "newton"),
+    ("toy_phase_joint", "adjoint"),
+    ("toy_robertson_dae", "kvaerno4_adjoint"),
+    ("toy_robertson_dae", "trbdf2_adjoint"),
     ("toy_box_lcp", "newton_inexact"),
     ("toy_cubic_roots", "newton_inexact"),
 ];

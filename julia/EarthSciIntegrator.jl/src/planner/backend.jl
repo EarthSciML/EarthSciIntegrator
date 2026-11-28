@@ -146,10 +146,14 @@ mutable struct DiffBackend <: PlanBackend
     # operator: (kind, document) pairs, and the frozen Jacobian's bands.
     frozen::Dict{String, Vector{Tuple{String, Any}}}
     frozen_bands::Dict{String, Vector{Dict{String, Any}}}
+    # An algebraic operator's parameter products (spec/plan.md §6.6, D127),
+    # by operator: (kind, document) pairs, and each product's plan-entry io.
+    products::Dict{String, Tuple{Vector{Tuple{String, Any}}, Dict{String, Any}}}
 end
 DiffBackend() = DiffBackend(
     nothing, Dict{String, OperatorArtifacts}(), nothing, nothing, nothing, nothing, Dict{String, Any}(), Dict{String, Any}(),
-    Dict{String, Vector{Tuple{String, Any}}}(), Dict{String, Vector{Dict{String, Any}}}()
+    Dict{String, Vector{Tuple{String, Any}}}(), Dict{String, Vector{Dict{String, Any}}}(),
+    Dict{String, Tuple{Vector{Tuple{String, Any}}, Dict{String, Any}}}()
 )
 
 """Bind `b` to the planning context `ctx`, dropping everything derived from another one."""
@@ -162,6 +166,7 @@ function bind!(b::DiffBackend, ctx)
     empty!(b.report)
     empty!(b.frozen)
     empty!(b.frozen_bands)
+    empty!(b.products)
     return b
 end
 
@@ -694,6 +699,7 @@ function derived_and_validation(b::DiffBackend, ctx)
         op = ctx.ops[o]
         docs = Any[(is_algebraic(op) ? "residual" : "rhs", artifacts!(b, ctx, op).rhs), ("jacobian", jacobian_document!(b, ctx, op))]
         is_algebraic(op) && append!(docs, frozen_documents!(b, ctx, op))
+        is_algebraic(op) && append!(docs, first(product_documents!(b, ctx, op)))
         for (kind, d) in docs
             # SHA's `sha256(::String)` re-hashes the whole string for every
             # block (its copy's alias check takes the string's `objectid`), so a
@@ -864,6 +870,9 @@ function derived_files(b::DiffBackend)
         a.jac === nothing || (out["derived/$o.jacobian.esm"] = a.jac.bytes)
     end
     for (o, docs) in b.frozen, (kind, d) in docs
+        out["derived/$o.$kind.esm"] = d.bytes
+    end
+    for (o, (docs, _)) in b.products, (kind, d) in docs
         out["derived/$o.$kind.esm"] = d.bytes
     end
     return out

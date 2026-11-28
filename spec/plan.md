@@ -32,7 +32,8 @@ Every choice in this chapter that can change a byte of the output is stated exac
 | `control.dt_scope` `cell` or `shard` (both runtimes step with `global` until M3; an omitted or `"auto"` `dt_scope` resolves to `global`, §5.5.3, D94) | refused | `unsupported_dt_scope` |
 | A Rosenbrock leaf, its `alg` given by the run config, on an operator that depends on $t$ (`"auto"` never resolves to one there, §5.5.3) (it needs `ft`, which a plan's operators do not provide until U17, spec/operator-interface.md §8.3; D94) | refused | `unsupported_time_derivative` |
 | Derived kinds `residual` (§6.4), `frozen_residual` and `frozen_jacobian` (§6.5), from M4b | emitted | — |
-| Derived kinds `vjp`, `second_order`, `param_jacobian`, `forcing_jacobian` (U7–U9, M4); `map`, `limit`, `condition` (U6, M4b) | not emitted | — |
+| Derived kinds `vjp` and `frozen_vjp` of an algebraic operator (§6.6), when the run config has `adjoint` (D127) | emitted | — |
+| Derived kind `vjp` of a right-hand-side operator, and `second_order`, `param_jacobian`, `forcing_jacobian` (U7–U9, M4); `map`, `limit`, `condition` (U6, M4b) | not emitted | — |
 | `column_block` structure (U9) | not emitted | — |
 
 A run config whose `adjoint` key is present is planned; its checkpoint schedule is a placeholder (§7.6) and no adjoint artifact is derived.
@@ -52,7 +53,7 @@ Planner stage C (operator references kept, §4 step 5, §6.1.5) is written again
   plan.report.json     implementation-specific report, not golden-gated
 ```
 
-- `derived/` documents are named `<operator>.<kind>.esm`, where `kind` is one of the `derived` kinds in the schema: `rhs`, `jacobian`, `frozen_jacobian`, `vjp`, `second_order`, `param_jacobian`, `forcing_jacobian`, `residual`, `map`, `limit`, `condition` (architecture §3.2 pass 6). At M2 every operator has exactly an `rhs` and a `jacobian` document. From M4b an algebraic operator has a `residual` and a `jacobian` document (the Jacobian of its residual document), and also a `frozen_jacobian` document when a `picard` node solves it.
+- `derived/` documents are named `<operator>.<kind>.esm`, where `kind` is one of the `derived` kinds in the schema: `rhs`, `jacobian`, `frozen_jacobian`, `vjp`, `second_order`, `param_jacobian`, `forcing_jacobian`, `residual`, `frozen_residual`, `frozen_vjp`, `map`, `limit`, `condition` (architecture §3.2 pass 6). At M2 every operator has exactly an `rhs` and a `jacobian` document. From M4b an algebraic operator has a `residual` and a `jacobian` document (the Jacobian of its residual document), and also a `frozen_jacobian` document when a `picard` node solves it.
 - `frozen_jacobian` is emitted for an operator used by a `solve` node with `picard.freeze`, the only place freezing is written (D51). The forward iteration uses the frozen Jacobian; the adjoint needs the full residual Jacobian at the converged solution, emitted as `jacobian` (spec/adjoint.md §4.6). `frozen_residual` is emitted beside it, and for a `solve` node with `converged.rel_change`, to give the observeds' values (§6.5, D124).
 - `plan.report.json` holds everything that legitimately differs between implementations: the planner's name and version, the upstream versions it was built with, timings, and the measured errors behind each validation check. Its format is not specified.
 - **Band-value files** (conformance only, §8.2): `validation/<operator>.bandvalues.json` beside a golden's `plan.json`, written by the Julia planner when asked, read by the conformance harness's Rust comparison. They are not part of the plan and not golden-gated byte for byte.
@@ -466,6 +467,15 @@ A solving node that names observeds gives its algebraic operator more documents 
 - **`<operator>.frozen_jacobian.esm`** (a `picard` node only) is §6.2's document built from a copy of the operator's residual document (§6.4) in which every reference to a `freeze` observed $O_m$ (in an equation, an observed definition or an operator reference's `bindings`) is renamed `FrozenEval.frozen_m` (the other frozen observeds are not renamed: a `rel_change`, scale or bound observed is read, not held), and the states `FrozenEval.frozen_m` are declared as above with the zero right-hand side; names are renamed, nothing is expanded. Its bands with row and column among the operator's unknowns are $g_z$ with every `freeze` observed held. Its band list is the plan entry's `frozen_bands` (§5.4's form), since it differs from the operator's.
 
 The frozen documents' states are the model's states and the `FrozenEval.frozen_m` states, in the canonical order of §4 over that larger set; a runtime maps the model's state into it by name. It evaluates the frozen residual document at the iterate, sets the frozen states of the frozen Jacobian document from it, and reads that document's bands (spec/methods.md §15.5). A frozen observed that the residual does not read is `name_wrong_kind` at its key (rule 2): freezing it would change nothing. A `rel_change` observed need only be an observed, whatever the residual reads.
+
+### 6.6 The parameter products `<operator>.vjp.esm` and `<operator>.frozen_vjp.esm` (D127)
+
+When the run config has `adjoint`, every algebraic operator gets the products the adjoint of its solve needs (spec/adjoint.md §4.6, §5.10), as EarthSciASTDiff writes them (esm-jacobian-spec §9.3):
+
+- **`<operator>.vjp.esm`** is EarthSciASTDiff's `vjp` product document on the `parameters` axis of the operator's residual document (§6.4): model `VjpEval`, one cotangent input per state of the residual document and one output per parameter the residual reads. Evaluated with the inputs set to $\mu$ (zero on every state but the unknowns), the outputs hold $g_p^\top \mu$.
+- **`<operator>.frozen_vjp.esm`**, when a bound of one of the operator's unknowns references a state-free observed (D125), is the same product of the frozen residual document (§6.5). Its cotangent input for `FrozenEval.frozen_m` weights $O_m$, so its outputs hold $\sum_m (\partial O_m/\partial p)^\top \lambda_m$. A scale's observed needs no product: a scale gets no cotangent (spec/adjoint.md §4.6).
+
+The plan entry names each document's inputs and outputs, since EarthSciASTDiff makes the names fresh against the document: `vjp` (and `frozen_vjp`) is an object with `lam`, each state of the source document to its input variable, and `vjp`, each parameter to its output variable, as EarthSciASTDiff's `io` gives them. A runtime writes the inputs into the evaluator's state slots beside the source's states and reads the outputs from the derivative slots by name. Without `adjoint` neither document is emitted and the entry has neither key, so a plan for a forward run is unchanged.
 
 
 ## 7. Resolved settings
