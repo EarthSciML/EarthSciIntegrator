@@ -26,4 +26,4 @@ earthsci-integrator-planner = { path = "earthsci-integrator-planner", version = 
 # (EarthSciASTDiff #82, #83, #84, #85) merged with #86 (per-cell blocks over
 # caller-named cell axes), until they merge and are released.
 [patch.crates-io]
-earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "68c1504a0644f83dc6651ba9882b42a61ac5c60b" }
+earthsci-astdiff = { git = "https://github.com/ctessum-claude/EarthSciASTDiff.git", rev = "6ebfe11fc95cad4015c7f538174689b39eaf885c" }
