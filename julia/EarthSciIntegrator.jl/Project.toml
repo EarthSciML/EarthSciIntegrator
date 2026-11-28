@@ -33,4 +33,4 @@ julia = "1.10"
 # ctessum-claude integ-named-steps-cellblocks: the named-steps stack
 # (EarthSciASTDiff #82, #83, #84, #85) merged with #86 (per-cell blocks over
 # caller-named cell axes), until they merge and are released.
-EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "6ebfe11fc95cad4015c7f538174689b39eaf885c"}
+EarthSciASTDiff = {url = "https://github.com/ctessum-claude/EarthSciASTDiff.git", subdir = "pkg/EarthSciASTDiff.jl", rev = "da82ad8d5fc0f9f5a3e2483e4c7ba00aefe33765"}
