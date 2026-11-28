@@ -118,6 +118,59 @@ fn solve_blocks() {
 }
 
 #[test]
+fn box_scaled() {
+    for case in ["scaled_ptc", "recover_method"] {
+        let (run, lp) = run_case("box_scaled", case);
+        // z[1] at the state-free observed upper bound 1.5 zmax[1] = 0.375,
+        // z[2] at 0 (D125).
+        assert_eq!(at_end(&run, &lp, "Box.z"), vec![0.375, 0.0], "{case}");
+        let TapeRecord::Solve {
+            active, recover, ..
+        } = solve_record(&run.tape)
+        else {
+            unreachable!()
+        };
+        assert_eq!(active["Box.z"].upper, vec![0], "{case}");
+        assert_eq!(active["Box.z"].lower, vec![1], "{case}");
+        let want: Vec<String> = if case == "recover_method" {
+            vec!["method".into()]
+        } else {
+            vec![]
+        };
+        assert_eq!(recover, &want, "{case}");
+    }
+}
+
+/// A scale that is not positive fails the invocation (spec/methods.md §15.1).
+#[test]
+fn a_scale_that_is_not_positive_fails() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("algebraic_runtime")
+        .join("box_scaled__negative_scale");
+    let _ = std::fs::remove_dir_all(&dir);
+    plan(
+        &fixtures()
+            .join("box_scaled")
+            .join("recover_method.run.json"),
+        &Options::default(),
+        &AstDiffBands,
+    )
+    .and_then(|p| p.write(&dir))
+    .unwrap();
+    let f = dir.join("plan.json");
+    let mut pj: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    pj["schedule"]["method"]["scale"]["Box.z"] = serde_json::json!(-1.0);
+    std::fs::write(&f, serde_json::to_vec(&pj).unwrap()).unwrap();
+    let lp = load_plan::<f64>(&dir).unwrap();
+    let spec = RunSpec::<f64>::with_problem(lp.problem, &lp.run_config, lp.tspan, None).unwrap();
+    let Err(err) = spec.forward(&spec.u0(), &spec.problem.p) else {
+        panic!("a scale of -1 was accepted")
+    };
+    assert!(err.to_string().contains("not positive"), "{err}");
+}
+
+#[test]
 fn picard_roots() {
     // The roots of z + z³ = c, c = i/4 (spec/toy-problems.md §1.11).
     let want = [

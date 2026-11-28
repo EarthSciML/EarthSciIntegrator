@@ -620,6 +620,19 @@ function check_algebraic_schedule(ctx, nodes)
                 frozen_name(o, nptr(n, key, "picard", "freeze", i - 1), "frozen observed")
             end
         end
+        # Scale keys are unknowns of the node; values parameters or observeds (D125).
+        zs = Set(node_unknowns(ctx, n))
+        sc = get(meth, "scale", Dict{String, Any}())
+        for z in sort!(String.(collect(keys(sc))))
+            at = nptr(n, key, "scale", z)
+            name_kind(m, z) === nothing && refuse("name_unresolved", at, "scale key $z is not a name of the flattened model")
+            z in zs || refuse("name_wrong_kind", at, "scale key $z is not an unknown of node $(n.id)")
+            v = sc[z]
+            v isa AbstractString || continue
+            k = name_kind(m, String(v))
+            k === nothing && refuse("name_unresolved", at, "the scale $v of $z is not a name of the flattened model")
+            k in (:parameter, :observed) || refuse("name_wrong_kind", at, "the scale $v of $z is a $k, not a parameter or an observed")
+        end
         conv = get(meth, "converged", Dict{String, Any}())
         # A rel_change observed need only be an observed (§6.5).
         haskey(conv, "rel_change") && need_kind(m, conv["rel_change"], :observed, nptr(n, key, "converged", "rel_change"), "rel_change observed")
@@ -645,22 +658,43 @@ function check_algebraic_schedule(ctx, nodes)
             end
         end
     end
-    # §5.9.7: a bound is a number or a parameter at this version.
+    # §5.9.7: a bound is a number, a parameter or a state-free observed (D125).
     for n in nodes
         n.kind == "solve" || continue
         for (i, z) in enumerate(n.spec["unknowns"])
             v = m.flat.state_variables[String(z)]
             for bnd in (v.lb, v.ub)
                 bnd isa AbstractString || continue
-                is_param(m, String(bnd)) || refuse(
+                state_free(m, String(bnd)) || refuse(
                     "unsupported_bound_reference", nptr(n, "unknowns", i - 1),
-                    "the bound $bnd of $z is a $(something(name_kind(m, String(bnd)), "name")); a bound that refers to a state or an observed is a later addition (spec/plan.md §5.9.7)"
+                    "the bound $bnd of $z is a $(something(name_kind(m, String(bnd)), "name")) that depends on a state; a bound that moves with the state is a later addition (spec/plan.md §5.9.7)"
                 )
             end
         end
     end
+    # Rule 18 (D125): a scale names a state-free observed or a parameter,
+    # scalar or of the unknown's shape.
+    for n in nodes, (meth, key) in node_methods(n)
+        sc = get(meth, "scale", Dict{String, Any}())
+        for z in sort!(String.(collect(keys(sc))))
+            v = sc[z]
+            v isa AbstractString || continue
+            at = nptr(n, key, "scale", z)
+            name_kind(m, String(v)) === :observed && !state_free(m, String(v)) && refuse(
+                "solve_scale_invalid", at, "the scale $v of $z is an observed that depends on a state; a scale is evaluated once per invocation (spec/run-config.md §4.10)"
+            )
+            sh = get(m.shapes, String(v), String[])
+            isempty(sh) || sh == get(m.shapes, z, String[]) || refuse(
+                "solve_scale_invalid", at, "the scale $v of $z has the shape $(sh), neither scalar nor $z's $(get(m.shapes, z, String[]))"
+            )
+        end
+    end
     return nothing
 end
+
+"""Whether `name` is a parameter, or an observed that depends on no state directly or through other observeds (D125)."""
+state_free(m::PlanModel, name::String) = is_param(m, name) ||
+    (name_kind(m, name) === :observed && !any(y -> is_state(m, y), observed_closure(m, [name])))
 
 """The plan's `bounds` of an algebraic operator (§5.9.7): per bounded paired unknown its `lb` and `ub`; `nothing` when none is bounded."""
 function bounds_json(m::PlanModel, op)
@@ -693,13 +727,13 @@ function algebraic_structure!(ctx, root)
         names = node_algebraic_ops(ctx, n)
         sn = SolvingNode(n, names, Residual[r for o in names for r in ctx.ops[o].residuals], node_unknowns(ctx, n), String[])
         pair_node!(b, ctx, sn)
-        frozen, picard = node_frozen(n)
+        frozen, nfreeze = node_frozen(ctx, n)
         i = 0
         for o in names
             op = ctx.ops[o]
             op.pairing = sn.pairing[(i + 1):(i + length(op.residuals))]
             i += length(op.residuals)
-            op.frozen, op.picard = frozen, picard
+            op.frozen, op.nfreeze = frozen, nfreeze
         end
         push!(nodes, sn)
     end
@@ -769,7 +803,8 @@ function resolve_method(ctx, meth::AbstractDict, op)
     out = Dict{String, Any}()
     if haskey(meth, "ptc")
         p = meth["ptc"]
-        out["ptc"] = Dict{String, Any}("dt0" => Float64(get(p, "dt0", 1.0e-3)), "growth" => Float64(get(p, "growth", 2.0)))
+        g = get(p, "growth", 2.0)
+        out["ptc"] = Dict{String, Any}("dt0" => Float64(get(p, "dt0", 1.0e-3)), "growth" => g == "uncapped" ? "uncapped" : Float64(g))
     elseif haskey(meth, "picard")
         out["picard"] = Dict{String, Any}("freeze" => Any[meth["picard"]["freeze"]...])
     else
@@ -781,8 +816,26 @@ function resolve_method(ctx, meth::AbstractDict, op)
     c = get(meth, "converged", Dict{String, Any}("residual" => 1.0e-10))
     out["converged"] = Dict{String, Any}(k => v for (k, v) in c)
     out["maxiter"] = get(meth, "maxiter", 100)
-    haskey(meth, "recover") && (out["recover"] = meth["recover"])
+    haskey(meth, "scale") && (out["scale"] = Dict{String, Any}(String(k) => v for (k, v) in meth["scale"]))
+    haskey(meth, "recover") && (out["recover"] = Any[resolve_recover(a) for a in meth["recover"]])
     return out
+end
+
+"""A `recover` action as written, but a `{"method": M}` step with `M`'s method key, `linesearch` and `maxiter` defaulted (§7.1, D125)."""
+function resolve_recover(a)
+    a isa AbstractDict && haskey(a, "method") || return a
+    mm = a["method"]
+    out = Dict{String, Any}()
+    if haskey(mm, "ptc")
+        p = mm["ptc"]
+        g = get(p, "growth", 2.0)
+        out["ptc"] = Dict{String, Any}("dt0" => Float64(get(p, "dt0", 1.0e-3)), "growth" => g == "uncapped" ? "uncapped" : Float64(g))
+    else
+        out["newton"] = Dict{String, Any}(k => v for (k, v) in mm["newton"])
+        out["linesearch"] = get(mm, "linesearch", "none")
+    end
+    out["maxiter"] = get(mm, "maxiter", 100)
+    return Dict{String, Any}("method" => out)
 end
 
 """A solve's `linsolve`: given (in object form), else by §5.5.3's table for the operator's class and structure, as if stiff."""
@@ -817,16 +870,38 @@ const DEFAULT_INITIALIZE = Dict{String, Any}(
 # ---------------------------------------------------------------------------
 # The frozen documents (spec/plan.md §6.5, D124)
 
-"""The observeds a solving node names (picard freeze in written order, then a rel_change observed not among them) and whether it is a picard solve."""
-function node_frozen(n)
+"""
+A solving node's frozen observeds (§6.5, D124, D125), each once at its first
+occurrence: picard's freeze (in written order), the rel_change observed, the
+observeds its method's scale names (keys in code-point order), and the
+observeds its unknowns' bounds name (unknowns in code-point order, lb before
+ub); and how many of the first are picard's freeze.
+"""
+function node_frozen(ctx, n)
     meth = n.kind == "solve" ? n.spec["method"] : get(n.spec, "initialize", nothing)
-    meth === nothing && return String[], false
+    meth === nothing && return String[], 0
+    m = ctx.model
     out = String[]
-    picard = haskey(meth, "picard")
-    picard && append!(out, String.(meth["picard"]["freeze"]))
+    add(o) = (o = String(o); o in out || push!(out, o); nothing)
+    haskey(meth, "picard") && foreach(add, meth["picard"]["freeze"])
+    nfreeze = length(out)
     rc = get(get(meth, "converged", Dict{String, Any}()), "rel_change", nothing)
-    rc === nothing || String(rc) in out || push!(out, String(rc))
-    return out, picard
+    rc === nothing || add(rc)
+    sc = get(meth, "scale", Dict{String, Any}())
+    for z in sort!(String.(collect(keys(sc))))
+        v = sc[z]
+        v isa AbstractString && name_kind(m, String(v)) === :observed && add(v)
+    end
+    if n.kind == "solve"
+        for z in sort!(String.(collect(n.spec["unknowns"])))
+            sv = get(m.flat.state_variables, z, nothing)
+            sv === nothing && continue
+            for bnd in (sv.lb, sv.ub)
+                bnd isa AbstractString && name_kind(m, String(bnd)) === :observed && add(bnd)
+            end
+        end
+    end
+    return out, nfreeze
 end
 
 frozen_state(k::Integer) = "$FROZEN_COMPONENT.frozen_$k"
@@ -878,9 +953,10 @@ function frozen_documents!(b, ctx, op)
     extra = Any[(frozen_state(k), frozen_declaration(m, o), frozen_rhs(m, o)) for (k, o) in enumerate(op.frozen)]
     fr = DerivedDocument(_rhs_document(m, op.name, Term[], false; extra, extra_refs = op.frozen))
     docs = Any[("frozen_residual", fr)]
-    if op.picard
+    if op.nfreeze > 0
         doc = residual_document(m, op.name, op)
-        ren = Dict{String, String}(o => frozen_state(k) for (k, o) in enumerate(op.frozen))
+        # Only picard's freeze observeds are held (§6.5).
+        ren = Dict{String, String}(o => frozen_state(k) for (k, o) in enumerate(op.frozen) if k <= op.nfreeze)
         _rename_refs!(doc["models"], ren)
         v = component_model!(doc["models"], FROZEN_COMPONENT)
         for (k, o) in enumerate(op.frozen)

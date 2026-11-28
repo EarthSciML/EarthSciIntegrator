@@ -15,12 +15,19 @@ pub type Entries = BTreeMap<(usize, usize), f64>;
 use std::sync::Arc;
 
 /// Where a bound's value comes from (spec/plan.md §5.9.7).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Bound {
     Const(f64),
     /// Index into the parameter vector.
     Param(usize),
+    /// A state-free observed (D125) and the element's position in it (a
+    /// scalar observed has one value for every element).
+    Obs(String, usize),
 }
+
+/// The values of the frozen observeds by name, evaluated once per
+/// invocation (D125).
+pub type Observed = BTreeMap<String, Vec<f64>>;
 
 /// An algebraic operator's frozen documents (spec/plan.md §6.5), evaluated
 /// at a model state `x`.
@@ -32,6 +39,8 @@ pub trait FrozenEval: Send + Sync {
     /// The Jacobian over the `nz` unknowns with the frozen observeds held at
     /// their values at `x` (spec/methods.md §15.5), by position.
     fn jacobian(&self, x: &[f64], p: &[f64], t: f64) -> Result<Entries, String>;
+    /// The frozen observeds `O_m`, in order (the plan entry's `frozen`).
+    fn names(&self) -> &[String];
 }
 
 /// The frozen documents of an algebraic operator, when the plan has them.
@@ -58,15 +67,29 @@ pub struct AlgebraicInfo {
     /// §5.4): per cell, the positions among the unknowns of the block's
     /// elements, in the block's order.
     pub blocks: Option<Vec<Vec<usize>>>,
+    /// The residual document's JSON (an array parameter's default), when
+    /// loaded from a plan.
+    pub doc: Option<Arc<Value>>,
+    /// Each unknown variable's extents.
+    pub extents: BTreeMap<String, Vec<usize>>,
 }
 
 impl AlgebraicInfo {
-    /// The bounds at the parameters `p` (`±∞` for an unbounded side).
-    pub fn values(&self, p: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    /// The bounds at the parameters `p` and the frozen observeds' values
+    /// `obs` (`±∞` for an unbounded side).
+    pub fn values(&self, p: &[f64], obs: &Observed) -> (Vec<f64>, Vec<f64>) {
         let v = |b: &Option<Bound>, inf: f64| match b {
             None => inf,
             Some(Bound::Const(x)) => *x,
             Some(Bound::Param(i)) => p[*i],
+            Some(Bound::Obs(name, e)) => {
+                let o = &obs[name];
+                if o.len() == 1 {
+                    o[0]
+                } else {
+                    o[*e]
+                }
+            }
         };
         (
             self.lower.iter().map(|b| v(b, f64::NEG_INFINITY)).collect(),
@@ -95,14 +118,99 @@ impl AlgebraicInfo {
                 [one] => one.blocks.clone(),
                 _ => None,
             },
+            doc: match infos {
+                [one] => one.doc.clone(),
+                _ => None,
+            },
+            extents: BTreeMap::new(),
         };
         for i in infos {
             out.dofs.extend(&i.dofs);
             out.names.extend(i.names.iter().cloned());
-            out.lower.extend(&i.lower);
-            out.upper.extend(&i.upper);
+            out.lower.extend(i.lower.iter().cloned());
+            out.upper.extend(i.upper.iter().cloned());
+            out.extents
+                .extend(i.extents.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         out
+    }
+
+    /// The values of the frozen observeds at the model state `x` (D125), by
+    /// name: what a referenced bound or scale reads, once per invocation.
+    pub fn observed(&self, x: &[f64], p: &[f64], t: f64) -> Result<Observed, Error> {
+        let Some(Frozen(f)) = &self.frozen else {
+            return Ok(Observed::new());
+        };
+        let vals = f
+            .values(x, p, t)
+            .map_err(|e| Error::Run(format!("solve: the frozen documents: {e}")))?;
+        Ok(f.names().iter().cloned().zip(vals).collect())
+    }
+
+    /// The scale of each unknown DOF under method `m` (spec/methods.md §15.1,
+    /// D125): 1 where `scale` names no unknown, else a number, a parameter,
+    /// an array parameter's default, or a frozen observed (scalar or one per
+    /// element). A scale that is not positive and finite fails the
+    /// invocation.
+    pub fn scale(
+        &self,
+        m: &SolveMethod,
+        p: &[f64],
+        pnames: &[String],
+        obs: &Observed,
+        id: &str,
+    ) -> Result<Vec<f64>, Error> {
+        let mut d = vec![1.0; self.dofs.len()];
+        if m.scale.is_empty() {
+            return Ok(d);
+        }
+        let mut first: BTreeMap<&str, usize> = BTreeMap::new();
+        for (i, z) in self.names.iter().enumerate() {
+            first.entry(z.as_str()).or_insert(i);
+        }
+        for (z, v) in &m.scale {
+            let Some(&f) = first.get(z.as_str()) else {
+                continue;
+            };
+            let n = self.names.iter().filter(|x| *x == z).count();
+            let vals: Vec<f64> = if let Some(x) = v.as_f64() {
+                vec![x; n]
+            } else {
+                let name = v.as_str().unwrap_or_default();
+                if let Some(k) = pnames.iter().position(|q| q == name) {
+                    vec![p[k]; n]
+                } else if let Some(o) = obs.get(name) {
+                    if o.len() == 1 {
+                        vec![o[0]; n]
+                    } else {
+                        o.clone()
+                    }
+                } else {
+                    let doc = self.doc.as_ref().ok_or_else(|| {
+                        Error::Config(format!(
+                            "solve node {id}: the scale {name} of {z} has no value"
+                        ))
+                    })?;
+                    array_default(doc, name, &self.extents[z]).map_err(Error::Config)?
+                }
+            };
+            if vals.len() != n {
+                return Err(Error::Config(format!(
+                    "solve node {id}: the scale {v} of {z} has {} elements, {z} {n}",
+                    vals.len()
+                )));
+            }
+            d[f..f + n].copy_from_slice(&vals);
+        }
+        if let Some(bad) = d.iter().position(|x| !(x.is_finite() && *x > 0.0)) {
+            let z = &self.names[bad];
+            return Err(Error::Run(format!(
+                "solve node {id}: the scale of {z} element {} is {}, not positive and finite (spec/methods.md §15.1) (SolveFailure)",
+                bad - first[z.as_str()] + 1,
+                d[bad]
+            )));
+        }
+        Ok(d)
     }
 }
 
@@ -162,8 +270,14 @@ pub enum MethodKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Recover {
     Underrelax(f64),
-    ScaleParam { param: String, by: f64, max: usize },
+    ScaleParam {
+        param: String,
+        by: f64,
+        max: usize,
+    },
     RevertWarmStart,
+    /// An attempt with another method (D125): the step's method object.
+    Method(Value),
 }
 
 /// A solve method as the resolved plan gives it (spec/plan.md §7.1).
@@ -184,6 +298,17 @@ pub struct SolveMethod {
     /// `linsolve` `block_lu` or `sparse_block_lu`: one LU per block of the
     /// plan's structure (dense within a block).
     pub block: bool,
+    /// The method's `scale`: unknown to a number or a name (D125).
+    pub scale: BTreeMap<String, Value>,
+}
+
+/// `ptc.growth`: a number, or infinite for "uncapped" (switched evolution
+/// relaxation, D125).
+fn growth_of(ptc: Option<&Value>) -> f64 {
+    match ptc.and_then(|p| p.get("growth")) {
+        Some(Value::String(s)) if s == "uncapped" => f64::INFINITY,
+        g => g.and_then(Value::as_f64).unwrap_or(2.0),
+    }
 }
 
 impl SolveMethod {
@@ -228,6 +353,8 @@ impl SolveMethod {
                 || a.as_str() == Some("revert_warm_start")
             {
                 recover.push(Recover::RevertWarmStart);
+            } else if let Some(mm) = a.get("method") {
+                recover.push(Recover::Method(mm.clone()));
             }
         }
         Ok(SolveMethod {
@@ -242,10 +369,7 @@ impl SolveMethod {
                 .and_then(|p| p.get("dt0"))
                 .and_then(Value::as_f64)
                 .unwrap_or(1e-3),
-            growth: ptc
-                .and_then(|p| p.get("growth"))
-                .and_then(Value::as_f64)
-                .unwrap_or(2.0),
+            growth: growth_of(ptc),
             backtracking: m.get("linesearch").and_then(Value::as_str) == Some("backtracking"),
             tol: match conv {
                 None => 1e-10,
@@ -264,7 +388,35 @@ impl SolveMethod {
                 .unwrap_or(0.0),
             maxiter: m.get("maxiter").and_then(Value::as_u64).unwrap_or(100) as usize,
             recover,
+            scale: m
+                .get("scale")
+                .and_then(Value::as_object)
+                .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default(),
         })
+    }
+
+    /// The method of a `recover` step `{"method": M}` (spec/methods.md
+    /// §15.7): `M`'s kind, options, `linesearch` and `maxiter`, with this
+    /// node's `converged`, `linsolve` and `scale`.
+    pub fn recover_method(&self, mm: &Value) -> SolveMethod {
+        let ptc = mm.get("ptc");
+        SolveMethod {
+            kind: if ptc.is_some() {
+                MethodKind::Ptc
+            } else {
+                MethodKind::Newton
+            },
+            dt0: ptc
+                .and_then(|p| p.get("dt0"))
+                .and_then(Value::as_f64)
+                .unwrap_or(1e-3),
+            growth: growth_of(ptc),
+            backtracking: mm.get("linesearch").and_then(Value::as_str) == Some("backtracking"),
+            maxiter: mm.get("maxiter").and_then(Value::as_u64).unwrap_or(100) as usize,
+            recover: vec![],
+            ..self.clone()
+        }
     }
 
     /// The default consistent initialization of a DAE (spec/run-config.md §4.3).
@@ -280,6 +432,7 @@ impl SolveMethod {
             block: false,
             maxiter: 100,
             recover: vec![],
+            scale: BTreeMap::new(),
         }
     }
 }
@@ -499,8 +652,18 @@ fn attempt<T: Scalar>(
     l: &[f64],
     h: &[f64],
     omega: f64,
+    d: &[f64],
 ) -> Result<(Vec<f64>, bool, usize), Error> {
     let fail = |e: String| Error::Run(format!("solve: the frozen documents: {e}"));
+    // The iteration works on the scaled residual D·G (§15.1, D125); the
+    // convergence test on the unscaled one.
+    let gs = |z: &[f64], p: &[f64]| -> Vec<f64> {
+        r.g(z, p).iter().zip(d).map(|(a, b)| a * b).collect()
+    };
+    let conv = |z: &[f64], g: &[f64]| -> f64 {
+        let gu: Vec<f64> = g.iter().zip(d).map(|(a, b)| a / b).collect();
+        ninf(&reform(z, &gu, l, h))
+    };
     let observed = |z: &[f64]| -> Result<Vec<f64>, Error> {
         let (Some(f), Some(i)) = (fz, m.rel_change) else {
             return Ok(vec![]);
@@ -511,22 +674,25 @@ fn attempt<T: Scalar>(
     };
     let nz = z0.len();
     let mut z = proj(z0, l, h);
-    let mut g = r.g(&z, p);
+    let mut g = gs(&z, p);
     let mut rr = reform(&z, &g, l, h);
     let mut n = ninf(&rr);
     if !n.is_finite() {
         return Ok((z, false, 0));
     }
-    if m.rel_change.is_none() && n <= m.tol {
+    if m.rel_change.is_none() && conv(&z, &g) <= m.tol {
         return Ok((z, true, 0));
     }
     let mut o = observed(&z)?;
     let mut delta = m.dt0;
     for k in 1..=m.maxiter {
-        let a = match (m.kind, fz) {
+        let mut a = match (m.kind, fz) {
             (MethodKind::Picard, Some(f)) => f.jacobian(&r.state_f64(&z), p, r.t).map_err(fail)?,
             _ => r.gz(&z, p),
         };
+        for ((row, _), v) in a.iter_mut() {
+            *v *= d[*row];
+        }
         match m.kind {
             MethodKind::Ptc => {
                 // (δ⁻¹I − G_z) s = G; a component held at a bound by an
@@ -545,7 +711,7 @@ fn attempt<T: Scalar>(
                 }
                 let zt: Vec<f64> = (0..nz).map(|i| z[i] + omega * s[i]).collect();
                 let znew = proj(&zt, l, h);
-                let gnew = r.g(&znew, p);
+                let gnew = gs(&znew, p);
                 let rnew = reform(&znew, &gnew, l, h);
                 let nnew = ninf(&rnew);
                 if !nnew.is_finite() {
@@ -578,7 +744,7 @@ fn attempt<T: Scalar>(
                     for j in 0..=10 {
                         let aj = 2f64.powi(-j);
                         let zt = proj(&(0..nz).map(|i| z[i] + aj * s[i]).collect::<Vec<_>>(), l, h);
-                        let rt = reform(&zt, &r.g(&zt, p), l, h);
+                        let rt = reform(&zt, &gs(&zt, p), l, h);
                         if 0.5 * rt.iter().map(|x| x * x).sum::<f64>() <= (1.0 - 1e-4 * aj) * phi {
                             alpha = aj;
                             break;
@@ -590,7 +756,7 @@ fn attempt<T: Scalar>(
                     l,
                     h,
                 );
-                g = r.g(&z, p);
+                g = gs(&z, p);
                 rr = reform(&z, &g, l, h);
                 n = ninf(&rr);
                 if !n.is_finite() {
@@ -599,12 +765,12 @@ fn attempt<T: Scalar>(
             }
         }
         if m.rel_change.is_none() {
-            if n <= m.tol {
+            if conv(&z, &g) <= m.tol {
                 return Ok((z, true, k));
             }
         } else {
             let onew = observed(&z)?;
-            let met = n <= m.tol && rel_met(&onew, &o, m.rel_tol);
+            let met = conv(&z, &g) <= m.tol && rel_met(&onew, &o, m.rel_tol);
             o = onew;
             if met {
                 return Ok((z, true, k));
@@ -625,8 +791,12 @@ pub fn run_solve<T: Scalar>(
     m: &SolveMethod,
     warm: &[f64],
     initial: &[f64],
+    id: &str,
 ) -> Result<SolveOutcome, Error> {
-    let (l, h) = info.values(p);
+    // Referenced bounds and scales are evaluated once per invocation (D125).
+    let obs = info.observed(&r.state_f64(warm), p, r.t)?;
+    let (l, h) = info.values(p, &obs);
+    let d = info.scale(m, p, pnames, &obs, id)?;
     if let Some(i) = (0..l.len()).find(|&i| l[i] > h[i]) {
         return Err(Error::Run(format!(
             "solve: the lower bound of {} exceeds its upper bound",
@@ -636,7 +806,7 @@ pub fn run_solve<T: Scalar>(
     let fz = frozen_of(info, m)?;
     let bl = Blocks::new(info, m)?;
     let mut actions = Vec::new();
-    let (mut z, mut ok, mut it) = attempt(r, fz, &bl, warm, p, m, &l, &h, 1.0)?;
+    let (mut z, mut ok, mut it) = attempt(r, fz, &bl, warm, p, m, &l, &h, 1.0, &d)?;
     let mut pp = p.to_vec();
     for a in &m.recover {
         if ok {
@@ -645,7 +815,7 @@ pub fn run_solve<T: Scalar>(
         match a {
             Recover::Underrelax(w) => {
                 actions.push("underrelax".to_string());
-                (z, ok, it) = attempt(r, fz, &bl, warm, &pp, m, &l, &h, *w)?;
+                (z, ok, it) = attempt(r, fz, &bl, warm, &pp, m, &l, &h, *w, &d)?;
             }
             Recover::ScaleParam { param, by, max } => {
                 let i = pnames.iter().position(|x| x == param).ok_or_else(|| {
@@ -659,12 +829,18 @@ pub fn run_solve<T: Scalar>(
                     }
                     pp[i] *= by;
                     actions.push("scale_param".to_string());
-                    (z, ok, it) = attempt(r, fz, &bl, warm, &pp, m, &l, &h, 1.0)?;
+                    (z, ok, it) = attempt(r, fz, &bl, warm, &pp, m, &l, &h, 1.0, &d)?;
                 }
             }
             Recover::RevertWarmStart => {
                 actions.push("revert_warm_start".to_string());
-                (z, ok, it) = attempt(r, fz, &bl, initial, &pp, m, &l, &h, 1.0)?;
+                (z, ok, it) = attempt(r, fz, &bl, initial, &pp, m, &l, &h, 1.0, &d)?;
+            }
+            Recover::Method(mm) => {
+                // An attempt with another method from the warm start (D125).
+                actions.push("method".to_string());
+                let m2 = m.recover_method(mm);
+                (z, ok, it) = attempt(r, fz, &bl, warm, &pp, &m2, &l, &h, 1.0, &d)?;
             }
         }
     }

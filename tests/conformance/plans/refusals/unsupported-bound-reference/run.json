@@ -6,18 +6,32 @@
       "select": {
         "components": "Box"
       }
+    },
+    "feed": {
+      "select": {
+        "components": "Feed"
+      }
     }
   },
   "step": {
     "dt": 1
   },
   "schedule": {
-    "solve": "box",
-    "unknowns": [
-      "Box.z"
-    ],
-    "method": {
-      "ptc": {}
-    }
+    "sequence": [
+      {
+        "solve": "box",
+        "unknowns": [
+          "Box.z"
+        ],
+        "method": {
+          "ptc": {}
+        }
+      },
+      {
+        "leaf": "feed",
+        "alg": "Rodas4",
+        "dt": 1
+      }
+    ]
   }
 }

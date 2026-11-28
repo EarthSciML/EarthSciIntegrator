@@ -197,6 +197,8 @@ function operator_json(m::PlanModel, op::PlanOperator, stiff)
         isempty(f) || (d["forcing"] = f)
         bj = bounds_json(m, op)
         bj === nothing || (d["bounds"] = bj)
+        # §6.5: the frozen observeds, in order (D125).
+        isempty(op.frozen) || (d["frozen"] = Any[op.frozen...])
         return d
     end
     d = Dict{String, Any}(

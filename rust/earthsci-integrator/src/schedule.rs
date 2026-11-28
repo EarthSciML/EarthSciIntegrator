@@ -969,7 +969,9 @@ impl<'a, T: Scalar> Exec<'a, T> {
                         u: &uf,
                         t: t0,
                     };
-                    let o = run_solve(&r, &d.info, self.p, &d.pnames, &d.init, &warm, &d.initial)?;
+                    let o = run_solve(
+                        &r, &d.info, self.p, &d.pnames, &d.init, &warm, &d.initial, &leaf.id,
+                    )?;
                     if !o.ok {
                         return Err(Error::Run(format!(
                             "leaf {}: the consistent initialization did not converge at t = {t0} (InitialFailure)",
@@ -1131,7 +1133,7 @@ impl<'a, T: Scalar> Exec<'a, T> {
                             t: t0,
                         };
                         let o = run_solve(
-                            &r, &s.info, self.p, &s.pnames, &s.method, &warm, &s.initial,
+                            &r, &s.info, self.p, &s.pnames, &s.method, &warm, &s.initial, id,
                         )?;
                         if !o.ok {
                             return Err(Error::Run(format!(

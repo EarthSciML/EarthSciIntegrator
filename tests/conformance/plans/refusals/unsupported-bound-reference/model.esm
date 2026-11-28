@@ -1,8 +1,8 @@
 {
   "esm": "2.1.0",
   "metadata": {
-    "name": "box_lcp_observed_bound",
-    "description": "spec/toy-problems.md \u00a71.8 with the upper bound an observed (zcap = 2 zmax) that reads no unknown: only number and parameter bounds are planned at this version (spec/plan.md \u00a75.9.7)."
+    "name": "box_lcp_state_bound",
+    "description": "spec/toy-problems.md \u00a71.8 whose upper bound zcap reads the state Feed.q of another component, so it would move with the state: unsupported_bound_reference (spec/plan.md \u00a75.9.7, D125)."
   },
   "index_sets": {
     "k": {
@@ -47,7 +47,7 @@
           "shape": [
             "k"
           ],
-          "description": "an observed cap, twice zmax"
+          "description": "an observed cap that reads a state: zmax times Feed.q"
         }
       },
       "equations": [
@@ -130,16 +130,42 @@
             "expr": {
               "op": "*",
               "args": [
-                2,
                 {
                   "op": "index",
                   "args": [
                     "zmax",
                     "i"
                   ]
-                }
+                },
+                "Feed.q"
               ]
             }
+          }
+        }
+      ]
+    },
+    "Feed": {
+      "variables": {
+        "q": {
+          "type": "unknown",
+          "default": 1.0
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "q"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "*",
+            "args": [
+              -1,
+              "q"
+            ]
           }
         }
       ]

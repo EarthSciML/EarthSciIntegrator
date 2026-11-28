@@ -650,7 +650,8 @@ function plan_problem(
         info = algebraic_info(n, plan["operators"][n], L, pnames, docjson)
         fz = haskey(plan["derived"], "derived/$n.frozen_residual.esm") ?
             frozen_docs(n, plan["operators"][n], L, pnames, doc, info.dofs) : nothing
-        info = AlgebraicInfo(info.dofs, info.names, info.lower, info.upper, fz, solve_blocks(n, plan["operators"][n], L, docjson, info))
+        ext = Dict{String, Vector{Int}}(z => L.extents[z] for z in unique(info.names))
+        info = AlgebraicInfo(info.dofs, info.names, info.lower, info.upper, fz, solve_blocks(n, plan["operators"][n], L, docjson, info), docjson, ext)
         algebraic[n] = info
     end
     variables = Pair{String, Vector{Int}}[
@@ -764,7 +765,11 @@ function frozen_docs(name, entry, L::DofLayout, pnames, doc, zdofs)
             push!(points, (j.slots[nm], zpos[row], zpos[col]))
         end
     end
-    return FrozenDocs(r, j, length(Lf.names), tolf, fdofs, points)
+    names = String.(get(entry, "frozen", Any[]))
+    length(names) == length(fdofs) || throw(
+        ConfigError("operator '$name': the plan entry lists $(length(names)) frozen observeds, its frozen residual document $(length(fdofs))")
+    )
+    return FrozenDocs(names, r, j, length(Lf.names), tolf, fdofs, points)
 end
 
 _with_forcing(op::PlannedOperator, F) = PlannedOperator(

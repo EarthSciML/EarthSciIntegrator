@@ -1,0 +1,189 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "box_scaled",
+    "description": "spec/toy-problems.md \u00a71.8 with a state-free observed upper bound zcap = 1.5 zmax (D125) and a state-free observed scale zscale = 0.5 + zmax: the solution is z = (0.375, 0), z[1] at its upper bound, z[2] at 0."
+  },
+  "index_sets": {
+    "k": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "z": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "default": 0.0,
+          "lb": 0,
+          "ub": "zcap"
+        },
+        "zmax": {
+          "type": "parameter",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            0.25,
+            10.0
+          ]
+        },
+        "b": {
+          "type": "parameter",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            1.0,
+            -2.0
+          ]
+        },
+        "zcap": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "description": "a state-free observed cap, 1.5 zmax"
+        },
+        "zscale": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "description": "a state-free observed scale, 0.5 + zmax"
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "faq",
+                  "output_idx": [],
+                  "args": [],
+                  "ranges": {
+                    "j": {
+                      "from": "k"
+                    }
+                  },
+                  "expr": {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": "==",
+                            "args": [
+                              "i",
+                              "j"
+                            ]
+                          },
+                          2.0,
+                          1.0
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "z",
+                          "j"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          },
+          "rhs": 0.0
+        },
+        {
+          "lhs": "zcap",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                1.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "zmax",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "zscale",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "zmax",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

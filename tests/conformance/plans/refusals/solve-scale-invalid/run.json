@@ -1,0 +1,26 @@
+{
+  "esm_integrator": "0.1.0",
+  "model": "model.esm",
+  "operators": {
+    "box": {
+      "select": {
+        "components": "Box"
+      }
+    }
+  },
+  "step": {
+    "dt": 1
+  },
+  "schedule": {
+    "solve": "box",
+    "unknowns": [
+      "Box.z"
+    ],
+    "method": {
+      "ptc": {},
+      "scale": {
+        "Box.z": "Box.zsq"
+      }
+    }
+  }
+}

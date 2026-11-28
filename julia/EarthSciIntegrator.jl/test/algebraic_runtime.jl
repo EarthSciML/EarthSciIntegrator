@@ -55,6 +55,28 @@ _solve_record(run) = only(r for r in run.tape.records if r isa AR.SolveRecord)
         it = _solve_record(run).iterations
         @test case == "newton_rel_change" ? it <= 8 : 30 <= it <= 100
     end
+    @testset "box_scaled $case" for case in ("scaled_ptc", "recover_method")
+        run, pp = _run_case("box_scaled", case)
+        # z[1] at the state-free observed upper bound 1.5 zmax[1] = 0.375,
+        # z[2] at 0 (D125).
+        @test _end(run, pp, "Box.z") == [0.375, 0.0]
+        rec = _solve_record(run)
+        @test rec.active == Dict("Box.z" => ([1], [0], Int[]))
+        @test rec.recover == (case == "recover_method" ? ["method"] : String[])
+    end
+    @testset "a scale that is not positive fails the invocation" begin
+        out = mktempdir()
+        AR.write_plan(AR.plan(joinpath(PFIX, "box_scaled", "recover_method.run.json")), out)
+        f = joinpath(out, "plan.json")
+        pj = AR.JSON.parsefile(f)
+        pj["schedule"]["method"]["scale"]["Box.z"] = -1.0
+        write(f, AR.JSON.json(pj))
+        run, pp = AR.build_plan_run(out)
+        # forward! records a run failure rather than throwing it.
+        AR.forward!(run)
+        @test run.retcode == "SolveFailure"
+        @test occursin("not positive", run.failure)
+    end
     @testset "robertson_dae $case" for (case, rtol) in (("rodas4", 1.0e-8), ("kvaerno4", 1.0e-6), ("trbdf2", 1.0e-4), ("inconsistent", 1.0e-8))
         ode, opp = _run_case("toy_robertson", "rodas4")
         run, pp = _run_case("toy_robertson_dae", case)

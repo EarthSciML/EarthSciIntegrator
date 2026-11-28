@@ -155,6 +155,10 @@
     "code": "solve_pairing_ambiguous",
     "at": "/schedule"
   },
+  "solve-scale-invalid": {
+    "code": "solve_scale_invalid",
+    "at": "/schedule/method/scale/Box.z"
+  },
   "solve-structurally-singular": {
     "code": "solve_structurally_singular",
     "at": "/schedule"
@@ -197,7 +201,7 @@
   },
   "unsupported-bound-reference": {
     "code": "unsupported_bound_reference",
-    "at": "/schedule/unknowns/0"
+    "at": "/schedule/sequence/0/unknowns/0"
   },
   "unsupported-dae-bounds": {
     "code": "unsupported_dae_bounds",

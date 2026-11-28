@@ -1,0 +1,195 @@
+{
+  "esm": "2.1.0",
+  "metadata": {
+    "name": "box_lcp_state_scale",
+    "description": "spec/toy-problems.md \u00a71.8 with a scale that is an observed of the unknowns, zsq = z^2 + 1: solve_scale_invalid (spec/run-config.md \u00a74.10, D125)."
+  },
+  "index_sets": {
+    "k": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "z": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "default": 0.0,
+          "lb": 0,
+          "ub": "zcap"
+        },
+        "zmax": {
+          "type": "parameter",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            0.25,
+            10.0
+          ]
+        },
+        "b": {
+          "type": "parameter",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            1.0,
+            -2.0
+          ]
+        },
+        "zcap": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "description": "a state-free observed cap, 1.5 zmax"
+        },
+        "zsq": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "description": "an observed of the unknowns"
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "faq",
+                  "output_idx": [],
+                  "args": [],
+                  "ranges": {
+                    "j": {
+                      "from": "k"
+                    }
+                  },
+                  "expr": {
+                    "op": "*",
+                    "args": [
+                      {
+                        "op": "ifelse",
+                        "args": [
+                          {
+                            "op": "==",
+                            "args": [
+                              "i",
+                              "j"
+                            ]
+                          },
+                          2.0,
+                          1.0
+                        ]
+                      },
+                      {
+                        "op": "index",
+                        "args": [
+                          "z",
+                          "j"
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          },
+          "rhs": 0.0
+        },
+        {
+          "lhs": "zcap",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                1.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "zmax",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "zsq",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                1.0,
+                {
+                  "op": "^",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "z",
+                        "i"
+                      ]
+                    },
+                    2
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "solver": {
+    "time_span": {
+      "start": 0,
+      "end": 1
+    }
+  }
+}

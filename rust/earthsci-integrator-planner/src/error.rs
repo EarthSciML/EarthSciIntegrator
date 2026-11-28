@@ -62,6 +62,7 @@ pub mod codes {
     pub const FORCING_REFRESH_NOT_HIT: &str = "forcing_refresh_not_hit";
     pub const SOLVE_BOUNDS_INVALID: &str = "solve_bounds_invalid";
     pub const SOLVE_BOUNDS_SIGN: &str = "solve_bounds_sign";
+    pub const SOLVE_SCALE_INVALID: &str = "solve_scale_invalid";
     pub const OPERATOR_MIXES_KINDS: &str = "operator_mixes_kinds";
     pub const OPERATOR_KIND_MISMATCH: &str = "operator_kind_mismatch";
     pub const ALGEBRAIC_UNKNOWN_UNSOLVED: &str = "algebraic_unknown_unsolved";
@@ -136,6 +137,7 @@ pub mod codes {
         FORCING_REFRESH_NOT_HIT,
         SOLVE_BOUNDS_INVALID,
         SOLVE_BOUNDS_SIGN,
+        SOLVE_SCALE_INVALID,
         OPERATOR_MIXES_KINDS,
         OPERATOR_KIND_MISMATCH,
         ALGEBRAIC_UNKNOWN_UNSOLVED,

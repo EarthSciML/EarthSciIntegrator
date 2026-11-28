@@ -20,9 +20,13 @@ struct AlgebraicInfo
     upper::Vector{Any}
     frozen::Any                      # FrozenDocs or nothing
     blocks::Union{Nothing, Vector{Vector{Int}}}
+    doc::Any                         # the residual document's JSON (an array parameter's default), or nothing
+    extents::Dict{String, Vector{Int}}   # each unknown variable's extents
 end
 AlgebraicInfo(dofs, names, lower, upper) = AlgebraicInfo(dofs, names, lower, upper, nothing, nothing)
 AlgebraicInfo(dofs, names, lower, upper, frozen) = AlgebraicInfo(dofs, names, lower, upper, frozen, nothing)
+AlgebraicInfo(dofs, names, lower, upper, frozen, blocks) =
+    AlgebraicInfo(dofs, names, lower, upper, frozen, blocks, nothing, Dict{String, Vector{Int}}())
 
 """
     FrozenDocs
@@ -38,6 +42,7 @@ field in `jac`'s output, and the positions of the row and column among the
 operator's unknowns.
 """
 struct FrozenDocs
+    names::Vector{String}            # the frozen observeds O_m, in order (the plan entry's `frozen`)
     resid::Any
     jac::Any
     nf::Int
@@ -75,10 +80,69 @@ function frozen_jacobian(F::FrozenDocs, x, nz, p, t)
     return A
 end
 
-"""The bounds of `info` at the parameter vector `p`: `(l, u)` with `-Inf`/`Inf` for an unbounded side."""
-function bound_values(info::AlgebraicInfo, p)
-    val(b, inf) = b === nothing ? inf : b[1] === :const ? Float64(b[2]) : Float64(p[b[2]])
+"""
+The values of the frozen observeds of `info` at the model state `x` (D125), by
+name: what a referenced bound or scale reads, once per invocation.
+"""
+function observed_values(info::AlgebraicInfo, x, p, t)
+    F = info.frozen
+    F === nothing && return Dict{String, Vector{Float64}}()
+    return Dict(zip(F.names, frozen_values(F, x, p, t)))
+end
+
+"""
+The bounds of `info` at the parameter vector `p` and the frozen observeds'
+values `obs`: `(l, u)` with `-Inf`/`Inf` for an unbounded side.
+"""
+function bound_values(info::AlgebraicInfo, p, obs = Dict{String, Vector{Float64}}())
+    function val(b, inf)
+        b === nothing && return inf
+        b[1] === :const && return Float64(b[2])
+        b[1] === :param && return Float64(p[b[2]])
+        v = obs[b[2]]
+        return length(v) == 1 ? v[1] : v[b[3]]
+    end
     return Float64[val(b, -Inf) for b in info.lower], Float64[val(b, Inf) for b in info.upper]
+end
+
+"""
+The scale of each unknown DOF of `info` under method `m` (spec/methods.md
+§15.1, D125): 1 where `scale` names no unknown, else a number, a parameter,
+an array parameter's default, or a frozen observed (scalar or one per
+element). A scale that is not positive and finite fails the invocation.
+"""
+function scale_values(info::AlgebraicInfo, m, p, pnames, obs, id)
+    d = ones(length(info.dofs))
+    isempty(m.scale) && return d
+    first = Dict{String, Int}()
+    for (i, z) in enumerate(info.names)
+        haskey(first, z) || (first[z] = i)
+    end
+    for (z, v) in m.scale
+        haskey(first, z) || continue
+        n = count(==(z), info.names)
+        vals = if v isa Real
+            fill(Float64(v), n)
+        else
+            name = String(v)
+            k = findfirst(==(name), pnames)
+            if k !== nothing
+                fill(Float64(p[k]), n)
+            elseif haskey(obs, name)
+                o = obs[name]
+                length(o) == 1 ? fill(o[1], n) : o
+            else
+                array_default(info.doc, name, info.extents[z], id)
+            end
+        end
+        length(vals) == n || throw(ConfigError("solve node $id: the scale $v of $z has $(length(vals)) elements, $z $n"))
+        d[first[z]:(first[z] + n - 1)] = vals
+    end
+    bad = findfirst(x -> !(isfinite(x) && x > 0), d)
+    bad === nothing || throw(
+        RunFailure("SolveFailure", "solve node $id: the scale of $(info.names[bad]) element $(bad - first[info.names[bad]] + 1) is $(d[bad]), not positive and finite (spec/methods.md §15.1)")
+    )
+    return d
 end
 
 """
@@ -106,12 +170,16 @@ function algebraic_info(name, entry, L::DofLayout, pnames::Vector{String}, docjs
         for (key, dest) in (("lb", lower), ("ub", upper))
             haskey(b, key) || continue
             v = b[key]
+            frozen = String.(get(entry, "frozen", Any[]))
             src = if v isa Real
                 fill((:const, Float64(v)), n)
             else
                 pn = String(v)
                 i = findfirst(==(pn), pnames)
+                # A state-free observed bound reads the frozen residual
+                # document once per invocation (D125).
                 i !== nothing ? fill((:param, i), n) :
+                    pn in frozen ? [(:obs, pn, e) for e in 1:n] :
                     [(:const, x) for x in array_default(docjson, pn, L.extents[z], name)]
             end
             dest[(k + 1):(k + n)] = src
@@ -161,6 +229,7 @@ struct SolveMethod
     recover::Vector{Any}
     pivot::Bool
     block::Bool                      # linsolve block_lu or sparse_block_lu: one LU per block of the plan's structure
+    scale::Dict{String, Any}         # unknown => number or name (D125)
 end
 
 function SolveMethod(m::AbstractDict, id)
@@ -182,9 +251,28 @@ function SolveMethod(m::AbstractDict, id)
     pivot = ls isa AbstractDict && haskey(ls, "block_lu") ? Bool(get(ls["block_lu"], "pivot", true)) : true
     p = get(m, "ptc", Dict{String, Any}())
     return SolveMethod(
-        kind, Float64(get(p, "dt0", 1.0e-3)), Float64(get(p, "growth", 2.0)),
+        kind, Float64(get(p, "dt0", 1.0e-3)), _growth(get(p, "growth", 2.0)),
         Symbol(get(m, "linesearch", "none")), Float64(get(conv, "residual", Inf)), rc,
-        Float64(get(conv, "tol", 0.0)), Int(get(m, "maxiter", 100)), collect(Any, get(m, "recover", Any[])), pivot, block
+        Float64(get(conv, "tol", 0.0)), Int(get(m, "maxiter", 100)), collect(Any, get(m, "recover", Any[])), pivot, block,
+        Dict{String, Any}(String(k) => v for (k, v) in get(m, "scale", Dict{String, Any}()))
+    )
+end
+
+"""`ptc.growth`: a number, or `Inf` for "uncapped" (switched evolution relaxation, D125)."""
+_growth(g) = g == "uncapped" ? Inf : Float64(g)
+
+"""
+The method of a `recover` step `{"method": M}` (spec/methods.md §15.7): `M`'s
+kind, options, `linesearch` and `maxiter`, with the node's `converged`,
+`linsolve` and `scale`.
+"""
+function recover_method(m::SolveMethod, mm::AbstractDict)
+    kind = haskey(mm, "ptc") ? :ptc : :newton
+    p = get(mm, "ptc", Dict{String, Any}())
+    return SolveMethod(
+        kind, Float64(get(p, "dt0", 1.0e-3)), _growth(get(p, "growth", 2.0)),
+        Symbol(get(mm, "linesearch", "none")), m.tol, m.relchange, m.rctol, Int(get(mm, "maxiter", 100)),
+        Any[], m.pivot, m.block, m.scale
     )
 end
 
@@ -325,23 +413,29 @@ One attempt of a solve from `z0` (§15.2–§15.5); `ω` the under-relaxation,
 attempt converges when every criterion given is met; the change is measured
 from the previous iterate, so the starting iterate cannot meet it.
 """
-function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l, h, ω)
+function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l, h, ω, d = ones(length(info.dofs)))
     dofs = info.dofs
     F = _frozen(info, m)
-    G(z) = residual_at(ops, dofs, u, z, p, t)
+    # The iteration works on the scaled residual D·G (§15.1, D125); the
+    # convergence test on the unscaled one.
+    G(z) = residual_at(ops, dofs, u, z, p, t) .* d
+    conv(z, g) = _ninf(_R(z, g ./ d, l, h))
     O(z) = frozen_values(F, _with_z(u, dofs, z), p, t)[m.relchange]
     z = _proj(z0, l, h)
     g = G(z)
     r = _R(z, g, l, h)
     n = _ninf(r)
     isfinite(n) || return z, false, 0
-    m.relchange == 0 && n <= m.tol && return z, true, 0
+    m.relchange == 0 && conv(z, g) <= m.tol && return z, true, 0
     o = m.relchange == 0 ? nothing : O(z)
     B = SolveBlocks(info, m)
     δ = m.dt0
     for k in 1:m.maxiter
         A = m.kind === :picard ? frozen_jacobian(F, _with_z(u, dofs, z), length(z), p, t) :
             residual_jacobian(ops, dofs, u, z, p, t)
+        for (rc, v) in A
+            A[rc] = v * d[rc[1]]
+        end
         if m.kind === :ptc
             # A component held at a bound by an outward rate does not move (§15.4).
             held = BitVector([(z[i] <= l[i] && g[i] <= 0) || (z[i] >= h[i] && g[i] >= 0) for i in eachindex(z)])
@@ -387,10 +481,10 @@ function solve_attempt(ops, info::AlgebraicInfo, u, z0, p, t, m::SolveMethod, l,
             isfinite(n) || return z, false, k
         end
         if m.relchange == 0
-            n <= m.tol && return z, true, k
+            conv(z, g) <= m.tol && return z, true, k
         else
             onew = O(z)
-            met = n <= m.tol && _rel_met(onew, o, m.rctol)
+            met = conv(z, g) <= m.tol && _rel_met(onew, o, m.rctol)
             o = onew
             met && return z, true, k
         end
@@ -406,32 +500,39 @@ A solve with its `recover` ladder (§15.7) and, at convergence, the active set
 `warm` is the starting iterate; `initial` the model's initial value of the
 unknowns (`revert_warm_start`).
 """
-function run_solve(ops, info::AlgebraicInfo, u, p, t, m::SolveMethod, warm, initial, pnames)
-    l, h = bound_values(info, p)
+function run_solve(ops, info::AlgebraicInfo, u, p, t, m::SolveMethod, warm, initial, pnames; id = "")
+    # Referenced bounds and scales are evaluated once per invocation (D125).
+    obs = observed_values(info, _with_z(u, info.dofs, warm), p, t)
+    l, h = bound_values(info, p, obs)
+    d = scale_values(info, m, p, pnames, obs, id)
     any(i -> l[i] > h[i], eachindex(l)) && throw(
         ConfigError("solve: the lower bound of $(info.names[findfirst(i -> l[i] > h[i], eachindex(l))]) exceeds its upper bound")
     )
     actions = String[]
-    z, ok, it = solve_attempt(ops, info, u, warm, p, t, m, l, h, 1.0)
+    z, ok, it = solve_attempt(ops, info, u, warm, p, t, m, l, h, 1.0, d)
     pp = copy(p)
     scaled = Dict{Int, Int}()
     for a in m.recover
         ok && break
-        if haskey(a, "underrelax")
+        if a isa AbstractDict && haskey(a, "underrelax")
             push!(actions, "underrelax")
-            z, ok, it = solve_attempt(ops, info, u, warm, pp, t, m, l, h, Float64(a["underrelax"]))
-        elseif haskey(a, "scale_param")
+            z, ok, it = solve_attempt(ops, info, u, warm, pp, t, m, l, h, Float64(a["underrelax"]), d)
+        elseif a isa AbstractDict && haskey(a, "scale_param")
             i = findfirst(==(String(a["scale_param"])), pnames)
             i === nothing && throw(ConfigError("solve: recover scale_param $(a["scale_param"]) is not a scalar parameter"))
             for _ in 1:Int(get(a, "max", 1))
                 ok && break
                 pp[i] *= Float64(a["by"])
                 push!(actions, "scale_param")
-                z, ok, it = solve_attempt(ops, info, u, warm, pp, t, m, l, h, 1.0)
+                z, ok, it = solve_attempt(ops, info, u, warm, pp, t, m, l, h, 1.0, d)
             end
-        elseif haskey(a, "revert_warm_start") || a == "revert_warm_start"
+        elseif a == "revert_warm_start" || (a isa AbstractDict && haskey(a, "revert_warm_start"))
             push!(actions, "revert_warm_start")
-            z, ok, it = solve_attempt(ops, info, u, initial, pp, t, m, l, h, 1.0)
+            z, ok, it = solve_attempt(ops, info, u, initial, pp, t, m, l, h, 1.0, d)
+        elseif a isa AbstractDict && haskey(a, "method")
+            # An attempt with another method from the warm start (D125).
+            push!(actions, "method")
+            z, ok, it = solve_attempt(ops, info, u, warm, pp, t, recover_method(m, a["method"]), l, h, 1.0, d)
         end
     end
     lower, upper, degenerate = Int[], Int[], Int[]
@@ -540,7 +641,7 @@ function advance!(run::Run, ctx::ExecCtx, node::SolveNode, u, ta::Float64, tb::F
         p = _params(run, mode)
         init = run.u0[info.dofs]
         warm = node.warm_start === :initial ? init : Float64.(u[info.dofs])
-        o = run_solve(node.ops, info, u, p, ta, node.method, warm, init, run.prob.pnames)
+        o = run_solve(node.ops, info, u, p, ta, node.method, warm, init, run.prob.pnames; id = node.id)
         o.ok || throw(RunFailure("SolveFailure", "solve node $(node.id) ($path) did not converge at t = $ta"))
         push!(mode.tape, SolveRecord(path, ta, tb - ta, o.z, o.iterations, o.recover, active_sets(info, o)))
         out[info.dofs] = o.z
@@ -608,7 +709,7 @@ function dae_initialize(run::Run, ctx::ExecCtx, node::LeafNode, u, ta::Float64)
     p = _params(run, ctx.mode)
     uf = Float64.(u)
     z0 = uf[d.info.dofs]
-    o = run_solve(d.ops, d.info, uf, p, ta, d.init, z0, run.u0[d.info.dofs], run.prob.pnames)
+    o = run_solve(d.ops, d.info, uf, p, ta, d.init, z0, run.u0[d.info.dofs], run.prob.pnames; id = node.id)
     o.ok || throw(RunFailure("InitialFailure", "the consistent initialization of $(node.id) did not converge at t = $ta"))
     out = copy(u)
     out[d.info.dofs] = o.z

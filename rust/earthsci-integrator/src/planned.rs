@@ -767,7 +767,15 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
             upper: vec![],
             frozen: None,
             blocks: None,
+            doc: None,
+            extents: BTreeMap::new(),
         };
+        let frozen_names: Vec<&str> = entry["frozen"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
         for z in entry["writes"]
             .as_array()
             .into_iter()
@@ -780,6 +788,7 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
                 .ok_or_else(|| refuse(&b.name, &b.rhs_path, format!("no state {z}")))?;
             let ext: Vec<usize> = m.dofs.states[z].1.clone();
             let n = r.len();
+            info.extents.insert(z.to_string(), ext.clone());
             info.dofs.extend(r);
             info.names.extend(std::iter::repeat_n(z.to_string(), n));
             let bnds = &entry["bounds"][z];
@@ -793,6 +802,11 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
                     let pn = v.as_str().unwrap_or_default();
                     match m.params.iter().position(|x| x == pn) {
                         Some(i) => vec![Some(crate::algebraic::Bound::Param(i)); n],
+                        // A state-free observed bound reads the frozen
+                        // residual document once per invocation (D125).
+                        None if frozen_names.contains(&pn) => (0..n)
+                            .map(|e| Some(crate::algebraic::Bound::Obs(pn.to_string(), e)))
+                            .collect(),
                         None => crate::algebraic::array_default(&doc, pn, &ext)
                             .map_err(|e| refuse(&b.name, &b.rhs_path, e))?
                             .into_iter()
@@ -814,6 +828,7 @@ pub fn load_plan_with<T: Scalar>(dir: &Path, data: &DataOptions) -> Result<Loade
         }
         info.blocks = solve_blocks(&b.name, entry, &m.dofs, &doc, &info.names)
             .map_err(|e| refuse(&b.name, &b.rhs_path, format!("its block structure: {e}")))?;
+        info.doc = Some(Arc::new(doc));
         algebraic.insert(b.name.clone(), info);
     }
     for b in built {
@@ -954,6 +969,8 @@ fn state_shapes(path: &Path, dofs: &Dofs) -> Result<BTreeMap<String, Vec<String>
 /// their own canonical layout: the model's states and the frozen states
 /// `FrozenEval.frozen_m`.
 struct PlannedFrozen {
+    /// The frozen observeds, in order (the plan entry's `frozen`).
+    names: Vec<String>,
     resid: Document,
     jac: Option<Document>,
     /// The length of the frozen layout.
@@ -1066,7 +1083,26 @@ impl PlannedFrozen {
                 Some(jac)
             }
         };
+        let names: Vec<String> = entry["frozen"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        if names.len() != fdofs.len() {
+            return Err(refuse(
+                name,
+                rpath,
+                format!(
+                    "the plan entry lists {} frozen observeds, the document {}",
+                    names.len(),
+                    fdofs.len()
+                ),
+            ));
+        }
         Ok(PlannedFrozen {
+            names,
             resid,
             jac,
             nf: lf.n,
@@ -1101,6 +1137,10 @@ impl crate::algebraic::FrozenEval for PlannedFrozen {
 
     fn has_jacobian(&self) -> bool {
         self.jac.is_some()
+    }
+
+    fn names(&self) -> &[String] {
+        &self.names
     }
 
     fn jacobian(&self, x: &[f64], p: &[f64], t: f64) -> Result<crate::algebraic::Entries, String> {

@@ -646,6 +646,45 @@ pub fn check_schedule(
                     frozen_name(o.as_str().unwrap_or_default(), at, "frozen observed")?;
                 }
             }
+            // Scale keys are unknowns of the node; values parameters or
+            // observeds (D125).
+            if let Some(sc) = meth.get("scale").and_then(Value::as_object) {
+                let zs = node_unknowns(n, ops, info);
+                let mut keys: Vec<&String> = sc.keys().collect();
+                keys.sort();
+                for z in keys {
+                    let at = ptr(&ptr(&n.key_ptr(key), "scale"), z);
+                    if !info.is_name(z) {
+                        return Err(refuse(
+                            codes::NAME_UNRESOLVED,
+                            at,
+                            format!("scale key {z} is not a name of the flattened model"),
+                        ));
+                    }
+                    if !zs.contains(z) {
+                        return Err(refuse(
+                            codes::NAME_WRONG_KIND,
+                            at,
+                            format!("scale key {z} is not an unknown of node {}", n.id()),
+                        ));
+                    }
+                    let Some(v) = sc[z].as_str() else { continue };
+                    if !info.is_name(v) {
+                        return Err(refuse(
+                            codes::NAME_UNRESOLVED,
+                            at,
+                            format!("the scale {v} of {z} is not a name of the flattened model"),
+                        ));
+                    }
+                    if !(info.is_parameter(v) || info.is_observed(v)) || info.is_state(v) {
+                        return Err(refuse(
+                            codes::NAME_WRONG_KIND,
+                            at,
+                            format!("the scale {v} of {z} is not a parameter or an observed"),
+                        ));
+                    }
+                }
+            }
             if let Some(o) = meth
                 .get("converged")
                 .and_then(|c| c.get("rel_change"))
@@ -690,7 +729,7 @@ pub fn check_schedule(
             }
         }
     }
-    // §5.9.7: a bound is a number or a parameter at this version.
+    // §5.9.7: a bound is a number, a parameter or a state-free observed (D125).
     for n in &nodes {
         if !matches!(n.kind, Kind::Solve) {
             continue;
@@ -698,11 +737,43 @@ pub fn check_schedule(
         for (i, z) in written_unknowns(n).iter().enumerate() {
             let v = &info.flat.state_variables[z];
             for b in [bound_name(&v.lb), bound_name(&v.ub)].into_iter().flatten() {
-                if !info.is_parameter(&b) {
+                if !state_free(info, &b) {
                     return Err(refuse(
                         codes::UNSUPPORTED_BOUND_REFERENCE,
                         ptr(&n.key_ptr("unknowns"), i),
-                        format!("the bound {b} of {z} is not a parameter; a bound that refers to a state or an observed is a later addition (spec/plan.md §5.9.7)"),
+                        format!("the bound {b} of {z} depends on a state; a bound that moves with the state is a later addition (spec/plan.md §5.9.7)"),
+                    ));
+                }
+            }
+        }
+    }
+    // Rule 18 (D125): a scale names a state-free observed or a parameter,
+    // scalar or of the unknown's shape.
+    for n in &nodes {
+        for (meth, key) in node_methods(n) {
+            let Some(sc) = meth.get("scale").and_then(Value::as_object) else {
+                continue;
+            };
+            let mut keys: Vec<&String> = sc.keys().collect();
+            keys.sort();
+            for z in keys {
+                let Some(v) = sc[z].as_str() else { continue };
+                let at = ptr(&ptr(&n.key_ptr(key), "scale"), z);
+                if info.is_observed(v) && !state_free(info, v) {
+                    return Err(refuse(
+                        codes::SOLVE_SCALE_INVALID,
+                        at,
+                        format!("the scale {v} of {z} is an observed that depends on a state; a scale is evaluated once per invocation (spec/run-config.md §4.10)"),
+                    ));
+                }
+                let sh = info.shapes.get(v).cloned().unwrap_or_default();
+                if !sh.is_empty() && Some(&sh) != info.shapes.get(z.as_str()) {
+                    return Err(refuse(
+                        codes::SOLVE_SCALE_INVALID,
+                        at,
+                        format!(
+                            "the scale {v} of {z} has the shape {sh:?}, neither scalar nor {z}'s"
+                        ),
                     ));
                 }
             }
@@ -1126,13 +1197,7 @@ pub fn default_initialize() -> Value {
 pub fn resolve_method(meth: &Value, linsolve: Value) -> Value {
     let mut out = Map::new();
     if let Some(p) = meth.get("ptc") {
-        out.insert(
-            "ptc".into(),
-            json!({
-                "dt0": p.get("dt0").and_then(Value::as_f64).unwrap_or(1.0e-3),
-                "growth": p.get("growth").and_then(Value::as_f64).unwrap_or(2.0),
-            }),
-        );
+        out.insert("ptc".into(), resolve_ptc(p));
     } else if let Some(p) = meth.get("picard") {
         out.insert("picard".into(), json!({"freeze": p["freeze"]}));
     } else {
@@ -1160,10 +1225,57 @@ pub fn resolve_method(meth: &Value, linsolve: Value) -> Value {
         "maxiter".into(),
         meth.get("maxiter").cloned().unwrap_or_else(|| json!(100)),
     );
-    if let Some(r) = meth.get("recover") {
-        out.insert("recover".into(), r.clone());
+    if let Some(s) = meth.get("scale") {
+        out.insert("scale".into(), s.clone());
+    }
+    if let Some(r) = meth.get("recover").and_then(Value::as_array) {
+        out.insert(
+            "recover".into(),
+            Value::Array(r.iter().map(resolve_recover).collect()),
+        );
     }
     Value::Object(out)
+}
+
+/// `ptc`'s options defaulted: `dt0` 1e-3, `growth` 2 (a number or
+/// "uncapped", D125).
+fn resolve_ptc(p: &Value) -> Value {
+    let growth = match p.get("growth") {
+        Some(Value::String(s)) if s == "uncapped" => json!("uncapped"),
+        g => json!(g.and_then(Value::as_f64).unwrap_or(2.0)),
+    };
+    json!({
+        "dt0": p.get("dt0").and_then(Value::as_f64).unwrap_or(1.0e-3),
+        "growth": growth,
+    })
+}
+
+/// A `recover` action as written, but a `{"method": M}` step with `M`'s
+/// method key, `linesearch` and `maxiter` defaulted (§7.1, D125).
+fn resolve_recover(a: &Value) -> Value {
+    let Some(mm) = a.get("method") else {
+        return a.clone();
+    };
+    let mut out = Map::new();
+    if let Some(p) = mm.get("ptc") {
+        out.insert("ptc".into(), resolve_ptc(p));
+    } else {
+        out.insert(
+            "newton".into(),
+            mm.get("newton").cloned().unwrap_or_else(|| json!({})),
+        );
+        out.insert(
+            "linesearch".into(),
+            mm.get("linesearch")
+                .cloned()
+                .unwrap_or_else(|| json!("none")),
+        );
+    }
+    out.insert(
+        "maxiter".into(),
+        mm.get("maxiter").cloned().unwrap_or_else(|| json!(100)),
+    );
+    json!({"method": out})
 }
 
 /// The plan's `bounds` of an algebraic operator (§5.9.7): per bounded paired
@@ -1188,35 +1300,83 @@ pub fn bounds_json(info: &ModelInfo, op: &Operator) -> Option<Value> {
 // ---------------------------------------------------------------------------
 // The frozen documents (spec/plan.md §6.5, D124)
 
-/// The observeds a solving node names (picard freeze in written order, then
-/// a rel_change observed not among them) and whether it is a picard solve.
-pub fn node_frozen(n: &Node) -> (Vec<String>, bool) {
+/// A solving node's frozen observeds (§6.5, D124, D125), each once at its
+/// first occurrence: picard's freeze (in written order), the rel_change
+/// observed, the observeds its method's scale names (keys in code-point
+/// order), and the observeds its unknowns' bounds name (unknowns in
+/// code-point order, lb before ub); and how many of the first are picard's
+/// freeze.
+pub fn node_frozen(n: &Node, info: &ModelInfo) -> (Vec<String>, usize) {
     let meth = match &n.kind {
         Kind::Solve => n.value.get("method"),
         _ => n.value.get("initialize"),
     };
     let Some(meth) = meth else {
-        return (vec![], false);
+        return (vec![], 0);
     };
     let mut out: Vec<String> = Vec::new();
-    let picard = meth.get("picard").is_some();
+    let mut add = |o: &str| {
+        if !out.iter().any(|x| x == o) {
+            out.push(o.to_string());
+        }
+    };
     if let Some(fr) = meth
         .get("picard")
         .and_then(|p| p.get("freeze"))
         .and_then(Value::as_array)
     {
-        out.extend(fr.iter().filter_map(Value::as_str).map(str::to_string));
+        fr.iter().filter_map(Value::as_str).for_each(&mut add);
     }
+    let nfreeze = out.len();
+    let mut add = |o: &str| {
+        if !out.iter().any(|x| x == o) {
+            out.push(o.to_string());
+        }
+    };
     if let Some(rc) = meth
         .get("converged")
         .and_then(|c| c.get("rel_change"))
         .and_then(Value::as_str)
     {
-        if !out.iter().any(|o| o == rc) {
-            out.push(rc.to_string());
+        add(rc);
+    }
+    if let Some(sc) = meth.get("scale").and_then(Value::as_object) {
+        let mut keys: Vec<&String> = sc.keys().collect();
+        keys.sort();
+        for z in keys {
+            if let Some(v) = sc[z].as_str() {
+                if info.is_observed(v) {
+                    add(v);
+                }
+            }
         }
     }
-    (out, picard)
+    if matches!(n.kind, Kind::Solve) {
+        let mut zs = written_unknowns(n);
+        zs.sort();
+        for z in zs {
+            let Some(v) = info.flat.state_variables.get(&z) else {
+                continue;
+            };
+            for b in [bound_name(&v.lb), bound_name(&v.ub)].into_iter().flatten() {
+                if info.is_observed(&b) {
+                    add(&b);
+                }
+            }
+        }
+    }
+    (out, nfreeze)
+}
+
+/// Whether `name` is a parameter, or an observed that depends on no state
+/// directly or through other observeds (D125).
+pub fn state_free(info: &ModelInfo, name: &str) -> bool {
+    info.is_parameter(name)
+        || (info.is_observed(name)
+            && !info
+                .close_over_observeds(&[name.to_string()].into())
+                .iter()
+                .any(|y| info.is_state(y)))
 }
 
 /// The probe component's frozen state for the k-th observed (1-based).

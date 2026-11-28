@@ -436,14 +436,14 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
             unknowns: crate::algebraic::node_unknowns(n, &ops, &info),
         };
         let pairing = crate::algebraic::pair_node(&info, &sn)?;
-        let (frozen, picard) = crate::algebraic::node_frozen(n);
+        let (frozen, nfreeze) = crate::algebraic::node_frozen(n, &info);
         let mut i = 0;
         for o in &names {
             let k = ops[o].residuals.len();
             let op = ops.get_mut(o).expect("named");
             op.pairing = pairing[i..i + k].to_vec();
             op.frozen = frozen.clone();
-            op.picard = picard;
+            op.nfreeze = nfreeze;
             i += k;
         }
     }
@@ -519,12 +519,14 @@ pub fn plan(path: &Path, options: &Options, bands: &dyn BandSource) -> Result<Pl
                     &info, name, &extra, &refs,
                 )),
             )];
-            if op.picard {
+            if op.nfreeze > 0 {
                 let mut fdoc = doc.clone();
                 let ren: BTreeMap<String, String> = op
                     .frozen
                     .iter()
                     .enumerate()
+                    // Only picard's freeze observeds are held (§6.5).
+                    .take(op.nfreeze)
                     .map(|(k, o)| (o.clone(), crate::algebraic::frozen_state(k + 1)))
                     .collect();
                 crate::algebraic::rename_refs(&mut fdoc["models"], &ren);
@@ -941,6 +943,10 @@ impl Planned {
             out.insert("residuals".into(), Value::Array(rs));
             if let Some(b) = crate::algebraic::bounds_json(&self.model, op) {
                 out.insert("bounds".into(), b);
+            }
+            // §6.5: the frozen observeds, in order (D125).
+            if !op.frozen.is_empty() {
+                out.insert("frozen".into(), json!(op.frozen));
             }
             out.insert("structure".into(), self.structures[name].to_json());
             if let Some(fb) = self.frozen_bands.get(name) {
